@@ -671,7 +671,7 @@ func (m model) View() string {
 			}
 			tasks = append(tasks, row)
 
-			if item.Notes != "" && selected {
+			if item.Notes != "" {
 				for _, line := range strings.Split(item.Notes, "\n") {
 					tasks = append(tasks, indent+notesStyle.Render("│ "+line))
 				}
