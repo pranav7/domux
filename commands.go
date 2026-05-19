@@ -1,0 +1,619 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+func runCommand(name string, args []string) error {
+	switch name {
+	case "help":
+		printUsage()
+		return nil
+	case "sessions":
+		if len(args) != 0 {
+			return fmt.Errorf("sessions does not accept arguments")
+		}
+		return runPicker()
+	case "start":
+		return startSession(args)
+	case "attach":
+		return attachSessionCommand(args)
+	case "adopt":
+		return adoptSession(args)
+	case "focus":
+		return focusSessionTodo(args)
+	case "status":
+		return printTmuxStatus(args)
+	case "list":
+		return printListCommand(args)
+	case "clear":
+		if len(args) != 0 {
+			return fmt.Errorf("clear does not accept arguments")
+		}
+		return clearWorkspace()
+	case "clear-state":
+		if len(args) != 0 {
+			return fmt.Errorf("clear-state does not accept arguments")
+		}
+		session, err := currentTmuxSession()
+		if err != nil {
+			return err
+		}
+		return clearSessionState(session)
+	case "server":
+		return serverCommand(args)
+	case "set-server":
+		if len(args) != 0 {
+			return fmt.Errorf("set-server does not accept arguments")
+		}
+		return setServerSession()
+	case "label":
+		return labelCommand(args)
+	case "ai-state":
+		return aiStateCommand(args)
+	case "workspace":
+		return workspaceCommand(args)
+	case "install":
+		return installCommand(args)
+	case "doctor":
+		return doctorCommand(args)
+	case "migrate":
+		return migrateCommand(args)
+	case "claude-statusline":
+		return claudeStatuslineCommand(args)
+	default:
+		return fmt.Errorf("unknown command %q", name)
+	}
+}
+
+func startSession(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	name := fs.String("name", "", "tmux session name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	dir := "."
+	if fs.NArg() > 1 {
+		return fmt.Errorf("start accepts at most one directory")
+	}
+	if fs.NArg() == 1 {
+		dir = fs.Arg(0)
+	}
+
+	root, err := resolveRoot(dir)
+	if err != nil {
+		return err
+	}
+
+	if *name != "" {
+		return createOrAttachSession(*name, root)
+	}
+
+	matches, err := matchingSessionsForRoot(root)
+	if err != nil {
+		return err
+	}
+	if len(matches) > 0 {
+		return runPickerForSessionNames(matches)
+	}
+
+	sessionName := nextSessionName(filepath.Base(root))
+	return createOrAttachSession(sessionName, root)
+}
+
+func adoptSession(args []string) error {
+	fs := flag.NewFlagSet("adopt", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	dir := "."
+	if fs.NArg() > 1 {
+		return fmt.Errorf("adopt accepts at most one directory")
+	}
+	if fs.NArg() == 1 {
+		dir = fs.Arg(0)
+	}
+	session, err := currentTmuxSession()
+	if err != nil {
+		return err
+	}
+	root, err := resolveRoot(dir)
+	if err != nil {
+		return err
+	}
+	state, err := setSessionRoot(session, root)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("adopted %s -> %s\n", state.Name, state.Root)
+	return nil
+}
+
+func attachSessionCommand(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("attach requires a session name")
+	}
+	return attachTmuxSession(args[0])
+}
+
+func createOrAttachSession(name, root string) error {
+	if tmuxSessionExists(name) {
+		state, err := loadSessionState(name)
+		if err != nil && os.IsNotExist(err) {
+			if _, err := setSessionRoot(name, root); err != nil {
+				return err
+			}
+		} else if err == nil && state.Root == "" {
+			if _, err := setSessionRoot(name, root); err != nil {
+				return err
+			}
+		}
+		return attachTmuxSession(name)
+	}
+
+	if err := createTmuxSession(name, root); err != nil {
+		return err
+	}
+	if _, err := setSessionRoot(name, root); err != nil {
+		return err
+	}
+	return attachTmuxSession(name)
+}
+
+func tmuxSessionExists(name string) bool {
+	return exec.Command("tmux", "has-session", "-t", name).Run() == nil
+}
+
+func createTmuxSession(name, root string) error {
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", root)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func attachTmuxSession(name string) error {
+	clearWaitingState(name)
+	if _, err := currentTmuxSession(); err == nil {
+		cmd := exec.Command("tmux", "switch-client", "-t", name)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	cmd := exec.Command("tmux", "attach-session", "-t", name)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func matchingSessionsForRoot(root string) ([]string, error) {
+	var matches []string
+	seen := map[string]bool{}
+	states, err := listSessionStates()
+	if err != nil {
+		return nil, err
+	}
+	for _, state := range states {
+		if state.Root == root && tmuxSessionExists(state.Name) {
+			matches = append(matches, state.Name)
+			seen[state.Name] = true
+		}
+	}
+
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err == nil {
+		for _, session := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if session == "" || seen[session] {
+				continue
+			}
+			pathOut, err := exec.Command("tmux", "display-message", "-t", session, "-p", "#{pane_current_path}").Output()
+			if err != nil {
+				continue
+			}
+			sessionRoot, err := resolveRoot(strings.TrimSpace(string(pathOut)))
+			if err == nil && sessionRoot == root {
+				matches = append(matches, session)
+				seen[session] = true
+			}
+		}
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
+func nextSessionName(base string) string {
+	base = cleanSessionName(base)
+	if base == "" {
+		base = "domux"
+	}
+	if !tmuxSessionExists(base) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !tmuxSessionExists(candidate) {
+			return candidate
+		}
+	}
+}
+
+func cleanSessionName(name string) string {
+	name = strings.ToLower(name)
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		case r == '.' || r == ' ':
+			b.WriteRune('-')
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func focusSessionTodo(args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("focus accepts zero args or one todo id")
+	}
+	session, err := currentTmuxSession()
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cannot get current directory: %w", err)
+	}
+	ctx, err := resolveDomuxContextForSession(session, cwd)
+	if err != nil {
+		return err
+	}
+	list, err := loadList(ctx.TodoPath)
+	if err != nil {
+		return err
+	}
+	if len(list.Active) == 0 {
+		return fmt.Errorf("no active todos to focus")
+	}
+	id := ""
+	if len(args) == 1 {
+		id = args[0]
+	} else {
+		ensureItemID(&list.Active[0])
+		id = list.Active[0].ID
+		if err := saveList(ctx.TodoPath, list); err != nil {
+			return err
+		}
+	}
+	state := ctx.State
+	if state == nil {
+		state = loadSessionStateWithLegacy(session)
+	}
+	state.Name = session
+	state.Root = ctx.Root
+	state.TodoPath = ctx.TodoPath
+	state.FocusedTodoID = id
+	if err := saveSessionState(state); err != nil {
+		return err
+	}
+	fmt.Printf("focused %s\n", id)
+	return nil
+}
+
+func printListCommand(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("list does not accept arguments")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cannot get current directory: %w", err)
+	}
+	ctx, err := resolveDomuxContext(cwd)
+	if err != nil {
+		return err
+	}
+	list, err := loadList(ctx.TodoPath)
+	if err != nil {
+		return err
+	}
+	for i, item := range list.Active {
+		prefix := "├─"
+		if i == len(list.Active)-1 {
+			prefix = "└─"
+		}
+		symbol := "○"
+		if item.InProgress {
+			symbol = "●"
+		}
+		fmt.Printf("%s %s %s\n", prefix, symbol, item.Title)
+	}
+	return nil
+}
+
+func printTmuxStatus(args []string) error {
+	if len(args) > 2 {
+		return fmt.Errorf("status accepts optional session and pane path")
+	}
+	session := ""
+	if len(args) >= 1 {
+		session = args[0]
+	}
+	cwd := ""
+	if len(args) >= 2 {
+		cwd = args[1]
+	}
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cannot get current directory: %w", err)
+		}
+	}
+	var ctx *DomuxContext
+	var err error
+	if session != "" {
+		ctx, err = resolveDomuxContextForSession(session, cwd)
+	} else {
+		ctx, err = resolveDomuxContext(cwd)
+		session = ctx.Session
+	}
+	if err != nil {
+		return err
+	}
+	list, _ := loadList(ctx.TodoPath)
+	status := ""
+	if item, ok := focusedOrTopItem(list, ctx.State); ok {
+		title := item.Title
+		if len(title) > 50 {
+			title = title[:47] + "..."
+		}
+		symbol := "○"
+		if item.InProgress {
+			symbol = "●"
+		}
+		status = fmt.Sprintf("#[default]#[fg=#f9e2af]%s %s ", symbol, title)
+	}
+	if ctx.State == nil && session != "" {
+		ctx.State = loadSessionStateWithLegacy(session)
+	}
+	switch aggregateAIStateFromSession(ctx.State) {
+	case "CLAUDING":
+		status += "#[default]#[fg=#a6e3a1]#[bg=#a6e3a1,fg=#1e1e2e,bold] CLAUDING #[default]#[fg=#a6e3a1]#[default]"
+	case "WAITING":
+		status += "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] WAITING #[default]#[fg=#f38ba8]#[default]"
+	}
+	if ctx.State != nil && ctx.State.Server {
+		status += "#[default]#[fg=#f9e2af,bold] ⚡"
+	}
+	fmt.Print(status)
+	return nil
+}
+
+func clearWorkspace() error {
+	session, err := currentTmuxSession()
+	if err != nil {
+		return err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cannot get current directory: %w", err)
+	}
+	return clearWorkspaceForSession(session, cwd, true)
+}
+
+func setServerSession() error {
+	session, err := currentTmuxSession()
+	if err != nil {
+		return err
+	}
+
+	return setServerSessionByName(session)
+}
+
+func clearSessionState(session string) error {
+	return clearWorkspaceForSession(session, "", false)
+}
+
+func clearWorkspaceForSession(session, dir string, verbose bool) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot get home directory: %w", err)
+	}
+	if err := clearSessionStateFiles(homeDir, session); err != nil {
+		return err
+	}
+	state := loadSessionStateWithLegacy(session)
+	state.Label = ""
+	state.Server = false
+	state.Workspace = ""
+	state.AI = map[string]string{}
+	if err := saveSessionState(state); err != nil {
+		return err
+	}
+	_ = refreshTmuxClient()
+
+	if dir == "" {
+		return nil
+	}
+	return resetGitWorkspace(dir, verbose)
+}
+
+func clearSessionStateFiles(homeDir, session string) error {
+	if err := removeHomeFile(homeDir, ".tmux-label-"+session); err != nil {
+		return err
+	}
+	if err := removeHomeFile(homeDir, ".tmux-server-"+session); err != nil {
+		return err
+	}
+	if err := removeHomeFile(homeDir, ".tmux-claude-"+session); err != nil {
+		return err
+	}
+	return removeHomeFilesWithPrefix(homeDir, ".tmux-claude-"+session+"_")
+}
+
+func setServerSessionByName(session string) error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot get home directory: %w", err)
+	}
+
+	if err := removeHomeFilesWithPrefix(homeDir, ".tmux-server-"); err != nil {
+		return err
+	}
+	states, err := listSessionStates()
+	if err != nil {
+		return err
+	}
+	for i := range states {
+		states[i].Server = states[i].Name == session
+		if err := saveSessionState(&states[i]); err != nil {
+			return err
+		}
+	}
+	state := loadSessionStateWithLegacy(session)
+	state.Server = true
+	if err := saveSessionState(state); err != nil {
+		return err
+	}
+	if err := writeHomeFile(homeDir, ".tmux-server-"+session, "running\n"); err != nil {
+		return err
+	}
+	return refreshTmuxClient()
+}
+
+func currentTmuxSession() (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine current tmux session: %w", err)
+	}
+	session := strings.TrimSpace(string(out))
+	if session == "" {
+		return "", fmt.Errorf("cannot determine current tmux session")
+	}
+	return session, nil
+}
+
+func refreshTmuxClient() error {
+	cmd := exec.Command("tmux", "refresh-client", "-S")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func resetGitWorkspace(dir string, verbose bool) error {
+	if !insideGitWorktree(dir) {
+		if verbose {
+			fmt.Println("Not a git repo, skipping git reset")
+		}
+		return nil
+	}
+
+	dirName := filepath.Base(dir)
+	if isWorkspaceDir(dirName) {
+		if verbose {
+			fmt.Printf("Resetting worktree: %s\n", dirName)
+		}
+		if err := runGitCommand(dir, verbose, "checkout", dirName); err != nil {
+			return err
+		}
+		if err := runGitCommand(dir, verbose, "fetch", "origin", "main"); err != nil {
+			return err
+		}
+		return runGitCommand(dir, verbose, "merge", "origin/main", "-m", "Merge main into "+dirName)
+	}
+
+	if verbose {
+		fmt.Printf("Resetting main directory: %s\n", dirName)
+	}
+	if err := runGitCommand(dir, verbose, "checkout", "main"); err != nil {
+		return err
+	}
+	return runGitCommand(dir, verbose, "pull", "origin", "main")
+}
+
+func insideGitWorktree(dir string) bool {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	cmd.Dir = dir
+	return cmd.Run() == nil
+}
+
+func runGitCommand(dir string, verbose bool, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if verbose {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func isWorkspaceDir(name string) bool {
+	const prefix = "workspace-"
+	if !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(name, prefix)
+	if suffix == "" {
+		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func writeHomeFile(homeDir, name, contents string) error {
+	path := filepath.Join(homeDir, name)
+	if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
+		return fmt.Errorf("cannot write %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeHomeFile(homeDir, name string) error {
+	path := filepath.Join(homeDir, name)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cannot remove %s: %w", path, err)
+	}
+	return nil
+}
+
+func removeHomeFilesWithPrefix(homeDir, prefix string) error {
+	entries, err := os.ReadDir(homeDir)
+	if err != nil {
+		return fmt.Errorf("cannot read %s: %w", homeDir, err)
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		if err := removeHomeFile(homeDir, entry.Name()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
