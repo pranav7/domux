@@ -139,6 +139,26 @@ func TestPickerKeepsRelatedGroupsSeparate(t *testing.T) {
 	if !slices.Equal(groups, want) {
 		t.Fatalf("groups = %#v, want %#v", groups, want)
 	}
+	if rows[2].Kind != rowSpacer {
+		t.Fatalf("row[2] kind = %v, want spacer", rows[2].Kind)
+	}
+}
+
+func TestPickerFilterSkipsLeadingSpacer(t *testing.T) {
+	m := newPickerModel(rowsFromEntries([]groupEntry{
+		{group: "audrey-app", session: &sessionInfo{Name: "audrey-app"}},
+		{group: "domux", session: &sessionInfo{Name: "domux"}},
+		{group: "dotfiles", session: &sessionInfo{Name: "dotfiles"}},
+	}))
+	m.filter.SetValue("dotfiles")
+	m.rebuildVisible()
+
+	if len(m.visible) == 0 {
+		t.Fatalf("visible rows empty")
+	}
+	if got := m.rows[m.visible[0]].Kind; got == rowSpacer {
+		t.Fatalf("first visible row is spacer")
+	}
 }
 
 func TestPickerViewFitsHeightWithGroupHeaders(t *testing.T) {

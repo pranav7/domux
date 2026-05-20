@@ -17,6 +17,7 @@ type rowKind int
 
 const (
 	rowHeader rowKind = iota
+	rowSpacer
 	rowSession
 	rowTask
 )
@@ -276,15 +277,21 @@ func (m *pickerModel) rebuildVisible() {
 	}
 
 	var headerIdx int
+	spacerIdx := -1
 	groupHasMatch := false
 	for i, r := range m.rows {
 		switch r.Kind {
+		case rowSpacer:
+			spacerIdx = i
 		case rowHeader:
 			headerIdx = i
 			groupHasMatch = false
 		case rowSession:
 			if matched[r.Session.Name] {
 				if !groupHasMatch {
+					if len(m.visible) > 0 && spacerIdx >= 0 {
+						m.visible = append(m.visible, spacerIdx)
+					}
 					m.visible = append(m.visible, headerIdx)
 					groupHasMatch = true
 				}
@@ -778,6 +785,8 @@ func (m pickerModel) renderRow(row pickerRow, selected bool) string {
 	switch row.Kind {
 	case rowHeader:
 		return m.renderHeader(row)
+	case rowSpacer:
+		return ""
 	case rowSession:
 		return m.renderSession(row, selected)
 	case rowTask:
@@ -1040,6 +1049,9 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 	currentGroup := ""
 	for _, e := range entries {
 		if e.group != currentGroup {
+			if currentGroup != "" {
+				rows = append(rows, pickerRow{Kind: rowSpacer, Group: e.group})
+			}
 			rows = append(rows, pickerRow{Kind: rowHeader, Group: e.group})
 			currentGroup = e.group
 		}
