@@ -75,29 +75,34 @@ func labelCommand(args []string) error {
 			return err
 		}
 	}
-	state := loadSessionStateWithLegacy(session)
-	homeDir, _ := os.UserHomeDir()
-
 	switch fs.Arg(0) {
 	case "set":
 		if fs.NArg() < 2 {
 			return fmt.Errorf("label set requires a value")
 		}
-		state.Label = strings.Join(fs.Args()[1:], " ")
-		if homeDir != "" {
-			if err := writeHomeFile(homeDir, ".tmux-label-"+session, state.Label+"\n"); err != nil {
-				return err
-			}
-		}
+		return setSessionLabel(session, strings.Join(fs.Args()[1:], " "))
 	case "clear":
-		state.Label = ""
-		if homeDir != "" {
+		return setSessionLabel(session, "")
+	default:
+		return fmt.Errorf("unknown label command %q", fs.Arg(0))
+	}
+}
+
+func setSessionLabel(session, label string) error {
+	label = strings.TrimSpace(label)
+	state := loadSessionStateWithLegacy(session)
+	state.Name = session
+	state.Label = label
+
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		if label == "" {
 			if err := removeHomeFile(homeDir, ".tmux-label-"+session); err != nil {
 				return err
 			}
+		} else if err := writeHomeFile(homeDir, ".tmux-label-"+session, label+"\n"); err != nil {
+			return err
 		}
-	default:
-		return fmt.Errorf("unknown label command %q", fs.Arg(0))
 	}
 	if err := saveSessionState(state); err != nil {
 		return err
@@ -110,11 +115,13 @@ func aiStateCommand(args []string) error {
 	fs.SetOutput(os.Stderr)
 	sessionFlag := fs.String("session", "", "tmux session name")
 	paneFlag := fs.String("pane", "", "pane key")
+	agentFlag := fs.String("agent", "", "ai agent: claude or codex")
+	allFlag := fs.Bool("all", false, "apply to all panes for the agent")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("ai-state requires CLAUDING, WAITING, IDLE, clear, or toggle")
+		return fmt.Errorf("ai-state requires CLAUDING, CODEXING, WAITING, IDLE, clear, or toggle")
 	}
 	session := *sessionFlag
 	if session == "" {
@@ -124,15 +131,33 @@ func aiStateCommand(args []string) error {
 			return err
 		}
 	}
+	value := fs.Arg(0)
+	agent := strings.ToLower(strings.TrimSpace(*agentFlag))
+	if agent == "" {
+		agent = inferAgentFromAIValue(value)
+	}
+	if agent == "" {
+		agent = "claude"
+	}
+	if agent != "claude" && agent != "codex" {
+		return fmt.Errorf("ai-state agent must be claude or codex")
+	}
+	if *allFlag {
+		if *paneFlag != "" {
+			return fmt.Errorf("ai-state --all cannot be combined with --pane")
+		}
+		switch normalizeAIStateValue(value) {
+		case "", "CLEAR", "IDLE":
+			return clearAIStateForAgent(session, agent)
+		default:
+			return fmt.Errorf("ai-state --all only supports clear or IDLE")
+		}
+	}
 	pane := *paneFlag
 	if pane == "" {
 		pane = currentTmuxPaneKey()
 	}
-	state := strings.ToUpper(fs.Arg(0))
-	if state == "CLEAR" {
-		state = ""
-	}
-	return setAIState(session, pane, state)
+	return setAIState(session, pane, agent, value)
 }
 
 func workspaceCommand(args []string) error {
@@ -170,36 +195,49 @@ func workspaceCommand(args []string) error {
 }
 
 func currentTmuxPaneKey() string {
-	out, err := execOutput("tmux", "display-message", "-p", "#{window_index}_#{pane_index}")
+	out, err := execOutput("tmux", tmuxDisplayArgs("#{window_index}_#{pane_index}")...)
 	if err != nil || strings.TrimSpace(out) == "" {
 		return "default"
 	}
 	return strings.TrimSpace(out)
 }
 
-func setAIState(session, pane, value string) error {
+func setAIState(session, pane, agent, value string) error {
 	if pane == "" {
 		pane = "default"
+	}
+	if agent == "" {
+		agent = "claude"
 	}
 	state := loadSessionStateWithLegacy(session)
 	if state.AI == nil {
 		state.AI = map[string]string{}
 	}
-	current := strings.TrimSpace(state.AI[pane])
+	key := aiStateKey(agent, pane)
+	current := strings.TrimSpace(state.AI[key])
+	if current == "" && agent == "claude" {
+		current = strings.TrimSpace(state.AI[pane])
+	}
+	value = normalizeAIStateValue(value)
 	if value == "TOGGLE" {
 		switch current {
-		case "CLAUDING":
+		case workingAIState(agent):
 			value = "WAITING"
 		case "WAITING":
 			value = ""
 		default:
-			value = "CLAUDING"
+			value = workingAIState(agent)
 		}
+	} else {
+		value = normalizeAIState(agent, value)
 	}
 	if value == "" || value == "IDLE" {
-		delete(state.AI, pane)
+		delete(state.AI, key)
+		if agent == "claude" {
+			delete(state.AI, pane)
+		}
 	} else {
-		state.AI[pane] = value
+		state.AI[key] = value
 	}
 	if err := saveSessionState(state); err != nil {
 		return err
@@ -207,7 +245,7 @@ func setAIState(session, pane, value string) error {
 
 	homeDir, _ := os.UserHomeDir()
 	if homeDir != "" {
-		name := ".tmux-claude-" + session + "_" + pane
+		name := ".tmux-" + agent + "-" + session + "_" + pane
 		if value == "" || value == "IDLE" {
 			if err := removeHomeFile(homeDir, name); err != nil {
 				return err
@@ -219,11 +257,52 @@ func setAIState(session, pane, value string) error {
 	return refreshTmuxClient()
 }
 
+func clearAIStateForAgent(session, agent string) error {
+	state := loadSessionStateWithLegacy(session)
+	changed := false
+	for key, value := range state.AI {
+		keyAgent := inferAgentFromAIKey(key)
+		if keyAgent == "" {
+			keyAgent = inferAgentFromAIValue(value)
+		}
+		if keyAgent == "" && agent == "claude" {
+			keyAgent = "claude"
+		}
+		if keyAgent == agent {
+			delete(state.AI, key)
+			changed = true
+		}
+	}
+	if changed {
+		if err := saveSessionState(state); err != nil {
+			return err
+		}
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		if err := removeHomeFile(homeDir, ".tmux-"+agent+"-"+session); err != nil {
+			return err
+		}
+		if err := removeHomeFilesWithPrefix(homeDir, ".tmux-"+agent+"-"+session+"_"); err != nil {
+			return err
+		}
+	}
+	return refreshTmuxClient()
+}
+
+func workingAIState(agent string) string {
+	if agent == "codex" {
+		return "CODEXING"
+	}
+	return "CLAUDING"
+}
+
 func clearWaitingState(session string) {
 	state := loadSessionStateWithLegacy(session)
 	changed := false
 	for pane, value := range state.AI {
-		if strings.TrimSpace(value) == "WAITING" {
+		if normalizeAIStateValue(value) == "WAITING" {
 			state.AI[pane] = "IDLE"
 			changed = true
 		}
@@ -236,18 +315,20 @@ func clearWaitingState(session string) {
 	if homeDir == "" {
 		return
 	}
-	pattern := filepath.Join(homeDir, ".tmux-claude-"+session+"_*")
-	matches, _ := filepath.Glob(pattern)
-	for _, path := range matches {
-		data, err := os.ReadFile(path)
-		if err == nil && strings.TrimSpace(string(data)) == "WAITING" {
-			_ = os.WriteFile(path, []byte("IDLE\n"), 0644)
+	for _, agent := range []string{"claude", "codex"} {
+		pattern := filepath.Join(homeDir, ".tmux-"+agent+"-"+session+"_*")
+		matches, _ := filepath.Glob(pattern)
+		for _, path := range matches {
+			data, err := os.ReadFile(path)
+			if err == nil && normalizeAIStateValue(string(data)) == "WAITING" {
+				_ = os.WriteFile(path, []byte("IDLE\n"), 0644)
+			}
 		}
-	}
-	legacyFile := filepath.Join(homeDir, ".tmux-claude-"+session)
-	data, err := os.ReadFile(legacyFile)
-	if err == nil && strings.TrimSpace(string(data)) == "WAITING" {
-		_ = os.WriteFile(legacyFile, []byte("IDLE\n"), 0644)
+		legacyFile := filepath.Join(homeDir, ".tmux-"+agent+"-"+session)
+		data, err := os.ReadFile(legacyFile)
+		if err == nil && normalizeAIStateValue(string(data)) == "WAITING" {
+			_ = os.WriteFile(legacyFile, []byte("IDLE\n"), 0644)
+		}
 	}
 }
 

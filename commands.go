@@ -15,11 +15,24 @@ func runCommand(name string, args []string) error {
 	case "help":
 		printUsage()
 		return nil
-	case "sessions":
+	case "sessions", "switcher":
 		if len(args) != 0 {
-			return fmt.Errorf("sessions does not accept arguments")
+			return fmt.Errorf("%s does not accept arguments", name)
 		}
 		return runPicker()
+	case "todo":
+		if len(args) != 0 {
+			return fmt.Errorf("todo does not accept arguments")
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cannot get current directory: %w", err)
+		}
+		ctx, err := resolveDomuxContext(cwd)
+		if err != nil {
+			return err
+		}
+		return runTUI(ctx.TodoPath)
 	case "start":
 		return startSession(args)
 	case "attach":
@@ -101,12 +114,22 @@ func startSession(args []string) error {
 	if err != nil {
 		return err
 	}
+	if session, ok := singleMatchingStartSession(matches); ok {
+		return attachTmuxSession(session)
+	}
 	if len(matches) > 0 {
 		return runPickerForSessionNames(matches)
 	}
 
 	sessionName := nextSessionName(filepath.Base(root))
 	return createOrAttachSession(sessionName, root)
+}
+
+func singleMatchingStartSession(matches []string) (string, bool) {
+	if len(matches) != 1 {
+		return "", false
+	}
+	return matches[0], true
 }
 
 func adoptSession(args []string) error {
@@ -184,17 +207,45 @@ func createTmuxSession(name, root string) error {
 
 func attachTmuxSession(name string) error {
 	clearWaitingState(name)
-	if _, err := currentTmuxSession(); err == nil {
-		cmd := exec.Command("tmux", "switch-client", "-t", name)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	if inTmuxClientEnv() {
+		cmd := exec.Command("tmux", tmuxAttachArgs(true, name)...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		if !isNoCurrentClientOutput(out) {
+			_, _ = os.Stderr.Write(out)
+			return err
+		}
 	}
-	cmd := exec.Command("tmux", "attach-session", "-t", name)
+	cmd := exec.Command("tmux", tmuxAttachArgs(false, name)...)
+	cmd.Env = withoutTmuxEnv(os.Environ())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func inTmuxClientEnv() bool {
+	return strings.TrimSpace(os.Getenv("TMUX")) != ""
+}
+
+func withoutTmuxEnv(env []string) []string {
+	next := make([]string, 0, len(env))
+	for _, item := range env {
+		if strings.HasPrefix(item, "TMUX=") || strings.HasPrefix(item, "TMUX_PANE=") {
+			continue
+		}
+		next = append(next, item)
+	}
+	return next
+}
+
+func tmuxAttachArgs(inTmux bool, name string) []string {
+	if inTmux {
+		return []string{"switch-client", "-t", name}
+	}
+	return []string{"attach-session", "-t", name}
 }
 
 func matchingSessionsForRoot(root string) ([]string, error) {
@@ -390,17 +441,29 @@ func printTmuxStatus(args []string) error {
 	if ctx.State == nil && session != "" {
 		ctx.State = loadSessionStateWithLegacy(session)
 	}
-	switch aggregateAIStateFromSession(ctx.State) {
-	case "CLAUDING":
-		status += "#[default]#[fg=#a6e3a1]#[bg=#a6e3a1,fg=#1e1e2e,bold] CLAUDING #[default]#[fg=#a6e3a1]#[default]"
-	case "WAITING":
-		status += "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] WAITING #[default]#[fg=#f38ba8]#[default]"
-	}
+	aiStates := aggregateAIStatesFromSession(ctx.State)
+	status += tmuxAIBadge("claude", aiStates.Claude)
+	status += tmuxAIBadge("codex", aiStates.Codex)
 	if ctx.State != nil && ctx.State.Server {
 		status += "#[default]#[fg=#f9e2af,bold] ⚡"
 	}
 	fmt.Print(status)
 	return nil
+}
+
+func tmuxAIBadge(agent, state string) string {
+	switch {
+	case agent == "claude" && state == "CLAUDING":
+		return "#[default]#[fg=#a6e3a1]#[bg=#a6e3a1,fg=#1e1e2e,bold] CLAUDING #[default]#[fg=#a6e3a1]#[default]"
+	case agent == "claude" && state == "WAITING":
+		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CLAUDE WAITING #[default]#[fg=#f38ba8]#[default]"
+	case agent == "codex" && state == "CODEXING":
+		return "#[default]#[fg=#89b4fa]#[bg=#89b4fa,fg=#1e1e2e,bold] CODEXING #[default]#[fg=#89b4fa]#[default]"
+	case agent == "codex" && state == "WAITING":
+		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CODEX WAITING #[default]#[fg=#f38ba8]#[default]"
+	default:
+		return ""
+	}
 }
 
 func clearWorkspace() error {
@@ -469,7 +532,13 @@ func clearSessionStateFiles(homeDir, session string) error {
 	if err := removeHomeFile(homeDir, ".tmux-claude-"+session); err != nil {
 		return err
 	}
-	return removeHomeFilesWithPrefix(homeDir, ".tmux-claude-"+session+"_")
+	if err := removeHomeFilesWithPrefix(homeDir, ".tmux-claude-"+session+"_"); err != nil {
+		return err
+	}
+	if err := removeHomeFile(homeDir, ".tmux-codex-"+session); err != nil {
+		return err
+	}
+	return removeHomeFilesWithPrefix(homeDir, ".tmux-codex-"+session+"_")
 }
 
 func setServerSessionByName(session string) error {
@@ -503,7 +572,7 @@ func setServerSessionByName(session string) error {
 }
 
 func currentTmuxSession() (string, error) {
-	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	out, err := exec.Command("tmux", tmuxDisplayArgs("#S")...).Output()
 	if err != nil {
 		return "", fmt.Errorf("cannot determine current tmux session: %w", err)
 	}
@@ -514,11 +583,28 @@ func currentTmuxSession() (string, error) {
 	return session, nil
 }
 
+func tmuxDisplayArgs(format string) []string {
+	if pane := strings.TrimSpace(os.Getenv("TMUX_PANE")); pane != "" {
+		return []string{"display-message", "-t", pane, "-p", format}
+	}
+	return []string{"display-message", "-p", format}
+}
+
 func refreshTmuxClient() error {
 	cmd := exec.Command("tmux", "refresh-client", "-S")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if isNoCurrentClientOutput(out) {
+		return nil
+	}
+	_, _ = os.Stderr.Write(out)
+	return err
+}
+
+func isNoCurrentClientOutput(out []byte) bool {
+	return strings.Contains(string(out), "no current client")
 }
 
 func resetGitWorkspace(dir string, verbose bool) error {

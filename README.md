@@ -1,16 +1,22 @@
 # domux
 
-An opinionated tmux workbench with a session picker and per-session TODOs.
+An opinionated tmux workbench. Two TUIs, one binary:
 
-Domux pins a tmux session to the directory where the work started. The TODO
-context stays attached to that session even if an agent or shell later `cd`s
-through subdirectories.
+- **todo** — per-worktree task list (the "do" in *do*mux). Pinned to the git
+  root where work started, so `cd`-ing through subdirs doesn't lose context.
+- **switcher** — pinned-session picker across all your tmux sessions, with
+  live status (CLAUDING, CODEXING, WAITING), labels, and inline task previews.
 
 ## Usage
 
 ```sh
-# Open the TODO TUI for the current domux context
+# Open the todo TUI for the current domux context
 domux
+domux todo            # explicit alias
+
+# Open the session switcher
+domux switcher
+domux sessions        # historical alias
 
 # Start or resume tmux work in this directory
 domux start
@@ -24,9 +30,6 @@ domux adopt
 # Attach or switch to an existing session
 domux attach my-repo
 
-# Launch the session picker
-domux sessions
-
 # Reset/free the current tmux workspace, same as trr/tmux-reset
 domux clear
 
@@ -36,9 +39,10 @@ domux clear-state
 # Toggle the current tmux session as running the server
 domux server
 
-# Preview installable tmux and Claude Code integration
+# Preview installable tmux, Claude Code, and Codex integration
 domux install tmux
 domux install claude
+domux install codex
 
 # Check installed integration state
 domux doctor
@@ -55,6 +59,20 @@ domux --help
 ```sh
 go install github.com/pranav7/domux@latest
 ```
+
+### Local development
+
+```sh
+make           # build ./domux
+make install   # symlink ~/bin/domux -> ./domux (one-time)
+make test
+make switcher  # quick launch for testing
+```
+
+After `make install`, every subsequent `make` is live on your PATH — no
+copy step. Use `make uninstall` to remove the symlink (the original
+binary, if any, was backed up to `~/bin/domux.pre-symlink.bak`).
+
 
 Preview the generated tmux integration:
 
@@ -81,15 +99,23 @@ domux install claude
 domux install claude --apply
 ```
 
+Codex integration is preview-first too:
+
+```sh
+domux install codex
+domux install codex --apply
+```
+
 Install commands create backups before writing and do not delete legacy
 `~/.tmux-*` state files.
 
-## Session picker keybindings
+## Switcher keybindings
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` / arrows | Move cursor |
 | `Enter` | Switch to selected session |
+| `n` | Name (label) the selected session inline |
 | `c` | Clear/reset selected session |
 | `s` | Mark selected session as running the server |
 | `Tab` | Show/hide todos |
@@ -103,11 +129,11 @@ Install commands create backups before writing and do not delete legacy
 - Focused TODO per session
 - Native terminal TUI (bubbletea)
 - File-backed markdown format
-- Claude Code hooks can update tmux AI state through domux
+- Claude Code and Codex hooks can update tmux AI state through domux
 - Live reload via fsnotify
 - Vim-style keybindings
 
-## Keybindings
+## Todo keybindings
 
 | Key | Action |
 |-----|--------|
@@ -174,6 +200,7 @@ Existing dotfiles state is still read:
 - `~/.tmux-label-*`
 - `~/.tmux-server-*`
 - `~/.tmux-claude-*`
+- `~/.tmux-codex-*`
 - `~/.tmux-workspace-*`
 
 Use dry-run migration first:

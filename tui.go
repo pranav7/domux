@@ -638,7 +638,8 @@ func (m model) View() string {
 		pad = 1
 	}
 	sections = append(sections, "\n"+indent+firstLine+strings.Repeat(" ", pad)+count)
-	sections = append(sections, indent+logoStyle.Render(logoLines[1]))
+	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
+	sections = append(sections, indent+logoStyle.Render(logoLines[1])+"  "+featureStyle.Render("todo"))
 	sections = append(sections, "")
 	sections = append(sections, indent+worktree)
 	sections = append(sections, indent+separatorStyle.Render(strings.Repeat("─", innerWidth)))

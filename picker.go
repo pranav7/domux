@@ -31,7 +31,8 @@ type sessionInfo struct {
 	Name    string
 	Branch  string
 	PR      *prInfo
-	Claude  string // "WAITING", "CLAUDING", or ""
+	Claude  string
+	Codex   string
 	Server  bool
 	Windows int
 	Path    string
@@ -55,23 +56,35 @@ type pickerRow struct {
 }
 
 type pickerModel struct {
-	rows      []pickerRow
-	visible   []int
-	cursor    int
-	filter    textinput.Model
-	filtering bool
-	showTasks bool
-	status    string
-	statusErr bool
-	width     int
-	height    int
+	rows         []pickerRow
+	visible      []int
+	cursor       int
+	filter       textinput.Model
+	filtering    bool
+	labelInput   textinput.Model
+	labelEditing bool
+	labelTarget  string
+	showTasks    bool
+	status       string
+	statusErr    bool
+	width        int
+	height       int
+	startedAt    time.Time
 }
 
 type pickerActionMsg struct {
 	Action  string
 	Session string
+	Value   string
 	Err     error
 }
+
+type pickerRefreshMsg struct {
+	Rows []pickerRow
+}
+
+const pickerStartupInputGrace = 150 * time.Millisecond
+const pickerRefreshInterval = 2 * time.Second
 
 // Styles — Catppuccin Mocha
 var (
@@ -104,14 +117,14 @@ var (
 	pNameDim = lipgloss.NewStyle().
 			Foreground(peach)
 
-	pBadgeWaiting = lipgloss.NewStyle().
-			Background(red).
+	pBadgeClauding = lipgloss.NewStyle().
+			Background(green).
 			Foreground(lipgloss.Color("#1e1e2e")).
 			Bold(true).
 			Padding(0, 1)
 
-	pBadgeClauding = lipgloss.NewStyle().
-			Background(green).
+	pBadgeCodexing = lipgloss.NewStyle().
+			Background(blue).
 			Foreground(lipgloss.Color("#1e1e2e")).
 			Bold(true).
 			Padding(0, 1)
@@ -217,10 +230,16 @@ func newPickerModel(rows []pickerRow) pickerModel {
 	ti.Placeholder = ""
 	ti.CharLimit = 30
 
+	li := textinput.New()
+	li.Placeholder = ""
+	li.CharLimit = 60
+
 	m := pickerModel{
-		rows:      rows,
-		filter:    ti,
-		showTasks: true,
+		rows:       rows,
+		filter:     ti,
+		labelInput: li,
+		showTasks:  true,
+		startedAt:  time.Now(),
 	}
 	m.rebuildVisible()
 	for i, vi := range m.visible {
@@ -284,7 +303,7 @@ func isSelectablePickerRow(row pickerRow) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	return nil
+	return pickerRefreshCmd()
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -298,8 +317,57 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPickerAction(msg)
 		return m, nil
 
+	case pickerRefreshMsg:
+		m.refreshRows(msg.Rows)
+		return m, pickerRefreshCmd()
+
 	case tea.KeyMsg:
 		key := msg.String()
+		if m.ignoringStartupInput() {
+			return m, nil
+		}
+
+		if m.labelEditing {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.labelEditing = false
+				m.labelInput.SetValue("")
+				m.labelTarget = ""
+				return m, nil
+			case "enter":
+				target := m.labelTarget
+				value := strings.TrimSpace(m.labelInput.Value())
+				m.labelEditing = false
+				m.labelInput.SetValue("")
+				m.labelTarget = ""
+				if target == "" {
+					return m, nil
+				}
+				m.status = fmt.Sprintf("labeling %s", target)
+				m.statusErr = false
+				return m, func() tea.Msg {
+					return pickerActionMsg{
+						Action:  "label",
+						Session: target,
+						Value:   value,
+						Err:     setSessionLabel(target, value),
+					}
+				}
+			case "backspace":
+				v := m.labelInput.Value()
+				if len(v) > 0 {
+					m.labelInput.SetValue(v[:len(v)-1])
+				}
+				return m, nil
+			default:
+				if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
+					m.labelInput.SetValue(m.labelInput.Value() + key)
+				}
+				return m, nil
+			}
+		}
 
 		if m.filtering {
 			switch key {
@@ -369,6 +437,9 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.clearSelectedSession()
 		case "s":
 			return m, m.setSelectedServer()
+		case "n":
+			m.startLabelEdit()
+			return m, nil
 		case "g":
 			for i, vi := range m.visible {
 				if isSelectablePickerRow(m.rows[vi]) {
@@ -396,6 +467,42 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func pickerRefreshCmd() tea.Cmd {
+	return tea.Tick(pickerRefreshInterval, func(time.Time) tea.Msg {
+		return pickerRefreshMsg{Rows: gatherSessions()}
+	})
+}
+
+func (m *pickerModel) refreshRows(rows []pickerRow) {
+	if len(rows) == 0 {
+		return
+	}
+	selectedName := ""
+	if len(m.visible) > 0 && m.cursor < len(m.visible) {
+		row := m.rows[m.visible[m.cursor]]
+		if row.Session != nil {
+			selectedName = row.Session.Name
+		}
+	}
+	m.rows = rows
+	m.rebuildVisible()
+	m.cursor = 0
+	if selectedName != "" {
+		for i, vi := range m.visible {
+			row := m.rows[vi]
+			if row.Session != nil && row.Session.Name == selectedName {
+				m.cursor = i
+				break
+			}
+		}
+	}
+	m.clampCursor()
+}
+
+func (m pickerModel) ignoringStartupInput() bool {
+	return !m.startedAt.IsZero() && time.Since(m.startedAt) < pickerStartupInputGrace
 }
 
 func (m pickerModel) selectRow(row pickerRow) tea.Cmd {
@@ -439,6 +546,16 @@ func (m *pickerModel) clearSelectedSession() tea.Cmd {
 	}
 }
 
+func (m *pickerModel) startLabelEdit() {
+	session := m.selectedSession()
+	if session == nil {
+		return
+	}
+	m.labelEditing = true
+	m.labelTarget = session.Name
+	m.labelInput.SetValue(session.Label)
+}
+
 func (m *pickerModel) setSelectedServer() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil {
@@ -463,6 +580,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("clear %s failed: %v", msg.Session, msg.Err)
 		case "server":
 			m.status = fmt.Sprintf("set server %s failed: %v", msg.Session, msg.Err)
+		case "label":
+			m.status = fmt.Sprintf("label %s failed: %v", msg.Session, msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -471,6 +590,17 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 	}
 
 	switch msg.Action {
+	case "label":
+		for _, row := range m.rows {
+			if row.Kind == rowSession && row.Session != nil && row.Session.Name == msg.Session {
+				row.Session.Label = msg.Value
+			}
+		}
+		if msg.Value == "" {
+			m.status = fmt.Sprintf("cleared label for %s", msg.Session)
+		} else {
+			m.status = fmt.Sprintf("labeled %s", msg.Session)
+		}
 	case "clear":
 		for _, row := range m.rows {
 			if row.Kind == rowSession && row.Session != nil && row.Session.Name == msg.Session {
@@ -554,6 +684,7 @@ func (m pickerModel) View() string {
 		"█▄▀ █▄█ █ ▀ █ █▄█ █ █",
 	}
 	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
+	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
 	info := fmt.Sprintf("%d sessions", sessionCount)
 	if activeCount > 0 {
 		info += fmt.Sprintf(" · %d active", activeCount)
@@ -569,10 +700,16 @@ func (m pickerModel) View() string {
 			}
 			b.WriteString(rendered + strings.Repeat(" ", pad) + rightStr + "\n")
 		} else {
-			b.WriteString(rendered + "\n")
+			tag := "  " + featureStyle.Render("switcher")
+			b.WriteString(rendered + tag + "\n")
 		}
 	}
-	if m.filtering {
+	if m.labelEditing {
+		prefix := "label " + m.labelTarget + ": "
+		b.WriteString("\n    " + lipgloss.NewStyle().Foreground(peach).Render(prefix))
+		b.WriteString(lipgloss.NewStyle().Foreground(text).Render(m.labelInput.Value()))
+		b.WriteString(lipgloss.NewStyle().Foreground(peach).Render("▌") + "\n")
+	} else if m.filtering {
 		b.WriteString("\n    " + lipgloss.NewStyle().Foreground(blue).Render("/") + " ")
 		b.WriteString(lipgloss.NewStyle().Foreground(text).Render(m.filter.Value()))
 		b.WriteString(lipgloss.NewStyle().Foreground(blue).Render("▌") + "\n")
@@ -580,9 +717,9 @@ func (m pickerModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// logo(2) + blank(1) + filter-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
+	// logo(2) + blank(1) + prompt-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
 	availableHeight := m.height - 7
-	if m.filtering {
+	if m.filtering || m.labelEditing {
 		availableHeight--
 	}
 	if m.status != "" {
@@ -627,6 +764,7 @@ func (m pickerModel) View() string {
 	b.WriteString("    " +
 		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
 		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
+		pFooterKey.Render("n") + pFooter.Render(" name") + sep +
 		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
 		pFooterKey.Render("s") + pFooter.Render(" server") + sep +
 		pFooterKey.Render("tab") + pFooter.Render(" "+todoLabel) + sep +
@@ -656,15 +794,17 @@ func (m pickerModel) renderHeader(row pickerRow) string {
 		ruleWidth = 1
 	}
 	rule := "  " + pGroupRule.Render(strings.Repeat("─", ruleWidth))
-	return "\n    " + label + rule
+	return "    " + label + rule
 }
 
 func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	s := row.Session
 	var line strings.Builder
+	waiting := s.Claude == "WAITING" || s.Codex == "WAITING"
+	active := s.Claude != "" || s.Codex != ""
 
-	// Prefix: left accent bar for WAITING, cursor arrow for selected
-	if s.Claude == "WAITING" {
+	// Prefix: left accent bar for waiting, cursor arrow for selected
+	if waiting {
 		if selected {
 			line.WriteString("  " + pWaitingDot.Render("▎") + pCursor.Render("›") + " ")
 		} else {
@@ -677,7 +817,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	}
 
 	// Name — selected or active rows should be visibly readable.
-	if selected || s.Claude != "" {
+	if selected || active {
 		line.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Render(s.Name))
 	} else {
 		line.WriteString(lipgloss.NewStyle().Foreground(subtext0).Render(s.Name))
@@ -685,7 +825,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 
 	// Label (e.g. "Client Portal") — peach, it's the meaningful project name
 	if s.Label != "" {
-		if s.Claude != "" {
+		if active {
 			line.WriteString(pSep.Render(" · ") + pName.Render(s.Label))
 		} else {
 			line.WriteString(pSep.Render(" · ") + pNameDim.Render(s.Label))
@@ -693,12 +833,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	}
 
 	// Badge (after name, inline)
-	switch s.Claude {
-	case "WAITING":
-		line.WriteString(" " + pBadgeWaiting.Render("WAITING"))
-	case "CLAUDING":
-		line.WriteString(" " + pBadgeClauding.Render("CLAUDING"))
-	}
+	line.WriteString(renderAIBadges(s.Claude, s.Codex))
 
 	// Server
 	if s.Server {
@@ -740,6 +875,19 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	return result
 }
 
+func renderAIBadges(claude, codex string) string {
+	var line strings.Builder
+	switch claude {
+	case "CLAUDING":
+		line.WriteString(" " + pBadgeClauding.Render("CLAUDING"))
+	}
+	switch codex {
+	case "CODEXING":
+		line.WriteString(" " + pBadgeCodexing.Render("CODEXING"))
+	}
+	return line.String()
+}
+
 func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 	t := row.Task
 	connector := "├─"
@@ -762,8 +910,7 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 // Actions
 
 func switchSession(name string) {
-	clearWaitingState(name)
-	exec.Command("tmux", "switch-client", "-t", name).Run()
+	_ = attachTmuxSession(name)
 }
 
 // Data gathering
@@ -841,7 +988,9 @@ func gatherSessions() []pickerRow {
 			}
 		}
 
-		info.Claude = aggregateAIStateFromSession(state)
+		aiStates := aggregateAIStatesFromSession(state)
+		info.Claude = aiStates.Claude
+		info.Codex = aiStates.Codex
 		info.Server = state.Server
 
 		winOut, err := exec.Command("tmux", "list-windows", "-t", sess).Output()
@@ -881,9 +1030,10 @@ func gatherSessions() []pickerRow {
 		entries = append(entries, groupEntry{group: group, session: info})
 	}
 
-	// Merge singleton groups into larger related groups
-	mergeRelatedGroups(entries)
+	return rowsFromEntries(entries)
+}
 
+func rowsFromEntries(entries []groupEntry) []pickerRow {
 	sortEntries(entries)
 
 	var rows []pickerRow
@@ -900,44 +1050,6 @@ func gatherSessions() []pickerRow {
 	}
 
 	return rows
-}
-
-// mergeRelatedGroups folds singleton groups into larger groups they relate to.
-// e.g., group "audrey" (1 session) merges into "audrey-app" (5 sessions)
-// if "audrey" is a prefix of "audrey-app" or vice versa.
-func mergeRelatedGroups(entries []groupEntry) {
-	// Count sessions per group
-	groupCount := make(map[string]int)
-	for _, e := range entries {
-		groupCount[e.group]++
-	}
-
-	// For each singleton group, try to find a larger group to merge into
-	for i := range entries {
-		if groupCount[entries[i].group] > 1 {
-			continue
-		}
-		myGroup := entries[i].group
-		bestMatch := ""
-		bestCount := 0
-		for g, count := range groupCount {
-			if g == myGroup {
-				continue
-			}
-			// Check if one is a prefix/substring of the other
-			if strings.Contains(g, myGroup) || strings.Contains(myGroup, g) {
-				if count > bestCount {
-					bestMatch = g
-					bestCount = count
-				}
-			}
-		}
-		if bestMatch != "" {
-			groupCount[myGroup]--
-			entries[i].group = bestMatch
-			groupCount[bestMatch]++
-		}
-	}
 }
 
 func aggregateClaudeState(homeDir, session string) string {

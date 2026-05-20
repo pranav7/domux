@@ -25,6 +25,11 @@ type SessionState struct {
 	UpdatedAt     string            `json:"updated_at,omitempty"`
 }
 
+type AIStates struct {
+	Claude string
+	Codex  string
+}
+
 type DomuxContext struct {
 	Session  string
 	Root     string
@@ -188,22 +193,30 @@ func mergeLegacyState(state *SessionState) {
 	if state.AI == nil {
 		state.AI = map[string]string{}
 	}
-	pattern := filepath.Join(homeDir, ".tmux-claude-"+state.Name+"_*")
+	mergeLegacyAIStateFiles(state, homeDir, "claude")
+	mergeLegacyAIStateFiles(state, homeDir, "codex")
+	mergeFreshLegacyAIStateFile(state, homeDir, "claude")
+	mergeFreshLegacyAIStateFile(state, homeDir, "codex")
+}
+
+func mergeLegacyAIStateFiles(state *SessionState, homeDir, agent string) {
+	pattern := filepath.Join(homeDir, ".tmux-"+agent+"-"+state.Name+"_*")
 	matches, _ := filepath.Glob(pattern)
 	for _, path := range matches {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		key := strings.TrimPrefix(filepath.Base(path), ".tmux-claude-"+state.Name+"_")
-		state.AI[key] = strings.TrimSpace(string(data))
+		key := strings.TrimPrefix(filepath.Base(path), ".tmux-"+agent+"-"+state.Name+"_")
+		state.AI[aiStateKey(agent, key)] = strings.TrimSpace(string(data))
 	}
-	if len(state.AI) == 0 {
-		legacyPath := filepath.Join(homeDir, ".tmux-claude-"+state.Name)
-		if info, err := os.Stat(legacyPath); err == nil && time.Since(info.ModTime()) < 2*time.Minute {
-			if data, err := os.ReadFile(legacyPath); err == nil {
-				state.AI["legacy"] = strings.TrimSpace(string(data))
-			}
+}
+
+func mergeFreshLegacyAIStateFile(state *SessionState, homeDir, agent string) {
+	legacyPath := filepath.Join(homeDir, ".tmux-"+agent+"-"+state.Name)
+	if info, err := os.Stat(legacyPath); err == nil && time.Since(info.ModTime()) < 2*time.Minute {
+		if data, err := os.ReadFile(legacyPath); err == nil {
+			state.AI[aiStateKey(agent, "legacy")] = strings.TrimSpace(string(data))
 		}
 	}
 }
@@ -295,20 +308,105 @@ func focusedOrTopItem(list *List, state *SessionState) (Item, bool) {
 }
 
 func aggregateAIStateFromSession(state *SessionState) string {
-	if state == nil {
-		return ""
+	states := aggregateAIStatesFromSession(state)
+	if states.Claude == "WAITING" || states.Codex == "WAITING" {
+		return "WAITING"
 	}
-	hasClauding := false
-	for _, value := range state.AI {
-		switch strings.TrimSpace(value) {
-		case "WAITING":
-			return "WAITING"
-		case "CLAUDING":
-			hasClauding = true
+	if states.Claude != "" {
+		return states.Claude
+	}
+	return states.Codex
+}
+
+func aggregateAIStatesFromSession(state *SessionState) AIStates {
+	var states AIStates
+	if state == nil {
+		return states
+	}
+	for key, value := range state.AI {
+		agent := inferAgentFromAIKey(key)
+		if agent == "" {
+			agent = inferAgentFromAIValue(value)
+		}
+		if agent == "" {
+			agent = "claude"
+		}
+		value = normalizeAIState(agent, value)
+		switch agent {
+		case "codex":
+			states.Codex = mergeAIState(states.Codex, value)
+		default:
+			states.Claude = mergeAIState(states.Claude, value)
 		}
 	}
-	if hasClauding {
-		return "CLAUDING"
+	return states
+}
+
+func mergeAIState(current, next string) string {
+	if current == "WAITING" || next == "" {
+		return current
+	}
+	if next == "WAITING" {
+		return "WAITING"
+	}
+	if current != "" {
+		return current
+	}
+	return next
+}
+
+func inferAgentFromAIKey(key string) string {
+	agent, _, ok := strings.Cut(key, ":")
+	if !ok {
+		return ""
+	}
+	switch strings.ToLower(agent) {
+	case "claude", "codex":
+		return strings.ToLower(agent)
+	default:
+		return ""
+	}
+}
+
+func inferAgentFromAIValue(value string) string {
+	switch normalizeAIStateValue(value) {
+	case "CODEXING", "CODEX WAITING":
+		return "codex"
+	case "CLAUDING", "CLAUDE WAITING":
+		return "claude"
+	default:
+		return ""
+	}
+}
+
+func normalizeAIState(agent, value string) string {
+	value = normalizeAIStateValue(value)
+	switch value {
+	case "", "IDLE", "CLEAR":
+		return ""
+	case "CLAUDE WAITING", "CODEX WAITING", "WAITING":
+		return "WAITING"
+	case "CODEXING":
+		if agent == "codex" {
+			return "CODEXING"
+		}
+	case "CLAUDING":
+		if agent == "claude" {
+			return "CLAUDING"
+		}
 	}
 	return ""
+}
+
+func normalizeAIStateValue(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", " ")
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func aiStateKey(agent, pane string) string {
+	if pane == "" {
+		pane = "default"
+	}
+	return strings.ToLower(agent) + ":" + pane
 }

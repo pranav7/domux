@@ -41,3 +41,10 @@ func TestGeneratedTmuxConfigUsesStateOnlyClear(t *testing.T) {
 		t.Fatalf("generated tmux config should not bind plain domux clear")
 	}
 }
+
+func TestGeneratedTmuxConfigUsesHomeDomuxBinary(t *testing.T) {
+	config := generatedTmuxConfig()
+	if !strings.Contains(config, "$HOME/bin/domux sessions") {
+		t.Fatalf("generated tmux config should use home domux binary")
+	}
+}
