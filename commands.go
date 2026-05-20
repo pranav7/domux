@@ -460,6 +460,12 @@ func clearSessionStateFiles(homeDir, session string) error {
 	if err := removeHomeFile(homeDir, ".tmux-server-"+session); err != nil {
 		return err
 	}
+	if err := removeHomeFile(homeDir, ".tmux-workspace-"+session); err != nil {
+		return err
+	}
+	if err := removeHomeFile(homeDir, ".tmux-pr-"+session); err != nil {
+		return err
+	}
 	if err := removeHomeFile(homeDir, ".tmux-claude-"+session); err != nil {
 		return err
 	}
