@@ -139,3 +139,36 @@ func TestLowestFreeWorkspaceSlot(t *testing.T) {
 		})
 	}
 }
+
+func TestProvisionWorkspaceResetsExistingBranchToBase(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	// Pre-create workspace-1 branch pointing at a NEW commit ahead of main.
+	gitRun(t, root, "checkout", "-q", "-b", "workspace-1")
+	gitRun(t, root, "commit", "--allow-empty", "-q", "-m", "ahead")
+	aheadSha := gitOutput(t, root, "rev-parse", "workspace-1")
+	gitRun(t, root, "checkout", "-q", "main")
+
+	mainSha := gitOutput(t, root, "rev-parse", "origin/main")
+	if aheadSha == mainSha {
+		t.Fatalf("setup did not advance workspace-1 ahead of origin/main")
+	}
+
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+
+	gotSha := gitOutput(t, res.Path, "rev-parse", "HEAD")
+	if gotSha != mainSha {
+		t.Fatalf("worktree HEAD = %s, want origin/main %s (existing branch wasn't reset)", gotSha, mainSha)
+	}
+}
