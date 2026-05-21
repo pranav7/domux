@@ -261,3 +261,56 @@ func viewLineCount(s string) int {
 	}
 	return strings.Count(s, "\n") + 1
 }
+
+func TestPickerPlusDispatchesProvision(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "audrey-app",
+			Root: "/tmp/audrey-app",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if cmd == nil {
+		t.Fatalf("+ should dispatch a cmd")
+	}
+}
+
+func TestPickerPlusSetsProvisioningStatus(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "audrey-app",
+			Root: "/tmp/audrey-app",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	pm := next.(pickerModel)
+	if !strings.Contains(pm.status, "provisioning") {
+		t.Fatalf("status = %q, want it to mention provisioning", pm.status)
+	}
+	if pm.statusErr {
+		t.Fatalf("status should not be flagged as error")
+	}
+}
+
+func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "x"},
+		{Kind: rowSession, Group: "x", Session: &sessionInfo{Name: "x"}}, // no Root
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if cmd != nil {
+		t.Fatalf("expected no cmd when row has no Root")
+	}
+	pm := next.(pickerModel)
+	if !pm.statusErr {
+		t.Fatalf("expected error status, got %q", pm.status)
+	}
+}

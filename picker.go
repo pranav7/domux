@@ -477,6 +477,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "+":
+			return m, m.provisionInFocusedGroup()
+		case "D":
+			return m, m.deleteSelectedWorkspace()
 		default:
 			if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
 				m.filtering = true
@@ -600,6 +604,33 @@ func (m *pickerModel) setSelectedServer() tea.Cmd {
 	}
 }
 
+func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
+	session := m.selectedSession()
+	if session == nil || session.Root == "" {
+		m.status = "no git root for this row"
+		m.statusErr = true
+		return nil
+	}
+	root := session.Root
+	group := m.rows[m.visible[m.cursor]].Group
+	m.status = fmt.Sprintf("provisioning new workspace in %s", group)
+	m.statusErr = false
+	return func() tea.Msg {
+		res, err := provisionWorkspace(root)
+		return pickerActionMsg{
+			Action:  "provision",
+			Session: res.Session,
+			Value:   res.Branch,
+			Err:     err,
+		}
+	}
+}
+
+func (m *pickerModel) deleteSelectedWorkspace() tea.Cmd {
+	// Real implementation lands in Task 11.
+	return nil
+}
+
 func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 	if msg.Err != nil {
 		switch msg.Action {
@@ -609,6 +640,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("set server %s failed: %v", msg.Session, msg.Err)
 		case "label":
 			m.status = fmt.Sprintf("label %s failed: %v", msg.Session, msg.Err)
+		case "provision":
+			m.status = fmt.Sprintf("provision failed: %v", msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -644,6 +677,9 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			}
 		}
 		m.status = fmt.Sprintf("server set to %s", msg.Session)
+	case "provision":
+		m.status = fmt.Sprintf("provisioned %s", msg.Value)
+		m.statusErr = false
 	}
 	m.statusErr = false
 }
