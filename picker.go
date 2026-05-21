@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,21 +59,26 @@ type pickerRow struct {
 }
 
 type pickerModel struct {
-	rows         []pickerRow
-	visible      []int
-	cursor       int
-	filter       textinput.Model
-	filtering    bool
-	labelInput   textinput.Model
-	labelEditing bool
-	labelTarget  string
-	showTasks    bool
-	status       string
-	statusErr    bool
-	width        int
-	height       int
-	startedAt    time.Time
-	spinnerFrame int
+	rows          []pickerRow
+	visible       []int
+	cursor        int
+	filter        textinput.Model
+	filtering     bool
+	labelInput    textinput.Model
+	labelEditing  bool
+	labelTarget   string
+	confirmDelete bool
+	deleteSlot    int
+	deleteRoot    string
+	deleteBranch  string
+	deleteForce   bool
+	showTasks     bool
+	status        string
+	statusErr     bool
+	width         int
+	height        int
+	startedAt     time.Time
+	spinnerFrame  int
 }
 
 type pickerActionMsg struct {
@@ -346,6 +352,34 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		if m.ignoringStartupInput() {
 			return m, nil
+		}
+
+		if m.confirmDelete {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "y", "Y":
+				m.confirmDelete = false
+				target := m.deleteBranch
+				root := m.deleteRoot
+				slot := m.deleteSlot
+				force := m.deleteForce
+				m.status = fmt.Sprintf("removing %s", target)
+				m.statusErr = false
+				return m, func() tea.Msg {
+					return pickerActionMsg{
+						Action:  "delete",
+						Session: target,
+						Value:   strconv.Itoa(slot),
+						Err:     removeWorkspace(root, slot, force),
+					}
+				}
+			default:
+				m.confirmDelete = false
+				m.status = "delete cancelled"
+				m.statusErr = false
+				return m, nil
+			}
 		}
 
 		if m.labelEditing {
@@ -627,11 +661,45 @@ func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
 }
 
 func (m *pickerModel) deleteSelectedWorkspace() tea.Cmd {
-	// Real implementation lands in Task 11.
+	session := m.selectedSession()
+	if session == nil {
+		return nil
+	}
+	if session.Root == "" {
+		m.status = "no git root for this row"
+		m.statusErr = true
+		return nil
+	}
+	dir := filepath.Base(session.Path)
+	if !isWorkspaceDir(dir) {
+		m.status = "cannot delete main worktree"
+		m.statusErr = true
+		return nil
+	}
+	slot, err := strconv.Atoi(strings.TrimPrefix(dir, "workspace-"))
+	if err != nil || slot < 1 {
+		m.status = fmt.Sprintf("unrecognised workspace dir: %s", dir)
+		m.statusErr = true
+		return nil
+	}
+	m.confirmDelete = true
+	m.deleteSlot = slot
+	m.deleteRoot = session.Root
+	m.deleteBranch = dir
+	m.deleteForce = false
+	m.status = ""
+	m.statusErr = false
 	return nil
 }
 
 func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
+	if msg.Err == errDirtyWorkspace && msg.Action == "delete" {
+		m.confirmDelete = true
+		m.deleteForce = true
+		m.status = fmt.Sprintf("%s has unpushed work — force delete? (y/N)", msg.Session)
+		m.statusErr = true
+		return
+	}
 	if msg.Err != nil {
 		switch msg.Action {
 		case "clear":
@@ -642,6 +710,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("label %s failed: %v", msg.Session, msg.Err)
 		case "provision":
 			m.status = fmt.Sprintf("provision failed: %v", msg.Err)
+		case "delete":
+			m.status = fmt.Sprintf("delete %s failed: %v", msg.Session, msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -679,6 +749,17 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 		m.status = fmt.Sprintf("server set to %s", msg.Session)
 	case "provision":
 		m.status = fmt.Sprintf("provisioned %s", msg.Value)
+		m.statusErr = false
+	case "delete":
+		for i, row := range m.rows {
+			if row.Session != nil && row.Session.Name == msg.Session {
+				m.rows = append(m.rows[:i], m.rows[i+1:]...)
+				m.rebuildVisible()
+				m.clampCursor()
+				break
+			}
+		}
+		m.status = fmt.Sprintf("removed %s", msg.Session)
 		m.statusErr = false
 	}
 	m.statusErr = false

@@ -262,6 +262,92 @@ func viewLineCount(s string) int {
 	return strings.Count(s, "\n") + 1
 }
 
+func TestPickerDeleteEntersConfirmMode(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "workspace-1",
+			Path: "/r/.baag/worktrees/workspace-1",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+	if !pm.confirmDelete {
+		t.Fatalf("D should enter confirmDelete mode")
+	}
+	if pm.deleteSlot != 1 {
+		t.Fatalf("deleteSlot = %d, want 1", pm.deleteSlot)
+	}
+}
+
+func TestPickerDeleteRefusesMainRow(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "audrey-app",
+			Path: "/r",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("D on main row should not enter confirmDelete")
+	}
+	if !pm.statusErr {
+		t.Fatalf("expected error status, got %q", pm.status)
+	}
+}
+
+func TestPickerDeleteCancelOnAnyOtherKey(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name: "workspace-1",
+			Path: "/r/.baag/worktrees/workspace-1",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+
+	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	pm = next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("non-y key should cancel confirmDelete")
+	}
+}
+
+func TestPickerDeleteYDispatchesRemove(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name: "workspace-1",
+			Path: "/r/.baag/worktrees/workspace-1",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+
+	next, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	pm = next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("y should exit confirmDelete mode")
+	}
+	if cmd == nil {
+		t.Fatalf("y should dispatch a remove cmd")
+	}
+	if !strings.Contains(pm.status, "removing") {
+		t.Fatalf("status = %q, want it to mention removing", pm.status)
+	}
+}
+
 func TestPickerPlusDispatchesProvision(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "audrey-app"},
