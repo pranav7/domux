@@ -899,6 +899,8 @@ func (m pickerModel) View() string {
 	b.WriteString("    " +
 		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
 		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
+		pFooterKey.Render("+") + pFooter.Render(" new") + sep +
+		pFooterKey.Render("D") + pFooter.Render(" delete") + sep +
 		pFooterKey.Render("n") + pFooter.Render(" name") + sep +
 		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
 		pFooterKey.Render("s") + pFooter.Render(" server") + sep +
