@@ -611,6 +611,11 @@ func resetGitWorkspace(dir string, verbose bool) error {
 		return nil
 	}
 
+	base, err := defaultBaseBranch(dir)
+	if err != nil {
+		return err
+	}
+
 	dirName := filepath.Base(dir)
 	if isWorkspaceDir(dirName) {
 		if verbose {
@@ -619,19 +624,19 @@ func resetGitWorkspace(dir string, verbose bool) error {
 		if err := runGitCommand(dir, verbose, "checkout", dirName); err != nil {
 			return err
 		}
-		if err := runGitCommand(dir, verbose, "fetch", "origin", "main"); err != nil {
+		if err := runGitCommand(dir, verbose, "fetch", "origin", base); err != nil {
 			return err
 		}
-		return runGitCommand(dir, verbose, "merge", "origin/main", "-m", "Merge main into "+dirName)
+		return runGitCommand(dir, verbose, "merge", "origin/"+base, "-m", "Merge "+base+" into "+dirName)
 	}
 
 	if verbose {
 		fmt.Printf("Resetting main directory: %s\n", dirName)
 	}
-	if err := runGitCommand(dir, verbose, "checkout", "main"); err != nil {
+	if err := runGitCommand(dir, verbose, "checkout", base); err != nil {
 		return err
 	}
-	return runGitCommand(dir, verbose, "pull", "origin", "main")
+	return runGitCommand(dir, verbose, "pull", "origin", base)
 }
 
 func insideGitWorktree(dir string) bool {

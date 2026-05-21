@@ -267,3 +267,51 @@ esac
 		t.Fatalf("worktree dir still exists after force remove")
 	}
 }
+
+func TestResetGitWorkspaceUsesDetectedBase(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	// Switch default to `develop` to confirm we don't hard-code main.
+	gitRun(t, root, "checkout", "-q", "-b", "develop")
+	gitRun(t, root, "push", "-q", "-u", "origin", "develop")
+	gitRun(t, root, "remote", "set-head", "origin", "develop")
+	gitRun(t, root, "checkout", "-q", "main")
+
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	// Provision workspace while develop has no new commits yet.
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	// Sanity: the workspace was created from develop.
+	if branch := gitOutput(t, res.Path, "rev-parse", "--abbrev-ref", "HEAD"); branch != "workspace-1" {
+		t.Fatalf("workspace branch = %q", branch)
+	}
+
+	// Now advance develop on origin AFTER provisioning so reset must fetch it.
+	clone := t.TempDir()
+	gitRun(t, clone, "clone", "-q", gitOutput(t, root, "config", "--get", "remote.origin.url"), ".")
+	gitRun(t, clone, "config", "user.email", "t@t.t")
+	gitRun(t, clone, "config", "user.name", "t")
+	gitRun(t, clone, "checkout", "-q", "develop")
+	gitRun(t, clone, "commit", "--allow-empty", "-q", "-m", "advance develop")
+	gitRun(t, clone, "push", "-q", "origin", "develop")
+
+	// Run reset (existing entrypoint).
+	if err := resetGitWorkspace(res.Path, false); err != nil {
+		t.Fatalf("resetGitWorkspace: %v", err)
+	}
+
+	// origin/develop's advance should now be merged in.
+	logOut := gitOutput(t, res.Path, "log", "--oneline")
+	if !strings.Contains(logOut, "advance develop") {
+		t.Fatalf("expected advance develop merged into workspace, got:\n%s", logOut)
+	}
+}
