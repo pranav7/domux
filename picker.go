@@ -180,6 +180,9 @@ var (
 	pConnector = lipgloss.NewStyle().
 			Foreground(overlay0)
 
+	pMainMark = lipgloss.NewStyle().
+			Foreground(overlay0)
+
 	pFooter = lipgloss.NewStyle().
 		Foreground(overlay0)
 
@@ -323,6 +326,15 @@ func (m *pickerModel) rebuildVisible() {
 
 func isSelectablePickerRow(row pickerRow) bool {
 	return row.Kind == rowSession && row.Session != nil
+}
+
+// isMainWorktreePath returns true when path looks like the main checkout of
+// a project (i.e. not nested under /.baag/worktrees/).
+func isMainWorktreePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	return !strings.Contains(path, "/.baag/worktrees/")
 }
 
 func (m pickerModel) Init() tea.Cmd {
@@ -928,18 +940,24 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	waiting := s.Claude == "WAITING" || s.Codex == "WAITING"
 	active := s.Claude != "" || s.Codex != ""
 
-	// Prefix: left accent bar for waiting, cursor arrow for selected
-	if waiting {
-		if selected {
-			line.WriteString("  " + pWaitingDot.Render("▎") + pCursor.Render("›") + " ")
-		} else {
-			line.WriteString("  " + pWaitingDot.Render("▎") + "  ")
-		}
-	} else if selected {
-		line.WriteString("   " + pCursor.Render("›") + " ")
-	} else {
-		line.WriteString("     ")
+	mainGlyph := " "
+	if isMainWorktreePath(s.Path) {
+		mainGlyph = pMainMark.Render("◇")
 	}
+	// Prefix: left accent bar for waiting, cursor arrow for selected, then
+	// the main-worktree marker. Five-column total to keep alignment with
+	// non-session rows.
+	switch {
+	case waiting && selected:
+		line.WriteString("  " + pWaitingDot.Render("▎") + pCursor.Render("›") + mainGlyph)
+	case waiting:
+		line.WriteString("  " + pWaitingDot.Render("▎") + " " + mainGlyph)
+	case selected:
+		line.WriteString("   " + pCursor.Render("›") + mainGlyph)
+	default:
+		line.WriteString("    " + mainGlyph)
+	}
+	line.WriteString(" ")
 
 	// Name — selected or active rows should be visibly readable.
 	if selected || active {

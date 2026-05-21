@@ -384,6 +384,30 @@ func TestPickerPlusSetsProvisioningStatus(t *testing.T) {
 	}
 }
 
+func TestRenderSessionMarksMainWorktree(t *testing.T) {
+	mainRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+		Name: "audrey-app",
+		Path: "/r/audrey-app",
+		Root: "/r/audrey-app",
+	}}
+	wsRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+		Name: "workspace-1",
+		Path: "/r/audrey-app/.baag/worktrees/workspace-1",
+		Root: "/r/audrey-app",
+	}}
+	m := newPickerModel([]pickerRow{mainRow, wsRow})
+
+	mainOut := m.renderSession(mainRow, false)
+	wsOut := m.renderSession(wsRow, false)
+
+	if !strings.Contains(mainOut, "◇") {
+		t.Fatalf("main row missing ◇ glyph:\n%s", mainOut)
+	}
+	if strings.Contains(wsOut, "◇") {
+		t.Fatalf("workspace row should not have ◇ glyph:\n%s", wsOut)
+	}
+}
+
 func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "x"},
