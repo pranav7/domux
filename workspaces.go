@@ -152,3 +152,99 @@ func uniqueTmuxSessionName(base string) string {
 		}
 	}
 }
+
+// errDirtyWorkspace signals to the picker that it should re-prompt with the
+// force confirmation. Anything else from removeWorkspace is a hard error.
+var errDirtyWorkspace = fmt.Errorf("workspace has uncommitted or unpushed changes")
+
+// removeWorkspace tears down a workspace-N worktree: tmux session(s),
+// git worktree, branch, and any leftover legacy state files.
+// Refuses if the path doesn't actually point at a workspace-N dir under
+// <root>/.baag/worktrees/, even if the slot number is right.
+func removeWorkspace(root string, slot int, force bool) error {
+	if slot < 1 {
+		return fmt.Errorf("invalid workspace slot %d", slot)
+	}
+	branch := workspaceBranch(slot)
+	path := workspacePath(root, slot)
+
+	if !isWorkspaceDir(filepath.Base(path)) {
+		return fmt.Errorf("not a workspace dir: %s", path)
+	}
+	if !fileExists(path) {
+		return fmt.Errorf("workspace path missing: %s", path)
+	}
+
+	if !force {
+		if dirty, err := workspaceIsDirty(path, branch); err != nil {
+			return err
+		} else if dirty {
+			return errDirtyWorkspace
+		}
+	}
+
+	if err := killTmuxSessionsForRoot(path); err != nil {
+		return err
+	}
+
+	args := []string{"-C", root, "worktree", "remove", path}
+	if force {
+		args = []string{"-C", root, "worktree", "remove", "--force", path}
+	}
+	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("git", "-C", root, "branch", "-D", branch).CombinedOutput(); err != nil {
+		// Branch may not exist if provision crashed mid-way; tolerate that.
+		if !strings.Contains(string(out), "not found") {
+			return fmt.Errorf("git branch -D %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+func workspaceIsDirty(path, branch string) (bool, error) {
+	statusOut, err := exec.Command("git", "-C", path, "status", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	if len(strings.TrimSpace(string(statusOut))) > 0 {
+		return true, nil
+	}
+	// Unpushed: prefer @{u}, else fall back to origin/<base>.
+	upRange := branch + "@{u}.." + branch
+	if err := exec.Command("git", "-C", path, "rev-parse", branch+"@{u}").Run(); err != nil {
+		base, err := defaultBaseBranch(path)
+		if err != nil {
+			return false, err
+		}
+		upRange = "origin/" + base + ".." + branch
+	}
+	logOut, err := exec.Command("git", "-C", path, "log", "--oneline", upRange).Output()
+	if err != nil {
+		return false, fmt.Errorf("git log %s: %w", upRange, err)
+	}
+	return len(strings.TrimSpace(string(logOut))) > 0, nil
+}
+
+func killTmuxSessionsForRoot(path string) error {
+	states, err := listSessionStates()
+	if err != nil {
+		return err
+	}
+	homeDir, _ := os.UserHomeDir()
+	for _, st := range states {
+		if st.Root != path {
+			continue
+		}
+		_ = exec.Command("tmux", "kill-session", "-t", st.Name).Run()
+		if homeDir != "" {
+			_ = clearSessionStateFiles(homeDir, st.Name)
+		}
+		statePath, err := sessionStatePath(st.Name)
+		if err == nil {
+			_ = os.Remove(statePath)
+		}
+	}
+	return nil
+}

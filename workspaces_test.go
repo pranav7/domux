@@ -172,3 +172,39 @@ esac
 		t.Fatalf("worktree HEAD = %s, want origin/main %s (existing branch wasn't reset)", gotSha, mainSha)
 	}
 }
+
+func TestRemoveWorkspaceCleansWorktreeAndBranch(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+
+	if err := removeWorkspace(root, res.Slot, false); err != nil {
+		t.Fatalf("removeWorkspace: %v", err)
+	}
+	if fileExists(res.Path) {
+		t.Fatalf("worktree dir still exists: %s", res.Path)
+	}
+	if gitBranchExists(root, res.Branch) {
+		t.Fatalf("branch %s still exists", res.Branch)
+	}
+}
+
+func TestRemoveWorkspaceRefusesNonWorkspaceDir(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	// No workspace exists at slot 1.
+	err := removeWorkspace(root, 1, false)
+	if err == nil {
+		t.Fatalf("expected error for missing workspace")
+	}
+}
