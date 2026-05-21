@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -70,5 +71,37 @@ func TestDefaultBaseBranchFallsBackToMain(t *testing.T) {
 	}
 	if got != "main" {
 		t.Fatalf("got %q, want main fallback", got)
+	}
+}
+
+func TestLowestFreeWorkspaceSlot(t *testing.T) {
+	cases := []struct {
+		name string
+		dirs []int
+		want int
+	}{
+		{"empty", nil, 1},
+		{"contiguous", []int{1, 2}, 3},
+		{"gap at start", []int{2, 3}, 1},
+		{"gap middle", []int{1, 3}, 2},
+		{"unsorted", []int{4, 1, 2}, 3},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, n := range tc.dirs {
+				if err := os.MkdirAll(workspacePath(root, n), 0755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+			}
+			got, err := lowestFreeWorkspaceSlot(root)
+			if err != nil {
+				t.Fatalf("lowestFreeWorkspaceSlot: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
