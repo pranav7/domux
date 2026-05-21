@@ -208,3 +208,62 @@ func TestRemoveWorkspaceRefusesNonWorkspaceDir(t *testing.T) {
 		t.Fatalf("expected error for missing workspace")
 	}
 }
+
+func TestRemoveWorkspaceRefusesUncommittedWithoutForce(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	// Dirty the worktree.
+	if err := os.WriteFile(filepath.Join(res.Path, "scratch.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write scratch: %v", err)
+	}
+
+	err = removeWorkspace(root, res.Slot, false)
+	if err == nil {
+		t.Fatalf("expected errDirtyWorkspace, got nil")
+	}
+	if err != errDirtyWorkspace {
+		t.Fatalf("err = %v, want errDirtyWorkspace", err)
+	}
+	if !fileExists(res.Path) {
+		t.Fatalf("worktree removed despite dirty refuse")
+	}
+}
+
+func TestRemoveWorkspaceForceRemovesDirty(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(res.Path, "scratch.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write scratch: %v", err)
+	}
+
+	if err := removeWorkspace(root, res.Slot, true); err != nil {
+		t.Fatalf("removeWorkspace force: %v", err)
+	}
+	if fileExists(res.Path) {
+		t.Fatalf("worktree dir still exists after force remove")
+	}
+}
