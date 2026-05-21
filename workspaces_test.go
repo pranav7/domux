@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -71,6 +72,39 @@ func TestDefaultBaseBranchFallsBackToMain(t *testing.T) {
 	}
 	if got != "main" {
 		t.Fatalf("got %q, want main fallback", got)
+	}
+}
+
+func TestProvisionWorkspaceCreatesWorktreeAndBranch(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 1 ;;
+new-session) exit 0 ;;
+attach-session|switch-client) exit 0 ;;
+display-message) echo workspace-1 ; exit 0 ;;
+list-sessions) echo workspace-1 ; exit 0 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	if res.Branch != "workspace-1" {
+		t.Fatalf("Branch = %q, want workspace-1", res.Branch)
+	}
+	if !fileExists(res.Path) {
+		t.Fatalf("worktree dir not created: %s", res.Path)
+	}
+
+	wantBranch := gitOutput(t, res.Path, "branch", "--show-current")
+	if wantBranch != "workspace-1" {
+		t.Fatalf("worktree branch = %q, want workspace-1", wantBranch)
 	}
 }
 
