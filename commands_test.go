@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClearSessionStateFilesRemovesLegacySessionMetadata(t *testing.T) {
@@ -202,6 +203,80 @@ func TestMergeLegacyStateIncludesFreshLegacyAIWithPaneState(t *testing.T) {
 
 	if got.Claude != "CLAUDING" {
 		t.Fatalf("Claude = %q, AI = %#v", got.Claude, state.AI)
+	}
+}
+
+func TestMergeLegacyStateIgnoresStaleClaudingFile(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "workspace-1"
+	path := filepath.Join(homeDir, ".tmux-claude-"+session)
+	if err := os.WriteFile(path, []byte("CLAUDING\n"), 0644); err != nil {
+		t.Fatalf("write legacy claude state: %v", err)
+	}
+	stale := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(path, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	state := &SessionState{Name: session, AI: map[string]string{}}
+	mergeLegacyState(state)
+	got := aggregateAIStatesFromSession(state)
+
+	if got.Claude == "CLAUDING" {
+		t.Fatalf("stale CLAUDING leaked through: AI = %#v", state.AI)
+	}
+}
+
+func TestMergeLegacyStateKeepsStaleWaitingFile(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "workspace-1"
+	path := filepath.Join(homeDir, ".tmux-claude-"+session)
+	if err := os.WriteFile(path, []byte("WAITING\n"), 0644); err != nil {
+		t.Fatalf("write legacy claude state: %v", err)
+	}
+	old := time.Now().Add(-10 * time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	state := &SessionState{Name: session, AI: map[string]string{}}
+	mergeLegacyState(state)
+	got := aggregateAIStatesFromSession(state)
+
+	if got.Claude != "WAITING" {
+		t.Fatalf("WAITING dropped: AI = %#v", state.AI)
+	}
+}
+
+func TestSaveSessionStateDropsLegacyPseudoPane(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	state := &SessionState{
+		Name: session,
+		AI: map[string]string{
+			"claude:legacy": "CLAUDING",
+			"claude:1_0":    "CLAUDING",
+		},
+	}
+	if err := saveSessionState(state); err != nil {
+		t.Fatalf("saveSessionState: %v", err)
+	}
+	path, err := sessionStatePath(session)
+	if err != nil {
+		t.Fatalf("sessionStatePath: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(data), "claude:legacy") {
+		t.Fatalf("legacy pseudo-pane leaked into persisted state: %s", data)
+	}
+	if !strings.Contains(string(data), "claude:1_0") {
+		t.Fatalf("real pane key dropped: %s", data)
 	}
 }
 

@@ -453,12 +453,8 @@ func printTmuxStatus(args []string) error {
 
 func tmuxAIBadge(agent, state string) string {
 	switch {
-	case agent == "claude" && state == "CLAUDING":
-		return "#[default]#[fg=#a6e3a1]#[bg=#a6e3a1,fg=#1e1e2e,bold] CLAUDING #[default]#[fg=#a6e3a1]#[default]"
 	case agent == "claude" && state == "WAITING":
 		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CLAUDE WAITING #[default]#[fg=#f38ba8]#[default]"
-	case agent == "codex" && state == "CODEXING":
-		return "#[default]#[fg=#89b4fa]#[bg=#89b4fa,fg=#1e1e2e,bold] CODEXING #[default]#[fg=#89b4fa]#[default]"
 	case agent == "codex" && state == "WAITING":
 		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CODEX WAITING #[default]#[fg=#f38ba8]#[default]"
 	default:

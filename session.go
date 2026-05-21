@@ -112,6 +112,15 @@ func saveSessionState(state *SessionState) error {
 		state.CreatedAt = now
 	}
 	state.UpdatedAt = now
+	// The "<agent>:legacy" pseudo-pane is a synthetic key produced by
+	// mergeFreshLegacyAIStateFile from the raw ~/.tmux-<agent>-<session>
+	// file. It must never be persisted — otherwise a stale CLAUDING value
+	// from a crashed Claude session gets baked into the JSON and outlives
+	// the legacy file it came from.
+	if state.AI != nil {
+		delete(state.AI, "claude:legacy")
+		delete(state.AI, "codex:legacy")
+	}
 	if state.AI != nil && len(state.AI) == 0 {
 		state.AI = nil
 	}
@@ -203,21 +212,54 @@ func mergeLegacyAIStateFiles(state *SessionState, homeDir, agent string) {
 	pattern := filepath.Join(homeDir, ".tmux-"+agent+"-"+state.Name+"_*")
 	matches, _ := filepath.Glob(pattern)
 	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
+		value := strings.TrimSpace(string(data))
+		if legacyAIStateIsStale(value, info.ModTime()) {
+			continue
+		}
 		key := strings.TrimPrefix(filepath.Base(path), ".tmux-"+agent+"-"+state.Name+"_")
-		state.AI[aiStateKey(agent, key)] = strings.TrimSpace(string(data))
+		state.AI[aiStateKey(agent, key)] = value
 	}
 }
 
 func mergeFreshLegacyAIStateFile(state *SessionState, homeDir, agent string) {
 	legacyPath := filepath.Join(homeDir, ".tmux-"+agent+"-"+state.Name)
-	if info, err := os.Stat(legacyPath); err == nil && time.Since(info.ModTime()) < 2*time.Minute {
-		if data, err := os.ReadFile(legacyPath); err == nil {
-			state.AI[aiStateKey(agent, "legacy")] = strings.TrimSpace(string(data))
-		}
+	info, err := os.Stat(legacyPath)
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(legacyPath)
+	if err != nil {
+		return
+	}
+	value := strings.TrimSpace(string(data))
+	if legacyAIStateIsStale(value, info.ModTime()) {
+		return
+	}
+	state.AI[aiStateKey(agent, "legacy")] = value
+}
+
+// legacyAIStateIsStale decides whether an unbacked legacy state file should be
+// believed. Pre/PostToolUse hooks touch the working-state file on every tool
+// call, so a CLAUDING/CODEXING value with an mtime older than ~30s means the
+// agent died without firing Stop. WAITING blocks on the user and shouldn't
+// expire from mtime alone — give it a generous ceiling.
+func legacyAIStateIsStale(value string, mtime time.Time) bool {
+	age := time.Since(mtime)
+	switch normalizeAIStateValue(value) {
+	case "CLAUDING", "CODEXING":
+		return age > 30*time.Second
+	case "WAITING", "CLAUDE WAITING", "CODEX WAITING":
+		return age > 30*time.Minute
+	default:
+		return true
 	}
 }
 

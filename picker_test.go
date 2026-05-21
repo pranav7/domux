@@ -181,6 +181,21 @@ func TestPickerViewFitsHeightWithGroupHeaders(t *testing.T) {
 	}
 }
 
+func TestPickerViewOmitsHeaderSessionSummary(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "one", Claude: "CLAUDING"}},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "two"}},
+	})
+	m.width = 120
+	m.height = 20
+
+	view := m.View()
+	if strings.Contains(view, "2 sessions") || strings.Contains(view, "1 active") {
+		t.Fatalf("view rendered header summary:\n%s", view)
+	}
+}
+
 func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 	cases := []sessionInfo{
 		{Name: "claude-session", Claude: "WAITING"},
@@ -199,6 +214,35 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 		if strings.Contains(got, "CLAUDE WAITING") || strings.Contains(got, "CODEX WAITING") {
 			t.Fatalf("%s rendered waiting badge: %q", tc.Name, got)
 		}
+	}
+}
+
+func TestClaudingBadgeShowsSpinnerFrame(t *testing.T) {
+	frame0 := renderAIBadges("CLAUDING", "", 0)
+	frame1 := renderAIBadges("CLAUDING", "", 1)
+
+	if !strings.Contains(frame0, claudeSpinnerFrames[0]) {
+		t.Fatalf("frame 0 missing %q: %q", claudeSpinnerFrames[0], frame0)
+	}
+	if !strings.Contains(frame1, claudeSpinnerFrames[1]) {
+		t.Fatalf("frame 1 missing %q: %q", claudeSpinnerFrames[1], frame1)
+	}
+	if !strings.Contains(frame0, "Clauding") {
+		t.Fatalf("badge missing sentence-case Clauding text: %q", frame0)
+	}
+	if claudeBrandHex != "#DE7356" {
+		t.Fatalf("expected Claude brand colour #DE7356, got %q", claudeBrandHex)
+	}
+}
+
+func TestPickerSpinnerTickAdvancesFrame(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Session: &sessionInfo{Name: "s", Claude: "CLAUDING"}},
+	})
+	start := m.spinnerFrame
+	next, _ := m.Update(pickerSpinnerMsg{})
+	if next.(pickerModel).spinnerFrame == start {
+		t.Fatalf("spinner frame did not advance")
 	}
 }
 

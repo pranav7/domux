@@ -71,6 +71,7 @@ type pickerModel struct {
 	width        int
 	height       int
 	startedAt    time.Time
+	spinnerFrame int
 }
 
 type pickerActionMsg struct {
@@ -84,8 +85,16 @@ type pickerRefreshMsg struct {
 	Rows []pickerRow
 }
 
+type pickerSpinnerMsg struct{}
+
 const pickerStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
+const pickerSpinnerInterval = 150 * time.Millisecond
+const claudeBrandHex = "#DE7356"
+
+// claudeSpinnerFrames — star/asterisk shapes that pulse from sparse → dense → sparse,
+// so each frame morphs into the next instead of just rotating.
+var claudeSpinnerFrames = []string{"+", "✦", "✶", "✢", "✳", "✽", "✳", "✢", "✶", "✦"}
 
 // Styles — Catppuccin Mocha
 var (
@@ -119,16 +128,16 @@ var (
 			Foreground(peach)
 
 	pBadgeClauding = lipgloss.NewStyle().
-			Background(green).
-			Foreground(lipgloss.Color("#1e1e2e")).
-			Bold(true).
-			Padding(0, 1)
+			Foreground(lipgloss.Color(claudeBrandHex)).
+			Bold(true)
+
+	pSpinnerClaude = pBadgeClauding
 
 	pBadgeCodexing = lipgloss.NewStyle().
-			Background(blue).
-			Foreground(lipgloss.Color("#1e1e2e")).
-			Bold(true).
-			Padding(0, 1)
+			Foreground(blue).
+			Bold(true)
+
+	pSpinnerCodex = pBadgeCodexing
 
 	pServer = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#f9e2af"))
@@ -310,7 +319,7 @@ func isSelectablePickerRow(row pickerRow) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	return pickerRefreshCmd()
+	return tea.Batch(pickerRefreshCmd(), pickerSpinnerCmd())
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -327,6 +336,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pickerRefreshMsg:
 		m.refreshRows(msg.Rows)
 		return m, pickerRefreshCmd()
+
+	case pickerSpinnerMsg:
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(claudeSpinnerFrames)
+		return m, pickerSpinnerCmd()
 
 	case tea.KeyMsg:
 		key := msg.String()
@@ -479,6 +492,12 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func pickerRefreshCmd() tea.Cmd {
 	return tea.Tick(pickerRefreshInterval, func(time.Time) tea.Msg {
 		return pickerRefreshMsg{Rows: gatherSessions()}
+	})
+}
+
+func pickerSpinnerCmd() tea.Cmd {
+	return tea.Tick(pickerSpinnerInterval, func(time.Time) tea.Msg {
+		return pickerSpinnerMsg{}
 	})
 }
 
@@ -673,18 +692,6 @@ func (m pickerModel) View() string {
 
 	var b strings.Builder
 
-	// Header
-	sessionCount := 0
-	activeCount := 0
-	for _, r := range m.rows {
-		if r.Kind == rowSession {
-			sessionCount++
-			if r.Session.Claude != "" {
-				activeCount++
-			}
-		}
-	}
-
 	// Heading — block art
 	logoLines := []string{
 		"█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀",
@@ -692,20 +699,11 @@ func (m pickerModel) View() string {
 	}
 	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
 	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
-	info := fmt.Sprintf("%d sessions", sessionCount)
-	if activeCount > 0 {
-		info += fmt.Sprintf(" · %d active", activeCount)
-	}
-	rightStr := pSubtitle.Render(info)
 	b.WriteString("\n")
 	for i, line := range logoLines {
 		rendered := "    " + logoStyle.Render(line)
 		if i == 0 {
-			pad := m.width - lipgloss.Width(rendered) - lipgloss.Width(rightStr) - 2
-			if pad < 1 {
-				pad = 1
-			}
-			b.WriteString(rendered + strings.Repeat(" ", pad) + rightStr + "\n")
+			b.WriteString(rendered + "\n")
 		} else {
 			tag := "  " + featureStyle.Render("switcher")
 			b.WriteString(rendered + tag + "\n")
@@ -842,7 +840,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	}
 
 	// Badge (after name, inline)
-	line.WriteString(renderAIBadges(s.Claude, s.Codex))
+	line.WriteString(renderAIBadges(s.Claude, s.Codex, m.spinnerFrame))
 
 	// Server
 	if s.Server {
@@ -884,15 +882,16 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	return result
 }
 
-func renderAIBadges(claude, codex string) string {
+func renderAIBadges(claude, codex string, spinnerFrame int) string {
 	var line strings.Builder
+	frame := claudeSpinnerFrames[spinnerFrame%len(claudeSpinnerFrames)]
 	switch claude {
 	case "CLAUDING":
-		line.WriteString(" " + pBadgeClauding.Render("CLAUDING"))
+		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + pBadgeClauding.Render("Clauding"))
 	}
 	switch codex {
 	case "CODEXING":
-		line.WriteString(" " + pBadgeCodexing.Render("CODEXING"))
+		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + pBadgeCodexing.Render("Codexing"))
 	}
 	return line.String()
 }
