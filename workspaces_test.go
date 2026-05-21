@@ -44,3 +44,31 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func TestDefaultBaseBranchFromSymbolicRef(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+
+	got, err := defaultBaseBranch(root)
+	if err != nil {
+		t.Fatalf("defaultBaseBranch: %v", err)
+	}
+	if got != "main" {
+		t.Fatalf("got %q, want main", got)
+	}
+}
+
+func TestDefaultBaseBranchFallsBackToMain(t *testing.T) {
+	root := t.TempDir()
+	gitRun(t, root, "init", "-q", "-b", "develop")
+	gitRun(t, root, "config", "user.email", "t@t.t")
+	gitRun(t, root, "config", "user.name", "t")
+	gitRun(t, root, "commit", "--allow-empty", "-q", "-m", "init")
+	// no origin → no symbolic-ref
+
+	got, err := defaultBaseBranch(root)
+	if err != nil {
+		t.Fatalf("defaultBaseBranch: %v", err)
+	}
+	if got != "main" {
+		t.Fatalf("got %q, want main fallback", got)
+	}
+}
