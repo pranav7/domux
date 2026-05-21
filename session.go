@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -13,21 +14,23 @@ import (
 const timeFormat = time.RFC3339
 
 type SessionState struct {
-	Name          string            `json:"name"`
-	Root          string            `json:"root,omitempty"`
-	TodoPath      string            `json:"todo_path,omitempty"`
-	FocusedTodoID string            `json:"focused_todo_id,omitempty"`
-	Label         string            `json:"label,omitempty"`
-	Server        bool              `json:"server,omitempty"`
-	Workspace     string            `json:"workspace,omitempty"`
-	AI            map[string]string `json:"ai,omitempty"`
-	CreatedAt     string            `json:"created_at,omitempty"`
-	UpdatedAt     string            `json:"updated_at,omitempty"`
+	Name           string            `json:"name"`
+	Root           string            `json:"root,omitempty"`
+	TodoPath       string            `json:"todo_path,omitempty"`
+	FocusedTodoID  string            `json:"focused_todo_id,omitempty"`
+	Label          string            `json:"label,omitempty"`
+	Server         bool              `json:"server,omitempty"`
+	Workspace      string            `json:"workspace,omitempty"`
+	AI             map[string]string `json:"ai,omitempty"`
+	AIWorkingLabel string            `json:"ai_working_label,omitempty"`
+	CreatedAt      string            `json:"created_at,omitempty"`
+	UpdatedAt      string            `json:"updated_at,omitempty"`
 }
 
 type AIStates struct {
-	Claude string
-	Codex  string
+	Claude       string
+	Codex        string
+	WorkingLabel string
 }
 
 type DomuxContext struct {
@@ -120,6 +123,9 @@ func saveSessionState(state *SessionState) error {
 	if state.AI != nil {
 		delete(state.AI, "claude:legacy")
 		delete(state.AI, "codex:legacy")
+	}
+	if !stateHasWorkingAIState(state) {
+		state.AIWorkingLabel = ""
 	}
 	if state.AI != nil && len(state.AI) == 0 {
 		state.AI = nil
@@ -381,7 +387,50 @@ func aggregateAIStatesFromSession(state *SessionState) AIStates {
 			states.Claude = mergeAIState(states.Claude, value)
 		}
 	}
+	if states.Claude == "CLAUDING" || states.Codex == "CODEXING" {
+		states.WorkingLabel = state.AIWorkingLabel
+		if states.WorkingLabel == "" {
+			states.WorkingLabel = fallbackAIWorkingLabel(state)
+		}
+	}
 	return states
+}
+
+func stateHasWorkingAIState(state *SessionState) bool {
+	if state == nil {
+		return false
+	}
+	for key, value := range state.AI {
+		agent := inferAgentFromAIKey(key)
+		if agent == "" {
+			agent = inferAgentFromAIValue(value)
+		}
+		if agent == "" {
+			agent = "claude"
+		}
+		if normalizeAIState(agent, value) == workingAIState(agent) {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackAIWorkingLabel(state *SessionState) string {
+	parts := []string{state.Name}
+	for key, value := range state.AI {
+		agent := inferAgentFromAIKey(key)
+		if agent == "" {
+			agent = inferAgentFromAIValue(value)
+		}
+		if agent == "" {
+			agent = "claude"
+		}
+		if normalizeAIState(agent, value) == workingAIState(agent) {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	sort.Strings(parts[1:])
+	return stableAIWorkingLabel(strings.Join(parts, "\x00"))
 }
 
 func mergeAIState(current, next string) string {

@@ -29,16 +29,17 @@ type prInfo struct {
 }
 
 type sessionInfo struct {
-	Name    string
-	Branch  string
-	PR      *prInfo
-	Claude  string
-	Codex   string
-	Server  bool
-	Windows int
-	Path    string
-	Label   string
-	Tasks   []taskInfo
+	Name           string
+	Branch         string
+	PR             *prInfo
+	Claude         string
+	Codex          string
+	AIWorkingLabel string
+	Server         bool
+	Windows        int
+	Path           string
+	Label          string
+	Tasks          []taskInfo
 }
 
 type taskInfo struct {
@@ -840,7 +841,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	}
 
 	// Badge (after name, inline)
-	line.WriteString(renderAIBadges(s.Claude, s.Codex, m.spinnerFrame))
+	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.AIWorkingLabel, m.spinnerFrame))
 
 	// Server
 	if s.Server {
@@ -882,16 +883,19 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	return result
 }
 
-func renderAIBadges(claude, codex string, spinnerFrame int) string {
+func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 	var line strings.Builder
 	frame := claudeSpinnerFrames[spinnerFrame%len(claudeSpinnerFrames)]
+	if label == "" {
+		label = stableAIWorkingLabel(claude + ":" + codex)
+	}
 	switch claude {
 	case "CLAUDING":
-		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + pBadgeClauding.Render("Clauding"))
+		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + pBadgeClauding.Render(label))
 	}
 	switch codex {
 	case "CODEXING":
-		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + pBadgeCodexing.Render("Codexing"))
+		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + pBadgeCodexing.Render(label))
 	}
 	return line.String()
 }
@@ -999,6 +1003,7 @@ func gatherSessions() []pickerRow {
 		aiStates := aggregateAIStatesFromSession(state)
 		info.Claude = aiStates.Claude
 		info.Codex = aiStates.Codex
+		info.AIWorkingLabel = aiStates.WorkingLabel
 		info.Server = state.Server
 
 		winOut, err := exec.Command("tmux", "list-windows", "-t", sess).Output()

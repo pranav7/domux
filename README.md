@@ -5,7 +5,7 @@ An opinionated tmux workbench. Two TUIs, one binary:
 - **todo** — per-worktree task list (the "do" in *do*mux). Pinned to the git
   root where work started, so `cd`-ing through subdirs doesn't lose context.
 - **switcher** — pinned-session picker across all your tmux sessions, with
-  live status (CLAUDING, CODEXING, WAITING), labels, and inline task previews.
+  live AI status, labels, and inline task previews.
 
 ## Usage
 

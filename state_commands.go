@@ -239,6 +239,13 @@ func setAIState(session, pane, agent, value string) error {
 	} else {
 		state.AI[key] = value
 	}
+	if stateHasWorkingAIState(state) {
+		if state.AIWorkingLabel == "" {
+			state.AIWorkingLabel = randomAIWorkingLabel()
+		}
+	} else {
+		state.AIWorkingLabel = ""
+	}
 	if err := saveSessionState(state); err != nil {
 		return err
 	}

@@ -217,9 +217,9 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 	}
 }
 
-func TestClaudingBadgeShowsSpinnerFrame(t *testing.T) {
-	frame0 := renderAIBadges("CLAUDING", "", 0)
-	frame1 := renderAIBadges("CLAUDING", "", 1)
+func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
+	frame0 := renderAIBadges("CLAUDING", "", "Calculating", 0)
+	frame1 := renderAIBadges("CLAUDING", "", "Calculating", 1)
 
 	if !strings.Contains(frame0, claudeSpinnerFrames[0]) {
 		t.Fatalf("frame 0 missing %q: %q", claudeSpinnerFrames[0], frame0)
@@ -227,12 +227,24 @@ func TestClaudingBadgeShowsSpinnerFrame(t *testing.T) {
 	if !strings.Contains(frame1, claudeSpinnerFrames[1]) {
 		t.Fatalf("frame 1 missing %q: %q", claudeSpinnerFrames[1], frame1)
 	}
-	if !strings.Contains(frame0, "Clauding") {
-		t.Fatalf("badge missing sentence-case Clauding text: %q", frame0)
+	if !strings.Contains(frame0, "Calculating") {
+		t.Fatalf("badge missing stable working label: %q", frame0)
+	}
+	if strings.Contains(frame0, "Clauding") || strings.Contains(frame0, "Codexing") {
+		t.Fatalf("badge should not use agent name text: %q", frame0)
 	}
 	if claudeBrandHex != "#DE7356" {
 		t.Fatalf("expected Claude brand colour #DE7356, got %q", claudeBrandHex)
 	}
+}
+
+func containsAIWorkingLabel(s string) bool {
+	for _, label := range aiWorkingLabels {
+		if strings.Contains(s, label) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPickerSpinnerTickAdvancesFrame(t *testing.T) {

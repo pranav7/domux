@@ -323,3 +323,34 @@ func TestAIStateAllClearRemovesAllAgentPanes(t *testing.T) {
 		}
 	}
 }
+
+func TestAIWorkingLabelPersistsUntilWorkingEnds(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "dotfiles"
+
+	if err := setAIState(session, "1_0", "codex", "CODEXING"); err != nil {
+		t.Fatalf("setAIState working: %v", err)
+	}
+	state := loadSessionStateWithLegacy(session)
+	label := state.AIWorkingLabel
+	if label == "" {
+		t.Fatalf("working label missing: %#v", state)
+	}
+
+	if err := setAIState(session, "1_0", "codex", "CODEXING"); err != nil {
+		t.Fatalf("setAIState working again: %v", err)
+	}
+	state = loadSessionStateWithLegacy(session)
+	if state.AIWorkingLabel != label {
+		t.Fatalf("working label changed: %q -> %q", label, state.AIWorkingLabel)
+	}
+
+	if err := setAIState(session, "1_0", "codex", "WAITING"); err != nil {
+		t.Fatalf("setAIState waiting: %v", err)
+	}
+	state = loadSessionStateWithLegacy(session)
+	if state.AIWorkingLabel != "" {
+		t.Fatalf("working label kept after waiting: %q", state.AIWorkingLabel)
+	}
+}
