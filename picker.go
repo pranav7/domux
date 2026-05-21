@@ -37,6 +37,7 @@ type sessionInfo struct {
 	Server  bool
 	Windows int
 	Path    string
+	Root    string // git common root (group-level), stripped of /.baag/worktrees/...
 	Label   string
 	Tasks   []taskInfo
 }
@@ -969,12 +970,12 @@ func gatherSessions() []pickerRow {
 			rootOut, err := exec.Command("git", "-C", info.Path, "rev-parse", "--show-toplevel").Output()
 			if err == nil {
 				gitRoot := strings.TrimSpace(string(rootOut))
-				if strings.Contains(gitRoot, "/.baag/worktrees/") {
-					idx := strings.Index(gitRoot, "/.baag/worktrees/")
-					group = filepath.Base(gitRoot[:idx])
+				if idx := strings.Index(gitRoot, "/.baag/worktrees/"); idx >= 0 {
+					info.Root = gitRoot[:idx]
 				} else {
-					group = filepath.Base(gitRoot)
+					info.Root = gitRoot
 				}
+				group = filepath.Base(info.Root)
 			}
 		}
 		if group == "" {
