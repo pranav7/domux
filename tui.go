@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,6 +38,11 @@ type notesEditedMsg struct{ notes string }
 type errMsg struct{ err error }
 
 func (e errMsg) Error() string { return e.err.Error() }
+
+const (
+	notePadding = 5
+	notePrefix  = "│ "
+)
 
 // Colors - Catppuccin Mocha palette
 var (
@@ -104,7 +110,7 @@ var (
 	notesStyle = lipgloss.NewStyle().
 			Foreground(overlay1).
 			Italic(true).
-			PaddingLeft(5)
+			PaddingLeft(notePadding)
 
 	archiveHeaderStyle = lipgloss.NewStyle().
 				Foreground(overlay1).
@@ -673,8 +679,8 @@ func (m model) View() string {
 			tasks = append(tasks, row)
 
 			if item.Notes != "" {
-				for _, line := range strings.Split(item.Notes, "\n") {
-					tasks = append(tasks, indent+notesStyle.Render("│ "+line))
+				for _, line := range wrapNoteLines(item.Notes, innerWidth) {
+					tasks = append(tasks, indent+notesStyle.Render(notePrefix+line))
 				}
 			}
 		}
@@ -735,6 +741,80 @@ func (m model) View() string {
 	return lipgloss.NewStyle().PaddingTop(1).Render(
 		lipgloss.JoinVertical(lipgloss.Left, sections...),
 	)
+}
+
+func wrapNoteLines(notes string, innerWidth int) []string {
+	width := innerWidth - notePadding - lipgloss.Width(notePrefix)
+	if width < 1 {
+		width = 1
+	}
+
+	var lines []string
+	for _, line := range strings.Split(notes, "\n") {
+		lines = append(lines, wrapLine(line, width)...)
+	}
+	return lines
+}
+
+func wrapLine(line string, width int) []string {
+	if line == "" {
+		return []string{""}
+	}
+
+	var lines []string
+	for lipgloss.Width(line) > width {
+		cut := fitWidthIndex(line, width)
+		if cut >= len(line) {
+			break
+		}
+
+		if breakAt := lastSpaceIndex(line[:cut]); breakAt > 0 {
+			lines = append(lines, strings.TrimRightFunc(line[:breakAt], unicode.IsSpace))
+			line = strings.TrimLeftFunc(line[breakAt:], unicode.IsSpace)
+			if line == "" {
+				return lines
+			}
+			continue
+		}
+
+		lines = append(lines, line[:cut])
+		line = strings.TrimLeftFunc(line[cut:], unicode.IsSpace)
+		if line == "" {
+			return lines
+		}
+	}
+
+	return append(lines, line)
+}
+
+func fitWidthIndex(s string, width int) int {
+	end := 0
+	for i := range s {
+		if i == 0 {
+			continue
+		}
+		if lipgloss.Width(s[:i]) > width {
+			if end == 0 {
+				return i
+			}
+			return end
+		}
+		end = i
+	}
+	if lipgloss.Width(s) > width && end > 0 {
+		return end
+	}
+	return len(s)
+}
+
+func lastSpaceIndex(s string) int {
+	last := -1
+	for i, r := range s {
+		if unicode.IsSpace(r) {
+			last = i
+		}
+	}
+	return last
 }
 
 func (m model) renderFooter() string {
