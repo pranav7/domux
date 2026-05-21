@@ -273,3 +273,166 @@ func viewLineCount(s string) int {
 	}
 	return strings.Count(s, "\n") + 1
 }
+
+func TestPickerDeleteEntersConfirmMode(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "workspace-1",
+			Path: "/r/.baag/worktrees/workspace-1",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+	if !pm.confirmDelete {
+		t.Fatalf("D should enter confirmDelete mode")
+	}
+	if pm.deleteSlot != 1 {
+		t.Fatalf("deleteSlot = %d, want 1", pm.deleteSlot)
+	}
+}
+
+func TestPickerDeleteRefusesMainRow(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "audrey-app",
+			Path: "/r",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("D on main row should not enter confirmDelete")
+	}
+	if !pm.statusErr {
+		t.Fatalf("expected error status, got %q", pm.status)
+	}
+}
+
+func TestPickerDeleteCancelOnAnyOtherKey(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name: "workspace-1",
+			Path: "/r/.baag/worktrees/workspace-1",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+
+	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	pm = next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("non-y key should cancel confirmDelete")
+	}
+}
+
+func TestPickerDeleteYDispatchesRemove(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name: "workspace-1",
+			Path: "/r/.baag/worktrees/workspace-1",
+			Root: "/r",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+
+	next, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	pm = next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("y should exit confirmDelete mode")
+	}
+	if cmd == nil {
+		t.Fatalf("y should dispatch a remove cmd")
+	}
+	if !strings.Contains(pm.status, "removing") {
+		t.Fatalf("status = %q, want it to mention removing", pm.status)
+	}
+}
+
+func TestPickerPlusDispatchesProvision(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "audrey-app",
+			Root: "/tmp/audrey-app",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if cmd == nil {
+		t.Fatalf("+ should dispatch a cmd")
+	}
+}
+
+func TestPickerPlusSetsProvisioningStatus(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "audrey-app"},
+		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+			Name: "audrey-app",
+			Root: "/tmp/audrey-app",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	pm := next.(pickerModel)
+	if !strings.Contains(pm.status, "provisioning") {
+		t.Fatalf("status = %q, want it to mention provisioning", pm.status)
+	}
+	if pm.statusErr {
+		t.Fatalf("status should not be flagged as error")
+	}
+}
+
+func TestRenderSessionMarksMainWorktree(t *testing.T) {
+	mainRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+		Name: "audrey-app",
+		Path: "/r/audrey-app",
+		Root: "/r/audrey-app",
+	}}
+	wsRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+		Name: "workspace-1",
+		Path: "/r/audrey-app/.baag/worktrees/workspace-1",
+		Root: "/r/audrey-app",
+	}}
+	m := newPickerModel([]pickerRow{mainRow, wsRow})
+
+	mainOut := m.renderSession(mainRow, false)
+	wsOut := m.renderSession(wsRow, false)
+
+	if !strings.Contains(mainOut, "◇") {
+		t.Fatalf("main row missing ◇ glyph:\n%s", mainOut)
+	}
+	if strings.Contains(wsOut, "◇") {
+		t.Fatalf("workspace row should not have ◇ glyph:\n%s", wsOut)
+	}
+}
+
+func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "x"},
+		{Kind: rowSession, Group: "x", Session: &sessionInfo{Name: "x"}}, // no Root
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if cmd != nil {
+		t.Fatalf("expected no cmd when row has no Root")
+	}
+	pm := next.(pickerModel)
+	if !pm.statusErr {
+		t.Fatalf("expected error status, got %q", pm.status)
+	}
+}

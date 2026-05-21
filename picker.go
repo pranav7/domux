@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ type sessionInfo struct {
 	Server         bool
 	Windows        int
 	Path           string
+	Root           string // git common root (group-level), stripped of /.baag/worktrees/...
 	Label          string
 	Tasks          []taskInfo
 }
@@ -58,21 +60,26 @@ type pickerRow struct {
 }
 
 type pickerModel struct {
-	rows         []pickerRow
-	visible      []int
-	cursor       int
-	filter       textinput.Model
-	filtering    bool
-	labelInput   textinput.Model
-	labelEditing bool
-	labelTarget  string
-	showTasks    bool
-	status       string
-	statusErr    bool
-	width        int
-	height       int
-	startedAt    time.Time
-	spinnerFrame int
+	rows          []pickerRow
+	visible       []int
+	cursor        int
+	filter        textinput.Model
+	filtering     bool
+	labelInput    textinput.Model
+	labelEditing  bool
+	labelTarget   string
+	confirmDelete bool
+	deleteSlot    int
+	deleteRoot    string
+	deleteBranch  string
+	deleteForce   bool
+	showTasks     bool
+	status        string
+	statusErr     bool
+	width         int
+	height        int
+	startedAt     time.Time
+	spinnerFrame  int
 }
 
 type pickerActionMsg struct {
@@ -172,6 +179,9 @@ var (
 				Foreground(yellow)
 
 	pConnector = lipgloss.NewStyle().
+			Foreground(overlay0)
+
+	pMainMark = lipgloss.NewStyle().
 			Foreground(overlay0)
 
 	pFooter = lipgloss.NewStyle().
@@ -319,6 +329,15 @@ func isSelectablePickerRow(row pickerRow) bool {
 	return row.Kind == rowSession && row.Session != nil
 }
 
+// isMainWorktreePath returns true when path looks like the main checkout of
+// a project (i.e. not nested under /.baag/worktrees/).
+func isMainWorktreePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	return !strings.Contains(path, "/.baag/worktrees/")
+}
+
 func (m pickerModel) Init() tea.Cmd {
 	return tea.Batch(pickerRefreshCmd(), pickerSpinnerCmd())
 }
@@ -346,6 +365,34 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		if m.ignoringStartupInput() {
 			return m, nil
+		}
+
+		if m.confirmDelete {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "y", "Y":
+				m.confirmDelete = false
+				target := m.deleteBranch
+				root := m.deleteRoot
+				slot := m.deleteSlot
+				force := m.deleteForce
+				m.status = fmt.Sprintf("removing %s", target)
+				m.statusErr = false
+				return m, func() tea.Msg {
+					return pickerActionMsg{
+						Action:  "delete",
+						Session: target,
+						Value:   strconv.Itoa(slot),
+						Err:     removeWorkspace(root, slot, force),
+					}
+				}
+			default:
+				m.confirmDelete = false
+				m.status = "delete cancelled"
+				m.statusErr = false
+				return m, nil
+			}
 		}
 
 		if m.labelEditing {
@@ -477,6 +524,10 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "+":
+			return m, m.provisionInFocusedGroup()
+		case "D":
+			return m, m.deleteSelectedWorkspace()
 		default:
 			if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
 				m.filtering = true
@@ -600,7 +651,68 @@ func (m *pickerModel) setSelectedServer() tea.Cmd {
 	}
 }
 
+func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
+	session := m.selectedSession()
+	if session == nil || session.Root == "" {
+		m.status = "no git root for this row"
+		m.statusErr = true
+		return nil
+	}
+	root := session.Root
+	group := m.rows[m.visible[m.cursor]].Group
+	m.status = fmt.Sprintf("provisioning new workspace in %s", group)
+	m.statusErr = false
+	return func() tea.Msg {
+		res, err := provisionWorkspace(root)
+		return pickerActionMsg{
+			Action:  "provision",
+			Session: res.Session,
+			Value:   res.Branch,
+			Err:     err,
+		}
+	}
+}
+
+func (m *pickerModel) deleteSelectedWorkspace() tea.Cmd {
+	session := m.selectedSession()
+	if session == nil {
+		return nil
+	}
+	if session.Root == "" {
+		m.status = "no git root for this row"
+		m.statusErr = true
+		return nil
+	}
+	dir := filepath.Base(session.Path)
+	if !isWorkspaceDir(dir) {
+		m.status = "cannot delete main worktree"
+		m.statusErr = true
+		return nil
+	}
+	slot, err := strconv.Atoi(strings.TrimPrefix(dir, "workspace-"))
+	if err != nil || slot < 1 {
+		m.status = fmt.Sprintf("unrecognised workspace dir: %s", dir)
+		m.statusErr = true
+		return nil
+	}
+	m.confirmDelete = true
+	m.deleteSlot = slot
+	m.deleteRoot = session.Root
+	m.deleteBranch = dir
+	m.deleteForce = false
+	m.status = ""
+	m.statusErr = false
+	return nil
+}
+
 func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
+	if msg.Err == errDirtyWorkspace && msg.Action == "delete" {
+		m.confirmDelete = true
+		m.deleteForce = true
+		m.status = fmt.Sprintf("%s has unpushed work — force delete? (y/N)", msg.Session)
+		m.statusErr = true
+		return
+	}
 	if msg.Err != nil {
 		switch msg.Action {
 		case "clear":
@@ -609,6 +721,10 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("set server %s failed: %v", msg.Session, msg.Err)
 		case "label":
 			m.status = fmt.Sprintf("label %s failed: %v", msg.Session, msg.Err)
+		case "provision":
+			m.status = fmt.Sprintf("provision failed: %v", msg.Err)
+		case "delete":
+			m.status = fmt.Sprintf("delete %s failed: %v", msg.Session, msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -644,6 +760,20 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			}
 		}
 		m.status = fmt.Sprintf("server set to %s", msg.Session)
+	case "provision":
+		m.status = fmt.Sprintf("provisioned %s", msg.Value)
+		m.statusErr = false
+	case "delete":
+		for i, row := range m.rows {
+			if row.Session != nil && row.Session.Name == msg.Session {
+				m.rows = append(m.rows[:i], m.rows[i+1:]...)
+				m.rebuildVisible()
+				m.clampCursor()
+				break
+			}
+		}
+		m.status = fmt.Sprintf("removed %s", msg.Session)
+		m.statusErr = false
 	}
 	m.statusErr = false
 }
@@ -770,6 +900,8 @@ func (m pickerModel) View() string {
 	b.WriteString("    " +
 		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
 		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
+		pFooterKey.Render("+") + pFooter.Render(" new") + sep +
+		pFooterKey.Render("D") + pFooter.Render(" delete") + sep +
 		pFooterKey.Render("n") + pFooter.Render(" name") + sep +
 		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
 		pFooterKey.Render("s") + pFooter.Render(" server") + sep +
@@ -811,18 +943,24 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	waiting := s.Claude == "WAITING" || s.Codex == "WAITING"
 	active := s.Claude != "" || s.Codex != ""
 
-	// Prefix: left accent bar for waiting, cursor arrow for selected
-	if waiting {
-		if selected {
-			line.WriteString("  " + pWaitingDot.Render("▎") + pCursor.Render("›") + " ")
-		} else {
-			line.WriteString("  " + pWaitingDot.Render("▎") + "  ")
-		}
-	} else if selected {
-		line.WriteString("   " + pCursor.Render("›") + " ")
-	} else {
-		line.WriteString("     ")
+	mainGlyph := " "
+	if isMainWorktreePath(s.Path) {
+		mainGlyph = pMainMark.Render("◇")
 	}
+	// Prefix: left accent bar for waiting, cursor arrow for selected, then
+	// the main-worktree marker. Five-column total to keep alignment with
+	// non-session rows.
+	switch {
+	case waiting && selected:
+		line.WriteString("  " + pWaitingDot.Render("▎") + pCursor.Render("›") + mainGlyph)
+	case waiting:
+		line.WriteString("  " + pWaitingDot.Render("▎") + " " + mainGlyph)
+	case selected:
+		line.WriteString("   " + pCursor.Render("›") + mainGlyph)
+	default:
+		line.WriteString("    " + mainGlyph)
+	}
+	line.WriteString(" ")
 
 	// Name — selected or active rows should be visibly readable.
 	if selected || active {
@@ -973,12 +1111,12 @@ func gatherSessions() []pickerRow {
 			rootOut, err := exec.Command("git", "-C", info.Path, "rev-parse", "--show-toplevel").Output()
 			if err == nil {
 				gitRoot := strings.TrimSpace(string(rootOut))
-				if strings.Contains(gitRoot, "/.baag/worktrees/") {
-					idx := strings.Index(gitRoot, "/.baag/worktrees/")
-					group = filepath.Base(gitRoot[:idx])
+				if idx := strings.Index(gitRoot, "/.baag/worktrees/"); idx >= 0 {
+					info.Root = gitRoot[:idx]
 				} else {
-					group = filepath.Base(gitRoot)
+					info.Root = gitRoot
 				}
+				group = filepath.Base(info.Root)
 			}
 		}
 		if group == "" {
