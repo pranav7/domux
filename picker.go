@@ -713,6 +713,11 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 		m.statusErr = true
 		return
 	}
+	if msg.Err == errClearDirty && msg.Action == "clear" {
+		m.status = fmt.Sprintf("%s has uncommitted changes — commit or stash first", msg.Session)
+		m.statusErr = true
+		return
+	}
 	if msg.Err != nil {
 		switch msg.Action {
 		case "clear":
