@@ -106,7 +106,7 @@ const claudeBrandHex = "#DE7356"
 
 // claudeSpinnerFrames — star/asterisk shapes that pulse from sparse → dense → sparse,
 // so each frame morphs into the next instead of just rotating.
-var claudeSpinnerFrames = []string{"+", "✦", "✶", "✢", "✳", "✽", "✳", "✢", "✶", "✦"}
+var claudeSpinnerFrames = []string{"✽", "✦", "✶", "✢", "✳", "✽", "✳", "✢", "✶", "✦"}
 
 // Styles — Catppuccin Mocha
 var (
@@ -403,7 +403,9 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, pickerRefreshCmd()
 
 	case pickerSpinnerMsg:
-		m.spinnerFrame = (m.spinnerFrame + 1) % len(claudeSpinnerFrames)
+		// Wrap at LCM-ish large number so both the icon (mod 10) and the
+		// shimmer wave (variable cycle) read smoothly.
+		m.spinnerFrame = (m.spinnerFrame + 1) % 600
 		return m, pickerSpinnerCmd()
 
 	case tea.KeyMsg:
@@ -1093,6 +1095,15 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	return result
 }
 
+// Shimmer endpoints — dim/bright pair that the wave interpolates between.
+// Kept off-brand-dim so the trailing chars fade out without going invisible.
+const (
+	claudeShimmerDim    = "#B85E47"
+	claudeShimmerBright = "#FFC9B0"
+	codexShimmerDim     = "#6478A8"
+	codexShimmerBright  = "#C8DAFF"
+)
+
 func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 	var line strings.Builder
 	frame := claudeSpinnerFrames[spinnerFrame%len(claudeSpinnerFrames)]
@@ -1101,11 +1112,11 @@ func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 	}
 	switch claude {
 	case "CLAUDING":
-		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + pBadgeClauding.Render(label))
+		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + shimmerText(label, spinnerFrame, claudeShimmerDim, claudeShimmerBright))
 	}
 	switch codex {
 	case "CODEXING":
-		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + pBadgeCodexing.Render(label))
+		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + shimmerText(label, spinnerFrame, codexShimmerDim, codexShimmerBright))
 	}
 	return line.String()
 }

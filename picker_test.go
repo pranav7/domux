@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -8,6 +9,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 func TestPickerIgnoresInitialEscape(t *testing.T) {
 	m := newPickerModel([]pickerRow{
@@ -227,11 +232,15 @@ func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
 	if !strings.Contains(frame1, claudeSpinnerFrames[1]) {
 		t.Fatalf("frame 1 missing %q: %q", claudeSpinnerFrames[1], frame1)
 	}
-	if !strings.Contains(frame0, "Calculating") {
-		t.Fatalf("badge missing stable working label: %q", frame0)
+	plain0 := stripANSI(frame0)
+	if !strings.Contains(plain0, "Calculating") {
+		t.Fatalf("badge missing stable working label: %q", plain0)
 	}
-	if strings.Contains(frame0, "Clauding") || strings.Contains(frame0, "Codexing") {
-		t.Fatalf("badge should not use agent name text: %q", frame0)
+	if strings.Contains(plain0, "Clauding") || strings.Contains(plain0, "Codexing") {
+		t.Fatalf("badge should not use agent name text: %q", plain0)
+	}
+	if frame0 == frame1 {
+		t.Fatalf("shimmer should advance between frames: %q == %q", frame0, frame1)
 	}
 	if claudeBrandHex != "#DE7356" {
 		t.Fatalf("expected Claude brand colour #DE7356, got %q", claudeBrandHex)
