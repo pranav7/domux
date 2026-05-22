@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"sort"
 	"strings"
 )
+
+var errClearDirty = errors.New("uncommitted changes — commit or stash first")
 
 func runCommand(name string, args []string) error {
 	switch name {
@@ -611,6 +614,14 @@ func resetGitWorkspace(dir string, verbose bool) error {
 		return nil
 	}
 
+	statusOut, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	if len(strings.TrimSpace(string(statusOut))) > 0 {
+		return errClearDirty
+	}
+
 	base, err := defaultBaseBranch(dir)
 	if err != nil {
 		return err
@@ -621,13 +632,10 @@ func resetGitWorkspace(dir string, verbose bool) error {
 		if verbose {
 			fmt.Printf("Resetting worktree: %s\n", dirName)
 		}
-		if err := runGitCommand(dir, verbose, "checkout", dirName); err != nil {
-			return err
-		}
 		if err := runGitCommand(dir, verbose, "fetch", "origin", base); err != nil {
 			return err
 		}
-		return runGitCommand(dir, verbose, "merge", "origin/"+base, "-m", "Merge "+base+" into "+dirName)
+		return runGitCommand(dir, verbose, "reset", "--hard", "origin/"+base)
 	}
 
 	if verbose {

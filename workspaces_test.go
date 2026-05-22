@@ -315,3 +315,15 @@ esac
 		t.Fatalf("expected advance develop merged into workspace, got:\n%s", logOut)
 	}
 }
+
+func TestResetGitWorkspaceRejectsDirty(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	// Dirty the working tree.
+	if err := os.WriteFile(filepath.Join(root, "dirty.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	err := resetGitWorkspace(root, false)
+	if err != errClearDirty {
+		t.Fatalf("err = %v, want errClearDirty", err)
+	}
+}
