@@ -132,8 +132,8 @@ func TestTmuxAIBadgeRendersCompacting(t *testing.T) {
 	if !strings.Contains(got, "✦") {
 		t.Fatalf("Claude compacting badge missing star glyph: %q", got)
 	}
-	if !strings.Contains(got, "#cba6f7") {
-		t.Fatalf("Claude compacting badge missing mauve color: %q", got)
+	if !strings.Contains(got, "#AFAFFF") {
+		t.Fatalf("Claude compacting badge missing compact purple: %q", got)
 	}
 }
 

@@ -152,7 +152,7 @@ var (
 	pSpinnerCodex = pBadgeCodexing
 
 	pSpinnerCompacting = lipgloss.NewStyle().
-				Foreground(mauve).
+				Foreground(compactPurple).
 				Bold(true)
 
 	pServer = lipgloss.NewStyle().
@@ -1136,8 +1136,8 @@ const (
 	claudeShimmerBright  = "#FFC9B0"
 	codexShimmerDim      = "#6478A8"
 	codexShimmerBright   = "#C8DAFF"
-	compactShimmerDim    = "#7E5CB8"
-	compactShimmerBright = "#E6CFFF"
+	compactShimmerDim    = "#6F6FCF"
+	compactShimmerBright = "#D8D8FF"
 )
 
 func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
@@ -1147,8 +1147,8 @@ func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 		label = stableAIWorkingLabel(claude + ":" + codex)
 	}
 	// COMPACTING short-circuits — render once with a fixed "Compacting…" label
-	// in mauve, regardless of which agent slot carries it. Suppress the per-
-	// agent working badges since the same agent is mid-compaction, not working.
+	// regardless of which agent slot carries it. Suppress the per-agent working
+	// badges since the same agent is mid-compaction, not working.
 	if claude == "COMPACTING" || codex == "COMPACTING" {
 		line.WriteString(" " + pSpinnerCompacting.Render(frame) + " " + shimmerText("Compacting…", spinnerFrame, compactShimmerDim, compactShimmerBright))
 		return line.String()
