@@ -22,6 +22,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  domux adopt [DIR]  Pin the current tmux session to a directory\n")
 	fmt.Fprintf(os.Stderr, "  domux attach NAME  Attach/switch to a tmux session\n")
 	fmt.Fprintf(os.Stderr, "  domux clear        Reset/free the current tmux workspace\n")
+	fmt.Fprintf(os.Stderr, "  domux reset-branch Reset current git branch only\n")
 	fmt.Fprintf(os.Stderr, "  domux server       Toggle current tmux session as running the server\n\n")
 	fmt.Fprintf(os.Stderr, "Setup:\n")
 	fmt.Fprintf(os.Stderr, "  domux bootstrap    One-shot setup: detect brew/tmux/Claude/Codex, apply hooks\n")

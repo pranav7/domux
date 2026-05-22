@@ -45,6 +45,42 @@ func TestClearSessionStateFilesRemovesLegacySessionMetadata(t *testing.T) {
 	}
 }
 
+func TestClearWorkspaceDirtyKeepsSessionState(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	state := &SessionState{
+		Name:   session,
+		Root:   root,
+		Label:  "PBC",
+		Server: true,
+		AI:     map[string]string{"codex:0_0": "CODEXING"},
+	}
+	if err := saveSessionState(state); err != nil {
+		t.Fatalf("saveSessionState: %v", err)
+	}
+	legacyLabel := filepath.Join(homeDir, ".tmux-label-"+session)
+	if err := os.WriteFile(legacyLabel, []byte("PBC\n"), 0644); err != nil {
+		t.Fatalf("write legacy label: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dirty.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write dirty: %v", err)
+	}
+
+	err := clearWorkspaceForSession(session, root, false)
+	if err != errClearDirty {
+		t.Fatalf("err = %v, want errClearDirty", err)
+	}
+	got := loadSessionStateWithLegacy(session)
+	if got.Label != "PBC" || !got.Server || got.AI["codex:0_0"] != "CODEXING" {
+		t.Fatalf("state changed after dirty clear: %#v", got)
+	}
+	if _, err := os.Stat(legacyLabel); err != nil {
+		t.Fatalf("legacy label removed after dirty clear: %v", err)
+	}
+}
+
 func TestAggregateAIStatesKeepsClaudeAndCodexSeparate(t *testing.T) {
 	state := &SessionState{AI: map[string]string{
 		"claude:0_0": "WAITING",

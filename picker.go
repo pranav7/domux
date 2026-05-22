@@ -554,6 +554,8 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "c":
 			return m, m.clearSelectedSession()
+		case "r":
+			return m, m.resetSelectedBranch()
 		case "s":
 			return m, m.setSelectedServer()
 		case "n":
@@ -675,6 +677,29 @@ func (m *pickerModel) clearSelectedSession() tea.Cmd {
 	}
 }
 
+func (m *pickerModel) resetSelectedBranch() tea.Cmd {
+	session := m.selectedSession()
+	if session == nil {
+		return nil
+	}
+	name := session.Name
+	path := session.Path
+	if path == "" {
+		m.status = fmt.Sprintf("no path for %s", name)
+		m.statusErr = true
+		return nil
+	}
+	m.status = fmt.Sprintf("resetting branch for %s", name)
+	m.statusErr = false
+	return func() tea.Msg {
+		return pickerActionMsg{
+			Action:  "reset",
+			Session: name,
+			Err:     resetGitWorkspace(path, false),
+		}
+	}
+}
+
 func (m *pickerModel) startLabelEdit() {
 	session := m.selectedSession()
 	if session == nil {
@@ -764,7 +789,7 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 		m.statusErr = true
 		return
 	}
-	if msg.Err == errClearDirty && msg.Action == "clear" {
+	if msg.Err == errClearDirty && (msg.Action == "clear" || msg.Action == "reset") {
 		m.status = fmt.Sprintf("%s has uncommitted changes — commit or stash first", msg.Session)
 		m.statusErr = true
 		return
@@ -773,6 +798,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 		switch msg.Action {
 		case "clear":
 			m.status = fmt.Sprintf("clear %s failed: %v", msg.Session, msg.Err)
+		case "reset":
+			m.status = fmt.Sprintf("reset branch for %s failed: %v", msg.Session, msg.Err)
 		case "server":
 			m.status = fmt.Sprintf("set server %s failed: %v", msg.Session, msg.Err)
 		case "label":
@@ -809,6 +836,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			}
 		}
 		m.status = fmt.Sprintf("cleared %s", msg.Session)
+	case "reset":
+		m.status = fmt.Sprintf("reset branch for %s", msg.Session)
 	case "server":
 		for _, row := range m.rows {
 			if row.Kind == rowSession && row.Session != nil {
@@ -982,6 +1011,7 @@ func (m pickerModel) View() string {
 		pFooterKey.Render("D") + pFooter.Render(" delete") + sep +
 		pFooterKey.Render("n") + pFooter.Render(" name") + sep +
 		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
+		pFooterKey.Render("r") + pFooter.Render(" reset") + sep +
 		pFooterKey.Render("s") + pFooter.Render(" server") + sep +
 		pFooterKey.Render("tab") + pFooter.Render(" "+todoLabel) + sep +
 		pFooterKey.Render("/") + pFooter.Render(" filter") + sep +
@@ -1102,11 +1132,11 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 // Shimmer endpoints — dim/bright pair that the wave interpolates between.
 // Kept off-brand-dim so the trailing chars fade out without going invisible.
 const (
-	claudeShimmerDim    = "#B85E47"
-	claudeShimmerBright = "#FFC9B0"
-	codexShimmerDim     = "#6478A8"
-	codexShimmerBright  = "#C8DAFF"
-	compactShimmerDim   = "#7E5CB8"
+	claudeShimmerDim     = "#B85E47"
+	claudeShimmerBright  = "#FFC9B0"
+	codexShimmerDim      = "#6478A8"
+	codexShimmerBright   = "#C8DAFF"
+	compactShimmerDim    = "#7E5CB8"
 	compactShimmerBright = "#E6CFFF"
 )
 

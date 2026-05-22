@@ -309,10 +309,83 @@ esac
 		t.Fatalf("resetGitWorkspace: %v", err)
 	}
 
-	// origin/develop's advance should now be merged in.
+	// origin/develop's advance should now be included.
 	logOut := gitOutput(t, res.Path, "log", "--oneline")
 	if !strings.Contains(logOut, "advance develop") {
-		t.Fatalf("expected advance develop merged into workspace, got:\n%s", logOut)
+		t.Fatalf("expected advance develop in workspace, got:\n%s", logOut)
+	}
+}
+
+func TestResetGitWorkspaceRestoresWorkspaceBranchBeforeHardReset(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	gitRun(t, res.Path, "checkout", "-q", "-b", "fix/test")
+	gitRun(t, res.Path, "commit", "--allow-empty", "-q", "-m", "fix")
+	fixSha := gitOutput(t, res.Path, "rev-parse", "HEAD")
+
+	if err := resetGitWorkspace(res.Path, false); err != nil {
+		t.Fatalf("resetGitWorkspace: %v", err)
+	}
+
+	if branch := gitOutput(t, res.Path, "branch", "--show-current"); branch != "workspace-1" {
+		t.Fatalf("branch = %q, want workspace-1", branch)
+	}
+	mainSha := gitOutput(t, root, "rev-parse", "origin/main")
+	if got := gitOutput(t, res.Path, "rev-parse", "HEAD"); got != mainSha {
+		t.Fatalf("workspace HEAD = %s, want origin/main %s", got, mainSha)
+	}
+	if got := gitOutput(t, res.Path, "rev-parse", "fix/test"); got != fixSha {
+		t.Fatalf("fix/test = %s, want %s", got, fixSha)
+	}
+}
+
+func TestResetGitWorkspaceUsesTopLevelFromSubdir(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	nested := filepath.Join(res.Path, "nested")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "file.txt"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+	gitRun(t, res.Path, "add", "nested/file.txt")
+	gitRun(t, res.Path, "commit", "-q", "-m", "local workspace work")
+
+	if err := resetGitWorkspace(nested, false); err != nil {
+		t.Fatalf("resetGitWorkspace: %v", err)
+	}
+
+	if branch := gitOutput(t, res.Path, "branch", "--show-current"); branch != "workspace-1" {
+		t.Fatalf("branch = %q, want workspace-1", branch)
+	}
+	mainSha := gitOutput(t, root, "rev-parse", "origin/main")
+	if got := gitOutput(t, res.Path, "rev-parse", "HEAD"); got != mainSha {
+		t.Fatalf("workspace HEAD = %s, want origin/main %s", got, mainSha)
 	}
 }
 

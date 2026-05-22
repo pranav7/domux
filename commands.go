@@ -53,6 +53,11 @@ func runCommand(name string, args []string) error {
 			return fmt.Errorf("clear does not accept arguments")
 		}
 		return clearWorkspace()
+	case "reset-branch":
+		if len(args) != 0 {
+			return fmt.Errorf("reset-branch does not accept arguments")
+		}
+		return resetBranch()
 	case "clear-state":
 		if len(args) != 0 {
 			return fmt.Errorf("clear-state does not accept arguments")
@@ -489,6 +494,14 @@ func clearWorkspace() error {
 	return clearWorkspaceForSession(session, cwd, true)
 }
 
+func resetBranch() error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cannot get current directory: %w", err)
+	}
+	return resetGitWorkspace(cwd, true)
+}
+
 func setServerSession() error {
 	session, err := currentTmuxSession()
 	if err != nil {
@@ -503,6 +516,12 @@ func clearSessionState(session string) error {
 }
 
 func clearWorkspaceForSession(session, dir string, verbose bool) error {
+	if dir != "" {
+		if err := resetGitWorkspace(dir, verbose); err != nil {
+			return err
+		}
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot get home directory: %w", err)
@@ -519,11 +538,7 @@ func clearWorkspaceForSession(session, dir string, verbose bool) error {
 		return err
 	}
 	_ = refreshTmuxClient()
-
-	if dir == "" {
-		return nil
-	}
-	return resetGitWorkspace(dir, verbose)
+	return nil
 }
 
 func clearSessionStateFiles(homeDir, session string) error {
@@ -625,7 +640,12 @@ func resetGitWorkspace(dir string, verbose bool) error {
 		return nil
 	}
 
-	statusOut, err := exec.Command("git", "-C", dir, "status", "--porcelain").Output()
+	root, err := gitWorktreeRoot(dir)
+	if err != nil {
+		return err
+	}
+
+	statusOut, err := exec.Command("git", "-C", root, "status", "--porcelain").Output()
 	if err != nil {
 		return fmt.Errorf("git status: %w", err)
 	}
@@ -633,35 +653,50 @@ func resetGitWorkspace(dir string, verbose bool) error {
 		return errClearDirty
 	}
 
-	base, err := defaultBaseBranch(dir)
+	base, err := defaultBaseBranch(root)
 	if err != nil {
 		return err
 	}
 
-	dirName := filepath.Base(dir)
+	dirName := filepath.Base(root)
 	if isWorkspaceDir(dirName) {
 		if verbose {
 			fmt.Printf("Resetting worktree: %s\n", dirName)
 		}
-		if err := runGitCommand(dir, verbose, "fetch", "origin", base); err != nil {
+		if err := runGitCommand(root, verbose, "checkout", dirName); err != nil {
 			return err
 		}
-		return runGitCommand(dir, verbose, "reset", "--hard", "origin/"+base)
+		if err := runGitCommand(root, verbose, "fetch", "origin", base); err != nil {
+			return err
+		}
+		return runGitCommand(root, verbose, "reset", "--hard", "origin/"+base)
 	}
 
 	if verbose {
 		fmt.Printf("Resetting main directory: %s\n", dirName)
 	}
-	if err := runGitCommand(dir, verbose, "checkout", base); err != nil {
+	if err := runGitCommand(root, verbose, "checkout", base); err != nil {
 		return err
 	}
-	return runGitCommand(dir, verbose, "pull", "origin", base)
+	return runGitCommand(root, verbose, "pull", "origin", base)
 }
 
 func insideGitWorktree(dir string) bool {
 	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
 	cmd.Dir = dir
 	return cmd.Run() == nil
+}
+
+func gitWorktreeRoot(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return "", fmt.Errorf("git rev-parse --show-toplevel returned empty path")
+	}
+	return root, nil
 }
 
 func runGitCommand(dir string, verbose bool, args ...string) error {

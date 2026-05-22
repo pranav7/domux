@@ -35,7 +35,10 @@ domux attach my-repo
 # Reset/free the current tmux workspace, same as trr/tmux-reset
 domux clear
 
-# Clear only domux session state, without git reset/merge behavior
+# Reset only git branch, keeping domux session state
+domux reset-branch
+
+# Clear only domux session state, without git reset behavior
 domux clear-state
 
 # Toggle the current tmux session as running the server
@@ -159,6 +162,7 @@ manages a launchd daemon and `pmset disablesleep` — enable it via
 | `Enter` | Switch to selected session |
 | `n` | Name (label) the selected session inline |
 | `c` | Clear/reset selected session |
+| `r` | Reset selected session branch only |
 | `s` | Mark selected session as running the server |
 | `Tab` | Show/hide todos |
 | `/` | Filter sessions |

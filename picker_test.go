@@ -110,6 +110,56 @@ func TestPickerLabelActionUpdatesRowImmediately(t *testing.T) {
 	}
 }
 
+func TestPickerResetKeyDispatchesReset(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s", Path: "/tmp/s"}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	pm := next.(pickerModel)
+	if cmd == nil {
+		t.Fatalf("r should dispatch a reset cmd")
+	}
+	if !strings.Contains(pm.status, "resetting branch") {
+		t.Fatalf("status = %q, want reset status", pm.status)
+	}
+}
+
+func TestPickerResetActionKeepsSessionState(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name:   "s",
+			Label:  "PBC",
+			Server: true,
+			Claude: "CLAUDING",
+		}},
+	})
+
+	m.applyPickerAction(pickerActionMsg{Action: "reset", Session: "s"})
+	row := m.rows[1].Session
+	if row.Label != "PBC" || !row.Server || row.Claude != "CLAUDING" {
+		t.Fatalf("reset action changed session state: %#v", row)
+	}
+}
+
+func TestPickerResetRefusesRowWithoutPath(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+
+	cmd := m.resetSelectedBranch()
+	if cmd != nil {
+		t.Fatalf("reset without path should not dispatch")
+	}
+	if !m.statusErr || !strings.Contains(m.status, "no path") {
+		t.Fatalf("status = %q, err = %v; want no path error", m.status, m.statusErr)
+	}
+}
+
 func TestPickerRefreshRowsUpdatesSessionState(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "domux"},
