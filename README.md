@@ -71,23 +71,31 @@ domux --help
 ## Installation
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+```
+
+macOS only (Apple Silicon + Intel). No Go toolchain required — the script
+downloads the latest checksum-verified release binary into `~/.local/bin`
+and then hands off to `domux bootstrap`.
+
+Env var overrides: `DOMUX_VERSION=v0.1.0`, `DOMUX_INSTALL_DIR=/custom/path`,
+`DOMUX_SKIP_BOOTSTRAP=1`.
+
+### From source
+
+```sh
 go install github.com/pranav7/domux@latest
+domux bootstrap
 ```
 
 ### One-shot bootstrap
 
-After installing the binary, run:
-
-```sh
-domux bootstrap
-```
-
-This detects Homebrew, tmux, Claude Code, and Codex; prints the plan; asks
-once for confirmation; then writes the tmux integration, patches Claude
-and Codex hooks if those tools are present, and registers caffeinate in
-partial mode (idle-sleep prevention only — no sudo). For lid-close sleep
-prevention (requires sudo), run `domux install caffeinate --full`
-separately.
+`domux bootstrap` detects Homebrew, tmux, Claude Code, and Codex; prints
+the plan; asks once for confirmation; then writes the tmux integration,
+patches Claude and Codex hooks if those tools are present, and registers
+caffeinate in partial mode (idle-sleep prevention only — no sudo). For
+lid-close sleep prevention (requires sudo), run
+`domux install caffeinate --full` separately.
 
 The generated `bind-key` entries inherit whatever tmux prefix you already
 use — domux does not change your prefix.

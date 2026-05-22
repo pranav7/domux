@@ -1,15 +1,16 @@
 BIN ?= $(HOME)/bin/domux
 SRC := $(wildcard *.go)
 OUT := domux
+VERSION ?= dev
 
-.PHONY: all build install uninstall test vet run switcher todo clean
+.PHONY: all build install uninstall test vet run switcher todo clean release-local
 
 all: build
 
 build: $(OUT)
 
 $(OUT): $(SRC)
-	go build -o $(OUT) .
+	go build -ldflags "-X main.version=$(VERSION)" -o $(OUT) .
 
 install: build
 	@mkdir -p $(dir $(BIN))
@@ -40,3 +41,19 @@ todo: build
 
 clean:
 	rm -f $(OUT)
+	rm -rf dist
+
+release-local:
+	@mkdir -p dist
+	@for goarch in arm64 amd64; do \
+		v_body=$$(echo "$(VERSION)" | sed 's/^v//'); \
+		outdir="dist/darwin_$$goarch"; \
+		mkdir -p $$outdir; \
+		echo "==> building darwin/$$goarch"; \
+		GOOS=darwin GOARCH=$$goarch CGO_ENABLED=0 \
+			go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o $$outdir/$(OUT) . || exit 1; \
+		tar -czf dist/domux_$${v_body}_darwin_$${goarch}.tar.gz -C $$outdir $(OUT); \
+	done
+	@cd dist && shasum -a 256 domux_*.tar.gz > SHA256SUMS
+	@echo "==> dist/"
+	@ls -1 dist/

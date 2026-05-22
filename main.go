@@ -6,6 +6,8 @@ import (
 	"os"
 )
 
+var version = "dev"
+
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀\n")
 	fmt.Fprintf(os.Stderr, "█▄▀ █▄█ █ ▀ █ █▄█ █ █  todo · switcher\n\n")
@@ -34,6 +36,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  domux --count      Print active task count and exit\n")
 	fmt.Fprintf(os.Stderr, "  domux --status     Print top task for tmux status bar\n")
 	fmt.Fprintf(os.Stderr, "  domux --list       Print all active tasks\n")
+	fmt.Fprintf(os.Stderr, "  domux --version    Print version and exit\n")
 	fmt.Fprintf(os.Stderr, "  domux --help       Show this help\n")
 }
 
@@ -51,8 +54,14 @@ func main() {
 	statusFlag := flag.Bool("status", false, "Print top task + count for tmux status bar")
 	listFlag := flag.Bool("list", false, "Print all active tasks and exit")
 	sessionsFlag := flag.Bool("sessions", false, "Launch session picker TUI")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Usage = printUsage
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version)
+		return
+	}
 
 	if *sessionsFlag {
 		if err := runPicker(); err != nil {
