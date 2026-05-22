@@ -95,7 +95,7 @@ type pickerRefreshMsg struct {
 
 type pickerSpinnerMsg struct{}
 
-const pickerStartupInputGrace = 150 * time.Millisecond
+const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
 const pickerSpinnerInterval = 150 * time.Millisecond
 const claudeBrandHex = "#DE7356"
@@ -580,7 +580,7 @@ func (m *pickerModel) refreshRows(rows []pickerRow) {
 }
 
 func (m pickerModel) ignoringStartupInput() bool {
-	return !m.startedAt.IsZero() && time.Since(m.startedAt) < pickerStartupInputGrace
+	return !m.startedAt.IsZero() && time.Since(m.startedAt) < tuiStartupInputGrace
 }
 
 func (m pickerModel) selectRow(row pickerRow) tea.Cmd {

@@ -15,9 +15,10 @@ import (
 
 func installCommand(args []string) error {
 	if len(args) == 0 {
-		fmt.Println("Usage: domux install tmux|claude|codex [--apply]")
+		fmt.Println("Usage: domux install tmux|claude|codex [--apply] | caffeinate [--full]")
 		fmt.Println()
-		fmt.Println("Default is preview-only. Pass --apply to write generated integration files.")
+		fmt.Println("tmux/claude/codex: preview-only by default. Pass --apply to write.")
+		fmt.Println("caffeinate: registers partial mode immediately. Pass --full for lid-close prevention (requires sudo).")
 		return nil
 	}
 	switch args[0] {
@@ -27,6 +28,8 @@ func installCommand(args []string) error {
 		return installClaude(args[1:])
 	case "codex":
 		return installCodex(args[1:])
+	case "caffeinate":
+		return installCaffeinate(args[1:])
 	default:
 		return fmt.Errorf("unknown install target %q", args[0])
 	}
@@ -71,6 +74,7 @@ func generatedTmuxConfig() string {
 
 bind-key s display-popup -E -w 60% -h 50% "$HOME/bin/domux sessions"
 bind-key t display-popup -E -w 60% -h 50% -d "#{pane_current_path}" "$HOME/bin/domux"
+bind-key u display-popup -E -w 50% -h 30% "$HOME/bin/domux commands"
 
 bind-key i run-shell '$HOME/bin/domux ai-state --session "#{session_name}" --pane "#{window_index}_#{pane_index}" toggle'
 bind-key v run-shell '$HOME/bin/domux server --session "#{session_name}" toggle'
@@ -350,6 +354,8 @@ func doctorCommand(args []string) error {
 	checks = append(checks, checkResult("Claude settings", fileExists(claudeSettings), claudeSettings))
 	codexHooks := filepath.Join(homeDir, ".codex", "hooks.json")
 	checks = append(checks, checkResult("Codex hooks", fileExists(codexHooks), codexHooks))
+	caffPath, err := caffeinateConfigPath()
+	checks = append(checks, checkResult("caffeinate", err == nil && fileExists(caffPath), caffPath))
 
 	for _, check := range checks {
 		mark := "ok"
