@@ -76,6 +76,7 @@ type pickerModel struct {
 	showTasks     bool
 	status        string
 	statusErr     bool
+	statusSetAt   time.Time
 	width         int
 	height        int
 	startedAt     time.Time
@@ -95,9 +96,12 @@ type pickerRefreshMsg struct {
 
 type pickerSpinnerMsg struct{}
 
+type pickerStatusExpireMsg struct{ at time.Time }
+
 const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
 const pickerSpinnerInterval = 150 * time.Millisecond
+const pickerStatusTTL = 5 * time.Second
 const claudeBrandHex = "#DE7356"
 
 // claudeSpinnerFrames — star/asterisk shapes that pulse from sparse → dense → sparse,
@@ -194,10 +198,16 @@ var (
 			Foreground(surface1)
 
 	pStatus = lipgloss.NewStyle().
-		Foreground(green)
+		Foreground(base).
+		Background(green).
+		Bold(true).
+		Padding(0, 1)
 
 	pStatusErr = lipgloss.NewStyle().
-			Foreground(red)
+			Foreground(base).
+			Background(red).
+			Bold(true).
+			Padding(0, 1)
 )
 
 func runPicker() error {
@@ -241,6 +251,7 @@ func runPickerForSessionNames(names []string) error {
 	}
 	m := newPickerModel(filtered)
 	m.status = "matching sessions for this directory"
+	m.statusSetAt = time.Now()
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
@@ -339,10 +350,44 @@ func isMainWorktreePath(path string) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	return tea.Batch(pickerRefreshCmd(), pickerSpinnerCmd())
+	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd()}
+	if m.status != "" && !m.statusSetAt.IsZero() {
+		cmds = append(cmds, statusExpireCmd(m.statusSetAt))
+	}
+	return tea.Batch(cmds...)
+}
+
+func statusExpireCmd(at time.Time) tea.Cmd {
+	return tea.Tick(pickerStatusTTL, func(time.Time) tea.Msg {
+		return pickerStatusExpireMsg{at: at}
+	})
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevStatus := m.status
+	nm, cmd := m.updateInner(msg)
+	npm := nm.(pickerModel)
+	if npm.status != "" && npm.status != prevStatus {
+		now := time.Now()
+		npm.statusSetAt = now
+		expire := statusExpireCmd(now)
+		if cmd == nil {
+			cmd = expire
+		} else {
+			cmd = tea.Batch(cmd, expire)
+		}
+	}
+	return npm, cmd
+}
+
+func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if msg, ok := msg.(pickerStatusExpireMsg); ok {
+		if m.statusSetAt.Equal(msg.at) {
+			m.status = ""
+			m.statusErr = false
+		}
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -852,14 +897,33 @@ func (m pickerModel) View() string {
 	}
 	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
 	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
+
+	statusBox := ""
+	if m.status != "" {
+		style := pStatus
+		if m.statusErr {
+			style = pStatusErr
+		}
+		statusBox = style.Render(m.status)
+	}
+
 	b.WriteString("\n")
 	for i, line := range logoLines {
 		rendered := "    " + logoStyle.Render(line)
-		if i == 0 {
-			b.WriteString(rendered + "\n")
+		var trailing string
+		if i == 1 {
+			trailing = "  " + featureStyle.Render("switcher")
+		}
+		if i == 0 && statusBox != "" {
+			usedWidth := lipgloss.Width(rendered)
+			statusWidth := lipgloss.Width(statusBox)
+			pad := m.width - usedWidth - statusWidth - 4
+			if pad < 1 {
+				pad = 1
+			}
+			b.WriteString(rendered + strings.Repeat(" ", pad) + statusBox + "\n")
 		} else {
-			tag := "  " + featureStyle.Render("switcher")
-			b.WriteString(rendered + tag + "\n")
+			b.WriteString(rendered + trailing + "\n")
 		}
 	}
 	if m.labelEditing {
@@ -875,9 +939,6 @@ func (m pickerModel) View() string {
 	// logo(2) + blank(1) + prompt-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
 	availableHeight := m.height - 7
 	if m.filtering {
-		availableHeight--
-	}
-	if m.status != "" {
 		availableHeight--
 	}
 
@@ -900,14 +961,6 @@ func (m pickerModel) View() string {
 	for rendered < availableHeight {
 		b.WriteString("\n")
 		rendered++
-	}
-
-	if m.status != "" {
-		style := pStatus
-		if m.statusErr {
-			style = pStatusErr
-		}
-		b.WriteString("    " + style.Render(m.status) + "\n")
 	}
 
 	// Footer

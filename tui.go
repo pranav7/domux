@@ -620,6 +620,10 @@ func (m model) View() string {
 		return m.helpView()
 	}
 
+	if m.addMode || m.editMode {
+		return m.renderAddOverlay()
+	}
+
 	var sections []string
 
 	const indent = "    "
@@ -724,23 +728,41 @@ func (m model) View() string {
 		}
 	}
 
-	// Input or footer
-	if m.addMode || m.editMode {
-		inputBox := lipgloss.NewStyle().PaddingLeft(4).Render(inputStyle.Render(m.textInput.View()))
-		action := "add"
-		if m.editMode {
-			action = "save"
-		}
-		hint := lipgloss.NewStyle().PaddingLeft(4).Render(footerDescStyle.Render("enter " + action + " · esc cancel"))
-		sections = append(sections, inputBox+"\n"+hint)
-	} else {
-		sections = append(sections, "")
-		sections = append(sections, indent+m.renderFooter())
-	}
+	sections = append(sections, "")
+	sections = append(sections, indent+m.renderFooter())
 
 	return lipgloss.NewStyle().PaddingTop(1).Render(
 		lipgloss.JoinVertical(lipgloss.Left, sections...),
 	)
+}
+
+func (m model) renderAddOverlay() string {
+	innerWidth := 60
+	if m.width > 0 && m.width-12 < innerWidth {
+		innerWidth = m.width - 12
+		if innerWidth < 24 {
+			innerWidth = 24
+		}
+	}
+
+	title := "add task"
+	action := "add"
+	if m.editMode {
+		title = "edit task"
+		action = "save"
+	}
+
+	titleLine := lipgloss.NewStyle().Foreground(blue).Bold(true).Render(title)
+	inputLine := m.textInput.View()
+	hint := lipgloss.NewStyle().Foreground(overlay0).Render("enter " + action + " · esc cancel")
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(blue).
+		Padding(1, 2).
+		Width(innerWidth).
+		Render(titleLine + "\n\n" + inputLine + "\n\n" + hint)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func wrapNoteLines(notes string, innerWidth int) []string {
