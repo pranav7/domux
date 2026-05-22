@@ -46,6 +46,15 @@ domux install tmux
 domux install claude
 domux install codex
 
+# Register caffeinate (partial mode — idle-sleep prevention, no sudo)
+domux install caffeinate
+
+# One-shot setup: detect brew/tmux/Claude/Codex and apply hooks
+domux bootstrap
+
+# Open the utilities popup (toggle caffeinate, …)
+domux commands
+
 # Check installed integration state
 domux doctor
 
@@ -61,6 +70,24 @@ domux --help
 ```sh
 go install github.com/pranav7/domux@latest
 ```
+
+### One-shot bootstrap
+
+After installing the binary, run:
+
+```sh
+domux bootstrap
+```
+
+This detects Homebrew, tmux, Claude Code, and Codex; prints the plan; asks
+once for confirmation; then writes the tmux integration, patches Claude
+and Codex hooks if those tools are present, and registers caffeinate in
+partial mode (idle-sleep prevention only — no sudo). For lid-close sleep
+prevention (requires sudo), run `domux install caffeinate --full`
+separately.
+
+The generated `bind-key` entries inherit whatever tmux prefix you already
+use — domux does not change your prefix.
 
 ### Local development
 
@@ -110,6 +137,19 @@ domux install codex --apply
 
 Install commands create backups before writing and do not delete legacy
 `~/.tmux-*` state files.
+
+## Commands popup
+
+`<prefix> u` opens a small popup with toggleable utilities:
+
+```sh
+domux commands
+```
+
+First entry is caffeinate. Enter toggles it. Partial mode runs
+`caffeinate -dimsu` in the background (idle-sleep only). Full mode also
+manages a launchd daemon and `pmset disablesleep` — enable it via
+`domux install caffeinate --full` (requires sudo once at install time).
 
 ## Switcher keybindings
 

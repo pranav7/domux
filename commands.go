@@ -77,6 +77,13 @@ func runCommand(name string, args []string) error {
 		return workspaceCommand(args)
 	case "install":
 		return installCommand(args)
+	case "bootstrap":
+		return bootstrapCommand(args)
+	case "commands":
+		if len(args) != 0 {
+			return fmt.Errorf("commands does not accept arguments")
+		}
+		return runUtilities()
 	case "doctor":
 		return doctorCommand(args)
 	case "migrate":
