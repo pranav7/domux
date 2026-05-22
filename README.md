@@ -1,4 +1,4 @@
-<img width="1190" height="614" alt="image" src="https://github.com/user-attachments/assets/c7e16b18-3c07-4622-844a-002e31404e64" />
+<img width="1140" height="588" alt="image" src="https://github.com/user-attachments/assets/9e778d42-f3db-4394-9d70-9a06d6ef66d5" />
 
 # domux
 
