@@ -821,6 +821,23 @@ func (m *pickerModel) clampCursor() {
 	m.cursor = 0
 }
 
+func (m pickerModel) renderLabelOverlay() string {
+	innerWidth := 36
+	value := m.labelInput.Value()
+	title := lipgloss.NewStyle().Foreground(peach).Bold(true).Render("name session")
+	target := lipgloss.NewStyle().Foreground(overlay1).Render(m.labelTarget)
+	inputLine := lipgloss.NewStyle().Foreground(text).Render(value) +
+		lipgloss.NewStyle().Foreground(peach).Render("▌")
+	hint := lipgloss.NewStyle().Foreground(overlay0).Render("enter to confirm · esc to cancel")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(peach).
+		Padding(1, 2).
+		Width(innerWidth).
+		Render(title + "\n" + target + "\n\n" + inputLine + "\n\n" + hint)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m pickerModel) View() string {
 	if m.width == 0 {
 		return ""
@@ -846,10 +863,7 @@ func (m pickerModel) View() string {
 		}
 	}
 	if m.labelEditing {
-		prefix := "label " + m.labelTarget + ": "
-		b.WriteString("\n    " + lipgloss.NewStyle().Foreground(peach).Render(prefix))
-		b.WriteString(lipgloss.NewStyle().Foreground(text).Render(m.labelInput.Value()))
-		b.WriteString(lipgloss.NewStyle().Foreground(peach).Render("▌") + "\n")
+		return m.renderLabelOverlay()
 	} else if m.filtering {
 		b.WriteString("\n    " + lipgloss.NewStyle().Foreground(blue).Render("/") + " ")
 		b.WriteString(lipgloss.NewStyle().Foreground(text).Render(m.filter.Value()))
@@ -860,7 +874,7 @@ func (m pickerModel) View() string {
 
 	// logo(2) + blank(1) + prompt-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
 	availableHeight := m.height - 7
-	if m.filtering || m.labelEditing {
+	if m.filtering {
 		availableHeight--
 	}
 	if m.status != "" {
