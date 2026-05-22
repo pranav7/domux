@@ -427,12 +427,12 @@ func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
 	})
 	time.Sleep(200 * time.Millisecond)
 
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
-	if cmd != nil {
-		t.Fatalf("expected no cmd when row has no Root")
-	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
 	pm := next.(pickerModel)
 	if !pm.statusErr {
 		t.Fatalf("expected error status, got %q", pm.status)
+	}
+	if pm.status == "" || !strings.Contains(pm.status, "no git root") {
+		t.Fatalf("expected 'no git root' status, got %q", pm.status)
 	}
 }

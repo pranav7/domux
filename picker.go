@@ -76,6 +76,7 @@ type pickerModel struct {
 	showTasks     bool
 	status        string
 	statusErr     bool
+	statusSetAt   time.Time
 	width         int
 	height        int
 	startedAt     time.Time
@@ -95,9 +96,12 @@ type pickerRefreshMsg struct {
 
 type pickerSpinnerMsg struct{}
 
+type pickerStatusExpireMsg struct{ at time.Time }
+
 const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
 const pickerSpinnerInterval = 150 * time.Millisecond
+const pickerStatusTTL = 5 * time.Second
 const claudeBrandHex = "#DE7356"
 
 // claudeSpinnerFrames — star/asterisk shapes that pulse from sparse → dense → sparse,
@@ -247,6 +251,7 @@ func runPickerForSessionNames(names []string) error {
 	}
 	m := newPickerModel(filtered)
 	m.status = "matching sessions for this directory"
+	m.statusSetAt = time.Now()
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
@@ -345,10 +350,44 @@ func isMainWorktreePath(path string) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	return tea.Batch(pickerRefreshCmd(), pickerSpinnerCmd())
+	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd()}
+	if m.status != "" && !m.statusSetAt.IsZero() {
+		cmds = append(cmds, statusExpireCmd(m.statusSetAt))
+	}
+	return tea.Batch(cmds...)
+}
+
+func statusExpireCmd(at time.Time) tea.Cmd {
+	return tea.Tick(pickerStatusTTL, func(time.Time) tea.Msg {
+		return pickerStatusExpireMsg{at: at}
+	})
 }
 
 func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevStatus := m.status
+	nm, cmd := m.updateInner(msg)
+	npm := nm.(pickerModel)
+	if npm.status != "" && npm.status != prevStatus {
+		now := time.Now()
+		npm.statusSetAt = now
+		expire := statusExpireCmd(now)
+		if cmd == nil {
+			cmd = expire
+		} else {
+			cmd = tea.Batch(cmd, expire)
+		}
+	}
+	return npm, cmd
+}
+
+func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if msg, ok := msg.(pickerStatusExpireMsg); ok {
+		if m.statusSetAt.Equal(msg.at) {
+			m.status = ""
+			m.statusErr = false
+		}
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
