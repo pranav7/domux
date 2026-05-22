@@ -151,9 +151,14 @@ func patchedClaudeSettings(path string) (map[string]any, error) {
 	addCommandHook(hooks, "PostCompact", "", "domux ai-state --agent claude CLAUDING")
 	addCommandHook(hooks, "Stop", "", "domux ai-state clear")
 
-	settings["statusLine"] = map[string]any{
-		"type":    "command",
-		"command": "domux claude-statusline",
+	// Only set statusLine if the user hasn't configured one. Overwriting
+	// a custom statusLine (custom shell script, etc.) without warning is
+	// the kind of side effect that doesn't belong in an idempotent patch.
+	if _, exists := settings["statusLine"]; !exists {
+		settings["statusLine"] = map[string]any{
+			"type":    "command",
+			"command": "domux claude-statusline",
+		}
 	}
 	return settings, nil
 }

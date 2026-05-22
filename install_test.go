@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -19,6 +20,45 @@ func TestPatchedClaudeSettingsAddsCompactHooks(t *testing.T) {
 	postEntries, _ := events["PostCompact"].([]any)
 	if !hookCommandExists(postEntries, "domux ai-state --agent claude CLAUDING") {
 		t.Fatalf("PostCompact hook missing — events: %#v", events)
+	}
+}
+
+func TestPatchedClaudeSettingsSetsStatusLineWhenAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	settings, err := patchedClaudeSettings(path)
+	if err != nil {
+		t.Fatalf("patchedClaudeSettings: %v", err)
+	}
+	sl, _ := settings["statusLine"].(map[string]any)
+	if sl["command"] != "domux claude-statusline" {
+		t.Fatalf("expected domux statusLine when absent, got %#v", sl)
+	}
+}
+
+func TestPatchedClaudeSettingsPreservesExistingStatusLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	existing := `{
+  "statusLine": {
+    "type": "command",
+    "command": "bash ~/.claude/statusline-command.sh"
+  }
+}`
+	if err := os.WriteFile(path, []byte(existing), 0600); err != nil {
+		t.Fatalf("seed settings.json: %v", err)
+	}
+	settings, err := patchedClaudeSettings(path)
+	if err != nil {
+		t.Fatalf("patchedClaudeSettings: %v", err)
+	}
+	sl, _ := settings["statusLine"].(map[string]any)
+	if sl["command"] != "bash ~/.claude/statusline-command.sh" {
+		t.Fatalf("custom statusLine was clobbered: %#v", sl)
+	}
+	// Hooks should still be added even when statusLine is preserved.
+	events, _ := settings["hooks"].(map[string]any)
+	preEntries, _ := events["PreCompact"].([]any)
+	if !hookCommandExists(preEntries, "domux ai-state --agent claude COMPACTING") {
+		t.Fatalf("PreCompact hook should still be added when statusLine is preserved")
 	}
 }
 
