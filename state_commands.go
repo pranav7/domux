@@ -121,7 +121,7 @@ func aiStateCommand(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("ai-state requires CLAUDING, CODEXING, WAITING, IDLE, clear, or toggle")
+		return fmt.Errorf("ai-state requires CLAUDING, CODEXING, COMPACTING, WAITING, IDLE, clear, or toggle")
 	}
 	session := *sessionFlag
 	if session == "" {

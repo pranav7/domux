@@ -87,6 +87,41 @@ func TestTmuxAIBadgesUseAgentWaitingLabels(t *testing.T) {
 	}
 }
 
+func TestTmuxAIBadgeRendersCompacting(t *testing.T) {
+	got := tmuxAIBadge("claude", "COMPACTING")
+	if !strings.Contains(got, "Compacting") {
+		t.Fatalf("Claude compacting badge = %q", got)
+	}
+	if !strings.Contains(got, "✦") {
+		t.Fatalf("Claude compacting badge missing star glyph: %q", got)
+	}
+	if !strings.Contains(got, "#cba6f7") {
+		t.Fatalf("Claude compacting badge missing mauve color: %q", got)
+	}
+}
+
+func TestCompactingOutranksClauding(t *testing.T) {
+	state := &SessionState{AI: map[string]string{
+		"claude:0_0": "CLAUDING",
+		"claude:0_1": "COMPACTING",
+	}}
+	got := aggregateAIStatesFromSession(state)
+	if got.Claude != "COMPACTING" {
+		t.Fatalf("Claude = %q, want COMPACTING", got.Claude)
+	}
+}
+
+func TestWaitingOutranksCompacting(t *testing.T) {
+	state := &SessionState{AI: map[string]string{
+		"claude:0_0": "COMPACTING",
+		"claude:0_1": "WAITING",
+	}}
+	got := aggregateAIStatesFromSession(state)
+	if got.Claude != "WAITING" {
+		t.Fatalf("Claude = %q, want WAITING", got.Claude)
+	}
+}
+
 func TestSingleMatchingStartSessionAttachesDirectly(t *testing.T) {
 	session, ok := singleMatchingStartSession([]string{"dotfiles"})
 	if !ok {

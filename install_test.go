@@ -1,6 +1,26 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestPatchedClaudeSettingsAddsCompactHooks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	settings, err := patchedClaudeSettings(path)
+	if err != nil {
+		t.Fatalf("patchedClaudeSettings: %v", err)
+	}
+	events, _ := settings["hooks"].(map[string]any)
+	preEntries, _ := events["PreCompact"].([]any)
+	if !hookCommandExists(preEntries, "domux ai-state --agent claude COMPACTING") {
+		t.Fatalf("PreCompact hook missing — events: %#v", events)
+	}
+	postEntries, _ := events["PostCompact"].([]any)
+	if !hookCommandExists(postEntries, "domux ai-state --agent claude CLAUDING") {
+		t.Fatalf("PostCompact hook missing — events: %#v", events)
+	}
+}
 
 func TestPatchedCodexHooksUsesCodexEvents(t *testing.T) {
 	hooks := patchedCodexHooks(map[string]any{})

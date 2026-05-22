@@ -256,12 +256,16 @@ func mergeFreshLegacyAIStateFile(state *SessionState, homeDir, agent string) {
 // believed. Pre/PostToolUse hooks touch the working-state file on every tool
 // call, so a CLAUDING/CODEXING value with an mtime older than ~30s means the
 // agent died without firing Stop. WAITING blocks on the user and shouldn't
-// expire from mtime alone — give it a generous ceiling.
+// expire from mtime alone — give it a generous ceiling. COMPACTING is bracketed
+// by PreCompact/PostCompact but compaction itself can take a while, so give it
+// a couple minutes before treating it as a crash residue.
 func legacyAIStateIsStale(value string, mtime time.Time) bool {
 	age := time.Since(mtime)
 	switch normalizeAIStateValue(value) {
 	case "CLAUDING", "CODEXING":
 		return age > 30*time.Second
+	case "COMPACTING":
+		return age > 5*time.Minute
 	case "WAITING", "CLAUDE WAITING", "CODEX WAITING":
 		return age > 30*time.Minute
 	default:
@@ -434,16 +438,26 @@ func fallbackAIWorkingLabel(state *SessionState) string {
 }
 
 func mergeAIState(current, next string) string {
-	if current == "WAITING" || next == "" {
-		return current
+	if aiStateRank(next) > aiStateRank(current) {
+		return next
 	}
-	if next == "WAITING" {
-		return "WAITING"
+	return current
+}
+
+// aiStateRank — precedence for collapsing per-pane states down to one per
+// agent. WAITING (user-blocking) outranks COMPACTING (transient, agent-busy)
+// outranks the plain working states.
+func aiStateRank(value string) int {
+	switch value {
+	case "WAITING":
+		return 3
+	case "COMPACTING":
+		return 2
+	case "CLAUDING", "CODEXING":
+		return 1
+	default:
+		return 0
 	}
-	if current != "" {
-		return current
-	}
-	return next
 }
 
 func inferAgentFromAIKey(key string) string {
@@ -466,6 +480,8 @@ func inferAgentFromAIValue(value string) string {
 	case "CLAUDING", "CLAUDE WAITING":
 		return "claude"
 	default:
+		// COMPACTING is agent-agnostic — let the caller decide (defaults to
+		// claude since PreCompact is a Claude Code-only hook today).
 		return ""
 	}
 }
@@ -477,6 +493,8 @@ func normalizeAIState(agent, value string) string {
 		return ""
 	case "CLAUDE WAITING", "CODEX WAITING", "WAITING":
 		return "WAITING"
+	case "COMPACTING":
+		return "COMPACTING"
 	case "CODEXING":
 		if agent == "codex" {
 			return "CODEXING"

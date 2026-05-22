@@ -147,6 +147,8 @@ func patchedClaudeSettings(path string) (map[string]any, error) {
 	addCommandHook(hooks, "PreToolUse", "*", "domux ai-state CLAUDING")
 	addCommandHook(hooks, "UserPromptSubmit", "", "domux ai-state CLAUDING")
 	addCommandHook(hooks, "Notification", "", "domux ai-state WAITING")
+	addCommandHook(hooks, "PreCompact", "", "domux ai-state --agent claude COMPACTING")
+	addCommandHook(hooks, "PostCompact", "", "domux ai-state --agent claude CLAUDING")
 	addCommandHook(hooks, "Stop", "", "domux ai-state clear")
 
 	settings["statusLine"] = map[string]any{

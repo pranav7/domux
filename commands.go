@@ -467,6 +467,10 @@ func tmuxAIBadge(agent, state string) string {
 		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CLAUDE WAITING #[default]#[fg=#f38ba8]#[default]"
 	case agent == "codex" && state == "WAITING":
 		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CODEX WAITING #[default]#[fg=#f38ba8]#[default]"
+	case agent == "claude" && state == "COMPACTING":
+		return "#[default]#[fg=#cba6f7,bold] ✦ Compacting… ✦ #[default]"
+	case agent == "codex" && state == "COMPACTING":
+		return "#[default]#[fg=#cba6f7,bold] ✦ Compacting… ✦ #[default]"
 	default:
 		return ""
 	}

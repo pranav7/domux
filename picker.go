@@ -106,7 +106,7 @@ const claudeBrandHex = "#DE7356"
 
 // claudeSpinnerFrames — star/asterisk shapes that pulse from sparse → dense → sparse,
 // so each frame morphs into the next instead of just rotating.
-var claudeSpinnerFrames = []string{"✽", "✦", "✶", "✢", "✳", "✽", "✳", "✢", "✶", "✦"}
+var claudeSpinnerFrames = []string{"✦", "✶", "✢", "✳", "✽", "✽", "✳", "✢", "✶", "✦", "·"}
 
 // Styles — Catppuccin Mocha
 var (
@@ -150,6 +150,10 @@ var (
 			Bold(true)
 
 	pSpinnerCodex = pBadgeCodexing
+
+	pSpinnerCompacting = lipgloss.NewStyle().
+				Foreground(mauve).
+				Bold(true)
 
 	pServer = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#f9e2af"))
@@ -1102,6 +1106,8 @@ const (
 	claudeShimmerBright = "#FFC9B0"
 	codexShimmerDim     = "#6478A8"
 	codexShimmerBright  = "#C8DAFF"
+	compactShimmerDim   = "#7E5CB8"
+	compactShimmerBright = "#E6CFFF"
 )
 
 func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
@@ -1109,6 +1115,13 @@ func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 	frame := claudeSpinnerFrames[spinnerFrame%len(claudeSpinnerFrames)]
 	if label == "" {
 		label = stableAIWorkingLabel(claude + ":" + codex)
+	}
+	// COMPACTING short-circuits — render once with a fixed "Compacting…" label
+	// in mauve, regardless of which agent slot carries it. Suppress the per-
+	// agent working badges since the same agent is mid-compaction, not working.
+	if claude == "COMPACTING" || codex == "COMPACTING" {
+		line.WriteString(" " + pSpinnerCompacting.Render(frame) + " " + shimmerText("Compacting…", spinnerFrame, compactShimmerDim, compactShimmerBright))
+		return line.String()
 	}
 	switch claude {
 	case "CLAUDING":
