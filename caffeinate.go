@@ -190,6 +190,13 @@ func caffeinatePlistContent() string {
 }
 
 func caffeinateRunning() bool {
+	if ourCaffeinateAlive() {
+		return true
+	}
+	return anyCaffeinateAlive()
+}
+
+func ourCaffeinateAlive() bool {
 	data, err := os.ReadFile(caffeinatePIDFile)
 	if err != nil {
 		return false
@@ -212,6 +219,10 @@ func caffeinateRunning() bool {
 		return false
 	}
 	return true
+}
+
+func anyCaffeinateAlive() bool {
+	return exec.Command("pgrep", "-x", "caffeinate").Run() == nil
 }
 
 func pidIsCaffeinate(pid int) bool {
@@ -252,6 +263,8 @@ func caffeinateOff() error {
 		}
 		_ = os.Remove(caffeinatePIDFile)
 	}
+	// Also clear any caffeinate started outside domux (personal scripts, stray runs).
+	_ = exec.Command("pkill", "-x", "caffeinate").Run()
 	if loadCaffeinateConfig().Mode == caffeinateModeFull {
 		_ = runSudoNonInteractive("launchctl", "unload", caffeinatePlistPath)
 		_ = runSudoNonInteractive("pmset", "-a", "disablesleep", "0")
