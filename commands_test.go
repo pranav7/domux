@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -348,6 +349,48 @@ func TestSaveSessionStateDropsLegacyPseudoPane(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "claude:1_0") {
 		t.Fatalf("real pane key dropped: %s", data)
+	}
+}
+
+func TestSaveSessionStateUsesUniqueTempFiles(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "dotfiles"
+	values := []string{"CODEXING", "WAITING", "IDLE", "CODEXING"}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(values))
+	for _, value := range values {
+		value := value
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- saveSessionState(&SessionState{
+				Name: session,
+				AI: map[string]string{
+					"codex:1_0": value,
+				},
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("saveSessionState: %v", err)
+		}
+	}
+	path, err := sessionStatePath(session)
+	if err != nil {
+		t.Fatalf("sessionStatePath: %v", err)
+	}
+	matches, err := filepath.Glob(path + ".*.tmp")
+	if err != nil {
+		t.Fatalf("glob tmp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp files left behind: %#v", matches)
 	}
 }
 

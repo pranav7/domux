@@ -143,7 +143,7 @@ func saveSessionState(state *SessionState) error {
 		return fmt.Errorf("cannot encode session state: %w", err)
 	}
 	data = append(data, '\n')
-	tmp := path + ".tmp"
+	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return fmt.Errorf("cannot write %s: %w", tmp, err)
 	}
