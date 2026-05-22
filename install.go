@@ -228,7 +228,18 @@ func patchedCodexHooks(settings map[string]any) map[string]any {
 }
 
 func codexDomuxHook(args string) string {
-	return `PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$HOME/bin/domux" ` + args
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return "domux " + args
+	}
+	return shellCommandPath(filepath.Join(homeDir, "bin", "domux")) + " " + args
+}
+
+func shellCommandPath(path string) string {
+	if !strings.ContainsAny(path, " \t\n'\"\\$`!*?[]{}()<>|&;") {
+		return path
+	}
+	return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
 }
 
 func pruneCopiedClaudeCodexHooks(hooks map[string]any) {
@@ -276,6 +287,7 @@ func isCopiedClaudeCodexHook(command string) bool {
 	return strings.Contains(command, ".tmux-claude-") ||
 		strings.Contains(command, ".tmux-workspace-$(tmux display-message") ||
 		command == "domux workspace occupied" ||
+		strings.Contains(command, `"$HOME/bin/domux" ai-state --agent codex`) ||
 		command == "domux ai-state --agent codex CODEXING" ||
 		command == "domux ai-state --agent codex WAITING" ||
 		command == "domux ai-state --agent codex --all clear" ||

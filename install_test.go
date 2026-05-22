@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,54 @@ func TestPatchedCodexHooksMarksCodexState(t *testing.T) {
 	}
 	if !hookCommandExists(events["Stop"].([]any), codexDomuxHook("ai-state --agent codex --all clear")) {
 		t.Fatalf("Stop should clear Codex state")
+	}
+}
+
+func TestCodexDomuxHookUsesAbsolutePath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	got := codexDomuxHook("ai-state --agent codex CODEXING")
+	want := filepath.Join(homeDir, "bin", "domux") + " ai-state --agent codex CODEXING"
+	if got != want {
+		t.Fatalf("hook = %q, want %q", got, want)
+	}
+}
+
+func TestPatchedCodexHooksPrunesOldWrappedDomuxHooks(t *testing.T) {
+	oldCommand := `PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$HOME/bin/domux" ai-state --agent codex CODEXING`
+	hooks := patchedCodexHooks(map[string]any{
+		"hooks": map[string]any{
+			"PostToolUse": []any{
+				map[string]any{
+					"matcher": "*",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": oldCommand,
+						},
+					},
+				},
+			},
+		},
+	})
+	events, _ := hooks["hooks"].(map[string]any)
+
+	if hookCommandExists(events["PostToolUse"].([]any), oldCommand) {
+		t.Fatalf("old wrapped Codex hook should be pruned")
+	}
+	if !hookCommandExists(events["PostToolUse"].([]any), codexDomuxHook("ai-state --agent codex CODEXING")) {
+		t.Fatalf("new absolute Codex hook should be added")
+	}
+}
+
+func TestShellCommandPathQuotesSpecialChars(t *testing.T) {
+	got := shellCommandPath("/tmp/a path/it's/domux")
+	if !strings.HasPrefix(got, "'") || !strings.HasSuffix(got, "'") {
+		t.Fatalf("path should be quoted: %q", got)
+	}
+	if !strings.Contains(got, "'\\''") {
+		t.Fatalf("single quote should be escaped: %q", got)
 	}
 }
 
