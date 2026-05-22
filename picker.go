@@ -194,10 +194,16 @@ var (
 			Foreground(surface1)
 
 	pStatus = lipgloss.NewStyle().
-		Foreground(green)
+		Foreground(base).
+		Background(green).
+		Bold(true).
+		Padding(0, 1)
 
 	pStatusErr = lipgloss.NewStyle().
-			Foreground(red)
+			Foreground(base).
+			Background(red).
+			Bold(true).
+			Padding(0, 1)
 )
 
 func runPicker() error {
@@ -852,14 +858,33 @@ func (m pickerModel) View() string {
 	}
 	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
 	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
+
+	statusBox := ""
+	if m.status != "" {
+		style := pStatus
+		if m.statusErr {
+			style = pStatusErr
+		}
+		statusBox = style.Render(m.status)
+	}
+
 	b.WriteString("\n")
 	for i, line := range logoLines {
 		rendered := "    " + logoStyle.Render(line)
-		if i == 0 {
-			b.WriteString(rendered + "\n")
+		var trailing string
+		if i == 1 {
+			trailing = "  " + featureStyle.Render("switcher")
+		}
+		if i == 0 && statusBox != "" {
+			usedWidth := lipgloss.Width(rendered)
+			statusWidth := lipgloss.Width(statusBox)
+			pad := m.width - usedWidth - statusWidth - 4
+			if pad < 1 {
+				pad = 1
+			}
+			b.WriteString(rendered + strings.Repeat(" ", pad) + statusBox + "\n")
 		} else {
-			tag := "  " + featureStyle.Render("switcher")
-			b.WriteString(rendered + tag + "\n")
+			b.WriteString(rendered + trailing + "\n")
 		}
 	}
 	if m.labelEditing {
@@ -875,9 +900,6 @@ func (m pickerModel) View() string {
 	// logo(2) + blank(1) + prompt-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
 	availableHeight := m.height - 7
 	if m.filtering {
-		availableHeight--
-	}
-	if m.status != "" {
 		availableHeight--
 	}
 
@@ -900,14 +922,6 @@ func (m pickerModel) View() string {
 	for rendered < availableHeight {
 		b.WriteString("\n")
 		rendered++
-	}
-
-	if m.status != "" {
-		style := pStatus
-		if m.statusErr {
-			style = pStatusErr
-		}
-		b.WriteString("    " + style.Render(m.status) + "\n")
 	}
 
 	// Footer
