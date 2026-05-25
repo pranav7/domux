@@ -162,7 +162,7 @@ var (
 		Foreground(surface1)
 
 	pBranch = lipgloss.NewStyle().
-		Foreground(blue)
+		Foreground(pink)
 
 	pBranchDim = lipgloss.NewStyle().
 			Foreground(overlay0)
@@ -1072,9 +1072,9 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 
 	// Name — selected or active rows should be visibly readable.
 	if selected || active {
-		line.WriteString(lipgloss.NewStyle().Foreground(text).Bold(true).Render(s.Name))
+		line.WriteString(lipgloss.NewStyle().Foreground(teal).Bold(true).Render(s.Name))
 	} else {
-		line.WriteString(lipgloss.NewStyle().Foreground(subtext0).Render(s.Name))
+		line.WriteString(lipgloss.NewStyle().Foreground(teal).Render(s.Name))
 	}
 
 	// Label (e.g. "Client Portal") — peach, it's the meaningful project name
@@ -1096,7 +1096,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 
 	// Separator + branch (always colored — it's navigation context)
 	if s.Branch != "" {
-		line.WriteString(pSep.Render(" · ") + pBranch.Render(s.Branch))
+		line.WriteString(pSep.Render(" on ") + pBranch.Render(s.Branch))
 	}
 
 	// PR — number colored by state, title dimmed

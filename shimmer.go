@@ -29,7 +29,7 @@ func shimmerText(text string, frame int, dimHex, brightHex string) string {
 
 	// Fractional speed → peak slides between chars across frames instead of
 	// jumping a whole rune per tick. Smoother glide at 150ms/tick.
-	const speed = 1.2
+	const speed = 0.6
 	phase := math.Mod(float64(frame)*speed, float64(cycle))
 	if phase < 0 {
 		phase += float64(cycle)

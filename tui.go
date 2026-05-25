@@ -60,6 +60,8 @@ var (
 	red      = lipgloss.Color("#f38ba8")
 	mauve    = lipgloss.Color("#cba6f7")
 	flamingo = lipgloss.Color("#f2cdcd")
+	pink     = lipgloss.Color("#E3B4D8")
+	teal     = lipgloss.Color("#93E2D5")
 
 	compactPurple = lipgloss.Color("#AFAFFF")
 )
