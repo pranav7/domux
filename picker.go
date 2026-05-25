@@ -1070,34 +1070,33 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	}
 	line.WriteString(" ")
 
-	// Name — selected or active rows should be visibly readable.
+	nameStyle := lipgloss.NewStyle().Foreground(teal)
 	if selected || active {
-		line.WriteString(lipgloss.NewStyle().Foreground(teal).Bold(true).Render(s.Name))
-	} else {
-		line.WriteString(lipgloss.NewStyle().Foreground(teal).Render(s.Name))
+		nameStyle = nameStyle.Bold(true)
+	}
+	labelStyle := pNameDim
+	if active || selected {
+		labelStyle = pName
 	}
 
-	// Label (e.g. "Client Portal") — peach, it's the meaningful project name
+	// Order: {name} on {branch} | {label} ⚡ {AI}
+	line.WriteString(nameStyle.Render(s.Name))
+
+	if s.Branch != "" {
+		line.WriteString(pSep.Render(" on ") + pBranch.Render(s.Branch))
+	}
+
 	if s.Label != "" {
-		if active {
-			line.WriteString(pSep.Render(" · ") + pName.Render(s.Label))
-		} else {
-			line.WriteString(pSep.Render(" · ") + pNameDim.Render(s.Label))
-		}
+		line.WriteString(pSep.Render(" | ") + labelStyle.Render(s.Label))
 	}
-
-	// Badge (after name, inline)
-	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.AIWorkingLabel, m.spinnerFrame))
 
 	// Server
 	if s.Server {
 		line.WriteString(" " + pServer.Render("⚡"))
 	}
 
-	// Separator + branch (always colored — it's navigation context)
-	if s.Branch != "" {
-		line.WriteString(pSep.Render(" on ") + pBranch.Render(s.Branch))
-	}
+	// AI badge (spinner + working label)
+	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.AIWorkingLabel, m.spinnerFrame))
 
 	// PR — number colored by state, title dimmed
 	if s.PR != nil {
