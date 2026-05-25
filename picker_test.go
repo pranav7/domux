@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -371,7 +372,7 @@ func TestPickerDeleteEntersConfirmMode(t *testing.T) {
 	}
 }
 
-func TestPickerDeleteRefusesMainRow(t *testing.T) {
+func TestPickerDeleteClosesMainRow(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "audrey-app"},
 		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
@@ -384,11 +385,17 @@ func TestPickerDeleteRefusesMainRow(t *testing.T) {
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
 	pm := next.(pickerModel)
-	if pm.confirmDelete {
-		t.Fatalf("D on main row should not enter confirmDelete")
+	if !pm.confirmDelete {
+		t.Fatalf("D on main row should enter confirmDelete")
 	}
-	if !pm.statusErr {
-		t.Fatalf("expected error status, got %q", pm.status)
+	if pm.deleteAction != "close" {
+		t.Fatalf("deleteAction = %q, want close", pm.deleteAction)
+	}
+	if pm.deleteSession != "audrey-app" {
+		t.Fatalf("deleteSession = %q, want audrey-app", pm.deleteSession)
+	}
+	if pm.statusErr || !strings.Contains(pm.status, "close audrey-app") {
+		t.Fatalf("status = %q, err = %v", pm.status, pm.statusErr)
 	}
 }
 
@@ -423,7 +430,7 @@ func TestPickerDeleteYDispatchesRemove(t *testing.T) {
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
 	pm := next.(pickerModel)
 
-	next, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	next, cmd := pm.updateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	pm = next.(pickerModel)
 	if pm.confirmDelete {
 		t.Fatalf("y should exit confirmDelete mode")
@@ -433,6 +440,58 @@ func TestPickerDeleteYDispatchesRemove(t *testing.T) {
 	}
 	if !strings.Contains(pm.status, "removing") {
 		t.Fatalf("status = %q, want it to mention removing", pm.status)
+	}
+}
+
+func TestPickerCloseYDispatchesClose(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session|kill-session|refresh-client) exit 0 ;;
+*) exit 1 ;;
+esac
+`, callFile)
+
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name: "audrey-app",
+			Path: "/r/audrey-app",
+			Root: "/r/audrey-app",
+		}},
+	})
+	time.Sleep(200 * time.Millisecond)
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	pm := next.(pickerModel)
+
+	next, cmd := pm.updateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	pm = next.(pickerModel)
+	if pm.confirmDelete {
+		t.Fatalf("y should exit confirmDelete mode")
+	}
+	if cmd == nil {
+		t.Fatalf("y should dispatch a close cmd")
+	}
+
+	msg := cmd().(pickerActionMsg)
+	if msg.Action != "close" || msg.Session != "audrey-app" || msg.Err != nil {
+		t.Fatalf("msg = %#v", msg)
+	}
+}
+
+func TestPickerCloseActionRemovesEmptyGroup(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s", Tasks: []taskInfo{{Title: "todo", SessionName: "s"}}}},
+		{Kind: rowTask, Group: "g", Task: &taskInfo{Title: "todo", SessionName: "s"}},
+	})
+
+	m.applyPickerAction(pickerActionMsg{Action: "close", Session: "s"})
+
+	if len(m.rows) != 0 {
+		t.Fatalf("rows = %#v, want empty", m.rows)
 	}
 }
 

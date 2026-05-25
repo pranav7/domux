@@ -67,6 +67,17 @@ func sessionStatePath(session string) (string, error) {
 	return filepath.Join(dir, sanitizeSessionName(session)+".json"), nil
 }
 
+func removeSessionState(session string) error {
+	path, err := sessionStatePath(session)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("cannot remove %s: %w", path, err)
+	}
+	return nil
+}
+
 func sanitizeSessionName(name string) string {
 	name = strings.ReplaceAll(name, "/", "%2F")
 	name = strings.ReplaceAll(name, ":", "%3A")

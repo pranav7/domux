@@ -241,10 +241,7 @@ func killTmuxSessionsForRoot(path string) error {
 		if homeDir != "" {
 			_ = clearSessionStateFiles(homeDir, st.Name)
 		}
-		statePath, err := sessionStatePath(st.Name)
-		if err == nil {
-			_ = os.Remove(statePath)
-		}
+		_ = removeSessionState(st.Name)
 	}
 	return nil
 }

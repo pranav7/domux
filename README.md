@@ -190,6 +190,8 @@ manages a launchd daemon and `pmset disablesleep` — enable it via
 |-----|--------|
 | `j` / `k` / arrows | Move cursor |
 | `Enter` | Switch to selected session |
+| `+` | Create a workspace session in the selected group |
+| `D` | Delete workspace sessions, close main sessions |
 | `n` | Name (label) the selected session inline |
 | `c` | Clear/reset selected session |
 | `r` | Reset selected session branch only |

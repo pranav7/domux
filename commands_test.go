@@ -82,6 +82,64 @@ func TestClearWorkspaceDirtyKeepsSessionState(t *testing.T) {
 	}
 }
 
+func TestCloseTmuxSessionClearsStateAndKillsSession(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audreyai_azure_tf_internal"
+	state := &SessionState{
+		Name:   session,
+		Root:   "/tmp/audreyai",
+		Label:  "done",
+		Server: true,
+		AI:     map[string]string{"codex:0_0": "CODEXING"},
+	}
+	if err := saveSessionState(state); err != nil {
+		t.Fatalf("saveSessionState: %v", err)
+	}
+	legacy := []string{
+		".tmux-label-" + session,
+		".tmux-server-" + session,
+		".tmux-codex-" + session + "_0_0",
+	}
+	for _, name := range legacy {
+		if err := os.WriteFile(filepath.Join(homeDir, name), []byte("x\n"), 0644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session|kill-session|refresh-client) exit 0 ;;
+*) exit 1 ;;
+esac
+`, callFile)
+
+	if err := closeTmuxSession(session); err != nil {
+		t.Fatalf("closeTmuxSession: %v", err)
+	}
+
+	statePath, err := sessionStatePath(session)
+	if err != nil {
+		t.Fatalf("sessionStatePath: %v", err)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("state file still exists, stat err = %v", err)
+	}
+	for _, name := range legacy {
+		if _, err := os.Stat(filepath.Join(homeDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("legacy %s still exists, stat err = %v", name, err)
+		}
+	}
+	data, err := os.ReadFile(callFile)
+	if err != nil {
+		t.Fatalf("read tmux call: %v", err)
+	}
+	if !strings.Contains(string(data), "kill-session -t "+session) {
+		t.Fatalf("tmux calls = %q", data)
+	}
+}
+
 func TestAggregateAIStatesKeepsClaudeAndCodexSeparate(t *testing.T) {
 	state := &SessionState{AI: map[string]string{
 		"claude:0_0": "WAITING",

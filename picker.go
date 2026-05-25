@@ -69,6 +69,8 @@ type pickerModel struct {
 	labelEditing  bool
 	labelTarget   string
 	confirmDelete bool
+	deleteAction  string
+	deleteSession string
 	deleteSlot    int
 	deleteRoot    string
 	deleteBranch  string
@@ -424,23 +426,49 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "y", "Y":
 				m.confirmDelete = false
+				action := m.deleteAction
+				if action == "" {
+					action = "delete"
+				}
 				target := m.deleteBranch
-				root := m.deleteRoot
-				slot := m.deleteSlot
-				force := m.deleteForce
-				m.status = fmt.Sprintf("removing %s", target)
 				m.statusErr = false
-				return m, func() tea.Msg {
-					return pickerActionMsg{
-						Action:  "delete",
-						Session: target,
-						Value:   strconv.Itoa(slot),
-						Err:     removeWorkspace(root, slot, force),
+
+				switch action {
+				case "close":
+					session := m.deleteSession
+					m.status = fmt.Sprintf("closing %s", session)
+					return m, func() tea.Msg {
+						return pickerActionMsg{
+							Action:  "close",
+							Session: session,
+							Err:     closeTmuxSession(session),
+						}
+					}
+				default:
+					session := m.deleteSession
+					if session == "" {
+						session = target
+					}
+					root := m.deleteRoot
+					slot := m.deleteSlot
+					force := m.deleteForce
+					m.status = fmt.Sprintf("removing %s", target)
+					return m, func() tea.Msg {
+						return pickerActionMsg{
+							Action:  "delete",
+							Session: session,
+							Value:   target,
+							Err:     removeWorkspace(root, slot, force),
+						}
 					}
 				}
 			default:
+				action := m.deleteAction
+				if action == "" {
+					action = "delete"
+				}
 				m.confirmDelete = false
-				m.status = "delete cancelled"
+				m.status = action + " cancelled"
 				m.statusErr = false
 				return m, nil
 			}
@@ -580,7 +608,7 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "+":
 			return m, m.provisionInFocusedGroup()
 		case "D":
-			return m, m.deleteSelectedWorkspace()
+			return m, m.deleteOrCloseSelectedSession()
 		default:
 			if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
 				m.filtering = true
@@ -749,22 +777,26 @@ func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
 	}
 }
 
-func (m *pickerModel) deleteSelectedWorkspace() tea.Cmd {
+func (m *pickerModel) deleteOrCloseSelectedSession() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil {
 		return nil
 	}
-	if session.Root == "" {
-		m.status = "no git root for this row"
-		m.statusErr = true
-		return nil
-	}
 	dir := filepath.Base(session.Path)
-	if !isWorkspaceDir(dir) {
-		m.status = "cannot delete main worktree"
-		m.statusErr = true
+
+	if session.Root == "" || !isWorkspaceDir(dir) {
+		m.confirmDelete = true
+		m.deleteAction = "close"
+		m.deleteSession = session.Name
+		m.deleteSlot = 0
+		m.deleteRoot = ""
+		m.deleteBranch = ""
+		m.deleteForce = false
+		m.status = fmt.Sprintf("close %s? (y/N)", session.Name)
+		m.statusErr = false
 		return nil
 	}
+
 	slot, err := strconv.Atoi(strings.TrimPrefix(dir, "workspace-"))
 	if err != nil || slot < 1 {
 		m.status = fmt.Sprintf("unrecognised workspace dir: %s", dir)
@@ -772,11 +804,13 @@ func (m *pickerModel) deleteSelectedWorkspace() tea.Cmd {
 		return nil
 	}
 	m.confirmDelete = true
+	m.deleteAction = "delete"
+	m.deleteSession = session.Name
 	m.deleteSlot = slot
 	m.deleteRoot = session.Root
 	m.deleteBranch = dir
 	m.deleteForce = false
-	m.status = ""
+	m.status = fmt.Sprintf("delete %s? (y/N)", dir)
 	m.statusErr = false
 	return nil
 }
@@ -785,7 +819,7 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 	if msg.Err == errDirtyWorkspace && msg.Action == "delete" {
 		m.confirmDelete = true
 		m.deleteForce = true
-		m.status = fmt.Sprintf("%s has unpushed work — force delete? (y/N)", msg.Session)
+		m.status = fmt.Sprintf("%s has unpushed work — force delete? (y/N)", pickerActionTarget(msg))
 		m.statusErr = true
 		return
 	}
@@ -806,8 +840,10 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("label %s failed: %v", msg.Session, msg.Err)
 		case "provision":
 			m.status = fmt.Sprintf("provision failed: %v", msg.Err)
+		case "close":
+			m.status = fmt.Sprintf("close %s failed: %v", msg.Session, msg.Err)
 		case "delete":
-			m.status = fmt.Sprintf("delete %s failed: %v", msg.Session, msg.Err)
+			m.status = fmt.Sprintf("delete %s failed: %v", pickerActionTarget(msg), msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -849,18 +885,35 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 		m.status = fmt.Sprintf("provisioned %s", msg.Value)
 		m.statusErr = false
 	case "delete":
-		for i, row := range m.rows {
-			if row.Session != nil && row.Session.Name == msg.Session {
-				m.rows = append(m.rows[:i], m.rows[i+1:]...)
-				m.rebuildVisible()
-				m.clampCursor()
-				break
-			}
-		}
-		m.status = fmt.Sprintf("removed %s", msg.Session)
+		m.removeSessionRows(msg.Session)
+		m.status = fmt.Sprintf("removed %s", pickerActionTarget(msg))
+		m.statusErr = false
+	case "close":
+		m.removeSessionRows(msg.Session)
+		m.status = fmt.Sprintf("closed %s", msg.Session)
 		m.statusErr = false
 	}
 	m.statusErr = false
+}
+
+func pickerActionTarget(msg pickerActionMsg) string {
+	if msg.Value != "" {
+		return msg.Value
+	}
+	return msg.Session
+}
+
+func (m *pickerModel) removeSessionRows(session string) {
+	var entries []groupEntry
+	for _, row := range m.rows {
+		if row.Kind != rowSession || row.Session == nil || row.Session.Name == session {
+			continue
+		}
+		entries = append(entries, groupEntry{group: row.Group, session: row.Session})
+	}
+	m.rows = rowsFromEntries(entries)
+	m.rebuildVisible()
+	m.clampCursor()
 }
 
 func (m *pickerModel) moveCursor(dir int) {
@@ -1008,7 +1061,7 @@ func (m pickerModel) View() string {
 		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
 		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
 		pFooterKey.Render("+") + pFooter.Render(" new") + sep +
-		pFooterKey.Render("D") + pFooter.Render(" delete") + sep +
+		pFooterKey.Render("D") + pFooter.Render(" close/delete") + sep +
 		pFooterKey.Render("n") + pFooter.Render(" name") + sep +
 		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
 		pFooterKey.Render("r") + pFooter.Render(" reset") + sep +

@@ -515,6 +515,47 @@ func clearSessionState(session string) error {
 	return clearWorkspaceForSession(session, "", false)
 }
 
+func closeTmuxSession(session string) error {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return fmt.Errorf("session required")
+	}
+
+	out, err := exec.Command("tmux", "has-session", "-t", session).CombinedOutput()
+	if err != nil && !isMissingTmuxSessionOutput(out) {
+		return fmt.Errorf("tmux has-session %s: %w: %s", session, err, strings.TrimSpace(string(out)))
+	}
+	missingSession := err != nil
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot get home directory: %w", err)
+	}
+	if err := clearSessionStateFiles(homeDir, session); err != nil {
+		return err
+	}
+	if err := removeSessionState(session); err != nil {
+		return err
+	}
+	if missingSession {
+		return nil
+	}
+
+	out, err = exec.Command("tmux", "kill-session", "-t", session).CombinedOutput()
+	if err != nil && !isMissingTmuxSessionOutput(out) {
+		return fmt.Errorf("tmux kill-session %s: %w: %s", session, err, strings.TrimSpace(string(out)))
+	}
+	_ = refreshTmuxClient()
+	return nil
+}
+
+func isMissingTmuxSessionOutput(out []byte) bool {
+	msg := strings.ToLower(string(out))
+	return strings.Contains(msg, "can't find session") ||
+		strings.Contains(msg, "no such session") ||
+		strings.Contains(msg, "no server running")
+}
+
 func clearWorkspaceForSession(session, dir string, verbose bool) error {
 	if dir != "" {
 		if err := resetGitWorkspace(dir, verbose); err != nil {
