@@ -3,7 +3,7 @@ SRC := $(wildcard *.go)
 OUT := domux
 VERSION ?= dev
 
-.PHONY: all build install uninstall test vet run switcher todo clean release-local
+.PHONY: all build install uninstall test vet run switcher todo clean release-local smoke-install-claude
 
 all: build
 
@@ -57,3 +57,9 @@ release-local:
 	@cd dist && shasum -a 256 domux_*.tar.gz > SHA256SUMS
 	@echo "==> dist/"
 	@ls -1 dist/
+
+smoke-install-claude: build
+	@echo "==> Previewing claude install (no --apply)"
+	./domux install claude
+	@echo
+	@echo "==> Apply step is manual — run \`./domux install claude --apply\` yourself to write."
