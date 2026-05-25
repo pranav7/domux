@@ -100,7 +100,7 @@ type pickerStatusExpireMsg struct{ at time.Time }
 
 const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
-const pickerSpinnerInterval = 150 * time.Millisecond
+const pickerSpinnerInterval = 80 * time.Millisecond
 const pickerStatusTTL = 5 * time.Second
 const claudeBrandHex = "#DE7356"
 
@@ -1141,7 +1141,9 @@ const (
 
 func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 	var line strings.Builder
-	frame := claudeSpinnerFrames[spinnerFrame%len(claudeSpinnerFrames)]
+	// Icon advances every 3 ticks (~240ms) so the star pulse stays calm while
+	// the shimmer phase continues to use every tick.
+	frame := claudeSpinnerFrames[(spinnerFrame/3)%len(claudeSpinnerFrames)]
 	if label == "" {
 		label = stableAIWorkingLabel(claude + ":" + codex)
 	}

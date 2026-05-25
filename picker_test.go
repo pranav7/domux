@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -275,12 +277,14 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
 	frame0 := renderAIBadges("CLAUDING", "", "Calculating", 0)
 	frame1 := renderAIBadges("CLAUDING", "", "Calculating", 1)
+	frame3 := renderAIBadges("CLAUDING", "", "Calculating", 3)
 
 	if !strings.Contains(frame0, claudeSpinnerFrames[0]) {
 		t.Fatalf("frame 0 missing %q: %q", claudeSpinnerFrames[0], frame0)
 	}
-	if !strings.Contains(frame1, claudeSpinnerFrames[1]) {
-		t.Fatalf("frame 1 missing %q: %q", claudeSpinnerFrames[1], frame1)
+	// Icon advances every 3 ticks; shimmer advances every tick.
+	if !strings.Contains(frame3, claudeSpinnerFrames[1]) {
+		t.Fatalf("frame 3 missing %q: %q", claudeSpinnerFrames[1], frame3)
 	}
 	plain0 := stripANSI(frame0)
 	if !strings.Contains(plain0, "Calculating") {
@@ -289,8 +293,21 @@ func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
 	if strings.Contains(plain0, "Clauding") || strings.Contains(plain0, "Codexing") {
 		t.Fatalf("badge should not use agent name text: %q", plain0)
 	}
-	if frame0 == frame1 {
-		t.Fatalf("shimmer should advance between frames: %q == %q", frame0, frame1)
+	if frame0 == frame3 {
+		t.Fatalf("icon should advance every three ticks: %q == %q", frame0, frame3)
+	}
+	_ = frame1
+	// Shimmer phase advances every tick. Force a color profile so lipgloss
+	// emits the per-rune color codes that distinguish adjacent frames.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+	// Pick frames where the bright peak sits inside the word (the leading tail
+	// is uniformly at the floor color, so early frames don't differ).
+	s0 := shimmerText("Calculating", 6, claudeShimmerDim, claudeShimmerBright)
+	s1 := shimmerText("Calculating", 7, claudeShimmerDim, claudeShimmerBright)
+	if s0 == s1 {
+		t.Fatalf("shimmer should advance between frames: %q == %q", s0, s1)
 	}
 	if claudeBrandHex != "#DE7356" {
 		t.Fatalf("expected Claude brand colour #DE7356, got %q", claudeBrandHex)
