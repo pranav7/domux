@@ -274,3 +274,23 @@ func TestInstallClaudePreviewMentionsPluginCommands(t *testing.T) {
 		t.Fatalf("preview should mention `claude plugin install implement-pipeline@domux`; got:\n%s", stdout)
 	}
 }
+
+func TestInstallClaudeSkipsPluginStepsWhenClaudeCliMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	// Ensure `claude` is not findable on PATH.
+	t.Setenv("PATH", "")
+
+	stdout, _, err := captureInstallClaude(t, []string{"--apply"})
+	if err != nil {
+		t.Fatalf("installClaude --apply: %v", err)
+	}
+	if !strings.Contains(stdout, "`claude` CLI not on PATH") {
+		t.Fatalf("expected warning about missing claude CLI; got:\n%s", stdout)
+	}
+	// Settings should still have been written even without claude on PATH.
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if !fileExists(settingsPath) {
+		t.Fatalf("expected settings.json to be written even when claude CLI is missing")
+	}
+}
