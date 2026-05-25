@@ -139,6 +139,19 @@ domux install claude
 domux install claude --apply
 ```
 
+This patches `~/.claude/settings.json` with AI-state hooks **and** writes a
+`/start-task` slash command to `~/.claude/commands/start-task.md`. Inside
+Claude Code, run:
+
+```
+/start-task fix login redirect on Safari
+```
+
+The command teaches Claude about domux + git worktrees, then has it refresh
+`origin/main`, branch off, and set the domux session label before touching
+code. Restricted branches (`main`, `master`, `workspace-*`) are noted so
+Claude won't commit to them.
+
 Codex integration is preview-first too:
 
 ```sh
