@@ -322,6 +322,44 @@ func TestMergeLegacyStateKeepsStaleWaitingFile(t *testing.T) {
 	}
 }
 
+func TestMergeLegacyStatePrunesOrphanedJSONClauding(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "workspace-1"
+
+	// Fresh pane 1_0 — backing legacy file written just now.
+	fresh := filepath.Join(homeDir, ".tmux-claude-"+session+"_1_0")
+	if err := os.WriteFile(fresh, []byte("CLAUDING\n"), 0644); err != nil {
+		t.Fatalf("write fresh pane file: %v", err)
+	}
+
+	// Stale pane 1_2 — JSON entry exists but backing legacy file is 3 days old.
+	stalePath := filepath.Join(homeDir, ".tmux-claude-"+session+"_1_2")
+	if err := os.WriteFile(stalePath, []byte("CLAUDING\n"), 0644); err != nil {
+		t.Fatalf("write stale pane file: %v", err)
+	}
+	old := time.Now().Add(-72 * time.Hour)
+	if err := os.Chtimes(stalePath, old, old); err != nil {
+		t.Fatalf("chtimes stale: %v", err)
+	}
+
+	state := &SessionState{
+		Name: session,
+		AI: map[string]string{
+			"claude:1_0": "CLAUDING",
+			"claude:1_2": "CLAUDING",
+		},
+	}
+	mergeLegacyState(state)
+
+	if _, ok := state.AI["claude:1_0"]; !ok {
+		t.Fatalf("fresh pane 1_0 pruned: AI = %#v", state.AI)
+	}
+	if _, ok := state.AI["claude:1_2"]; ok {
+		t.Fatalf("stale pane 1_2 not pruned: AI = %#v", state.AI)
+	}
+}
+
 func TestSaveSessionStateDropsLegacyPseudoPane(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

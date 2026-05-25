@@ -1,11 +1,32 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// captureInstallClaude runs installClaude(args) capturing stdout/stderr.
+func captureInstallClaude(t *testing.T, args []string) (string, string, error) {
+	t.Helper()
+	rOut, wOut, _ := os.Pipe()
+	rErr, wErr, _ := os.Pipe()
+	origOut, origErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = wOut, wErr
+	defer func() {
+		os.Stdout, os.Stderr = origOut, origErr
+	}()
+
+	err := installClaude(args)
+
+	wOut.Close()
+	wErr.Close()
+	outBytes, _ := io.ReadAll(rOut)
+	errBytes, _ := io.ReadAll(rErr)
+	return string(outBytes), string(errBytes), err
+}
 
 func TestPatchedClaudeSettingsAddsCompactHooks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
@@ -281,5 +302,41 @@ func TestPatchedCodexHooksPrunesOldDomuxSessionStart(t *testing.T) {
 	}
 	if !hookCommandExists(events["Stop"].([]any), codexDomuxHook("ai-state --agent codex --all clear")) {
 		t.Fatalf("new all-panes Codex Stop hook should be added")
+	}
+}
+
+func TestInstallClaudePreviewMentionsPluginCommands(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	stdout, _, err := captureInstallClaude(t, nil)
+	if err != nil {
+		t.Fatalf("installClaude preview: %v", err)
+	}
+	if !strings.Contains(stdout, "claude plugin marketplace add") {
+		t.Fatalf("preview should mention `claude plugin marketplace add`; got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "claude plugin install implement-pipeline@domux") {
+		t.Fatalf("preview should mention `claude plugin install implement-pipeline@domux`; got:\n%s", stdout)
+	}
+}
+
+func TestInstallClaudeSkipsPluginStepsWhenClaudeCliMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	// Ensure `claude` is not findable on PATH.
+	t.Setenv("PATH", "")
+
+	stdout, _, err := captureInstallClaude(t, []string{"--apply"})
+	if err != nil {
+		t.Fatalf("installClaude --apply: %v", err)
+	}
+	if !strings.Contains(stdout, "`claude` CLI not on PATH") {
+		t.Fatalf("expected warning about missing claude CLI; got:\n%s", stdout)
+	}
+	// Settings should still have been written even without claude on PATH.
+	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
+	if !fileExists(settingsPath) {
+		t.Fatalf("expected settings.json to be written even when claude CLI is missing")
 	}
 }

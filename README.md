@@ -162,6 +162,15 @@ domux install codex --apply
 Install commands create backups before writing and do not delete legacy
 `~/.tmux-*` state files.
 
+## /implement pipeline
+
+`domux install claude --apply` also installs the `implement-pipeline` Claude Code plugin:
+
+- `/implement` — hands-off pipeline (implement → simplify → lint → browser → UX → azcodex review → PR)
+- `/browser-test`, `/ux-review`, `/azcodex-review` — individually invokable gates
+
+See [docs/implement-pipeline.md](docs/implement-pipeline.md) for details.
+
 ## Commands popup
 
 `<prefix> u` opens a small popup with toggleable utilities:
