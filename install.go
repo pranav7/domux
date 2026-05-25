@@ -90,7 +90,7 @@ set-option -g status-right '#($HOME/bin/domux status "#{session_name}" "#{pane_c
 func installClaude(args []string) error {
 	fs := flag.NewFlagSet("install claude", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	apply := fs.Bool("apply", false, "patch ~/.claude/settings.json")
+	apply := fs.Bool("apply", false, "patch ~/.claude/settings.json + install implement-pipeline plugin")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -103,9 +103,11 @@ func installClaude(args []string) error {
 	if err != nil {
 		return err
 	}
+	marketplaceSource := claudePluginMarketplaceSource()
 	if !*apply {
 		data, _ := json.MarshalIndent(next, "", "  ")
 		fmt.Printf("Would patch %s with domux hooks/statusLine:\n\n%s\n", path, data)
+		printPluginInstallPlan(marketplaceSource)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -123,6 +125,80 @@ func installClaude(args []string) error {
 		return fmt.Errorf("cannot write %s: %w", path, err)
 	}
 	fmt.Printf("patched %s\n", path)
+	return runPluginInstall(marketplaceSource)
+}
+
+// claudePluginMarketplaceSource returns the path/repo to register as the
+// domux marketplace. Prefers a local clone (detected via os.Executable walking
+// up to find .claude-plugin/marketplace.json), falls back to GitHub.
+func claudePluginMarketplaceSource() string {
+	if local := detectLocalMarketplaceRoot(); local != "" {
+		return local
+	}
+	return "pranav7/domux"
+}
+
+func detectLocalMarketplaceRoot() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	for i := 0; i < 8; i++ {
+		if fileExists(filepath.Join(dir, ".claude-plugin", "marketplace.json")) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	// Also try the current working directory — common when running `go run` or
+	// the freshly built binary from the repo root.
+	if cwd, err := os.Getwd(); err == nil {
+		if fileExists(filepath.Join(cwd, ".claude-plugin", "marketplace.json")) {
+			return cwd
+		}
+	}
+	return ""
+}
+
+func printPluginInstallPlan(source string) {
+	if !commandExists("claude") {
+		fmt.Println()
+		fmt.Println("Would install implement-pipeline plugin, but `claude` CLI is not on PATH.")
+		fmt.Println("Install Claude Code first: https://claude.com/claude-code")
+		return
+	}
+	fmt.Println()
+	fmt.Println("Would also run:")
+	fmt.Printf("  claude plugin marketplace add %s\n", source)
+	fmt.Println("  claude plugin install implement-pipeline@domux")
+}
+
+func runPluginInstall(source string) error {
+	if !commandExists("claude") {
+		fmt.Println()
+		fmt.Println("warning: `claude` CLI not on PATH — skipping plugin install.")
+		fmt.Println("Install Claude Code (https://claude.com/claude-code), then run:")
+		fmt.Printf("  claude plugin marketplace add %s\n", source)
+		fmt.Println("  claude plugin install implement-pipeline@domux")
+		return nil
+	}
+	addCmd := exec.Command("claude", "plugin", "marketplace", "add", source)
+	addCmd.Stdout = os.Stdout
+	addCmd.Stderr = os.Stderr
+	if err := addCmd.Run(); err != nil {
+		return fmt.Errorf("claude plugin marketplace add: %w", err)
+	}
+	installCmd := exec.Command("claude", "plugin", "install", "implement-pipeline@domux")
+	installCmd.Stdout = os.Stdout
+	installCmd.Stderr = os.Stderr
+	if err := installCmd.Run(); err != nil {
+		return fmt.Errorf("claude plugin install: %w", err)
+	}
+	fmt.Println("installed implement-pipeline plugin")
 	return nil
 }
 
