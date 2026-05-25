@@ -208,10 +208,44 @@ func mergeLegacyState(state *SessionState) {
 	if state.AI == nil {
 		state.AI = map[string]string{}
 	}
+	pruneStaleAIStates(state, homeDir, "claude")
+	pruneStaleAIStates(state, homeDir, "codex")
 	mergeLegacyAIStateFiles(state, homeDir, "claude")
 	mergeLegacyAIStateFiles(state, homeDir, "codex")
 	mergeFreshLegacyAIStateFile(state, homeDir, "claude")
 	mergeFreshLegacyAIStateFile(state, homeDir, "codex")
+}
+
+// pruneStaleAIStates drops JSON AI entries whose backing per-pane legacy file
+// is stale. setAIState writes both atomically, so the legacy file's mtime is
+// a reliable freshness signal for the JSON entry. An entry with a stale
+// legacy file is an orphan from a crashed/killed agent (Stop never fired).
+// Missing legacy file → trust the JSON (covers code paths that write state
+// directly without going through setAIState).
+func pruneStaleAIStates(state *SessionState, homeDir, agent string) {
+	prefix := strings.ToLower(agent) + ":"
+	for key, value := range state.AI {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		pane := strings.TrimPrefix(key, prefix)
+		if pane == "legacy" {
+			// transient pseudo-pane from mergeFreshLegacyAIStateFile;
+			// saveSessionState strips it before write.
+			continue
+		}
+		if normalizeAIState(agent, value) == "" {
+			continue
+		}
+		legacyPath := filepath.Join(homeDir, ".tmux-"+agent+"-"+state.Name+"_"+pane)
+		info, err := os.Stat(legacyPath)
+		if err != nil {
+			continue
+		}
+		if legacyAIStateIsStale(value, info.ModTime()) {
+			delete(state.AI, key)
+		}
+	}
 }
 
 func mergeLegacyAIStateFiles(state *SessionState, homeDir, agent string) {
