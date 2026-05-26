@@ -198,8 +198,31 @@ func randomAIWorkingLabel() string {
 	return aiWorkingLabels[rand.Intn(len(aiWorkingLabels))]
 }
 
+func randomAIWorkingLabelExcept(exclude map[string]bool) string {
+	if len(exclude) >= len(aiWorkingLabels) {
+		return randomAIWorkingLabel()
+	}
+	for {
+		label := randomAIWorkingLabel()
+		if !exclude[label] {
+			return label
+		}
+	}
+}
+
 func stableAIWorkingLabel(seed string) string {
+	return stableAIWorkingLabelExcept(seed, nil)
+}
+
+func stableAIWorkingLabelExcept(seed string, exclude map[string]bool) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(seed))
-	return aiWorkingLabels[int(h.Sum32())%len(aiWorkingLabels)]
+	start := int(h.Sum32()) % len(aiWorkingLabels)
+	for i := 0; i < len(aiWorkingLabels); i++ {
+		label := aiWorkingLabels[(start+i)%len(aiWorkingLabels)]
+		if !exclude[label] {
+			return label
+		}
+	}
+	return aiWorkingLabels[start]
 }

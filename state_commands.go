@@ -239,13 +239,7 @@ func setAIState(session, pane, agent, value string) error {
 	} else {
 		state.AI[key] = value
 	}
-	if stateHasWorkingAIState(state) {
-		if state.AIWorkingLabel == "" {
-			state.AIWorkingLabel = randomAIWorkingLabel()
-		}
-	} else {
-		state.AIWorkingLabel = ""
-	}
+	ensureAIWorkingLabels(state)
 	if err := saveSessionState(state); err != nil {
 		return err
 	}
@@ -265,6 +259,8 @@ func setAIState(session, pane, agent, value string) error {
 }
 
 func clearAIStateForAgent(session, agent string) error {
+	_, stateErr := loadSessionState(session)
+	stateFileExists := stateErr == nil
 	state := loadSessionStateWithLegacy(session)
 	changed := false
 	for key, value := range state.AI {
@@ -280,7 +276,7 @@ func clearAIStateForAgent(session, agent string) error {
 			changed = true
 		}
 	}
-	if changed {
+	if changed || stateFileExists {
 		if err := saveSessionState(state); err != nil {
 			return err
 		}

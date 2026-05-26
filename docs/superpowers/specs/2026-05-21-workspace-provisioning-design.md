@@ -11,7 +11,7 @@ Let the user create, remove, and visually identify `workspace-N` worktrees from 
 
 - Named (non-numbered) worktrees. Scope is numbered slots only.
 - Provisioning outside the picker. No interactive prompt-driven CLI command beyond what the picker uses.
-- Replacing `baag` for feature-branch worktrees (the `feature/...` named ones in `.baag/worktrees/`). Those stay baag-managed.
+- Replacing `baag` for feature-branch worktrees. Those stay baag-managed.
 - Cross-project workspace creation. The picker only adds workspaces to a group that already has at least one session.
 
 ## Background
@@ -19,10 +19,10 @@ Let the user create, remove, and visually identify `workspace-N` worktrees from 
 `audrey-app` already follows the convention this feature standardizes on:
 
 - Primary checkout at `<project>/`, on the default branch (`main`).
-- Sibling worktrees at `<project>/.baag/worktrees/workspace-N`, each on a same-named branch (`workspace-N`), branched from `origin/main`.
+- Sibling worktrees at `<project>/.domux/worktrees/workspace-N`, each on a same-named branch (`workspace-N`), branched from `origin/main`.
 - The `workspace-N` branch is treated as that worktree's "main": `domux clear` already merges `origin/main` into it (`resetGitWorkspace` in `commands.go`).
 
-`isWorkspaceDir` (`commands.go:660`) already recognizes the naming convention. The picker (`picker.go:gatherSessions`) already groups by stripping `/.baag/worktrees/...` from the git root.
+`isWorkspaceDir` (`commands.go:660`) already recognizes the naming convention. The picker (`picker.go:gatherSessions`) already groups by stripping `/.domux/worktrees/...` from the git root.
 
 What's missing: a way to actually create and tear down these worktrees from the switcher.
 
@@ -84,7 +84,7 @@ Modifications:
 
 ### Main-worktree marker
 
-In each group, the "main" row is the one whose path is NOT under `/.baag/worktrees/` — same predicate the picker already uses for group extraction (`gatherSessions` in `picker.go:967`). That row gets a single `◇` glyph in `overlay0` rendered between the cursor space and the name:
+In each group, the "main" row is the one whose path is NOT under `/.domux/worktrees/` — same predicate the picker already uses for group extraction (`gatherSessions` in `picker.go:967`). That row gets a single `◇` glyph in `overlay0` rendered between the cursor space and the name:
 
 ```
 AUDREY-APP ───────────────────
@@ -109,8 +109,8 @@ provisionWorkspace(root) →
   git fetch origin <base>
   slot       = lowestFreeSlot(root)                       // lowest N with no dir at path AND no entry in `git worktree list` for that path
   branch     = "workspace-<slot>"
-  path       = root/.baag/worktrees/workspace-<slot>
-  mkdir -p   root/.baag/worktrees
+  path       = root/.domux/worktrees/workspace-<slot>
+  mkdir -p   root/.domux/worktrees
   if branch exists:
       git branch -f <branch> origin/<base>                // reset to base
       git worktree add <path> <branch>
@@ -127,7 +127,7 @@ provisionWorkspace(root) →
 ```
 removeWorkspace(root, slot, force) →
   branch = "workspace-<slot>"
-  path   = root/.baag/worktrees/workspace-<slot>
+  path   = root/.domux/worktrees/workspace-<slot>
   if filepath.Base(path) is not a workspaceDir → return error
   if !force:
       if git -C path status --porcelain non-empty → errDirtyWorkspace

@@ -158,6 +158,28 @@ func TestAggregateAIStatesKeepsClaudeAndCodexSeparate(t *testing.T) {
 	}
 }
 
+func TestAggregateAIStatesKeepsAgentLabelsSeparate(t *testing.T) {
+	state := &SessionState{
+		AI: map[string]string{
+			"claude:0_1": "CLAUDING",
+			"codex:0_2":  "CODEXING",
+		},
+		AIWorkingLabels: map[string]string{
+			"claude": "Pondering",
+			"codex":  "Computing",
+		},
+	}
+
+	got := aggregateAIStatesFromSession(state)
+
+	if got.ClaudeLabel != "Pondering" {
+		t.Fatalf("Claude label = %q", got.ClaudeLabel)
+	}
+	if got.CodexLabel != "Computing" {
+		t.Fatalf("Codex label = %q", got.CodexLabel)
+	}
+}
+
 func TestAggregateAIStatesTreatsLegacyAIAsClaude(t *testing.T) {
 	state := &SessionState{AI: map[string]string{
 		"0_0": "CLAUDING",
@@ -418,6 +440,45 @@ func TestMergeLegacyStatePrunesOrphanedJSONClauding(t *testing.T) {
 	}
 }
 
+func TestMergeLegacyStatePrunesMissingLegacyCodex(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	old := time.Now().Add(-2 * time.Minute).Format(timeFormat)
+	state := &SessionState{
+		Name:      session,
+		UpdatedAt: old,
+		AI: map[string]string{
+			"codex:1_1": "CODEXING",
+		},
+	}
+
+	mergeLegacyState(state)
+
+	if _, ok := state.AI["codex:1_1"]; ok {
+		t.Fatalf("missing legacy codex state not pruned: AI = %#v", state.AI)
+	}
+}
+
+func TestMergeLegacyStateKeepsRecentMissingLegacyCodex(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	state := &SessionState{
+		Name:      session,
+		UpdatedAt: time.Now().Format(timeFormat),
+		AI: map[string]string{
+			"codex:1_1": "CODEXING",
+		},
+	}
+
+	mergeLegacyState(state)
+
+	if _, ok := state.AI["codex:1_1"]; !ok {
+		t.Fatalf("recent missing legacy codex state pruned: AI = %#v", state.AI)
+	}
+}
+
 func TestSaveSessionStateDropsLegacyPseudoPane(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
@@ -534,7 +595,44 @@ func TestAIStateAllClearRemovesAllAgentPanes(t *testing.T) {
 	}
 }
 
-func TestAIWorkingLabelPersistsUntilWorkingEnds(t *testing.T) {
+func TestAIStateAllClearPersistsPrunedMissingLegacyState(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	path, err := sessionStatePath(session)
+	if err != nil {
+		t.Fatalf("sessionStatePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Minute).Format(timeFormat)
+	data := `{
+  "name": "audrey-app",
+  "ai": {
+    "codex:1_1": "CODEXING"
+  },
+  "updated_at": "` + old + `"
+}
+`
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	if err := aiStateCommand([]string{"--session", session, "--agent", "codex", "--all", "clear"}); err != nil {
+		t.Fatalf("aiStateCommand: %v", err)
+	}
+
+	gotData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(gotData), "codex:1_1") {
+		t.Fatalf("stale codex state persisted: %s", gotData)
+	}
+}
+
+func TestAIWorkingLabelsPersistPerAgentUntilWorkingEnds(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 	session := "dotfiles"
@@ -543,8 +641,8 @@ func TestAIWorkingLabelPersistsUntilWorkingEnds(t *testing.T) {
 		t.Fatalf("setAIState working: %v", err)
 	}
 	state := loadSessionStateWithLegacy(session)
-	label := state.AIWorkingLabel
-	if label == "" {
+	codexLabel := state.AIWorkingLabels["codex"]
+	if codexLabel == "" {
 		t.Fatalf("working label missing: %#v", state)
 	}
 
@@ -552,15 +650,38 @@ func TestAIWorkingLabelPersistsUntilWorkingEnds(t *testing.T) {
 		t.Fatalf("setAIState working again: %v", err)
 	}
 	state = loadSessionStateWithLegacy(session)
-	if state.AIWorkingLabel != label {
-		t.Fatalf("working label changed: %q -> %q", label, state.AIWorkingLabel)
+	if state.AIWorkingLabels["codex"] != codexLabel {
+		t.Fatalf("working label changed: %q -> %q", codexLabel, state.AIWorkingLabels["codex"])
+	}
+
+	if err := setAIState(session, "1_1", "claude", "CLAUDING"); err != nil {
+		t.Fatalf("setAIState claude working: %v", err)
+	}
+	state = loadSessionStateWithLegacy(session)
+	claudeLabel := state.AIWorkingLabels["claude"]
+	if claudeLabel == "" {
+		t.Fatalf("Claude working label missing: %#v", state)
+	}
+	if claudeLabel == codexLabel {
+		t.Fatalf("Claude and Codex share label %q", claudeLabel)
 	}
 
 	if err := setAIState(session, "1_0", "codex", "WAITING"); err != nil {
 		t.Fatalf("setAIState waiting: %v", err)
 	}
 	state = loadSessionStateWithLegacy(session)
-	if state.AIWorkingLabel != "" {
-		t.Fatalf("working label kept after waiting: %q", state.AIWorkingLabel)
+	if state.AIWorkingLabels["codex"] != "" {
+		t.Fatalf("Codex label kept after waiting: %#v", state.AIWorkingLabels)
+	}
+	if state.AIWorkingLabels["claude"] != claudeLabel {
+		t.Fatalf("Claude label changed: %q -> %q", claudeLabel, state.AIWorkingLabels["claude"])
+	}
+
+	if err := setAIState(session, "1_1", "claude", "WAITING"); err != nil {
+		t.Fatalf("setAIState claude waiting: %v", err)
+	}
+	state = loadSessionStateWithLegacy(session)
+	if len(state.AIWorkingLabels) != 0 {
+		t.Fatalf("working labels kept after waiting: %#v", state.AIWorkingLabels)
 	}
 }

@@ -86,9 +86,9 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// joinWorkspacePath returns root/.baag/worktrees/workspace-<n>.
+// joinWorkspacePath returns root/.domux/worktrees/workspace-<n>.
 func joinWorkspacePath(root string, n int) string {
-	return filepath.Join(root, ".baag", "worktrees", "workspaceN")
+	return filepath.Join(root, ".domux", "worktrees", "workspaceN")
 }
 ```
 
@@ -223,7 +223,7 @@ func TestLowestFreeWorkspaceSlot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			wt := filepath.Join(root, ".baag", "worktrees")
+			wt := filepath.Join(root, ".domux", "worktrees")
 			for _, n := range tc.dirs {
 				if err := os.MkdirAll(filepath.Join(wt, fmtWorkspaceName(n)), 0755); err != nil {
 					t.Fatalf("mkdir: %v", err)
@@ -292,12 +292,12 @@ import (
 )
 
 // workspaceWorktreeDir is the conventional location under <root> for
-// numbered scratch worktrees. Matches the `.baag/worktrees/workspace-N`
+// numbered scratch worktrees. Matches the `.domux/worktrees/workspace-N`
 // layout the picker already understands.
-const workspaceWorktreeDir = ".baag/worktrees"
+const workspaceWorktreeDir = ".domux/worktrees"
 
 // lowestFreeWorkspaceSlot returns the lowest N >= 1 where no directory
-// named workspace-N exists under <root>/.baag/worktrees. Existing git
+// named workspace-N exists under <root>/.domux/worktrees. Existing git
 // worktrees registered elsewhere with the same name aren't checked here —
 // `git worktree add` will fail loudly if there's a conflict.
 func lowestFreeWorkspaceSlot(root string) (int, error) {
@@ -343,7 +343,7 @@ Also update `workspaces_test.go` to use `workspacePath` and remove the temporary
 Replace
 ```go
 func joinWorkspacePath(root string, n int) string {
-	return filepath.Join(root, ".baag", "worktrees", "workspaceN")
+	return filepath.Join(root, ".domux", "worktrees", "workspaceN")
 }
 ```
 with nothing — delete it.
@@ -473,7 +473,7 @@ type workspaceResult struct {
 }
 
 // provisionWorkspace creates the next available workspace-N worktree under
-// <root>/.baag/worktrees, creates (or force-resets) the same-named branch
+// <root>/.domux/worktrees, creates (or force-resets) the same-named branch
 // from origin/<defaultBase>, and spins up a tmux session at the new path.
 func provisionWorkspace(root string) (workspaceResult, error) {
 	base, err := defaultBaseBranch(root)
@@ -687,7 +687,7 @@ var errDirtyWorkspace = fmt.Errorf("workspace has uncommitted or unpushed change
 // removeWorkspace tears down a workspace-N worktree: tmux session(s),
 // git worktree, branch, and any leftover legacy state files.
 // Refuses if the path doesn't actually point at a workspace-N dir under
-// <root>/.baag/worktrees/, even if the slot number is right.
+// <root>/.domux/worktrees/, even if the slot number is right.
 func removeWorkspace(root string, slot int, force bool) error {
 	if slot < 1 {
 		return fmt.Errorf("invalid workspace slot %d", slot)
@@ -1059,7 +1059,7 @@ type sessionInfo struct {
 	Server  bool
 	Windows int
 	Path    string
-	Root    string // git common root (group-level), stripped of /.baag/worktrees/...
+	Root    string // git common root (group-level), stripped of /.domux/worktrees/...
 	Label   string
 	Tasks   []taskInfo
 }
@@ -1078,8 +1078,8 @@ Replace:
 			rootOut, err := exec.Command("git", "-C", info.Path, "rev-parse", "--show-toplevel").Output()
 			if err == nil {
 				gitRoot := strings.TrimSpace(string(rootOut))
-				if strings.Contains(gitRoot, "/.baag/worktrees/") {
-					idx := strings.Index(gitRoot, "/.baag/worktrees/")
+				if strings.Contains(gitRoot, "/.domux/worktrees/") {
+					idx := strings.Index(gitRoot, "/.domux/worktrees/")
 					group = filepath.Base(gitRoot[:idx])
 				} else {
 					group = filepath.Base(gitRoot)
@@ -1097,7 +1097,7 @@ With:
 			rootOut, err := exec.Command("git", "-C", info.Path, "rev-parse", "--show-toplevel").Output()
 			if err == nil {
 				gitRoot := strings.TrimSpace(string(rootOut))
-				if idx := strings.Index(gitRoot, "/.baag/worktrees/"); idx >= 0 {
+				if idx := strings.Index(gitRoot, "/.domux/worktrees/"); idx >= 0 {
 					info.Root = gitRoot[:idx]
 				} else {
 					info.Root = gitRoot
@@ -1300,7 +1300,7 @@ func TestPickerDeleteEntersConfirmMode(t *testing.T) {
 		{Kind: rowHeader, Group: "audrey-app"},
 		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
 			Name: "workspace-1",
-			Path: "/r/.baag/worktrees/workspace-1",
+			Path: "/r/.domux/worktrees/workspace-1",
 			Root: "/r",
 		}},
 	})
@@ -1341,7 +1341,7 @@ func TestPickerDeleteCancelOnAnyOtherKey(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowSession, Group: "g", Session: &sessionInfo{
 			Name: "workspace-1",
-			Path: "/r/.baag/worktrees/workspace-1",
+			Path: "/r/.domux/worktrees/workspace-1",
 			Root: "/r",
 		}},
 	})
@@ -1360,7 +1360,7 @@ func TestPickerDeleteYDispatchesRemove(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowSession, Group: "g", Session: &sessionInfo{
 			Name: "workspace-1",
-			Path: "/r/.baag/worktrees/workspace-1",
+			Path: "/r/.domux/worktrees/workspace-1",
 			Root: "/r",
 		}},
 	})
@@ -1567,7 +1567,7 @@ func TestRenderSessionMarksMainWorktree(t *testing.T) {
 	}}
 	wsRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
 		Name: "workspace-1",
-		Path: "/r/audrey-app/.baag/worktrees/workspace-1",
+		Path: "/r/audrey-app/.domux/worktrees/workspace-1",
 		Root: "/r/audrey-app",
 	}}
 	m := newPickerModel([]pickerRow{mainRow, wsRow})
@@ -1595,12 +1595,12 @@ In `picker.go`, add a helper at the top of the file (near `isSelectablePickerRow
 
 ```go
 // isMainWorktreePath returns true when path looks like the main checkout of
-// a project (i.e. not nested under /.baag/worktrees/).
+// a project (i.e. not nested under /.domux/worktrees/).
 func isMainWorktreePath(path string) bool {
 	if path == "" {
 		return false
 	}
-	return !strings.Contains(path, "/.baag/worktrees/")
+	return !strings.Contains(path, "/.domux/worktrees/")
 }
 ```
 

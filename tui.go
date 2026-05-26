@@ -184,9 +184,8 @@ func shortenPath(p string) string {
 		p = "~" + p[len(home):]
 	}
 
-	// For worktrees like ~/projects/foo/bar/.baag/worktrees/workspace-1
-	// show "bar (workspace-1)"
-	if idx := strings.Index(p, "/.baag/worktrees/"); idx >= 0 {
+	// For known scratch worktrees, show "bar (workspace-1)".
+	if idx, ok := knownWorkspacePathIndex(p); ok {
 		project := filepath.Base(p[:idx])
 		wt := filepath.Base(p)
 		return project + " (" + wt + ")"

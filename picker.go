@@ -30,18 +30,19 @@ type prInfo struct {
 }
 
 type sessionInfo struct {
-	Name           string
-	Branch         string
-	PR             *prInfo
-	Claude         string
-	Codex          string
-	AIWorkingLabel string
-	Server         bool
-	Windows        int
-	Path           string
-	Root           string // git common root (group-level), stripped of /.baag/worktrees/...
-	Label          string
-	Tasks          []taskInfo
+	Name        string
+	Branch      string
+	PR          *prInfo
+	Claude      string
+	Codex       string
+	ClaudeLabel string
+	CodexLabel  string
+	Server      bool
+	Windows     int
+	Path        string
+	Root        string // git common root (group-level), stripped of scratch worktree dirs
+	Label       string
+	Tasks       []taskInfo
 }
 
 type taskInfo struct {
@@ -346,13 +347,13 @@ func isSelectablePickerRow(row pickerRow) bool {
 	return row.Kind == rowSession && row.Session != nil
 }
 
-// isMainWorktreePath returns true when path looks like the main checkout of
-// a project (i.e. not nested under /.baag/worktrees/).
+// isMainWorktreePath returns true when path looks like the main checkout of a
+// project (i.e. not nested under a known scratch worktree dir).
 func isMainWorktreePath(path string) bool {
 	if path == "" {
 		return false
 	}
-	return !strings.Contains(path, "/.baag/worktrees/")
+	return !isKnownWorkspacePath(path)
 }
 
 func (m pickerModel) Init() tea.Cmd {
@@ -527,10 +528,9 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.clampCursor()
 				return m, nil
 			case "enter":
-				if len(m.visible) == 0 {
-					return m, nil
-				}
-				return m, m.selectRow(m.rows[m.visible[m.cursor]])
+				m.filtering = false
+				m.clampCursor()
+				return m, nil
 			case "up", "ctrl+p":
 				m.moveCursor(-1)
 				return m, nil
@@ -1014,19 +1014,23 @@ func (m pickerModel) View() string {
 			b.WriteString(rendered + trailing + "\n")
 		}
 	}
+	showFilterLine := m.filtering || m.filter.Value() != ""
 	if m.labelEditing {
 		return m.renderLabelOverlay()
-	} else if m.filtering {
+	} else if showFilterLine {
 		b.WriteString("\n    " + lipgloss.NewStyle().Foreground(blue).Render("/") + " ")
 		b.WriteString(lipgloss.NewStyle().Foreground(text).Render(m.filter.Value()))
-		b.WriteString(lipgloss.NewStyle().Foreground(blue).Render("▌") + "\n")
+		if m.filtering {
+			b.WriteString(lipgloss.NewStyle().Foreground(blue).Render("▌"))
+		}
+		b.WriteString("\n")
 	} else {
 		b.WriteString("\n")
 	}
 
 	// logo(2) + blank(1) + prompt-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
 	availableHeight := m.height - 7
-	if m.filtering {
+	if showFilterLine {
 		availableHeight--
 	}
 
@@ -1149,7 +1153,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	}
 
 	// AI badge (spinner + working label)
-	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.AIWorkingLabel, m.spinnerFrame))
+	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
 
 	// PR — number colored by state, title dimmed
 	if s.PR != nil {
@@ -1192,14 +1196,10 @@ const (
 	compactShimmerBright = "#D8D8FF"
 )
 
-func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
+func renderAIBadges(claude, codex, claudeLabel, codexLabel string, spinnerFrame int) string {
 	var line strings.Builder
-	// Icon advances every 3 ticks (~240ms) so the star pulse stays calm while
-	// the shimmer phase continues to use every tick.
-	frame := claudeSpinnerFrames[(spinnerFrame/3)%len(claudeSpinnerFrames)]
-	if label == "" {
-		label = stableAIWorkingLabel(claude + ":" + codex)
-	}
+	// Icon advances every 2 ticks (~160ms).
+	frame := claudeSpinnerFrames[(spinnerFrame/2)%len(claudeSpinnerFrames)]
 	// COMPACTING short-circuits — render once with a fixed "Compacting…" label
 	// regardless of which agent slot carries it. Suppress the per-agent working
 	// badges since the same agent is mid-compaction, not working.
@@ -1207,13 +1207,21 @@ func renderAIBadges(claude, codex, label string, spinnerFrame int) string {
 		line.WriteString(" " + pSpinnerCompacting.Render(frame) + " " + shimmerText("Compacting…", spinnerFrame, compactShimmerDim, compactShimmerBright))
 		return line.String()
 	}
+	usedLabels := map[string]bool{}
 	switch claude {
 	case "CLAUDING":
-		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + shimmerText(label, spinnerFrame, claudeShimmerDim, claudeShimmerBright))
+		if claudeLabel == "" {
+			claudeLabel = stableAIWorkingLabelExcept("claude:"+claude+":"+codex, usedLabels)
+		}
+		usedLabels[claudeLabel] = true
+		line.WriteString(" " + pSpinnerClaude.Render(frame) + " " + shimmerText(claudeLabel, spinnerFrame, claudeShimmerDim, claudeShimmerBright))
 	}
 	switch codex {
 	case "CODEXING":
-		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + shimmerText(label, spinnerFrame, codexShimmerDim, codexShimmerBright))
+		if codexLabel == "" || usedLabels[codexLabel] {
+			codexLabel = stableAIWorkingLabelExcept("codex:"+claude+":"+codex, usedLabels)
+		}
+		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + shimmerText(codexLabel, spinnerFrame, codexShimmerDim, codexShimmerBright))
 	}
 	return line.String()
 }
@@ -1291,8 +1299,8 @@ func gatherSessions() []pickerRow {
 			rootOut, err := exec.Command("git", "-C", info.Path, "rev-parse", "--show-toplevel").Output()
 			if err == nil {
 				gitRoot := strings.TrimSpace(string(rootOut))
-				if idx := strings.Index(gitRoot, "/.baag/worktrees/"); idx >= 0 {
-					info.Root = gitRoot[:idx]
+				if root, ok := workspaceRootFromPath(gitRoot); ok {
+					info.Root = root
 				} else {
 					info.Root = gitRoot
 				}
@@ -1321,7 +1329,8 @@ func gatherSessions() []pickerRow {
 		aiStates := aggregateAIStatesFromSession(state)
 		info.Claude = aiStates.Claude
 		info.Codex = aiStates.Codex
-		info.AIWorkingLabel = aiStates.WorkingLabel
+		info.ClaudeLabel = aiStates.ClaudeLabel
+		info.CodexLabel = aiStates.CodexLabel
 		info.Server = state.Server
 
 		winOut, err := exec.Command("tmux", "list-windows", "-t", sess).Output()

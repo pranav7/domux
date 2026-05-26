@@ -14,23 +14,25 @@ import (
 const timeFormat = time.RFC3339
 
 type SessionState struct {
-	Name           string            `json:"name"`
-	Root           string            `json:"root,omitempty"`
-	TodoPath       string            `json:"todo_path,omitempty"`
-	FocusedTodoID  string            `json:"focused_todo_id,omitempty"`
-	Label          string            `json:"label,omitempty"`
-	Server         bool              `json:"server,omitempty"`
-	Workspace      string            `json:"workspace,omitempty"`
-	AI             map[string]string `json:"ai,omitempty"`
-	AIWorkingLabel string            `json:"ai_working_label,omitempty"`
-	CreatedAt      string            `json:"created_at,omitempty"`
-	UpdatedAt      string            `json:"updated_at,omitempty"`
+	Name            string            `json:"name"`
+	Root            string            `json:"root,omitempty"`
+	TodoPath        string            `json:"todo_path,omitempty"`
+	FocusedTodoID   string            `json:"focused_todo_id,omitempty"`
+	Label           string            `json:"label,omitempty"`
+	Server          bool              `json:"server,omitempty"`
+	Workspace       string            `json:"workspace,omitempty"`
+	AI              map[string]string `json:"ai,omitempty"`
+	AIWorkingLabel  string            `json:"ai_working_label,omitempty"`
+	AIWorkingLabels map[string]string `json:"ai_working_labels,omitempty"`
+	CreatedAt       string            `json:"created_at,omitempty"`
+	UpdatedAt       string            `json:"updated_at,omitempty"`
 }
 
 type AIStates struct {
-	Claude       string
-	Codex        string
-	WorkingLabel string
+	Claude      string
+	Codex       string
+	ClaudeLabel string
+	CodexLabel  string
 }
 
 type DomuxContext struct {
@@ -135,9 +137,7 @@ func saveSessionState(state *SessionState) error {
 		delete(state.AI, "claude:legacy")
 		delete(state.AI, "codex:legacy")
 	}
-	if !stateHasWorkingAIState(state) {
-		state.AIWorkingLabel = ""
-	}
+	pruneAIWorkingLabels(state)
 	if state.AI != nil && len(state.AI) == 0 {
 		state.AI = nil
 	}
@@ -154,9 +154,19 @@ func saveSessionState(state *SessionState) error {
 		return fmt.Errorf("cannot encode session state: %w", err)
 	}
 	data = append(data, '\n')
-	tmp := fmt.Sprintf("%s.%d.%d.tmp", path, os.Getpid(), time.Now().UnixNano())
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("cannot create temp session state: %w", err)
+	}
+	tmp := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("cannot write %s: %w", tmp, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("cannot close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
@@ -231,8 +241,8 @@ func mergeLegacyState(state *SessionState) {
 // is stale. setAIState writes both atomically, so the legacy file's mtime is
 // a reliable freshness signal for the JSON entry. An entry with a stale
 // legacy file is an orphan from a crashed/killed agent (Stop never fired).
-// Missing legacy file → trust the JSON (covers code paths that write state
-// directly without going through setAIState).
+// Missing legacy file → stale once the JSON timestamp itself is stale. This
+// covers hooks that set JSON but die or fail before the legacy file exists.
 func pruneStaleAIStates(state *SessionState, homeDir, agent string) {
 	prefix := strings.ToLower(agent) + ":"
 	for key, value := range state.AI {
@@ -251,12 +261,26 @@ func pruneStaleAIStates(state *SessionState, homeDir, agent string) {
 		legacyPath := filepath.Join(homeDir, ".tmux-"+agent+"-"+state.Name+"_"+pane)
 		info, err := os.Stat(legacyPath)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && missingLegacyAIStateIsStale(state, value) {
+				delete(state.AI, key)
+			}
 			continue
 		}
 		if legacyAIStateIsStale(value, info.ModTime()) {
 			delete(state.AI, key)
 		}
 	}
+}
+
+func missingLegacyAIStateIsStale(state *SessionState, value string) bool {
+	if state == nil || state.UpdatedAt == "" {
+		return true
+	}
+	updatedAt, err := time.Parse(timeFormat, state.UpdatedAt)
+	if err != nil {
+		return true
+	}
+	return legacyAIStateIsStale(value, updatedAt)
 }
 
 func mergeLegacyAIStateFiles(state *SessionState, homeDir, agent string) {
@@ -436,18 +460,21 @@ func aggregateAIStatesFromSession(state *SessionState) AIStates {
 			states.Claude = mergeAIState(states.Claude, value)
 		}
 	}
-	if states.Claude == "CLAUDING" || states.Codex == "CODEXING" {
-		states.WorkingLabel = state.AIWorkingLabel
-		if states.WorkingLabel == "" {
-			states.WorkingLabel = fallbackAIWorkingLabel(state)
-		}
+	usedLabels := map[string]bool{}
+	if states.Claude == "CLAUDING" {
+		states.ClaudeLabel = aiWorkingLabelForAgent(state, "claude", usedLabels)
+		usedLabels[states.ClaudeLabel] = true
+	}
+	if states.Codex == "CODEXING" {
+		states.CodexLabel = aiWorkingLabelForAgent(state, "codex", usedLabels)
 	}
 	return states
 }
 
-func stateHasWorkingAIState(state *SessionState) bool {
+func workingAIAgents(state *SessionState) map[string]bool {
+	agents := map[string]bool{}
 	if state == nil {
-		return false
+		return agents
 	}
 	for key, value := range state.AI {
 		agent := inferAgentFromAIKey(key)
@@ -458,14 +485,90 @@ func stateHasWorkingAIState(state *SessionState) bool {
 			agent = "claude"
 		}
 		if normalizeAIState(agent, value) == workingAIState(agent) {
-			return true
+			agents[agent] = true
 		}
 	}
-	return false
+	return agents
 }
 
-func fallbackAIWorkingLabel(state *SessionState) string {
-	parts := []string{state.Name}
+func pruneAIWorkingLabels(state *SessionState) {
+	if state == nil {
+		return
+	}
+	working := workingAIAgents(state)
+	if len(working) == 0 {
+		state.AIWorkingLabel = ""
+		state.AIWorkingLabels = nil
+		return
+	}
+	if state.AIWorkingLabels != nil {
+		for agent := range state.AIWorkingLabels {
+			if !working[agent] {
+				delete(state.AIWorkingLabels, agent)
+			}
+		}
+		if len(state.AIWorkingLabels) == 0 {
+			state.AIWorkingLabels = nil
+		} else {
+			state.AIWorkingLabel = ""
+		}
+	}
+}
+
+func ensureAIWorkingLabels(state *SessionState) {
+	if state == nil {
+		return
+	}
+	working := workingAIAgents(state)
+	if len(working) == 0 {
+		state.AIWorkingLabel = ""
+		state.AIWorkingLabels = nil
+		return
+	}
+	if state.AIWorkingLabels == nil {
+		state.AIWorkingLabels = map[string]string{}
+	}
+	used := map[string]bool{}
+	legacy := strings.TrimSpace(state.AIWorkingLabel)
+	for _, agent := range []string{"claude", "codex"} {
+		if !working[agent] {
+			delete(state.AIWorkingLabels, agent)
+			continue
+		}
+		label := strings.TrimSpace(state.AIWorkingLabels[agent])
+		if label == "" || used[label] {
+			if legacy != "" && !used[legacy] {
+				label = legacy
+			} else {
+				label = randomAIWorkingLabelExcept(used)
+			}
+			state.AIWorkingLabels[agent] = label
+		}
+		used[label] = true
+	}
+	state.AIWorkingLabel = ""
+	pruneAIWorkingLabels(state)
+}
+
+func aiWorkingLabelForAgent(state *SessionState, agent string, exclude map[string]bool) string {
+	if state == nil {
+		return stableAIWorkingLabelExcept(agent, exclude)
+	}
+	if state.AIWorkingLabels != nil {
+		label := strings.TrimSpace(state.AIWorkingLabels[agent])
+		if label != "" && !exclude[label] {
+			return label
+		}
+	}
+	working := workingAIAgents(state)
+	if state.AIWorkingLabel != "" && len(working) == 1 && working[agent] && !exclude[state.AIWorkingLabel] {
+		return state.AIWorkingLabel
+	}
+	return fallbackAIWorkingLabel(state, agent, exclude)
+}
+
+func fallbackAIWorkingLabel(state *SessionState, wantAgent string, exclude map[string]bool) string {
+	parts := []string{state.Name, wantAgent}
 	for key, value := range state.AI {
 		agent := inferAgentFromAIKey(key)
 		if agent == "" {
@@ -473,13 +576,18 @@ func fallbackAIWorkingLabel(state *SessionState) string {
 		}
 		if agent == "" {
 			agent = "claude"
+		}
+		if agent != wantAgent {
+			continue
 		}
 		if normalizeAIState(agent, value) == workingAIState(agent) {
 			parts = append(parts, key+"="+value)
 		}
 	}
-	sort.Strings(parts[1:])
-	return stableAIWorkingLabel(strings.Join(parts, "\x00"))
+	if len(parts) > 2 {
+		sort.Strings(parts[2:])
+	}
+	return stableAIWorkingLabelExcept(strings.Join(parts, "\x00"), exclude)
 }
 
 func mergeAIState(current, next string) string {

@@ -140,6 +140,56 @@ func TestLowestFreeWorkspaceSlot(t *testing.T) {
 	}
 }
 
+func TestLowestFreeWorkspaceSlotIncludesLegacyDirs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(workspacePathIn(root, legacyWorkspaceWorktreeDir, 1), 0755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	if err := os.MkdirAll(workspacePath(root, 2), 0755); err != nil {
+		t.Fatalf("mkdir current: %v", err)
+	}
+
+	got, err := lowestFreeWorkspaceSlot(root)
+	if err != nil {
+		t.Fatalf("lowestFreeWorkspaceSlot: %v", err)
+	}
+	if got != 3 {
+		t.Fatalf("got %d, want 3", got)
+	}
+}
+
+func TestExistingWorkspacePathFindsLegacyDirs(t *testing.T) {
+	root := t.TempDir()
+	want := workspacePathIn(root, legacyWorkspaceWorktreeDir, 1)
+	if err := os.MkdirAll(want, 0755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+
+	got, err := existingWorkspacePath(root, 1)
+	if err != nil {
+		t.Fatalf("existingWorkspacePath: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWorkspaceRootFromPathRecognizesCurrentAndLegacyDirs(t *testing.T) {
+	cases := []string{
+		"/r/app/.domux/worktrees/workspace-1",
+		"/r/app/.baag/worktrees/workspace-1",
+	}
+	for _, path := range cases {
+		got, ok := workspaceRootFromPath(path)
+		if !ok {
+			t.Fatalf("workspaceRootFromPath(%q) not recognized", path)
+		}
+		if got != "/r/app" {
+			t.Fatalf("workspaceRootFromPath(%q) = %q, want /r/app", path, got)
+		}
+	}
+}
+
 func TestProvisionWorkspaceResetsExistingBranchToBase(t *testing.T) {
 	root := setupGitWorkspaceRepo(t)
 	// Pre-create workspace-1 branch pointing at a NEW commit ahead of main.

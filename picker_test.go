@@ -219,6 +219,50 @@ func TestPickerFilterSkipsLeadingSpacer(t *testing.T) {
 	}
 }
 
+func TestPickerFilterEnterAllowsShortcutsOnFilteredList(t *testing.T) {
+	m := newPickerModel(rowsFromEntries([]groupEntry{
+		{group: "g", session: &sessionInfo{Name: "alpha"}},
+		{group: "g", session: &sessionInfo{Name: "domux", Path: "/tmp/domux"}},
+	}))
+	time.Sleep(200 * time.Millisecond)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	pm := next.(pickerModel)
+	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	pm = next.(pickerModel)
+	next, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = next.(pickerModel)
+
+	if cmd != nil {
+		t.Fatalf("enter should exit filter input, not switch")
+	}
+	if pm.filtering {
+		t.Fatalf("enter should exit filter input")
+	}
+	if pm.filter.Value() != "d" {
+		t.Fatalf("filter = %q, want d", pm.filter.Value())
+	}
+	session := pm.selectedSession()
+	if session == nil {
+		t.Fatalf("selected session is nil")
+	}
+	if got := session.Name; got != "domux" {
+		t.Fatalf("selected session = %q, want domux", got)
+	}
+
+	next, cmd = pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	pm = next.(pickerModel)
+	if cmd == nil {
+		t.Fatalf("c should run clear shortcut")
+	}
+	if pm.filtering || pm.filter.Value() != "d" {
+		t.Fatalf("clear shortcut changed filter state: filtering=%v filter=%q", pm.filtering, pm.filter.Value())
+	}
+	if !strings.Contains(pm.status, "clearing domux") {
+		t.Fatalf("status = %q, want clearing domux", pm.status)
+	}
+}
+
 func TestPickerViewFitsHeightWithGroupHeaders(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "audrey-app"},
@@ -276,9 +320,9 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 }
 
 func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
-	frame0 := renderAIBadges("CLAUDING", "", "Calculating", 0)
-	frame1 := renderAIBadges("CLAUDING", "", "Calculating", 1)
-	frame3 := renderAIBadges("CLAUDING", "", "Calculating", 3)
+	frame0 := renderAIBadges("CLAUDING", "", "Calculating", "", 0)
+	frame1 := renderAIBadges("CLAUDING", "", "Calculating", "", 1)
+	frame3 := renderAIBadges("CLAUDING", "", "Calculating", "", 3)
 
 	if !strings.Contains(frame0, claudeSpinnerFrames[0]) {
 		t.Fatalf("frame 0 missing %q: %q", claudeSpinnerFrames[0], frame0)
@@ -312,6 +356,16 @@ func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
 	}
 	if claudeBrandHex != "#DE7356" {
 		t.Fatalf("expected Claude brand colour #DE7356, got %q", claudeBrandHex)
+	}
+}
+
+func TestWorkingBadgesUseAgentLabels(t *testing.T) {
+	got := stripANSI(renderAIBadges("CLAUDING", "CODEXING", "Pondering", "Computing", 0))
+	if !strings.Contains(got, "Pondering") {
+		t.Fatalf("missing Claude label: %q", got)
+	}
+	if !strings.Contains(got, "Computing") {
+		t.Fatalf("missing Codex label: %q", got)
 	}
 }
 
@@ -356,7 +410,7 @@ func TestPickerDeleteEntersConfirmMode(t *testing.T) {
 		{Kind: rowHeader, Group: "audrey-app"},
 		{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
 			Name: "workspace-1",
-			Path: "/r/.baag/worktrees/workspace-1",
+			Path: "/r/.domux/worktrees/workspace-1",
 			Root: "/r",
 		}},
 	})
@@ -403,7 +457,7 @@ func TestPickerDeleteCancelOnAnyOtherKey(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowSession, Group: "g", Session: &sessionInfo{
 			Name: "workspace-1",
-			Path: "/r/.baag/worktrees/workspace-1",
+			Path: "/r/.domux/worktrees/workspace-1",
 			Root: "/r",
 		}},
 	})
@@ -422,7 +476,7 @@ func TestPickerDeleteYDispatchesRemove(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowSession, Group: "g", Session: &sessionInfo{
 			Name: "workspace-1",
-			Path: "/r/.baag/worktrees/workspace-1",
+			Path: "/r/.domux/worktrees/workspace-1",
 			Root: "/r",
 		}},
 	})
@@ -539,7 +593,7 @@ func TestRenderSessionMarksMainWorktree(t *testing.T) {
 	}}
 	wsRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
 		Name: "workspace-1",
-		Path: "/r/audrey-app/.baag/worktrees/workspace-1",
+		Path: "/r/audrey-app/.domux/worktrees/workspace-1",
 		Root: "/r/audrey-app",
 	}}
 	m := newPickerModel([]pickerRow{mainRow, wsRow})
@@ -552,6 +606,22 @@ func TestRenderSessionMarksMainWorktree(t *testing.T) {
 	}
 	if strings.Contains(wsOut, "◇") {
 		t.Fatalf("workspace row should not have ◇ glyph:\n%s", wsOut)
+	}
+}
+
+func TestIsMainWorktreePathRecognizesCurrentAndLegacyDirs(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/r/audrey-app", true},
+		{"/r/audrey-app/.domux/worktrees/workspace-1", false},
+		{"/r/audrey-app/.baag/worktrees/workspace-1", false},
+	}
+	for _, tc := range cases {
+		if got := isMainWorktreePath(tc.path); got != tc.want {
+			t.Fatalf("isMainWorktreePath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }
 

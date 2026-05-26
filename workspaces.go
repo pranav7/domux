@@ -26,36 +26,42 @@ func defaultBaseBranch(root string) (string, error) {
 	return ref, nil
 }
 
-// workspaceWorktreeDir is the conventional location under <root> for
-// numbered scratch worktrees. Matches the `.baag/worktrees/workspace-N`
-// layout the picker already understands.
-const workspaceWorktreeDir = ".baag/worktrees"
+// workspaceWorktreeDir is where new numbered scratch worktrees are created.
+const workspaceWorktreeDir = ".domux/worktrees"
+const legacyWorkspaceWorktreeDir = ".baag/worktrees"
 
-// lowestFreeWorkspaceSlot returns the lowest N >= 1 where no directory
-// named workspace-N exists under <root>/.baag/worktrees. Existing git
+var workspaceWorktreeDirs = []string{workspaceWorktreeDir, legacyWorkspaceWorktreeDir}
+
+// lowestFreeWorkspaceSlot returns the lowest N >= 1 where no directory named
+// workspace-N exists under any known worktree dir. Existing git
 // worktrees registered elsewhere with the same name aren't checked here —
 // `git worktree add` will fail loudly if there's a conflict.
 func lowestFreeWorkspaceSlot(root string) (int, error) {
-	dir := filepath.Join(root, workspaceWorktreeDir)
-	entries, err := os.ReadDir(dir)
-	if err != nil && !os.IsNotExist(err) {
-		return 0, fmt.Errorf("read %s: %w", dir, err)
-	}
 	taken := map[int]bool{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	for _, worktreeDir := range workspaceWorktreeDirs {
+		dir := filepath.Join(root, worktreeDir)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, fmt.Errorf("read %s: %w", dir, err)
 		}
-		const prefix = "workspace-"
-		if !strings.HasPrefix(e.Name(), prefix) {
-			continue
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			const prefix = "workspace-"
+			if !strings.HasPrefix(e.Name(), prefix) {
+				continue
+			}
+			suffix := strings.TrimPrefix(e.Name(), prefix)
+			n, err := strconv.Atoi(suffix)
+			if err != nil || n < 1 {
+				continue
+			}
+			taken[n] = true
 		}
-		suffix := strings.TrimPrefix(e.Name(), prefix)
-		n, err := strconv.Atoi(suffix)
-		if err != nil || n < 1 {
-			continue
-		}
-		taken[n] = true
 	}
 	for n := 1; ; n++ {
 		if !taken[n] {
@@ -66,6 +72,42 @@ func lowestFreeWorkspaceSlot(root string) (int, error) {
 
 func workspacePath(root string, n int) string {
 	return filepath.Join(root, workspaceWorktreeDir, fmt.Sprintf("workspace-%d", n))
+}
+
+func workspacePathIn(root, worktreeDir string, n int) string {
+	return filepath.Join(root, worktreeDir, fmt.Sprintf("workspace-%d", n))
+}
+
+func knownWorkspacePathIndex(path string) (int, bool) {
+	for _, worktreeDir := range workspaceWorktreeDirs {
+		if idx := strings.Index(path, "/"+worktreeDir+"/"); idx >= 0 {
+			return idx, true
+		}
+	}
+	return -1, false
+}
+
+func isKnownWorkspacePath(path string) bool {
+	_, ok := knownWorkspacePathIndex(path)
+	return ok
+}
+
+func workspaceRootFromPath(path string) (string, bool) {
+	idx, ok := knownWorkspacePathIndex(path)
+	if !ok {
+		return "", false
+	}
+	return path[:idx], true
+}
+
+func existingWorkspacePath(root string, n int) (string, error) {
+	for _, worktreeDir := range workspaceWorktreeDirs {
+		path := workspacePathIn(root, worktreeDir, n)
+		if fileExists(path) {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("workspace path missing: %s", workspacePath(root, n))
 }
 
 func workspaceBranch(n int) string {
@@ -81,7 +123,7 @@ type workspaceResult struct {
 }
 
 // provisionWorkspace creates the next available workspace-N worktree under
-// <root>/.baag/worktrees, creates (or force-resets) the same-named branch
+// <root>/.domux/worktrees, creates (or force-resets) the same-named branch
 // from origin/<defaultBase>, and spins up a tmux session at the new path.
 func provisionWorkspace(root string) (workspaceResult, error) {
 	base, err := defaultBaseBranch(root)
@@ -159,20 +201,20 @@ var errDirtyWorkspace = fmt.Errorf("workspace has uncommitted or unpushed change
 
 // removeWorkspace tears down a workspace-N worktree: tmux session(s),
 // git worktree, branch, and any leftover legacy state files.
-// Refuses if the path doesn't actually point at a workspace-N dir under
-// <root>/.baag/worktrees/, even if the slot number is right.
+// Refuses if the path doesn't actually point at a workspace-N dir under a
+// known worktree dir, even if the slot number is right.
 func removeWorkspace(root string, slot int, force bool) error {
 	if slot < 1 {
 		return fmt.Errorf("invalid workspace slot %d", slot)
 	}
 	branch := workspaceBranch(slot)
-	path := workspacePath(root, slot)
+	path, err := existingWorkspacePath(root, slot)
+	if err != nil {
+		return err
+	}
 
 	if !isWorkspaceDir(filepath.Base(path)) {
 		return fmt.Errorf("not a workspace dir: %s", path)
-	}
-	if !fileExists(path) {
-		return fmt.Errorf("workspace path missing: %s", path)
 	}
 
 	if !force {

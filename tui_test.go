@@ -27,6 +27,18 @@ func TestViewShowsNotesForUnselectedActiveItems(t *testing.T) {
 	}
 }
 
+func TestShortenPathRecognizesCurrentAndLegacyWorktrees(t *testing.T) {
+	cases := []string{
+		"/tmp/project/.domux/worktrees/workspace-1",
+		"/tmp/project/.baag/worktrees/workspace-1",
+	}
+	for _, path := range cases {
+		if got := shortenPath(path); got != "project (workspace-1)" {
+			t.Fatalf("shortenPath(%q) = %q", path, got)
+		}
+	}
+}
+
 func TestWrapNoteLinesFitsInnerWidth(t *testing.T) {
 	innerWidth := 32
 	lines := wrapNoteLines("alpha beta gamma delta epsilon zeta", innerWidth)
