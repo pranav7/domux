@@ -1,6 +1,6 @@
 # domux
 
-domux helps me scale multiple sessions in a single project. It's built on top of tmux. I wanted something that extends my current worfklow rather learning another tool. I am comfortable working in the terminal, and that's where I wanted this to work. It's simple, and it's not trying to do too much. There are a bunch of alternatives to this of course, but this works best for me, and it's quite scalable, yet simple. The beauty of the world we live in today is building software tailored to you. This is my take on an AI IDE built on top of the terminal. This is currently my daily driver.
+domux helps me scale multiple sessions in a single project. It's built on top of tmux. I wanted something that extends my current workflow rather learning another tool. I am comfortable working in the terminal, and that's where I wanted this to work. It's simple, and it's not trying to do too much. There are a bunch of alternatives to this of course, but this works best for me, and it's quite scalable, yet simple. The beauty of the world we live in today is building software tailored to you. This is my take on an AI IDE built on top of the terminal. This is currently my daily driver.
 
 There are two main parts to domux, the switcher and the todolist:
 
