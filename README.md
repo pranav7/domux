@@ -22,7 +22,7 @@ That's it, feedback welcome!
 
 ------
 
-> _Note: Everything below this point is AI generated to help set up dmoux._
+> _Note: Everything below this point is AI generated to help set up domux on your machine._
 
 ## Requirements
 
