@@ -1,28 +1,28 @@
-<img width="1140" height="588" alt="domux screenshot" src="https://github.com/user-attachments/assets/9e778d42-f3db-4394-9d70-9a06d6ef66d5" />
-
 # domux
 
-I usually have a few things going at once in a single project: several git
-worktrees, each on its own branch, often with a coding agent running in its own
-tmux session. tmux keeps all those shells alive, but it doesn't tell me much
-about them — which session is on which branch, what I was doing in each one, or
-whether the agent over in session 3 is still working or has been sitting there
-waiting on me.
+domux helps me scale multiple sessions in a single project. It's built on top of tmux. I wanted something that extends my current worfklow rather learning another tool. I am comfortable working in the terminal, and that's where I wanted this to work. It's simple, and it's not trying to do too much. There are a bunch of alternatives to this of course, but this works best for me, and it's quite scalable, yet simple. The beauty of the world we live in today is building software tailored to you. This is my take on an AI IDE built on top of the terminal. This is currently my daily driver.
 
-I built domux to keep track of all that. It pins each tmux session to the
-worktree where it started, gives every session its own todo list, and shows the
-whole lot in one switcher: the branch, a label, the task I'm focused on, and
-whether an agent is busy, waiting for input, or done. Worktrees do the work
-underneath, but I don't have to think about them — I just see what's happening
-across my sessions and where my attention is needed.
+There are two main parts to domux, the switcher and the todolist:
 
-The part that matters to me is that it lives inside tmux. I didn't want to learn
-another tool or keep a browser tab open to track my work. I already work in the
-terminal, so domux works there too.
+### The Switcher
+<img width="1140" height="588" alt="domux screenshot" src="https://github.com/user-attachments/assets/9e778d42-f3db-4394-9d70-9a06d6ef66d5" />
 
-No server, no database. State is plain markdown and JSON under
-`~/.local/share/domux`, and the tmux integration is a generated config file you
-can read before you source it.
+The switcher <kbd>\<leader\></kbd> + <kbd>s</kbd> is a custom tmux session switcher, but rich with details like the branch a worktree is on, a name for your session, preview of the tasks attached to that session — and shows the status of what AI agent attached to that session is doing,  is it working or waiting for your input. It currently works with claude and codex.
+
+### The Todolist
+<img width="1160" height="530" alt="image" src="https://github.com/user-attachments/assets/16ca123c-dbc7-44ec-bfc1-b6445ebf35ef" />
+
+The todolist <kbd>\<leader\></kbd> + <kbd>t</kbd>, is a simple tracker to remember what you were doing on that workspace.
+
+### Commands
+<img width="962" height="311" alt="image" src="https://github.com/user-attachments/assets/ae7beb8d-d37c-4496-9578-249b8750fbc9" />
+There is also a utilities panel <kbd>\<leader\></kbd> + <kbd>u</kbd>, that currently only supports `caffeinate` on / off (and requires sudo in case you want to keep your mac awake even with the lid closed)
+
+That's it, feedback welcome!
+
+------
+
+> _Note: Everything below this point is AI generated to help set up dmoux._
 
 ## Requirements
 
