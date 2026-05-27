@@ -136,11 +136,11 @@ var (
 			Bold(true)
 
 	pName = lipgloss.NewStyle().
-		Foreground(peach).
+		Foreground(green).
 		Bold(true)
 
 	pNameDim = lipgloss.NewStyle().
-			Foreground(peach)
+			Foreground(green)
 
 	pBadgeClauding = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(claudeBrandHex)).
