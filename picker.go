@@ -109,7 +109,7 @@ const claudeBrandHex = "#DE7356"
 
 // claudeSpinnerFrames — star/asterisk shapes that pulse from sparse → dense → sparse,
 // so each frame morphs into the next instead of just rotating.
-var claudeSpinnerFrames = []string{"·", "✦", "✶", "✳", "✢", "✽", "✽", "✢", "✳", "✶", "✦", "·"}
+var claudeSpinnerFrames = []string{"·", "✦", "✶", "✳", "✢", "✻", "✽", "✻", "✢", "✳", "✶", "✦", "·"}
 
 // Styles — Catppuccin Mocha
 var (

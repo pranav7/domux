@@ -1,279 +1,316 @@
-<img width="1140" height="588" alt="image" src="https://github.com/user-attachments/assets/9e778d42-f3db-4394-9d70-9a06d6ef66d5" />
+<img width="1140" height="588" alt="domux screenshot" src="https://github.com/user-attachments/assets/9e778d42-f3db-4394-9d70-9a06d6ef66d5" />
 
 # domux
 
-An opinionated tmux workbench. Two TUIs, one binary:
+`domux` is a small tmux workbench for people who keep too many terminal sessions
+open: projects, git worktrees, dev servers, and coding agents.
 
-- **todo** — per-worktree task list (the "do" in *do*mux). Pinned to the git
-  root where work started, so `cd`-ing through subdirs doesn't lose context.
-- **switcher** — pinned-session picker across all your tmux sessions, with
-  live AI status, labels, and inline task previews.
+It does two things:
 
-## Usage
+- keeps each tmux session pinned to the project or git worktree where it started
+- gives that context a local todo list and a session switcher
 
-```sh
-# Open the todo TUI for the current domux context
-domux
-domux todo            # explicit alias
+There is no server. State lives in markdown and JSON files under
+`~/.local/share/domux`. The tmux integration is just a generated config file you
+can inspect before sourcing.
 
-# Open the session switcher
-domux switcher
-domux sessions        # historical alias
+## Why
 
-# Start or resume tmux work in this directory
-domux start
+tmux is good at keeping shells alive. It is less good at answering:
 
-# Start or resume tmux work in another directory
-domux start ~/code/my-repo
+- which session belongs to which repo?
+- which worktree was this agent using?
+- what was I doing in this pane yesterday?
+- which session is running the dev server?
 
-# Adopt an existing tmux session into domux
-domux adopt
+`domux` keeps that bookkeeping close to tmux instead of putting it in a browser
+tab or a separate project tracker.
 
-# Attach or switch to an existing session
-domux attach my-repo
+## Overview
 
-# Reset/free the current tmux workspace, same as trr/tmux-reset
-domux clear
+- `domux`: a terminal todo list for the current project or worktree
+- `domux switcher`: a tmux session picker grouped by project
+- pinned session state: root path, label, focused todo, server marker, AI state
+- status bar output for the current task and agent activity
+- optional hooks for Claude Code and Codex
+- local, editable storage files
 
-# Reset only git branch, keeping domux session state
-domux reset-branch
+## Status
 
-# Clear only domux session state, without git reset behavior
-domux clear-state
+Current release binaries are for macOS, Apple Silicon and Intel. `tmux` is
+needed for the session workflow. The todo TUI itself is just a terminal program.
 
-# Toggle the current tmux session as running the server
-domux server
-
-# Preview installable tmux, Claude Code, and Codex integration
-domux install tmux
-domux install claude
-domux install codex
-
-# Register caffeinate (partial mode — idle-sleep prevention, no sudo)
-domux install caffeinate
-
-# One-shot setup: detect brew/tmux/Claude/Codex and apply hooks
-domux bootstrap
-
-# Open the utilities popup (toggle caffeinate, …)
-domux commands
-
-# Check installed integration state
-domux doctor
-
-# Print storage path for current context
-domux --path
-
-# Show help
-domux --help
-```
-
-## Installation
+## Install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
 ```
 
-macOS only (Apple Silicon + Intel). No Go toolchain required — the script
-downloads the latest checksum-verified release binary into `~/.local/bin`
-and then hands off to `domux bootstrap`.
+The installer downloads the latest checksum-verified release binary and runs
+`domux bootstrap`. No Go toolchain is needed.
 
-Env var overrides: `DOMUX_VERSION=v0.1.0`, `DOMUX_INSTALL_DIR=/custom/path`,
-`DOMUX_SKIP_BOOTSTRAP=1`.
+The script installs to `~/.local/bin` by default. If that is not on your `PATH`,
+it prints the line to add to your shell config.
 
-### From source
+To inspect first and bootstrap later:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | DOMUX_SKIP_BOOTSTRAP=1 sh
+domux bootstrap
+```
+
+Useful installer variables:
+
+| Variable | Meaning |
+|---|---|
+| `DOMUX_VERSION=v0.1.0` | Install a specific release |
+| `DOMUX_INSTALL_DIR=/custom/bin` | Install somewhere else |
+| `DOMUX_SKIP_BOOTSTRAP=1` | Skip setup after download |
+
+From source:
 
 ```sh
 go install github.com/pranav7/domux@latest
 domux bootstrap
 ```
 
-### One-shot bootstrap
+## Bootstrap
 
-`domux bootstrap` detects Homebrew, tmux, Claude Code, and Codex; prints
-the plan; asks once for confirmation; then writes the tmux integration,
-patches Claude and Codex hooks if those tools are present, and registers
-caffeinate in partial mode (idle-sleep prevention only — no sudo). For
-lid-close sleep prevention (requires sudo), run
-`domux install caffeinate --full` separately.
+`domux bootstrap` prints a plan, asks once, then applies the pieces it can use on
+your machine:
 
-The generated `bind-key` entries inherit whatever tmux prefix you already
-use — domux does not change your prefix.
+- installs tmux with Homebrew if tmux is missing and Homebrew exists
+- writes `~/.config/domux/domux.tmux`
+- patches Claude Code hooks if Claude Code is present
+- patches Codex hooks if Codex is present
+- registers idle-sleep prevention with `caffeinate`
 
-### Local development
-
-```sh
-make           # build ./domux
-make install   # symlink ~/bin/domux -> ./domux (one-time)
-make test
-make switcher  # quick launch for testing
-```
-
-After `make install`, every subsequent `make` is live on your PATH — no
-copy step. Use `make uninstall` to remove the symlink (the original
-binary, if any, was backed up to `~/bin/domux.pre-symlink.bak`).
-
-
-Preview the generated tmux integration:
-
-```sh
-domux install tmux
-```
-
-When ready, write it:
-
-```sh
-domux install tmux --apply
-```
-
-Then add this line to `~/.tmux.conf`:
+The tmux config is not automatically sourced. Add this to `~/.tmux.conf`:
 
 ```tmux
 source-file ~/.config/domux/domux.tmux
 ```
 
-Claude Code integration is also preview-first:
+Then reload tmux:
+
+```sh
+tmux source-file ~/.tmux.conf
+```
+
+The generated tmux bindings inherit your existing prefix. `domux` does not change
+your tmux prefix.
+
+## Quick Start
+
+Start or resume work in a directory:
+
+```sh
+domux start ~/code/my-repo
+```
+
+Open the todo TUI for the current context:
+
+```sh
+domux
+```
+
+Open the session switcher:
+
+```sh
+domux switcher
+```
+
+Mark the current tmux session as the one running the dev server:
+
+```sh
+domux server
+```
+
+Give the current session a label:
+
+```sh
+domux label set "auth cleanup"
+```
+
+Check setup:
+
+```sh
+domux doctor
+```
+
+## Tmux Bindings
+
+After sourcing `~/.config/domux/domux.tmux`:
+
+| Binding | Action |
+|---|---|
+| `<prefix> t` | Open todo popup for the current pane path |
+| `<prefix> s` | Open session switcher |
+| `<prefix> u` | Open utilities popup |
+| `<prefix> v` | Toggle server marker for current session |
+| `<prefix> N` | Set session label |
+| `<prefix> n` | Clear session label |
+| `<prefix> i` | Toggle AI state for current pane |
+| `<prefix> f` | Clear domux state for current session |
+
+## Todo TUI
+
+`domux` opens the todo list for the current context. Inside a pinned tmux
+session, that means the session root. Outside tmux, it uses the current git root
+or directory.
+
+| Key | Action |
+|---|---|
+| `j` / `k` / arrows | Move cursor |
+| `a` | Add task |
+| `e` | Edit task title |
+| `Enter` | Edit notes in `$EDITOR` |
+| `Space` / `x` | Mark done and archive |
+| `i` | Toggle in progress |
+| `f` | Focus task for this session |
+| `d` | Delete task |
+| `J` / `K` | Move task up or down |
+| `Tab` | Show or hide archive |
+| `r` | Reload from disk |
+| `?` / `h` | Toggle help |
+| `q` / `Esc` | Quit |
+
+## Session Switcher
+
+`domux switcher` shows tmux sessions grouped by project. It can show branch and
+PR state, labels, focused tasks, server marker, and Claude/Codex activity when
+hooks are installed.
+
+| Key | Action |
+|---|---|
+| `j` / `k` / arrows | Move cursor |
+| `Enter` | Switch to selected session |
+| `/` | Filter sessions |
+| `+` | Create a workspace session in the selected group |
+| `n` | Name selected session |
+| `c` | Clear selected session |
+| `r` | Reset selected branch only |
+| `s` | Mark selected session as server |
+| `Tab` | Show or hide task previews |
+| `D` | Delete workspace sessions or close main sessions |
+| `q` / `Esc` | Quit |
+
+## Commands
+
+| Command | Meaning |
+|---|---|
+| `domux` | Open todo TUI |
+| `domux todo` | Same as `domux` |
+| `domux switcher` | Open session switcher |
+| `domux sessions` | Alias for `switcher` |
+| `domux start [DIR]` | Start or resume a pinned tmux session |
+| `domux adopt [DIR]` | Pin the current tmux session to a directory |
+| `domux attach NAME` | Attach or switch to a tmux session |
+| `domux clear` | Reset and free the current workspace |
+| `domux reset-branch` | Reset only the current git branch |
+| `domux clear-state` | Clear domux state for current session |
+| `domux server` | Toggle server marker |
+| `domux commands` | Open utilities popup |
+| `domux doctor` | Check integration state |
+| `domux migrate` | Preview migration from old tmux dotfiles |
+
+Script-friendly output:
+
+| Command | Meaning |
+|---|---|
+| `domux --path` | Print todo file path for current context |
+| `domux --count` | Print active task count |
+| `domux --status` | Print tmux status text |
+| `domux --list` | Print active tasks |
+| `domux --version` | Print version |
+
+## Optional Claude and Codex Hooks
+
+If you use Claude Code or Codex, `domux` can install hooks that update tmux and
+the switcher when an agent starts working, waits for input, compacts, or exits.
+
+Preview first:
 
 ```sh
 domux install claude
-domux install claude --apply
+domux install codex
 ```
 
-This patches `~/.claude/settings.json` with AI-state hooks **and** writes a
-`/start-task` slash command to `~/.claude/commands/start-task.md`. Inside
-Claude Code, run:
-
-```
-/start-task fix login redirect on Safari
-```
-
-The command teaches Claude about domux + git worktrees, then has it refresh
-`origin/main`, branch off, and set the domux session label before touching
-code. Restricted branches (`main`, `master`, `workspace-*`) are noted so
-Claude won't commit to them.
-
-Codex integration is preview-first too:
+Apply:
 
 ```sh
-domux install codex
+domux install claude --apply
 domux install codex --apply
 ```
 
-Install commands create backups before writing and do not delete legacy
-`~/.tmux-*` state files.
+The Claude install also writes a `/start-task` command that tells Claude how to
+use domux, tmux sessions, and git worktrees before it starts coding.
 
-## /implement pipeline
+There is also an optional Claude Code plugin for an `/implement` pipeline. See
+[`docs/implement-pipeline.md`](docs/implement-pipeline.md) if you want that. It
+is not required for the normal domux workflow.
 
-`domux install claude --apply` also installs the `implement-pipeline` Claude Code plugin:
+## Caffeinate
 
-- `/implement` — hands-off pipeline (implement → simplify → lint → browser → UX → azcodex review → PR)
-- `/browser-test`, `/ux-review`, `/azcodex-review` — individually invokable gates
+`domux commands` opens a small utilities popup. The first utility is caffeinate.
 
-See [docs/implement-pipeline.md](docs/implement-pipeline.md) for details.
-
-## Commands popup
-
-`<prefix> u` opens a small popup with toggleable utilities:
+Partial mode prevents idle sleep and does not require sudo:
 
 ```sh
-domux commands
+domux install caffeinate
 ```
 
-First entry is caffeinate. Enter toggles it. Partial mode runs
-`caffeinate -dimsu` in the background (idle-sleep only). Full mode also
-manages a launchd daemon and `pmset disablesleep` — enable it via
-`domux install caffeinate --full` (requires sudo once at install time).
+Full mode also prevents lid-close sleep. It requires sudo once during install:
 
-## Switcher keybindings
+```sh
+domux install caffeinate --full
+```
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` / arrows | Move cursor |
-| `Enter` | Switch to selected session |
-| `+` | Create a workspace session in the selected group |
-| `D` | Delete workspace sessions, close main sessions |
-| `n` | Name (label) the selected session inline |
-| `c` | Clear/reset selected session |
-| `r` | Reset selected session branch only |
-| `s` | Mark selected session as running the server |
-| `Tab` | Show/hide todos |
-| `/` | Filter sessions |
-| `q` / `Esc` | Quit |
+## Storage
 
-## Features
+Todo files are stored as markdown:
 
-- One TODO list per git worktree
-- Tmux sessions pinned to their starting root
-- Focused TODO per session
-- Native terminal TUI (bubbletea)
-- File-backed markdown format
-- Claude Code and Codex hooks can update tmux AI state through domux
-- Live reload via fsnotify
-- Vim-style keybindings
+```text
+~/.local/share/domux/by-path/<escaped-path>.md
+```
 
-## Todo keybindings
-
-| Key | Action |
-|-----|--------|
-| `j` / `k` / arrows | Move cursor |
-| `a` | Add new task |
-| `e` | Edit selected task |
-| `i` | Toggle in progress / restore archived task in progress |
-| `f` | Focus selected task for current session |
-| `o` | Reopen archived task |
-| `Enter` | Edit notes in $EDITOR |
-| `Space` / `x` | Toggle done (moves to archive) |
-| `d` | Delete task |
-| `J` / `K` | Move task up/down |
-| `Tab` | Expand/collapse archive |
-| `r` | Reload file from disk |
-| `?` / `h` | Toggle help overlay |
-| `q` / `Esc` | Quit |
-
-## Data format
-
-TODO files are stored at `~/.local/share/domux/by-path/<sanitized-path>.md` in GitHub-flavored markdown:
+Example:
 
 ```markdown
 ---
-worktree: /Users/pranav/code/audrey-app
+worktree: /Users/alice/code/my-repo
 created: 2026-05-18
 ---
 
 # TODOs
 
 - [ ] Fix login redirect on Safari
-  Stack trace pointed at auth-callback.tsx:42.
-- [~] Bump react-router to v7
+  Notes can live under a task.
+- [~] Bump react-router
 
 ## Archive
 
-- [x] 2026-05-17 — Wire up new feature flag for X
+- [x] 2026-05-17 - Wire up feature flag
 ```
 
-Domux lazily adds stable HTML-comment IDs when a TODO file is saved:
+Session metadata lives here:
 
-```markdown
-- [ ] Fix login redirect on Safari <!-- domux:id=1a2b3c4d5e6f7890 -->
+```text
+~/.local/share/domux/sessions/<session>.json
 ```
 
-Session metadata is stored in `~/.local/share/domux/sessions/<session>.json`.
-Generated integration files live under `~/.config/domux/`.
+Generated integration files live here:
 
-## Claude interface
-
-To find the current session's pinned list:
-
-```sh
-domux --path
-# prints: /Users/pranav/.local/share/domux/by-path/%2FUsers%2Fpranav%2Fcode%2Faudrey-app.md
+```text
+~/.config/domux/
 ```
 
-Claude can read/write that path directly. The TUI picks up edits via fsnotify.
+The files are meant to be readable and recoverable. You can edit the markdown
+todo files directly; the TUI reloads changes from disk.
 
 ## Migration
 
-Existing dotfiles state is still read:
+Older tmux dotfile state is still read:
 
 - `~/.tmux-label-*`
 - `~/.tmux-server-*`
@@ -281,19 +318,43 @@ Existing dotfiles state is still read:
 - `~/.tmux-codex-*`
 - `~/.tmux-workspace-*`
 
-Use dry-run migration first:
+Preview migration:
 
 ```sh
 domux migrate
 ```
 
-Apply only after reviewing the output:
+Apply migration:
 
 ```sh
 domux migrate --apply
 ```
 
-## Design
+Install commands create backups before writing. Migration does not delete the old
+dotfiles.
 
-The implementation is intentionally self-contained so it can be installed
-outside personal dotfiles and adopted gradually.
+## Development
+
+```sh
+make
+make test
+make switcher
+```
+
+For local development, `make install` symlinks `~/bin/domux` to the repo build:
+
+```sh
+make install
+```
+
+Remove that symlink with:
+
+```sh
+make uninstall
+```
+
+## Design Notes
+
+`domux` is intentionally boring: one Go binary, tmux commands, markdown todos,
+and small JSON state files. The goal is to make existing terminal workflows less
+ambiguous, not to replace them.
