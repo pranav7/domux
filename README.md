@@ -343,8 +343,3 @@ Remove that symlink with:
 make uninstall
 ```
 
-## Design Notes
-
-I kept domux deliberately boring: one Go binary, tmux commands, markdown todos,
-and small JSON state files. It's meant to make my existing terminal workflow
-less ambiguous, not to replace it.
