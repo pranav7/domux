@@ -2,43 +2,33 @@
 
 # domux
 
-`domux` is a small tmux workbench for people who keep too many terminal sessions
-open: projects, git worktrees, dev servers, and coding agents.
+I usually have a few things going at once in a single project: several git
+worktrees, each on its own branch, often with a coding agent running in its own
+tmux session. tmux keeps all those shells alive, but it doesn't tell me much
+about them — which session is on which branch, what I was doing in each one, or
+whether the agent over in session 3 is still working or has been sitting there
+waiting on me.
 
-It does two things:
+I built domux to keep track of all that. It pins each tmux session to the
+worktree where it started, gives every session its own todo list, and shows the
+whole lot in one switcher: the branch, a label, the task I'm focused on, and
+whether an agent is busy, waiting for input, or done. Worktrees do the work
+underneath, but I don't have to think about them — I just see what's happening
+across my sessions and where my attention is needed.
 
-- keeps each tmux session pinned to the project or git worktree where it started
-- gives that context a local todo list and a session switcher
+The part that matters to me is that it lives inside tmux. I didn't want to learn
+another tool or keep a browser tab open to track my work. I already work in the
+terminal, so domux works there too.
 
-There is no server. State lives in markdown and JSON files under
-`~/.local/share/domux`. The tmux integration is just a generated config file you
-can inspect before sourcing.
+No server, no database. State is plain markdown and JSON under
+`~/.local/share/domux`, and the tmux integration is a generated config file you
+can read before you source it.
 
-## Why
+## Requirements
 
-tmux is good at keeping shells alive. It is less good at answering:
-
-- which session belongs to which repo?
-- which worktree was this agent using?
-- what was I doing in this pane yesterday?
-- which session is running the dev server?
-
-`domux` keeps that bookkeeping close to tmux instead of putting it in a browser
-tab or a separate project tracker.
-
-## Overview
-
-- `domux`: a terminal todo list for the current project or worktree
-- `domux switcher`: a tmux session picker grouped by project
-- pinned session state: root path, label, focused todo, server marker, AI state
-- status bar output for the current task and agent activity
-- optional hooks for Claude Code and Codex
-- local, editable storage files
-
-## Status
-
-Current release binaries are for macOS, Apple Silicon and Intel. `tmux` is
-needed for the session workflow. The todo TUI itself is just a terminal program.
+Release binaries are macOS only, Apple Silicon and Intel. You need `tmux` for the
+session and switcher workflow; the todo TUI on its own is just a terminal program
+that runs anywhere.
 
 ## Install
 
@@ -355,6 +345,6 @@ make uninstall
 
 ## Design Notes
 
-`domux` is intentionally boring: one Go binary, tmux commands, markdown todos,
-and small JSON state files. The goal is to make existing terminal workflows less
-ambiguous, not to replace them.
+I kept domux deliberately boring: one Go binary, tmux commands, markdown todos,
+and small JSON state files. It's meant to make my existing terminal workflow
+less ambiguous, not to replace it.
