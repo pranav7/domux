@@ -170,6 +170,10 @@ func runSudoNonInteractive(args ...string) error {
 }
 
 func caffeinatePlistContent() string {
+	// Re-assert disablesleep every 30s so lid-close prevention survives wake
+	// (macOS clears it on some sleep/wake cycles). KeepAlive restarts the loop
+	// if it ever dies. The job exists only while loaded; caffeinateOff unloads
+	// it and clears disablesleep, so it never outlives a "domux caffeinate off".
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -178,12 +182,13 @@ func caffeinatePlistContent() string {
     <string>com.domux.noclamshell</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/pmset</string>
-        <string>-a</string>
-        <string>disablesleep</string>
-        <string>1</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>while :; do /usr/bin/pmset -a disablesleep 1; sleep 30; done</string>
     </array>
     <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
     <true/>
 </dict>
 </plist>
