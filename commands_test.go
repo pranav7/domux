@@ -82,6 +82,37 @@ func TestClearWorkspaceDirtyKeepsSessionState(t *testing.T) {
 	}
 }
 
+func TestClearWorkspaceClearsSessionTodos(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	todoPath := filepath.Join(t.TempDir(), "todo.md")
+	list := &List{
+		Worktree: "/tmp/audrey-app",
+		Created:  "2026-05-28",
+		Active:   []Item{{Title: "open"}, {Title: "done", Done: true}},
+		Archive:  []Item{{Title: "old", Done: true}},
+	}
+	if err := saveList(todoPath, list); err != nil {
+		t.Fatalf("saveList: %v", err)
+	}
+	if err := saveSessionState(&SessionState{Name: session, TodoPath: todoPath}); err != nil {
+		t.Fatalf("saveSessionState: %v", err)
+	}
+
+	if err := clearWorkspaceForSession(session, "", false); err != nil {
+		t.Fatalf("clearWorkspaceForSession: %v", err)
+	}
+
+	got, err := loadList(todoPath)
+	if err != nil {
+		t.Fatalf("loadList: %v", err)
+	}
+	if len(got.Active) != 0 || len(got.Archive) != 0 {
+		t.Fatalf("todos not cleared: active=%#v archive=%#v", got.Active, got.Archive)
+	}
+}
+
 func TestCloseTmuxSessionClearsStateAndKillsSession(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

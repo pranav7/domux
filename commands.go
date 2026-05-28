@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 var errClearDirty = errors.New("uncommitted changes — commit or stash first")
@@ -354,15 +355,22 @@ func focusSessionTodo(args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(list.Active) == 0 {
+	focusIdx := -1
+	for i, item := range list.Active {
+		if !item.Done {
+			focusIdx = i
+			break
+		}
+	}
+	if focusIdx < 0 {
 		return fmt.Errorf("no active todos to focus")
 	}
 	id := ""
 	if len(args) == 1 {
 		id = args[0]
 	} else {
-		ensureItemID(&list.Active[0])
-		id = list.Active[0].ID
+		ensureItemID(&list.Active[focusIdx])
+		id = list.Active[focusIdx].ID
 		if err := saveList(ctx.TodoPath, list); err != nil {
 			return err
 		}
@@ -403,11 +411,7 @@ func printListCommand(args []string) error {
 		if i == len(list.Active)-1 {
 			prefix = "└─"
 		}
-		symbol := "○"
-		if item.InProgress {
-			symbol = "●"
-		}
-		fmt.Printf("%s %s %s\n", prefix, symbol, item.Title)
+		fmt.Printf("%s %s %s\n", prefix, todoSymbol(item), item.Title)
 	}
 	return nil
 }
@@ -449,10 +453,7 @@ func printTmuxStatus(args []string) error {
 		if len(title) > 50 {
 			title = title[:47] + "..."
 		}
-		symbol := "○"
-		if item.InProgress {
-			symbol = "●"
-		}
+		symbol := todoSymbol(item)
 		status = fmt.Sprintf("#[default]#[fg=#f9e2af]%s %s ", symbol, title)
 	}
 	if ctx.State == nil && session != "" {
@@ -565,6 +566,11 @@ func clearWorkspaceForSession(session, dir string, verbose bool) error {
 		}
 	}
 
+	state := loadSessionStateWithLegacy(session)
+	if err := clearTodosForSession(state, dir); err != nil {
+		return err
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("cannot get home directory: %w", err)
@@ -572,7 +578,6 @@ func clearWorkspaceForSession(session, dir string, verbose bool) error {
 	if err := clearSessionStateFiles(homeDir, session); err != nil {
 		return err
 	}
-	state := loadSessionStateWithLegacy(session)
 	state.Label = ""
 	state.Server = false
 	state.Workspace = ""
@@ -582,6 +587,40 @@ func clearWorkspaceForSession(session, dir string, verbose bool) error {
 	}
 	_ = refreshTmuxClient()
 	return nil
+}
+
+func clearTodosForSession(state *SessionState, dir string) error {
+	if state == nil {
+		state = &SessionState{}
+	}
+	path := state.TodoPath
+	worktree := state.Root
+	if worktree == "" {
+		worktree = dir
+	}
+	if path == "" && worktree != "" {
+		resolved, err := resolvePath(worktree)
+		if err != nil {
+			return err
+		}
+		path = resolved
+	}
+	if path == "" {
+		return nil
+	}
+	list, err := loadList(path)
+	if err != nil {
+		return err
+	}
+	if list.Worktree == "" {
+		list.Worktree = worktree
+	}
+	if list.Created == "" {
+		list.Created = time.Now().Format("2006-01-02")
+	}
+	list.Active = nil
+	list.Archive = nil
+	return saveList(path, list)
 }
 
 func clearSessionStateFiles(homeDir, session string) error {

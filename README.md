@@ -155,7 +155,8 @@ or directory.
 | `a` | Add task |
 | `e` | Edit task title |
 | `Enter` | Edit notes in `$EDITOR` |
-| `Space` / `x` | Mark done and archive |
+| `Space` / `x` | Toggle done |
+| `A` | Archive task |
 | `i` | Toggle in progress |
 | `f` | Focus task for this session |
 | `d` | Delete task |
@@ -277,10 +278,11 @@ created: 2026-05-18
 - [ ] Fix login redirect on Safari
   Notes can live under a task.
 - [~] Bump react-router
+- [x] 2026-05-18 — Verify deploy
 
 ## Archive
 
-- [x] 2026-05-17 - Wire up feature flag
+- [x] 2026-05-17 — Wire up feature flag
 ```
 
 Session metadata lives here:
@@ -342,4 +344,3 @@ Remove that symlink with:
 ```sh
 make uninstall
 ```
-

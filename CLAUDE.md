@@ -28,7 +28,7 @@ Single-package layout (`package main`) — no module subdirs. Go 1.22.
 
 **AI state model.** `state.AI` is `map[string]string` keyed `agent:pane` (e.g. `claude:1_0`, `codex:default`). `aggregateAIStatesFromSession` collapses per-pane entries into `AIStates{Claude, Codex}` with WAITING winning over CLAUDING/CODEXING. `normalizeAIState` is the single source of truth for value canonicalization — go through it.
 
-**TODO file format.** GitHub-flavored markdown with YAML frontmatter. Active `- [ ]` / in-progress `- [~] ` / archive `- [x] YYYY-MM-DD — title`. Lazy stable IDs appended as `<!-- domux:id=… -->` on save (`store.go`). Parsing is line-oriented in `loadList`; preserve that — no markdown library.
+**TODO file format.** GitHub-flavored markdown with YAML frontmatter. Active `- [ ]` / in-progress `- [~] ` / done `- [x] YYYY-MM-DD — title`; archived done items live under `## Archive`. Lazy stable IDs appended as `<!-- domux:id=… -->` on save (`store.go`). Parsing is line-oriented in `loadList`; preserve that — no markdown library.
 
 **TUIs.** Two bubbletea models:
 - `tui.go` — per-session TODO editor. fsnotify-backed live reload (`watcher`, `pendingReload`).

@@ -73,6 +73,44 @@ func TestShiftArrowsMoveActiveTodo(t *testing.T) {
 	}
 }
 
+func TestDoneKeyDoesNotArchiveActiveTodo(t *testing.T) {
+	m := model{
+		path:   filepath.Join(t.TempDir(), "todo.md"),
+		cursor: 0,
+		list: &List{Active: []Item{
+			{Title: "task"},
+		}},
+	}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	pm := next.(model)
+	if len(pm.list.Active) != 1 || len(pm.list.Archive) != 0 {
+		t.Fatalf("active=%d archive=%d, want active done only", len(pm.list.Active), len(pm.list.Archive))
+	}
+	if !pm.list.Active[0].Done || pm.list.Active[0].DoneDate == "" {
+		t.Fatalf("task not marked done: %#v", pm.list.Active[0])
+	}
+}
+
+func TestArchiveKeyMovesActiveTodoToArchive(t *testing.T) {
+	m := model{
+		path:   filepath.Join(t.TempDir(), "todo.md"),
+		cursor: 0,
+		list: &List{Active: []Item{
+			{Title: "task", Done: true, DoneDate: "2026-05-28"},
+		}},
+	}
+
+	next, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})
+	pm := next.(model)
+	if len(pm.list.Active) != 0 || len(pm.list.Archive) != 1 {
+		t.Fatalf("active=%d archive=%d, want archived", len(pm.list.Active), len(pm.list.Archive))
+	}
+	if pm.list.Archive[0].Title != "task" || !pm.list.Archive[0].Done {
+		t.Fatalf("archive item = %#v", pm.list.Archive[0])
+	}
+}
+
 func TestWrapNoteLinesFitsInnerWidth(t *testing.T) {
 	innerWidth := 32
 	lines := wrapNoteLines("alpha beta gamma delta epsilon zeta", innerWidth)

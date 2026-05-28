@@ -111,6 +111,15 @@ var (
 					Foreground(yellow).
 					Bold(true)
 
+	taskTitleDoneStyle = lipgloss.NewStyle().
+				Foreground(overlay1).
+				Strikethrough(true)
+
+	taskTitleDoneSelectedStyle = lipgloss.NewStyle().
+					Foreground(subtext0).
+					Bold(true).
+					Strikethrough(true)
+
 	notesStyle = lipgloss.NewStyle().
 			Foreground(overlay1).
 			Italic(true).
@@ -405,7 +414,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "i":
 		if idx, ok := m.selectedActiveIndex(); ok {
-			m.list.Active[idx].InProgress = !m.list.Active[idx].InProgress
+			item := &m.list.Active[idx]
+			item.InProgress = !item.InProgress
+			if item.InProgress {
+				item.Done = false
+				item.DoneDate = ""
+			}
 			if err := saveList(m.path, m.list); err != nil {
 				m.err = err
 			}
@@ -439,10 +453,29 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "x", " ":
 		if idx, ok := m.selectedActiveIndex(); ok {
+			item := &m.list.Active[idx]
+			item.Done = !item.Done
+			if item.Done {
+				item.InProgress = false
+				if item.DoneDate == "" {
+					item.DoneDate = time.Now().Format("2006-01-02")
+				}
+			} else {
+				item.DoneDate = ""
+			}
+			if err := saveList(m.path, m.list); err != nil {
+				m.err = err
+			}
+		}
+
+	case "A":
+		if idx, ok := m.selectedActiveIndex(); ok {
 			item := m.list.Active[idx]
 			item.InProgress = false
 			item.Done = true
-			item.DoneDate = time.Now().Format("2006-01-02")
+			if item.DoneDate == "" {
+				item.DoneDate = time.Now().Format("2006-01-02")
+			}
 			m.list.Archive = append([]Item{item}, m.list.Archive...)
 			m.list.Active = append(m.list.Active[:idx], m.list.Active[idx+1:]...)
 			if err := saveList(m.path, m.list); err != nil {
@@ -637,7 +670,7 @@ func (m model) View() string {
 		"█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀",
 		"█▄▀ █▄█ █ ▀ █ █▄█ █ █",
 	}
-	count := taskCountStyle.Render(fmt.Sprintf("%d tasks", len(m.list.Active)))
+	count := taskCountStyle.Render(fmt.Sprintf("%d tasks", openTaskCount(m.list)))
 	worktree := worktreeStyle.Render(shortenPath(m.list.Worktree))
 	innerWidth := m.width - 8 // 4-space indent on each side
 	if innerWidth < 20 {
@@ -668,12 +701,17 @@ func (m model) View() string {
 			var row string
 			checkbox := checkboxEmpty.Render("○")
 			title := taskTitleStyle.Render(item.Title)
-			if item.InProgress {
+			if item.Done {
+				checkbox = checkboxDone.Render("✓")
+				title = taskTitleDoneStyle.Render(item.Title)
+			} else if item.InProgress {
 				checkbox = checkboxProgress.Render("●")
 				title = taskTitleProgressStyle.Render(item.Title)
 			}
 			if selected {
-				if item.InProgress {
+				if item.Done {
+					title = taskTitleDoneSelectedStyle.Render(item.Title)
+				} else if item.InProgress {
 					title = taskTitleProgressSelectedStyle.Render(item.Title)
 				} else {
 					title = taskTitleSelectedStyle.Render(item.Title)
@@ -853,7 +891,8 @@ func (m model) renderFooter() string {
 		{"⏎", "notes"},
 		{"d", "del"},
 		{"J/K ⇧↑/↓", "move"},
-		{"⇥", "archive"},
+		{"A", "archive"},
+		{"⇥", "show"},
 		{"?", "help"},
 		{"q", "quit"},
 	}
@@ -878,10 +917,11 @@ func (m model) helpView() string {
 		{"f", "focus selected task for session"},
 		{"o", "reopen archived task"},
 		{"enter", "edit notes in $EDITOR"},
-		{"space / x", "mark done → archive"},
+		{"space / x", "toggle done"},
+		{"A", "archive selected task"},
 		{"d", "delete task"},
 		{"J / K / shift+up/down", "reorder task"},
-		{"tab", "toggle archive"},
+		{"tab", "show / hide archive"},
 		{"r", "reload from disk"},
 		{"?", "toggle help"},
 		{"q / ctrl+c", "quit"},

@@ -55,7 +55,7 @@ func loadList(path string) (*List, error) {
 		if currentItem == nil {
 			return
 		}
-		if currentItem.Done || inArchive {
+		if inArchive {
 			list.Archive = append(list.Archive, *currentItem)
 		} else {
 			list.Active = append(list.Active, *currentItem)
@@ -100,17 +100,24 @@ func loadList(path string) (*List, error) {
 		}
 
 		// Active items
-		if inTodos && (strings.HasPrefix(line, "- [ ] ") || strings.HasPrefix(line, "- [~] ")) {
+		if inTodos && (strings.HasPrefix(line, "- [ ] ") || strings.HasPrefix(line, "- [~] ") || strings.HasPrefix(line, "- [x] ")) {
 			flushItem()
 			inProgress := strings.HasPrefix(line, "- [~] ")
+			done := strings.HasPrefix(line, "- [x] ")
 			title := strings.TrimPrefix(line, "- [ ] ")
 			title = strings.TrimPrefix(title, "- [~] ")
+			title = strings.TrimPrefix(title, "- [x] ")
+			doneDate := ""
+			if done {
+				doneDate, title = splitDoneDateTitle(title)
+			}
 			title, id := splitTodoID(title)
 			currentItem = &Item{
 				ID:         id,
 				Title:      title,
 				InProgress: inProgress,
-				Done:       false,
+				Done:       done,
+				DoneDate:   doneDate,
 			}
 			continue
 		}
@@ -119,20 +126,14 @@ func loadList(path string) (*List, error) {
 		if inArchive && strings.HasPrefix(line, "- [x] ") {
 			flushItem()
 			rest := strings.TrimPrefix(line, "- [x] ")
-			parts := strings.SplitN(rest, " — ", 2)
-			title := rest
+			doneDate, title := splitDoneDateTitle(rest)
 			id := ""
-			if len(parts) == 2 {
-				title, id = splitTodoID(parts[1])
-				currentItem = &Item{
-					ID:       id,
-					DoneDate: parts[0],
-					Title:    title,
-					Done:     true,
-				}
-			} else {
-				title, id = splitTodoID(rest)
-				currentItem = &Item{ID: id, Title: title, Done: true}
+			title, id = splitTodoID(title)
+			currentItem = &Item{
+				ID:       id,
+				DoneDate: doneDate,
+				Title:    title,
+				Done:     true,
 			}
 			continue
 		}
@@ -187,10 +188,16 @@ func saveList(path string, list *List) error {
 		item := &list.Active[i]
 		ensureItemID(item)
 		marker := " "
-		if item.InProgress {
+		if item.Done {
+			marker = "x"
+		} else if item.InProgress {
 			marker = "~"
 		}
-		b.WriteString(fmt.Sprintf("- [%s] %s%s\n", marker, item.Title, todoIDComment(item.ID)))
+		title := item.Title
+		if item.Done && item.DoneDate != "" {
+			title = item.DoneDate + " — " + title
+		}
+		b.WriteString(fmt.Sprintf("- [%s] %s%s\n", marker, title, todoIDComment(item.ID)))
 		if item.Notes != "" {
 			for _, line := range strings.Split(item.Notes, "\n") {
 				b.WriteString(fmt.Sprintf("  %s\n", line))
@@ -244,6 +251,38 @@ func splitTodoID(title string) (string, string) {
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(title[idx:], prefix), suffix)
 	return strings.TrimSpace(title[:idx]), strings.TrimSpace(id)
+}
+
+func splitDoneDateTitle(rest string) (string, string) {
+	parts := strings.SplitN(rest, " — ", 2)
+	if len(parts) != 2 {
+		return "", rest
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+func openTaskCount(list *List) int {
+	if list == nil {
+		return 0
+	}
+	count := 0
+	for _, item := range list.Active {
+		if !item.Done {
+			count++
+		}
+	}
+	return count
+}
+
+func todoSymbol(item Item) string {
+	switch {
+	case item.Done:
+		return "✓"
+	case item.InProgress:
+		return "●"
+	default:
+		return "○"
+	}
 }
 
 func todoIDComment(id string) string {

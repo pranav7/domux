@@ -301,13 +301,27 @@ func TestPickerFilterEnterAllowsShortcutsOnFilteredList(t *testing.T) {
 		t.Fatalf("selected session = %q, want domux", got)
 	}
 
-	next, cmd = pm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	next, cmd = pm.updateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	pm = next.(pickerModel)
-	if cmd == nil {
-		t.Fatalf("c should run clear shortcut")
+	if cmd != nil {
+		t.Fatalf("c should only open clear confirmation")
+	}
+	if !pm.confirmDelete || pm.deleteAction != "clear" {
+		t.Fatalf("clear should enter confirm mode: confirm=%v action=%q", pm.confirmDelete, pm.deleteAction)
 	}
 	if pm.filtering || pm.filter.Value() != "d" {
 		t.Fatalf("clear shortcut changed filter state: filtering=%v filter=%q", pm.filtering, pm.filter.Value())
+	}
+	pm.width = 80
+	pm.height = 20
+	if !strings.Contains(pm.View(), "clear session") {
+		t.Fatalf("clear confirmation modal missing:\n%s", pm.View())
+	}
+
+	next, cmd = pm.updateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	pm = next.(pickerModel)
+	if cmd == nil {
+		t.Fatalf("y should run clear")
 	}
 	if !strings.Contains(pm.status, "clearing domux") {
 		t.Fatalf("status = %q, want clearing domux", pm.status)
@@ -748,6 +762,25 @@ func TestPickerCloseActionRemovesEmptyGroup(t *testing.T) {
 
 	if len(m.rows) != 0 {
 		t.Fatalf("rows = %#v, want empty", m.rows)
+	}
+}
+
+func TestPickerClearActionRemovesTaskRows(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s", Tasks: []taskInfo{{Title: "todo", SessionName: "s"}}}},
+		{Kind: rowTask, Group: "g", Task: &taskInfo{Title: "todo", SessionName: "s"}},
+	})
+
+	m.applyPickerAction(pickerActionMsg{Action: "clear", Session: "s"})
+
+	for _, row := range m.rows {
+		if row.Kind == rowTask {
+			t.Fatalf("task row remained after clear: %#v", row)
+		}
+		if row.Kind == rowSession && row.Session != nil && len(row.Session.Tasks) != 0 {
+			t.Fatalf("session tasks remained: %#v", row.Session.Tasks)
+		}
 	}
 }
 

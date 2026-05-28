@@ -49,6 +49,7 @@ type sessionInfo struct {
 type taskInfo struct {
 	Title       string
 	InProgress  bool
+	Done        bool
 	IsLast      bool
 	SessionName string
 	Path        string
@@ -75,6 +76,7 @@ type pickerModel struct {
 	deleteSession  string
 	deleteSlot     int
 	deleteRoot     string
+	deletePath     string
 	deleteBranch   string
 	deleteForce    bool
 	showTasks      bool
@@ -215,11 +217,18 @@ var (
 			Foreground(yellow).
 			Italic(true)
 
+	pTaskDone = lipgloss.NewStyle().
+			Foreground(overlay0).
+			Italic(true)
+
 	pTaskMarker = lipgloss.NewStyle().
 			Foreground(overlay0)
 
 	pTaskProgressMarker = lipgloss.NewStyle().
 				Foreground(yellow)
+
+	pTaskDoneMarker = lipgloss.NewStyle().
+			Foreground(green)
 
 	pConnector = lipgloss.NewStyle().
 			Foreground(surface1)
@@ -511,6 +520,17 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusErr = false
 
 				switch action {
+				case "clear":
+					session := m.deleteSession
+					path := m.deletePath
+					m.status = fmt.Sprintf("clearing %s", session)
+					return m, func() tea.Msg {
+						return pickerActionMsg{
+							Action:  "clear",
+							Session: session,
+							Err:     clearWorkspaceForSession(session, path, false),
+						}
+					}
 				case "close":
 					session := m.deleteSession
 					m.status = fmt.Sprintf("closing %s", session)
@@ -893,17 +913,17 @@ func (m *pickerModel) clearSelectedSession() tea.Cmd {
 	if session == nil {
 		return nil
 	}
-	name := session.Name
-	path := session.Path
-	m.status = fmt.Sprintf("clearing %s", name)
+	m.confirmDelete = true
+	m.deleteAction = "clear"
+	m.deleteSession = session.Name
+	m.deleteSlot = 0
+	m.deleteRoot = ""
+	m.deletePath = session.Path
+	m.deleteBranch = ""
+	m.deleteForce = false
+	m.status = fmt.Sprintf("clear %s? (y/N)", session.Name)
 	m.statusErr = false
-	return func() tea.Msg {
-		return pickerActionMsg{
-			Action:  "clear",
-			Session: name,
-			Err:     clearWorkspaceForSession(name, path, false),
-		}
-	}
+	return nil
 }
 
 func (m *pickerModel) resetSelectedBranch() tea.Cmd {
@@ -991,6 +1011,7 @@ func (m *pickerModel) deleteOrCloseSelectedSession() tea.Cmd {
 		m.deleteSession = session.Name
 		m.deleteSlot = 0
 		m.deleteRoot = ""
+		m.deletePath = ""
 		m.deleteBranch = ""
 		m.deleteForce = false
 		m.status = fmt.Sprintf("close %s? (y/N)", session.Name)
@@ -1009,6 +1030,7 @@ func (m *pickerModel) deleteOrCloseSelectedSession() tea.Cmd {
 	m.deleteSession = session.Name
 	m.deleteSlot = slot
 	m.deleteRoot = session.Root
+	m.deletePath = ""
 	m.deleteBranch = dir
 	m.deleteForce = false
 	m.status = fmt.Sprintf("delete %s? (y/N)", dir)
@@ -1074,8 +1096,10 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 				row.Session.Label = ""
 				row.Session.PR = nil
 				row.Session.Server = false
+				row.Session.Tasks = nil
 			}
 		}
+		m.removeSessionTaskRows(msg.Session)
 		m.status = fmt.Sprintf("cleared %s", msg.Session)
 	case "reset":
 		m.status = fmt.Sprintf("reset branch for %s", msg.Session)
@@ -1121,6 +1145,19 @@ func (m *pickerModel) removeSessionRows(session string) {
 	m.clampCursor()
 }
 
+func (m *pickerModel) removeSessionTaskRows(session string) {
+	var rows []pickerRow
+	for _, row := range m.rows {
+		if row.Kind == rowTask && row.Task != nil && row.Task.SessionName == session {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	m.rows = rows
+	m.rebuildVisible()
+	m.clampCursor()
+}
+
 func (m *pickerModel) moveCursor(dir int) {
 	if len(m.visible) == 0 {
 		return
@@ -1157,6 +1194,41 @@ func (m *pickerModel) clampCursor() {
 		}
 	}
 	m.cursor = 0
+}
+
+func (m pickerModel) renderConfirmOverlay() string {
+	title := "confirm"
+	body := pickerActionTarget(pickerActionMsg{
+		Action:  m.deleteAction,
+		Session: m.deleteSession,
+		Value:   m.deleteBranch,
+	})
+	switch m.deleteAction {
+	case "clear":
+		title = "clear session"
+		body = m.deleteSession + "\n\nclear session state and all todos"
+	case "close":
+		title = "close session"
+		body = m.deleteSession
+	case "delete":
+		title = "delete workspace"
+		body = m.deleteBranch
+		if m.deleteForce {
+			title = "force delete workspace"
+			body = m.deleteBranch + "\n\nuncommitted or unpushed work will be removed"
+		}
+	}
+
+	titleLine := lipgloss.NewStyle().Foreground(red).Bold(true).Render(title)
+	bodyLine := lipgloss.NewStyle().Foreground(text).Render(body)
+	hint := lipgloss.NewStyle().Foreground(overlay0).Render("y confirm · any other key cancel")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(red).
+		Padding(1, 2).
+		Width(46).
+		Render(titleLine + "\n\n" + bodyLine + "\n\n" + hint)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m pickerModel) renderLabelOverlay() string {
@@ -1211,72 +1283,28 @@ func (m pickerModel) View() string {
 		return ""
 	}
 
-	var b strings.Builder
-
-	// Heading — block art
-	logoLines := []string{
-		"█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀",
-		"█▄▀ █▄█ █ ▀ █ █▄█ █ █",
-	}
-	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
-	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
-
-	statusBox := ""
-	if m.status != "" {
-		style := pStatus
-		if m.statusErr {
-			style = pStatusErr
-		}
-		statusBox = style.Render(m.status)
-	}
-
-	b.WriteString("\n")
-	for i, line := range logoLines {
-		rendered := "    " + logoStyle.Render(line)
-		var trailing string
-		if i == 1 {
-			trailing = "  " + featureStyle.Render("switcher")
-		}
-		if i == 0 && statusBox != "" {
-			usedWidth := lipgloss.Width(rendered)
-			statusWidth := lipgloss.Width(statusBox)
-			pad := m.width - usedWidth - statusWidth - 4
-			if pad < 1 {
-				pad = 1
-			}
-			b.WriteString(rendered + strings.Repeat(" ", pad) + statusBox + "\n")
-		} else {
-			b.WriteString(rendered + trailing + "\n")
-		}
-	}
 	if m.helpOpen {
 		return m.renderHelpOverlay()
 	}
-	showFilterLine := m.filtering || m.filter.Value() != ""
+	if m.confirmDelete {
+		return m.renderConfirmOverlay()
+	}
 	if m.labelEditing {
 		return m.renderLabelOverlay()
-	} else if showFilterLine {
-		b.WriteString("\n    " + lipgloss.NewStyle().Foreground(blue).Render("/") + " ")
-		b.WriteString(lipgloss.NewStyle().Foreground(text).Render(m.filter.Value()))
-		if m.filtering {
-			b.WriteString(lipgloss.NewStyle().Foreground(blue).Render("▌"))
-		}
-		b.WriteString("\n")
-	} else {
-		b.WriteString("\n")
 	}
 
-	// logo(2) + blank(1) + prompt-or-blank(1) + footer(1) + blank(1) = 6, plus 1 spare
-	availableHeight := m.height - 7
-	if showFilterLine {
-		availableHeight--
-	}
+	var b strings.Builder
 
-	for _, line := range m.renderContentLines(availableHeight) {
+	// Interior spans everything between a leading blank line and the
+	// trailing blank + footer (plus 1 spare). When a preview is open it
+	// claims this full height — logo and list share the left column.
+	regionHeight := max(1, m.height-4)
+	b.WriteString("\n")
+	for _, line := range m.renderInterior(regionHeight) {
 		b.WriteString(line + "\n")
 	}
 
-	// blank line separating list from footer
+	// blank line separating interior from footer
 	b.WriteString("\n")
 
 	// Compact footer — most-used actions only; full list lives in the ? overlay.
@@ -1336,6 +1364,115 @@ func (m pickerModel) renderContentLines(height int) []string {
 	lines := make([]string, height)
 	for i := 0; i < height; i++ {
 		lines[i] = fitANSI(left[i], leftWidth) + " " + right[i]
+	}
+	return lines
+}
+
+// renderInterior fills the full vertical region between the leading blank and
+// the footer. When a preview is open it spans the whole height; the logo/list
+// live in the left column so the preview runs top-to-bottom alongside them.
+func (m pickerModel) renderInterior(regionHeight int) []string {
+	if regionHeight < 1 {
+		regionHeight = 1
+	}
+
+	// big preview — full width, full height, no logo
+	if m.previewOpen && m.previewBig {
+		return padLines(m.renderPreviewLines(m.width-4, regionHeight), regionHeight)
+	}
+
+	// split preview — logo + list on the left, full-height preview on the right
+	if m.previewOpen && m.width >= 110 {
+		previewWidth := previewPanelWidth(m.width)
+		leftWidth := m.width - previewWidth - 1
+		if leftWidth >= 24 {
+			left := m.renderLeftColumn(leftWidth, regionHeight)
+			right := padLines(m.renderPreviewLines(previewWidth, regionHeight), regionHeight)
+			lines := make([]string, regionHeight)
+			for i := 0; i < regionHeight; i++ {
+				lines[i] = fitANSI(left[i], leftWidth) + " " + right[i]
+			}
+			return lines
+		}
+	}
+
+	// narrow preview — full-width preview, no room for the list beside it
+	if m.previewOpen {
+		return padLines(m.renderPreviewLines(m.width-8, regionHeight), regionHeight)
+	}
+
+	// no preview — logo + filter + list
+	return m.renderLeftColumn(m.width, regionHeight)
+}
+
+// renderLeftColumn stacks the logo, filter line, and session list into exactly
+// regionHeight lines at the given width.
+func (m pickerModel) renderLeftColumn(width, regionHeight int) []string {
+	lines := m.logoHeaderLines(width)
+	lines = append(lines, m.filterLine())
+	listHeight := regionHeight - len(lines)
+	lines = append(lines, m.renderListLines(width, max(0, listHeight))...)
+	return padLines(lines, regionHeight)
+}
+
+// logoHeaderLines renders the two-line block-art logo (with optional status
+// box right-aligned to width) plus the "switcher" tag.
+func (m pickerModel) logoHeaderLines(width int) []string {
+	logoLines := []string{
+		"█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀",
+		"█▄▀ █▄█ █ ▀ █ █▄█ █ █",
+	}
+	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
+	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
+
+	statusBox := ""
+	if m.status != "" {
+		style := pStatus
+		if m.statusErr {
+			style = pStatusErr
+		}
+		statusBox = style.Render(m.status)
+	}
+
+	out := make([]string, len(logoLines))
+	for i, line := range logoLines {
+		rendered := "    " + logoStyle.Render(line)
+		if i == 0 && statusBox != "" {
+			pad := width - lipgloss.Width(rendered) - lipgloss.Width(statusBox) - 4
+			if pad < 1 {
+				pad = 1
+			}
+			out[i] = rendered + strings.Repeat(" ", pad) + statusBox
+			continue
+		}
+		if i == 1 {
+			rendered += "  " + featureStyle.Render("switcher")
+		}
+		out[i] = rendered
+	}
+	return out
+}
+
+// filterLine returns the "/ query" prompt when filtering, else a blank line.
+func (m pickerModel) filterLine() string {
+	if !m.filtering && m.filter.Value() == "" {
+		return ""
+	}
+	line := "    " + lipgloss.NewStyle().Foreground(blue).Render("/") + " " +
+		lipgloss.NewStyle().Foreground(text).Render(m.filter.Value())
+	if m.filtering {
+		line += lipgloss.NewStyle().Foreground(blue).Render("▌")
+	}
+	return line
+}
+
+// padLines truncates or pads lines to exactly n entries.
+func padLines(lines []string, n int) []string {
+	if len(lines) > n {
+		return lines[:n]
+	}
+	for len(lines) < n {
+		lines = append(lines, "")
 	}
 	return lines
 }
@@ -1930,7 +2067,10 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 
 	marker := pTaskMarker.Render("○")
 	title := pTask.Render(t.Title)
-	if t.InProgress {
+	if t.Done {
+		marker = pTaskDoneMarker.Render("✓")
+		title = pTaskDone.Render(t.Title)
+	} else if t.InProgress {
 		marker = pTaskProgressMarker.Render("●")
 		title = pTaskProgress.Render(t.Title)
 	}
@@ -2046,6 +2186,7 @@ func gatherSessions() []pickerRow {
 						info.Tasks = append(info.Tasks, taskInfo{
 							Title:       list.Active[i].Title,
 							InProgress:  list.Active[i].InProgress,
+							Done:        list.Active[i].Done,
 							IsLast:      i == maxTasks-1,
 							SessionName: sess,
 							Path:        info.Path,

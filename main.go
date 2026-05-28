@@ -95,7 +95,7 @@ func main() {
 		if err != nil {
 			os.Exit(1)
 		}
-		fmt.Print(len(list.Active))
+		fmt.Print(openTaskCount(list))
 		return
 	}
 
@@ -104,7 +104,8 @@ func main() {
 		if err != nil {
 			os.Exit(1)
 		}
-		if len(list.Active) == 0 {
+		count := openTaskCount(list)
+		if count == 0 {
 			return
 		}
 		topItem, ok := focusedOrTopItem(list, ctx.State)
@@ -112,15 +113,12 @@ func main() {
 			return
 		}
 		top := topItem.Title
-		symbol := "○"
-		if topItem.InProgress {
-			symbol = "●"
-		}
+		symbol := todoSymbol(topItem)
 		if len(top) > 50 {
 			top = top[:47] + "..."
 		}
-		if len(list.Active) > 1 {
-			fmt.Printf("%s %s + %d", symbol, top, len(list.Active)-1)
+		if count > 1 {
+			fmt.Printf("%s %s + %d", symbol, top, count-1)
 		} else {
 			fmt.Printf("%s %s", symbol, top)
 		}
@@ -137,11 +135,7 @@ func main() {
 			if i == len(list.Active)-1 {
 				prefix = "└─"
 			}
-			symbol := "○"
-			if item.InProgress {
-				symbol = "●"
-			}
-			fmt.Printf("%s %s %s\n", prefix, symbol, item.Title)
+			fmt.Printf("%s %s %s\n", prefix, todoSymbol(item), item.Title)
 		}
 		return
 	}

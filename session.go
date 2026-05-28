@@ -420,12 +420,17 @@ func focusedOrTopItem(list *List, state *SessionState) (Item, bool) {
 	}
 	if state != nil && state.FocusedTodoID != "" {
 		for _, item := range list.Active {
-			if item.ID == state.FocusedTodoID {
+			if item.ID == state.FocusedTodoID && !item.Done {
 				return item, true
 			}
 		}
 	}
-	return list.Active[0], true
+	for _, item := range list.Active {
+		if !item.Done {
+			return item, true
+		}
+	}
+	return Item{}, false
 }
 
 func aggregateAIStateFromSession(state *SessionState) string {
