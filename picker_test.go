@@ -760,7 +760,7 @@ func TestRenderSessionMarksMainWorktree(t *testing.T) {
 	}
 }
 
-func TestRenderSessionMovesDetailsToIndentedLine(t *testing.T) {
+func TestRenderSessionKeepsLabelInlineAndMovesPRToIndentedLine(t *testing.T) {
 	row := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
 		Name:   "workspace-1",
 		Branch: "feature/eng-147-v3",
@@ -779,13 +779,16 @@ func TestRenderSessionMovesDetailsToIndentedLine(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines = %#v, want two lines", lines)
 	}
-	if strings.Contains(lines[0], "PBC Validations") || strings.Contains(lines[0], "PR#311") {
-		t.Fatalf("detail leaked onto first line: %q", lines[0])
+	if !strings.Contains(lines[0], "PBC Validations") {
+		t.Fatalf("label missing from first line: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "PR#311") {
+		t.Fatalf("PR leaked onto first line: %q", lines[0])
 	}
 	if !strings.HasPrefix(lines[1], "        ") {
 		t.Fatalf("detail line not indented: %q", lines[1])
 	}
-	if !strings.Contains(lines[1], "PBC Validations · PR#311 · feat(pbc): free-text validations") {
+	if !strings.Contains(lines[1], "PR#311 · feat(pbc): free-text validations") {
 		t.Fatalf("detail line missing metadata: %q", lines[1])
 	}
 }
@@ -794,6 +797,11 @@ func TestRenderListLinesCountsSessionDetails(t *testing.T) {
 	row := pickerRow{Kind: rowSession, Group: "g", Session: &sessionInfo{
 		Name:  "workspace-1",
 		Label: "PBC Validations",
+		PR: &prInfo{
+			Number: 311,
+			State:  "OPEN",
+			Title:  "feat(pbc): free-text validations",
+		},
 	}}
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "g"},
@@ -802,7 +810,7 @@ func TestRenderListLinesCountsSessionDetails(t *testing.T) {
 
 	lines := m.renderListLines(100, 3)
 	plain := stripTestANSI(strings.Join(lines, "\n"))
-	if !strings.Contains(plain, "PBC Validations") {
+	if !strings.Contains(plain, "PR#311") {
 		t.Fatalf("detail line missing from rendered list:\n%s", plain)
 	}
 	if got := len(lines); got != 3 {

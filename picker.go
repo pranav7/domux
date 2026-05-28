@@ -201,13 +201,6 @@ var (
 	pBranchDim = lipgloss.NewStyle().
 			Foreground(overlay0)
 
-	pDetailLabel = lipgloss.NewStyle().
-			Foreground(subtext0)
-
-	pDetailLabelActive = lipgloss.NewStyle().
-				Foreground(text).
-				Bold(true)
-
 	pPROpen   = lipgloss.NewStyle().Foreground(green)
 	pPRMerged = lipgloss.NewStyle().Foreground(mauve)
 	pPRClosed = lipgloss.NewStyle().Foreground(red)
@@ -1786,21 +1779,21 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	if selected || active {
 		nameStyle = nameStyle.Bold(true)
 	}
-	labelStyle := pDetailLabel
+	labelStyle := pNameDim
 	if active || selected {
-		labelStyle = pDetailLabelActive
+		labelStyle = pName
 	}
 
-	// First line: {name} on {branch} ⚡ {AI}
+	// First line: {name} on {branch} | {label} ⚡ {AI}
 	line.WriteString(nameStyle.Render(s.Name))
 
 	if s.Branch != "" {
-		line.WriteString(pSep.Render(" on ") + pBranch.Render(s.Branch))
+		line.WriteString(pBranchDim.Render(" on ") + pBranch.Render(s.Branch))
 	}
 
 	var details []string
 	if s.Label != "" {
-		details = append(details, labelStyle.Render(s.Label))
+		line.WriteString(pSep.Render(" | ") + labelStyle.Render(s.Label))
 	}
 
 	// Server
