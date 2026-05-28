@@ -156,7 +156,7 @@ var (
 			Bold(true)
 
 	pGroupRule = lipgloss.NewStyle().
-			Foreground(surface1)
+			Foreground(surface0)
 
 	pCursor = lipgloss.NewStyle().
 		Foreground(blue).
@@ -201,6 +201,13 @@ var (
 	pBranchDim = lipgloss.NewStyle().
 			Foreground(overlay0)
 
+	pDetailLabel = lipgloss.NewStyle().
+			Foreground(subtext0)
+
+	pDetailLabelActive = lipgloss.NewStyle().
+				Foreground(text).
+				Bold(true)
+
 	pPROpen   = lipgloss.NewStyle().Foreground(green)
 	pPRMerged = lipgloss.NewStyle().Foreground(mauve)
 	pPRClosed = lipgloss.NewStyle().Foreground(red)
@@ -221,7 +228,7 @@ var (
 				Foreground(yellow)
 
 	pConnector = lipgloss.NewStyle().
-			Foreground(overlay0)
+			Foreground(surface1)
 
 	pMainMark = lipgloss.NewStyle().
 			Foreground(overlay0)
@@ -1779,9 +1786,9 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	if selected || active {
 		nameStyle = nameStyle.Bold(true)
 	}
-	labelStyle := pNameDim
+	labelStyle := pDetailLabel
 	if active || selected {
-		labelStyle = pName
+		labelStyle = pDetailLabelActive
 	}
 
 	// First line: {name} on {branch} ⚡ {AI}
