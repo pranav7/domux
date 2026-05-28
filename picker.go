@@ -97,12 +97,19 @@ type pickerRefreshMsg struct {
 	Rows []pickerRow
 }
 
+type pickerPRRefreshMsg struct {
+	Rows []pickerRow
+}
+
 type pickerSpinnerMsg struct{}
+
+type pickerPRRefreshTickMsg struct{}
 
 type pickerStatusExpireMsg struct{ at time.Time }
 
 const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
+const pickerPRRefreshInterval = 60 * time.Second
 const pickerSpinnerInterval = 80 * time.Millisecond
 const pickerStatusTTL = 5 * time.Second
 const claudeBrandHex = "#DE7356"
@@ -170,10 +177,10 @@ var (
 	pBranchDim = lipgloss.NewStyle().
 			Foreground(overlay0)
 
-	pPROpen   = lipgloss.NewStyle().Foreground(green).Bold(true)
-	pPRMerged = lipgloss.NewStyle().Foreground(mauve).Bold(true)
-	pPRClosed = lipgloss.NewStyle().Foreground(red).Bold(true)
-	pPRDraft  = lipgloss.NewStyle().Foreground(overlay1).Bold(true)
+	pPROpen   = lipgloss.NewStyle().Foreground(green)
+	pPRMerged = lipgloss.NewStyle().Foreground(mauve)
+	pPRClosed = lipgloss.NewStyle().Foreground(red)
+	pPRDraft  = lipgloss.NewStyle().Foreground(overlay1)
 
 	pTask = lipgloss.NewStyle().
 		Foreground(overlay1).
@@ -357,7 +364,7 @@ func isMainWorktreePath(path string) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd()}
+	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd(), pickerPRRefreshCmd()}
 	if m.status != "" && !m.statusSetAt.IsZero() {
 		cmds = append(cmds, statusExpireCmd(m.statusSetAt))
 	}
@@ -408,6 +415,13 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pickerRefreshMsg:
 		m.refreshRows(msg.Rows)
 		return m, pickerRefreshCmd()
+
+	case pickerPRRefreshMsg:
+		m.refreshRows(msg.Rows)
+		return m, pickerPRRefreshTickCmd()
+
+	case pickerPRRefreshTickMsg:
+		return m, pickerPRRefreshCmd()
 
 	case pickerSpinnerMsg:
 		// Wrap at LCM-ish large number so both the icon (mod 10) and the
@@ -625,6 +639,19 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 func pickerRefreshCmd() tea.Cmd {
 	return tea.Tick(pickerRefreshInterval, func(time.Time) tea.Msg {
 		return pickerRefreshMsg{Rows: gatherSessions()}
+	})
+}
+
+func pickerPRRefreshCmd() tea.Cmd {
+	return func() tea.Msg {
+		_ = refreshPRCaches()
+		return pickerPRRefreshMsg{Rows: gatherSessions()}
+	}
+}
+
+func pickerPRRefreshTickCmd() tea.Cmd {
+	return tea.Tick(pickerPRRefreshInterval, func(time.Time) tea.Msg {
+		return pickerPRRefreshTickMsg{}
 	})
 }
 
@@ -1315,15 +1342,8 @@ func gatherSessions() []pickerRow {
 			}
 		}
 
-		// PR cache
-		prFile := filepath.Join(homeDir, ".tmux-pr-"+sess)
-		if prData, err := os.ReadFile(prFile); err == nil {
-			parts := strings.SplitN(strings.TrimSpace(string(prData)), "::", 3)
-			if len(parts) == 3 {
-				num := 0
-				fmt.Sscanf(parts[0], "%d", &num)
-				info.PR = &prInfo{Number: num, State: parts[1], Title: parts[2]}
-			}
+		if pr, err := readPRCache(homeDir, sess); err == nil {
+			info.PR = pr
 		}
 
 		aiStates := aggregateAIStatesFromSession(state)
