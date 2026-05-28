@@ -30,6 +30,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  domux bootstrap    One-shot setup: detect brew/tmux/Claude/Codex, apply hooks\n")
 	fmt.Fprintf(os.Stderr, "  domux install      Preview tmux/Claude/Codex/caffeinate integration install\n")
 	fmt.Fprintf(os.Stderr, "  domux commands     Utilities popup (caffeinate, …)\n")
+	fmt.Fprintf(os.Stderr, "  domux caffeinate   Print/toggle keep-awake (status|on|off|toggle)\n")
 	fmt.Fprintf(os.Stderr, "  domux doctor       Check domux/tmux integration health\n\n")
 	fmt.Fprintf(os.Stderr, "Status output (for tmux/scripts):\n")
 	fmt.Fprintf(os.Stderr, "  domux --path       Print storage path and exit\n")

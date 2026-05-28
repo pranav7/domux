@@ -20,11 +20,12 @@ const (
 )
 
 const (
-	caffeinatePIDFile    = "/tmp/domux-caffeinate.pid"
 	caffeinatePlistPath  = "/Library/LaunchDaemons/com.domux.noclamshell.plist"
 	caffeinateSudoersDst = "/etc/sudoers.d/domux-caffeinate"
 	caffeinateConfigName = "caffeinate.json"
 )
+
+var caffeinatePIDFile = "/tmp/domux-caffeinate.pid"
 
 type caffeinateConfig struct {
 	Mode caffeinateMode `json:"mode"`
@@ -190,10 +191,7 @@ func caffeinatePlistContent() string {
 }
 
 func caffeinateRunning() bool {
-	if ourCaffeinateAlive() {
-		return true
-	}
-	return anyCaffeinateAlive()
+	return ourCaffeinateAlive()
 }
 
 func ourCaffeinateAlive() bool {
@@ -219,10 +217,6 @@ func ourCaffeinateAlive() bool {
 		return false
 	}
 	return true
-}
-
-func anyCaffeinateAlive() bool {
-	return exec.Command("pgrep", "-x", "caffeinate").Run() == nil
 }
 
 func pidIsCaffeinate(pid int) bool {
@@ -263,8 +257,6 @@ func caffeinateOff() error {
 		}
 		_ = os.Remove(caffeinatePIDFile)
 	}
-	// Also clear any caffeinate started outside domux (personal scripts, stray runs).
-	_ = exec.Command("pkill", "-x", "caffeinate").Run()
 	if loadCaffeinateConfig().Mode == caffeinateModeFull {
 		_ = runSudoNonInteractive("launchctl", "unload", caffeinatePlistPath)
 		_ = runSudoNonInteractive("pmset", "-a", "disablesleep", "0")
@@ -277,4 +269,46 @@ func toggleCaffeinate() error {
 		return caffeinateOff()
 	}
 	return caffeinateOn()
+}
+
+func caffeinateCommand(args []string) error {
+	sub := "status"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "status":
+		fmt.Println(caffeinateStatusLabel())
+		return nil
+	case "on":
+		if err := caffeinateOn(); err != nil {
+			return err
+		}
+		fmt.Println(caffeinateStatusLabel())
+		_ = refreshTmuxClient()
+		return nil
+	case "off":
+		if err := caffeinateOff(); err != nil {
+			return err
+		}
+		fmt.Println(caffeinateStatusLabel())
+		_ = refreshTmuxClient()
+		return nil
+	case "toggle":
+		if err := toggleCaffeinate(); err != nil {
+			return err
+		}
+		fmt.Println(caffeinateStatusLabel())
+		_ = refreshTmuxClient()
+		return nil
+	default:
+		return fmt.Errorf("usage: domux caffeinate [status|on|off|toggle]")
+	}
+}
+
+func caffeinateStatusLabel() string {
+	if caffeinateRunning() {
+		return "caffeinate: on"
+	}
+	return "caffeinate: off"
 }

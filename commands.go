@@ -89,6 +89,8 @@ func runCommand(name string, args []string) error {
 			return fmt.Errorf("commands does not accept arguments")
 		}
 		return runUtilities()
+	case "caffeinate":
+		return caffeinateCommand(args)
 	case "doctor":
 		return doctorCommand(args)
 	case "migrate":
