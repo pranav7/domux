@@ -91,6 +91,7 @@ type pickerModel struct {
 	previewLines   []string
 	previewErr     error
 	previewBig     bool
+	helpOpen       bool
 }
 
 type pickerActionMsg struct {
@@ -632,6 +633,16 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.helpOpen {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			default:
+				m.helpOpen = false
+				return m, nil
+			}
+		}
+
 		switch key {
 		case "left":
 			if m.previewOpen {
@@ -726,6 +737,9 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.provisionInFocusedGroup()
 		case "D":
 			return m, m.deleteOrCloseSelectedSession()
+		case "?":
+			m.helpOpen = true
+			return m, nil
 		default:
 			if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
 				m.filtering = true
@@ -1162,6 +1176,36 @@ func (m pickerModel) renderLabelOverlay() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+func (m pickerModel) renderHelpOverlay() string {
+	keyS := lipgloss.NewStyle().Foreground(mauve).Bold(true)
+	descS := lipgloss.NewStyle().Foreground(text)
+	catS := lipgloss.NewStyle().Foreground(overlay1).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(overlay0)
+	sep := dim.Render("  ·  ")
+
+	bind := func(k, d string) string { return keyS.Render(k) + descS.Render(" "+d) }
+	join := func(parts ...string) string { return strings.Join(parts, sep) }
+
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Foreground(mauve).Bold(true).Render("keybindings") + "\n\n")
+	b.WriteString(catS.Render("MOVE") + "\n")
+	b.WriteString("  " + join(bind("↑↓ / j k", "move"), bind("g / G", "top / bottom")) + "\n\n")
+	b.WriteString(catS.Render("SESSION") + "\n")
+	b.WriteString("  " + join(bind("⏎", "switch"), bind("+", "new"), bind("D", "close/delete")) + "\n")
+	b.WriteString("  " + join(bind("n", "name"), bind("c", "clear"), bind("r", "reset"), bind("s", "server")) + "\n\n")
+	b.WriteString(catS.Render("VIEW") + "\n")
+	b.WriteString("  " + join(bind("→", "preview"), bind("F", "big"), bind("P", "popup")) + "\n")
+	b.WriteString("  " + join(bind("tab", "show/hide todos"), bind("/", "filter")) + "\n\n")
+	b.WriteString(dim.Render("? or esc to close"))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(mauve).
+		Padding(1, 2).
+		Render(b.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m pickerModel) View() string {
 	if m.width == 0 {
 		return ""
@@ -1205,6 +1249,9 @@ func (m pickerModel) View() string {
 			b.WriteString(rendered + trailing + "\n")
 		}
 	}
+	if m.helpOpen {
+		return m.renderHelpOverlay()
+	}
 	showFilterLine := m.filtering || m.filter.Value() != ""
 	if m.labelEditing {
 		return m.renderLabelOverlay()
@@ -1229,35 +1276,29 @@ func (m pickerModel) View() string {
 		b.WriteString(line + "\n")
 	}
 
-	// Footer
+	// blank line separating list from footer
+	b.WriteString("\n")
+
+	// Compact footer — most-used actions only; full list lives in the ? overlay.
 	sep := pFooterSep.Render(" │ ")
-	todoLabel := "hide todos"
-	if !m.showTasks {
-		todoLabel = "show todos"
-	}
-	previewHelp := pFooterKey.Render("→") + pFooter.Render(" preview")
+	footer := "    " +
+		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
+		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
+		pFooterKey.Render("+") + pFooter.Render(" new") + sep
 	if m.previewOpen {
 		bigLabel := " big"
 		if m.previewBig {
 			bigLabel = " shrink"
 		}
-		previewHelp += sep + pFooterKey.Render("F") + pFooter.Render(bigLabel) + sep +
-			pFooterKey.Render("P") + pFooter.Render(" popup")
+		footer += pFooterKey.Render("F") + pFooter.Render(bigLabel) + sep +
+			pFooterKey.Render("P") + pFooter.Render(" popup") + sep
 	}
-	footer := "    " +
-		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
-		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
-		pFooterKey.Render("+") + pFooter.Render(" new") + sep +
-		pFooterKey.Render("D") + pFooter.Render(" close/delete") + sep +
-		pFooterKey.Render("n") + pFooter.Render(" name") + sep +
-		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
-		pFooterKey.Render("r") + pFooter.Render(" reset") + sep +
-		pFooterKey.Render("s") + pFooter.Render(" server") + sep +
-		previewHelp + sep +
-		pFooterKey.Render("tab") + pFooter.Render(" "+todoLabel) + sep +
-		pFooterKey.Render("/") + pFooter.Render(" filter") + sep +
+	footer += pFooterKey.Render("/") + pFooter.Render(" filter") + sep +
+		pFooterKey.Render("?") + pFooter.Render(" help") + sep +
 		m.renderEscHelp()
-	b.WriteString(fitANSI(footer, m.width))
+	// fit to width minus a right margin matching the 4-col left indent so the
+	// footer never bleeds past the right border (also absorbs wide-glyph miscounts)
+	b.WriteString(fitANSI(footer, max(1, m.width-4)))
 
 	return b.String()
 }

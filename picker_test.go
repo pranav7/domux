@@ -62,6 +62,35 @@ func TestPickerNStartsLabelEdit(t *testing.T) {
 	}
 }
 
+func TestPickerHelpOverlayToggle(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "audrey-app"}},
+	})
+	m.width, m.height = 120, 40
+	time.Sleep(200 * time.Millisecond)
+
+	// '?' opens the overlay rather than starting a filter for "?"
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	pm := next.(pickerModel)
+	if !pm.helpOpen {
+		t.Fatalf("? should open help overlay")
+	}
+	if pm.filtering || pm.filter.Value() != "" {
+		t.Fatalf("? must not start a filter, got filtering=%v value=%q", pm.filtering, pm.filter.Value())
+	}
+	if !strings.Contains(pm.View(), "keybindings") {
+		t.Fatalf("help overlay should render the cheatsheet")
+	}
+
+	// any key closes it (esc here)
+	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	pm = next.(pickerModel)
+	if pm.helpOpen {
+		t.Fatalf("esc should close help overlay")
+	}
+}
+
 func TestPickerLabelEditEscCancels(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "g"},
