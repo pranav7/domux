@@ -760,6 +760,56 @@ func TestRenderSessionMarksMainWorktree(t *testing.T) {
 	}
 }
 
+func TestRenderSessionMovesDetailsToIndentedLine(t *testing.T) {
+	row := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
+		Name:   "workspace-1",
+		Branch: "feature/eng-147-v3",
+		Label:  "PBC Validations",
+		PR: &prInfo{
+			Number: 311,
+			State:  "OPEN",
+			Title:  "feat(pbc): free-text validations",
+		},
+		Path: "/r/audrey-app/.domux/worktrees/workspace-1",
+		Root: "/r/audrey-app",
+	}}
+	m := newPickerModel([]pickerRow{row})
+
+	lines := strings.Split(stripTestANSI(m.renderSession(row, false)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %#v, want two lines", lines)
+	}
+	if strings.Contains(lines[0], "PBC Validations") || strings.Contains(lines[0], "PR#311") {
+		t.Fatalf("detail leaked onto first line: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "        ") {
+		t.Fatalf("detail line not indented: %q", lines[1])
+	}
+	if !strings.Contains(lines[1], "PBC Validations · PR#311 · feat(pbc): free-text validations") {
+		t.Fatalf("detail line missing metadata: %q", lines[1])
+	}
+}
+
+func TestRenderListLinesCountsSessionDetails(t *testing.T) {
+	row := pickerRow{Kind: rowSession, Group: "g", Session: &sessionInfo{
+		Name:  "workspace-1",
+		Label: "PBC Validations",
+	}}
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		row,
+	})
+
+	lines := m.renderListLines(100, 3)
+	plain := stripTestANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(plain, "PBC Validations") {
+		t.Fatalf("detail line missing from rendered list:\n%s", plain)
+	}
+	if got := len(lines); got != 3 {
+		t.Fatalf("lines = %d, want 3", got)
+	}
+}
+
 func TestIsMainWorktreePathRecognizesCurrentAndLegacyDirs(t *testing.T) {
 	cases := []struct {
 		path string

@@ -1316,21 +1316,52 @@ func (m pickerModel) renderListLines(width, height int) []string {
 	}
 	lm := m
 	lm.width = width
-	startIdx := 0
-	if lm.cursor >= startIdx+height {
-		startIdx = lm.cursor - height + 1
-	}
+
+	rowLines := make([][]string, 0, len(lm.visible))
+	cursorStart, cursorEnd := 0, 0
+	lineCount := 0
 	for i, vi := range lm.visible {
-		if i < startIdx {
-			continue
+		rendered := lm.renderRowLines(lm.rows[vi], i == lm.cursor, width)
+		rowLines = append(rowLines, rendered)
+		if i == lm.cursor {
+			cursorStart = lineCount
+			cursorEnd = lineCount + len(rendered)
+		}
+		lineCount += len(rendered)
+	}
+
+	startLine := 0
+	if cursorEnd > height {
+		startLine = cursorEnd - height
+	}
+	if cursorStart < startLine {
+		startLine = cursorStart
+	}
+
+	lineIdx := 0
+	for _, rendered := range rowLines {
+		for _, line := range rendered {
+			if lineIdx >= startLine && len(lines) < height {
+				lines = append(lines, line)
+			}
+			lineIdx++
 		}
 		if len(lines) >= height {
 			break
 		}
-		lines = append(lines, fitANSI(lm.renderRow(lm.rows[vi], i == lm.cursor), width))
 	}
 	for len(lines) < height {
 		lines = append(lines, "")
+	}
+	return lines
+}
+
+func (m pickerModel) renderRowLines(row pickerRow, selected bool, width int) []string {
+	raw := m.renderRow(row, selected)
+	parts := strings.Split(raw, "\n")
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		lines = append(lines, fitANSI(part, width))
 	}
 	return lines
 }
@@ -1753,15 +1784,16 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		labelStyle = pName
 	}
 
-	// Order: {name} on {branch} | {label} ⚡ {AI}
+	// First line: {name} on {branch} ⚡ {AI}
 	line.WriteString(nameStyle.Render(s.Name))
 
 	if s.Branch != "" {
 		line.WriteString(pSep.Render(" on ") + pBranch.Render(s.Branch))
 	}
 
+	var details []string
 	if s.Label != "" {
-		line.WriteString(pSep.Render(" | ") + labelStyle.Render(s.Label))
+		details = append(details, labelStyle.Render(s.Label))
 	}
 
 	// Server
@@ -1772,34 +1804,35 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	// AI badge (spinner + working label)
 	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
 
-	// PR — number colored by state, title dimmed
 	if s.PR != nil {
 		pr := fmt.Sprintf("PR#%d", s.PR.Number)
-		var prStyle lipgloss.Style
-		switch s.PR.State {
-		case "OPEN":
-			prStyle = pPROpen
-		case "MERGED":
-			prStyle = pPRMerged
-		case "CLOSED":
-			prStyle = pPRClosed
-		case "DRAFT":
-			prStyle = pPRDraft
-		default:
-			prStyle = pPROpen
-		}
-		line.WriteString(pSep.Render(" · ") + prStyle.Render(pr))
+		details = append(details, prStyleForState(s.PR.State).Render(pr))
 		if s.PR.Title != "" {
-			title := s.PR.Title
-			if len(title) > 40 {
-				title = title[:37] + "..."
-			}
-			line.WriteString(pSep.Render(" · ") + pSubtitle.Render(title))
+			details = append(details, pSubtitle.Render(s.PR.Title))
 		}
+	}
+
+	if len(details) > 0 {
+		line.WriteString("\n        " + strings.Join(details, pSep.Render(" · ")))
 	}
 
 	result := line.String()
 	return result
+}
+
+func prStyleForState(state string) lipgloss.Style {
+	switch state {
+	case "OPEN":
+		return pPROpen
+	case "MERGED":
+		return pPRMerged
+	case "CLOSED":
+		return pPRClosed
+	case "DRAFT":
+		return pPRDraft
+	default:
+		return pPROpen
+	}
 }
 
 // Shimmer endpoints — dim/bright pair that the wave interpolates between.
