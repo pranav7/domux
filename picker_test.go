@@ -13,9 +13,9 @@ import (
 	"github.com/muesli/termenv"
 )
 
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var testANSIRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
-func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+func stripTestANSI(s string) string { return testANSIRE.ReplaceAllString(s, "") }
 
 func TestPickerIgnoresInitialEscape(t *testing.T) {
 	m := newPickerModel([]pickerRow{
@@ -263,6 +263,145 @@ func TestPickerFilterEnterAllowsShortcutsOnFilteredList(t *testing.T) {
 	}
 }
 
+func TestPickerRightOpensPreview(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	pm := next.(pickerModel)
+	if !pm.previewOpen {
+		t.Fatalf("right should open preview")
+	}
+	if pm.previewSession != "s" || pm.previewTarget != "s" {
+		t.Fatalf("preview target = %q/%q, want s/s", pm.previewSession, pm.previewTarget)
+	}
+	if cmd == nil {
+		t.Fatalf("right should dispatch preview capture")
+	}
+}
+
+func TestPickerEscClosesPreview(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	m.previewOpen = true
+	m.previewSession = "s"
+	m.previewTarget = "s"
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	pm := next.(pickerModel)
+	if pm.previewOpen {
+		t.Fatalf("esc should close preview")
+	}
+	if cmd != nil {
+		t.Fatalf("esc closing preview should not quit")
+	}
+}
+
+func TestPickerPreviewViewFitsHeight(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	m.width = 120
+	m.height = 20
+	m.previewOpen = true
+	m.previewSession = "s"
+	m.previewTarget = "s:1.0"
+	m.previewLines = []string{"one", "two", "three"}
+
+	if got := viewLineCount(m.View()); got > m.height {
+		t.Fatalf("view lines = %d, want <= %d", got, m.height)
+	}
+	if view := m.View(); !strings.Contains(view, "╭") || !strings.Contains(view, "╰") {
+		t.Fatalf("preview should render rounded border")
+	}
+}
+
+func TestPickerFullPreviewToggle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'F'}})
+	pm := next.(pickerModel)
+	if !pm.previewOpen || !pm.previewBig {
+		t.Fatalf("F should open big preview")
+	}
+	if cmd == nil {
+		t.Fatalf("F should dispatch preview capture")
+	}
+
+	next, _ = pm.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	pm = next.(pickerModel)
+	if !pm.previewOpen || pm.previewBig {
+		t.Fatalf("esc should shrink big preview first")
+	}
+}
+
+func TestPickerBigPreviewUsesFullWidth(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	m.width = 120
+	m.previewOpen = true
+	m.previewBig = true
+	m.previewSession = "s"
+	m.previewTarget = "s:1.0"
+	m.previewLines = []string{"one"}
+
+	lines := m.renderContentLines(5)
+	if got := lipgloss.Width(lines[0]); got != 116 {
+		t.Fatalf("big preview width = %d, want 116", got)
+	}
+}
+
+func TestPreferredPreviewPaneUsesAIPane(t *testing.T) {
+	state := &SessionState{AI: map[string]string{
+		"codex:2_3":  "CODEXING",
+		"claude:1_0": "WAITING",
+	}}
+
+	if got := preferredPreviewPane(state); got != "1_0" {
+		t.Fatalf("preferred pane = %q, want 1_0", got)
+	}
+}
+
+func TestCaptureTmuxPreview(t *testing.T) {
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" > "$DOMUX_TMUX_CALL"
+printf '\033[31mone\033[0m\033[H\n\ntwo\n'
+`, callFile)
+
+	lines, err := captureTmuxPreview("s:1.0")
+	if err != nil {
+		t.Fatalf("captureTmuxPreview: %v", err)
+	}
+	want := []string{"\x1b[31mone\x1b[0m", "", "two"}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("lines = %#v, want %#v", lines, want)
+	}
+	call := mustRead(t, callFile)
+	if !strings.Contains(call, "capture-pane -ep -J -S -200 -t s:1.0") {
+		t.Fatalf("tmux call = %q", call)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	got := shellQuote("s:1.0'pane")
+	if got != "'s:1.0'\"'\"'pane'" {
+		t.Fatalf("shellQuote = %q", got)
+	}
+}
+
 func TestPickerViewFitsHeightWithGroupHeaders(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "audrey-app"},
@@ -331,7 +470,7 @@ func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
 	if !strings.Contains(frame3, claudeSpinnerFrames[1]) {
 		t.Fatalf("frame 3 missing %q: %q", claudeSpinnerFrames[1], frame3)
 	}
-	plain0 := stripANSI(frame0)
+	plain0 := stripTestANSI(frame0)
 	if !strings.Contains(plain0, "Calculating") {
 		t.Fatalf("badge missing stable working label: %q", plain0)
 	}
@@ -359,8 +498,20 @@ func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
 	}
 }
 
+func TestShimmerBouncesBack(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+
+	outbound := shimmerText("Calculating", 10, claudeShimmerDim, claudeShimmerBright)
+	inbound := shimmerText("Calculating", 105, claudeShimmerDim, claudeShimmerBright)
+	if outbound != inbound {
+		t.Fatalf("mirrored shimmer frames should match:\noutbound: %q\ninbound:  %q", outbound, inbound)
+	}
+}
+
 func TestWorkingBadgesUseAgentLabels(t *testing.T) {
-	got := stripANSI(renderAIBadges("CLAUDING", "CODEXING", "Pondering", "Computing", 0))
+	got := stripTestANSI(renderAIBadges("CLAUDING", "CODEXING", "Pondering", "Computing", 0))
 	if !strings.Contains(got, "Pondering") {
 		t.Fatalf("missing Claude label: %q", got)
 	}

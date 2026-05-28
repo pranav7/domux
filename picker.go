@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,29 +62,35 @@ type pickerRow struct {
 }
 
 type pickerModel struct {
-	rows          []pickerRow
-	visible       []int
-	cursor        int
-	filter        textinput.Model
-	filtering     bool
-	labelInput    textinput.Model
-	labelEditing  bool
-	labelTarget   string
-	confirmDelete bool
-	deleteAction  string
-	deleteSession string
-	deleteSlot    int
-	deleteRoot    string
-	deleteBranch  string
-	deleteForce   bool
-	showTasks     bool
-	status        string
-	statusErr     bool
-	statusSetAt   time.Time
-	width         int
-	height        int
-	startedAt     time.Time
-	spinnerFrame  int
+	rows           []pickerRow
+	visible        []int
+	cursor         int
+	filter         textinput.Model
+	filtering      bool
+	labelInput     textinput.Model
+	labelEditing   bool
+	labelTarget    string
+	confirmDelete  bool
+	deleteAction   string
+	deleteSession  string
+	deleteSlot     int
+	deleteRoot     string
+	deleteBranch   string
+	deleteForce    bool
+	showTasks      bool
+	status         string
+	statusErr      bool
+	statusSetAt    time.Time
+	width          int
+	height         int
+	startedAt      time.Time
+	spinnerFrame   int
+	previewOpen    bool
+	previewSession string
+	previewTarget  string
+	previewLines   []string
+	previewErr     error
+	previewBig     bool
 }
 
 type pickerActionMsg struct {
@@ -107,10 +114,27 @@ type pickerPRRefreshTickMsg struct{}
 
 type pickerStatusExpireMsg struct{ at time.Time }
 
+type pickerPreviewMsg struct {
+	Session string
+	Target  string
+	Lines   []string
+	Err     error
+}
+
+type pickerPreviewTickMsg struct {
+	Session string
+	Target  string
+}
+
+type pickerPopupClosedMsg struct {
+	Err error
+}
+
 const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
 const pickerPRRefreshInterval = 60 * time.Second
 const pickerSpinnerInterval = 80 * time.Millisecond
+const pickerPreviewInterval = 500 * time.Millisecond
 const pickerStatusTTL = 5 * time.Second
 const claudeBrandHex = "#DE7356"
 
@@ -222,6 +246,22 @@ var (
 			Background(red).
 			Bold(true).
 			Padding(0, 1)
+
+	pPreviewTitle = lipgloss.NewStyle().
+			Foreground(blue).
+			Bold(true)
+
+	pPreviewMeta = lipgloss.NewStyle().
+			Foreground(overlay1)
+
+	pPreviewRule = lipgloss.NewStyle().
+			Foreground(surface1)
+
+	pPreviewText = lipgloss.NewStyle().
+			Foreground(subtext0)
+
+	pPreviewErr = lipgloss.NewStyle().
+			Foreground(red)
 )
 
 func runPicker() error {
@@ -429,6 +469,27 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinnerFrame = (m.spinnerFrame + 1) % 600
 		return m, pickerSpinnerCmd()
 
+	case pickerPreviewMsg:
+		if !m.previewOpen || msg.Session != m.previewSession || msg.Target != m.previewTarget {
+			return m, nil
+		}
+		m.previewLines = msg.Lines
+		m.previewErr = msg.Err
+		return m, pickerPreviewTickCmd(msg.Session, msg.Target)
+
+	case pickerPreviewTickMsg:
+		if !m.previewOpen || msg.Session != m.previewSession || msg.Target != m.previewTarget {
+			return m, nil
+		}
+		return m, pickerPreviewRefreshCmd(msg.Session, msg.Target)
+
+	case pickerPopupClosedMsg:
+		if msg.Err != nil {
+			m.status = fmt.Sprintf("preview popup failed: %v", msg.Err)
+			m.statusErr = true
+		}
+		return m, windowSizeCmd(m.width, m.height)
+
 	case tea.KeyMsg:
 		key := msg.String()
 		if m.ignoringStartupInput() {
@@ -572,7 +633,25 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch key {
+		case "left":
+			if m.previewOpen {
+				if m.previewBig {
+					m.previewBig = false
+					return m, nil
+				}
+				m.closePreview()
+				return m, nil
+			}
+			return m, nil
 		case "ctrl+c", "esc", "q":
+			if m.previewOpen && key == "esc" {
+				if m.previewBig {
+					m.previewBig = false
+					return m, nil
+				}
+				m.closePreview()
+				return m, nil
+			}
 			return m, tea.Quit
 		case "enter":
 			if len(m.visible) == 0 {
@@ -581,10 +660,34 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.selectRow(m.rows[m.visible[m.cursor]])
 		case "up", "k":
 			m.moveCursor(-1)
+			if m.previewOpen {
+				return m, m.openPreviewForSelected()
+			}
 			return m, nil
 		case "down", "j":
 			m.moveCursor(1)
+			if m.previewOpen {
+				return m, m.openPreviewForSelected()
+			}
 			return m, nil
+		case "right":
+			cmd := m.openPreviewForSelected()
+			m.previewBig = false
+			return m, cmd
+		case "F", "shift+right":
+			if !m.previewOpen {
+				cmd := m.openPreviewForSelected()
+				m.previewBig = true
+				return m, cmd
+			}
+			m.previewBig = !m.previewBig
+			return m, nil
+		case "P":
+			if !m.previewOpen {
+				cmd := m.openPreviewForSelected()
+				return m, tea.Batch(cmd, m.previewPopupCmd())
+			}
+			return m, m.previewPopupCmd()
 		case "tab":
 			m.showTasks = !m.showTasks
 			m.rebuildVisible()
@@ -661,6 +764,25 @@ func pickerSpinnerCmd() tea.Cmd {
 	})
 }
 
+func pickerPreviewRefreshCmd(session, target string) tea.Cmd {
+	return func() tea.Msg {
+		lines, err := captureTmuxPreview(target)
+		return pickerPreviewMsg{Session: session, Target: target, Lines: lines, Err: err}
+	}
+}
+
+func pickerPreviewTickCmd(session, target string) tea.Cmd {
+	return tea.Tick(pickerPreviewInterval, func(time.Time) tea.Msg {
+		return pickerPreviewTickMsg{Session: session, Target: target}
+	})
+}
+
+func windowSizeCmd(width, height int) tea.Cmd {
+	return func() tea.Msg {
+		return tea.WindowSizeMsg{Width: width, Height: height}
+	}
+}
+
 func (m *pickerModel) refreshRows(rows []pickerRow) {
 	if len(rows) == 0 {
 		return
@@ -712,6 +834,44 @@ func (m pickerModel) selectedSession() *sessionInfo {
 		return nil
 	}
 	return row.Session
+}
+
+func (m *pickerModel) openPreviewForSelected() tea.Cmd {
+	session := m.selectedSession()
+	if session == nil {
+		return nil
+	}
+	m.previewOpen = true
+	m.previewSession = session.Name
+	m.previewTarget = preferredPreviewTarget(session.Name)
+	m.previewLines = nil
+	m.previewErr = nil
+	return pickerPreviewRefreshCmd(m.previewSession, m.previewTarget)
+}
+
+func (m pickerModel) previewPopupCmd() tea.Cmd {
+	if m.previewTarget == "" {
+		return nil
+	}
+	title := " " + m.previewSession
+	if pane := previewPaneLabel(m.previewTarget); pane != "" {
+		title += " · " + pane
+	}
+	title += " "
+	script := fmt.Sprintf("tmux capture-pane -ep -J -S -5000 -t %s | less -R +G", shellQuote(m.previewTarget))
+	cmd := exec.Command("tmux", "display-popup", "-E", "-w", "92%", "-h", "90%", "-T", title, "sh", "-c", script)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return pickerPopupClosedMsg{Err: err}
+	})
+}
+
+func (m *pickerModel) closePreview() {
+	m.previewOpen = false
+	m.previewSession = ""
+	m.previewTarget = ""
+	m.previewLines = nil
+	m.previewErr = nil
+	m.previewBig = false
 }
 
 func (m *pickerModel) clearSelectedSession() tea.Cmd {
@@ -1061,25 +1221,8 @@ func (m pickerModel) View() string {
 		availableHeight--
 	}
 
-	startIdx := 0
-	if m.cursor >= startIdx+availableHeight {
-		startIdx = m.cursor - availableHeight + 1
-	}
-
-	rendered := 0
-	for i, vi := range m.visible {
-		if i < startIdx {
-			continue
-		}
-		if rendered >= availableHeight {
-			break
-		}
-		b.WriteString(m.renderRow(m.rows[vi], i == m.cursor) + "\n")
-		rendered++
-	}
-	for rendered < availableHeight {
-		b.WriteString("\n")
-		rendered++
+	for _, line := range m.renderContentLines(availableHeight) {
+		b.WriteString(line + "\n")
 	}
 
 	// Footer
@@ -1088,7 +1231,16 @@ func (m pickerModel) View() string {
 	if !m.showTasks {
 		todoLabel = "show todos"
 	}
-	b.WriteString("    " +
+	previewHelp := pFooterKey.Render("→") + pFooter.Render(" preview")
+	if m.previewOpen {
+		bigLabel := " big"
+		if m.previewBig {
+			bigLabel = " shrink"
+		}
+		previewHelp += sep + pFooterKey.Render("F") + pFooter.Render(bigLabel) + sep +
+			pFooterKey.Render("P") + pFooter.Render(" popup")
+	}
+	footer := "    " +
 		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
 		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
 		pFooterKey.Render("+") + pFooter.Render(" new") + sep +
@@ -1097,11 +1249,449 @@ func (m pickerModel) View() string {
 		pFooterKey.Render("c") + pFooter.Render(" clear") + sep +
 		pFooterKey.Render("r") + pFooter.Render(" reset") + sep +
 		pFooterKey.Render("s") + pFooter.Render(" server") + sep +
+		previewHelp + sep +
 		pFooterKey.Render("tab") + pFooter.Render(" "+todoLabel) + sep +
 		pFooterKey.Render("/") + pFooter.Render(" filter") + sep +
-		pFooterKey.Render("esc") + pFooter.Render(" close"))
+		m.renderEscHelp()
+	b.WriteString(fitANSI(footer, m.width))
 
 	return b.String()
+}
+
+func (m pickerModel) renderEscHelp() string {
+	if m.previewBig {
+		return pFooterKey.Render("←/esc") + pFooter.Render(" back")
+	}
+	if m.previewOpen {
+		return pFooterKey.Render("←/esc") + pFooter.Render(" preview")
+	}
+	return pFooterKey.Render("esc") + pFooter.Render(" close")
+}
+
+func (m pickerModel) renderContentLines(height int) []string {
+	if height < 0 {
+		height = 0
+	}
+	if !m.previewOpen {
+		return m.renderListLines(m.width, height)
+	}
+	if m.previewBig {
+		return m.renderPreviewLines(m.width-4, height)
+	}
+	if m.width < 110 {
+		return m.renderPreviewLines(m.width-8, height)
+	}
+	previewWidth := previewPanelWidth(m.width)
+	leftWidth := m.width - previewWidth - 1
+	if leftWidth < 24 {
+		return m.renderPreviewLines(m.width-8, height)
+	}
+	left := m.renderListLines(m.width, height)
+	right := m.renderPreviewLines(previewWidth, height)
+	lines := make([]string, height)
+	for i := 0; i < height; i++ {
+		lines[i] = fitANSI(left[i], leftWidth) + " " + right[i]
+	}
+	return lines
+}
+
+func previewPanelWidth(total int) int {
+	width := total * 3 / 5
+	if width > 80 {
+		width = 80
+	}
+	if width < 44 {
+		width = 44
+	}
+	if width > total-8 {
+		width = total - 8
+	}
+	return width
+}
+
+func (m pickerModel) renderListLines(width, height int) []string {
+	lines := make([]string, 0, height)
+	if height <= 0 {
+		return lines
+	}
+	lm := m
+	lm.width = width
+	startIdx := 0
+	if lm.cursor >= startIdx+height {
+		startIdx = lm.cursor - height + 1
+	}
+	for i, vi := range lm.visible {
+		if i < startIdx {
+			continue
+		}
+		if len(lines) >= height {
+			break
+		}
+		lines = append(lines, fitANSI(lm.renderRow(lm.rows[vi], i == lm.cursor), width))
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+func (m pickerModel) renderPreviewLines(width, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if width < 24 {
+		width = 24
+	}
+	bodyWidth := max(1, width-4)
+	bodyHeight := max(0, height-2)
+
+	title := m.renderPreviewTitle()
+	top := roundedTop(title, width)
+	bottom := pPreviewRule.Render("╰" + strings.Repeat("─", max(0, width-2)) + "╯")
+	lines := []string{top}
+	if height == 1 {
+		return lines
+	}
+
+	var body []string
+	bodyStyle := lipgloss.NewStyle()
+	styledBody := false
+	switch {
+	case m.previewErr != nil:
+		body = []string{firstLine(m.previewErr.Error())}
+		bodyStyle = pPreviewErr
+		styledBody = true
+	case len(m.previewLines) == 0:
+		body = []string{"capturing..."}
+		bodyStyle = pPreviewMeta
+		styledBody = true
+	default:
+		body = trimPreviewBlankLines(m.previewLines)
+		if len(body) > bodyHeight {
+			body = body[len(body)-bodyHeight:]
+		}
+	}
+	for _, line := range body {
+		if len(lines) >= height-1 {
+			break
+		}
+		content := fitANSI("    "+line, bodyWidth) + "\x1b[0m"
+		if styledBody {
+			content = bodyStyle.Render(fitPlain(line, bodyWidth))
+		}
+		lines = append(lines, pPreviewRule.Render("│")+" "+content+" "+pPreviewRule.Render("│"))
+	}
+	for len(lines) < height-1 {
+		lines = append(lines, pPreviewRule.Render("│")+" "+strings.Repeat(" ", bodyWidth)+" "+pPreviewRule.Render("│"))
+	}
+	lines = append(lines, bottom)
+	return lines
+}
+
+func (m pickerModel) renderPreviewTitle() string {
+	title := pPreviewTitle.Render("preview " + m.previewSession)
+	if session := m.previewSessionInfo(); session != nil {
+		if session.Branch != "" {
+			title += pSep.Render(" / ") + pPreviewMeta.Render(session.Branch)
+		}
+		badges := renderAIBadges(session.Claude, session.Codex, session.ClaudeLabel, session.CodexLabel, m.spinnerFrame)
+		if badges != "" {
+			title += badges
+		}
+	}
+	if pane := previewPaneLabel(m.previewTarget); pane != "" {
+		title += pSep.Render(" · ") + pPreviewMeta.Render(pane)
+	}
+	return title
+}
+
+func (m pickerModel) previewSessionInfo() *sessionInfo {
+	for _, row := range m.rows {
+		if row.Session != nil && row.Session.Name == m.previewSession {
+			return row.Session
+		}
+	}
+	return nil
+}
+
+func roundedTop(title string, width int) string {
+	title = fitANSI(" "+title+" ", max(0, width-4))
+	fill := max(0, width-3-lipgloss.Width(title))
+	return pPreviewRule.Render("╭─") + title + pPreviewRule.Render(strings.Repeat("─", fill)+"╮")
+}
+
+func preferredPreviewTarget(session string) string {
+	state := loadSessionStateWithLegacy(session)
+	if pane := preferredPreviewPane(state); pane != "" {
+		if target, ok := tmuxPaneTarget(session, pane); ok {
+			return target
+		}
+	}
+	return session
+}
+
+func preferredPreviewPane(state *SessionState) string {
+	if state == nil {
+		return ""
+	}
+	bestPane := ""
+	bestRank := 0
+	bestAgent := 99
+	bestValue := ""
+	for key, value := range state.AI {
+		agent, pane := aiKeyAgentPane(key, value)
+		if pane == "" || pane == "default" || pane == "legacy" {
+			continue
+		}
+		if !validTmuxPaneKey(pane) {
+			continue
+		}
+		normalized := normalizeAIState(agent, value)
+		rank := aiStateRank(normalized)
+		if rank == 0 {
+			continue
+		}
+		agentRank := 1
+		if agent == "claude" {
+			agentRank = 0
+		}
+		if rank > bestRank ||
+			(rank == bestRank && agentRank < bestAgent) ||
+			(rank == bestRank && agentRank == bestAgent && normalized < bestValue) ||
+			(rank == bestRank && agentRank == bestAgent && normalized == bestValue && pane < bestPane) {
+			bestPane = pane
+			bestRank = rank
+			bestAgent = agentRank
+			bestValue = normalized
+		}
+	}
+	return bestPane
+}
+
+func aiKeyAgentPane(key, value string) (string, string) {
+	agent, pane, ok := strings.Cut(key, ":")
+	if ok {
+		agent = strings.ToLower(agent)
+		if agent != "claude" && agent != "codex" {
+			agent = inferAgentFromAIValue(value)
+		}
+	} else {
+		agent = inferAgentFromAIValue(value)
+		pane = key
+	}
+	if agent == "" {
+		agent = "claude"
+	}
+	return agent, pane
+}
+
+func validTmuxPaneKey(key string) bool {
+	window, pane, ok := strings.Cut(key, "_")
+	if !ok || window == "" || pane == "" {
+		return false
+	}
+	_, err := strconv.Atoi(window)
+	if err != nil {
+		return false
+	}
+	_, err = strconv.Atoi(pane)
+	return err == nil
+}
+
+func tmuxPaneTarget(session, paneKey string) (string, bool) {
+	window, pane, ok := strings.Cut(paneKey, "_")
+	if !ok {
+		return "", false
+	}
+	return session + ":" + window + "." + pane, true
+}
+
+func captureTmuxPreview(target string) ([]string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-ep", "-J", "-S", "-200", "-t", target).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("tmux capture-pane: %s", msg)
+	}
+	return previewOutputLines(string(out)), nil
+}
+
+func previewOutputLines(out string) []string {
+	out = strings.TrimRight(out, "\n")
+	if out == "" {
+		return nil
+	}
+	raw := strings.Split(out, "\n")
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		lines = append(lines, filterPreviewANSI(strings.TrimRight(line, "\r")))
+	}
+	return lines
+}
+
+func trimPreviewBlankLines(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(stripANSI(lines[0])) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(stripANSI(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func filterPreviewANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if j, final, ok := ansiSequenceEnd(s, i); ok {
+				if final == 'm' {
+					b.WriteString(s[i:j])
+				}
+				i = j
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		b.WriteRune(r)
+		i += size
+	}
+	return b.String()
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			if j, _, ok := ansiSequenceEnd(s, i); ok {
+				i = j
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		b.WriteRune(r)
+		i += size
+	}
+	return b.String()
+}
+
+func ansiSequenceEnd(s string, i int) (int, byte, bool) {
+	if i+1 >= len(s) {
+		return len(s), 0, true
+	}
+	switch s[i+1] {
+	case '[':
+		for j := i + 2; j < len(s); j++ {
+			c := s[j]
+			if c >= 0x40 && c <= 0x7e {
+				return j + 1, c, true
+			}
+		}
+		return len(s), 0, true
+	case ']':
+		for j := i + 2; j < len(s); j++ {
+			if s[j] == '\a' {
+				return j + 1, 0, true
+			}
+			if s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\' {
+				return j + 2, 0, true
+			}
+		}
+		return len(s), 0, true
+	default:
+		return i + 2, 0, true
+	}
+}
+
+func previewPaneLabel(target string) string {
+	_, pane, ok := strings.Cut(target, ":")
+	if !ok {
+		return ""
+	}
+	return pane
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return strings.TrimSpace(line)
+}
+
+func fitPlain(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if used+w > width {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String()
+}
+
+func fitANSI(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	used := 0
+	truncated := false
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) {
+				c := s[j]
+				j++
+				if c >= 0x40 && c <= 0x7e {
+					break
+				}
+			}
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			i++
+			continue
+		}
+		w := lipgloss.Width(string(r))
+		if used+w > width {
+			truncated = true
+			break
+		}
+		b.WriteRune(r)
+		used += w
+		i += size
+	}
+	out := b.String()
+	if truncated {
+		out += "\x1b[0m"
+	}
+	if pad := width - lipgloss.Width(out); pad > 0 {
+		out += strings.Repeat(" ", pad)
+	}
+	return out
 }
 
 func (m pickerModel) renderRow(row pickerRow, selected bool) string {

@@ -10,7 +10,7 @@ import (
 )
 
 // shimmerText renders text with a bright band that flows from first letter to
-// last, then loops — like the "Compacting conversation…" effect in Claude Code.
+// last, then back.
 // frame is a monotonic counter advanced once per spinner tick.
 func shimmerText(text string, frame int, dimHex, brightHex string) string {
 	if text == "" {
@@ -22,17 +22,21 @@ func shimmerText(text string, frame int, dimHex, brightHex string) string {
 	// Tail on both sides so the highlight enters and exits cleanly instead of
 	// popping in at index 0.
 	const tail = 6
-	cycle := n + tail*2
-	if cycle < 12 {
-		cycle = 12
+	oneWay := n + tail*2
+	if oneWay < 12 {
+		oneWay = 12
 	}
 
 	// Fractional speed → peak slides between chars across frames instead of
 	// jumping a whole rune per tick. Smoother glide at 80ms/tick.
 	const speed = 1.2
+	cycle := oneWay * 2
 	phase := math.Mod(float64(frame)*speed, float64(cycle))
 	if phase < 0 {
 		phase += float64(cycle)
+	}
+	if phase > float64(oneWay) {
+		phase = float64(cycle) - phase
 	}
 	pos := phase - float64(tail)
 	const sigma = 2.2
