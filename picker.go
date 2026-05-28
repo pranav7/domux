@@ -1054,7 +1054,11 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 		for _, row := range m.rows {
 			if row.Kind == rowSession && row.Session != nil && row.Session.Name == msg.Session {
 				row.Session.Claude = ""
+				row.Session.Codex = ""
+				row.Session.ClaudeLabel = ""
+				row.Session.CodexLabel = ""
 				row.Session.Label = ""
+				row.Session.PR = nil
 				row.Session.Server = false
 			}
 		}

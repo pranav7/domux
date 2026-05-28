@@ -466,7 +466,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.clampCursor()
 		}
 
-	case "J":
+	case "J", "shift+down":
 		if idx, ok := m.selectedActiveIndex(); ok && idx < len(m.list.Active)-1 {
 			m.list.Active[idx], m.list.Active[idx+1] = m.list.Active[idx+1], m.list.Active[idx]
 			m.cursor++
@@ -475,7 +475,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case "K":
+	case "K", "shift+up":
 		if idx, ok := m.selectedActiveIndex(); ok && idx > 0 {
 			m.list.Active[idx], m.list.Active[idx-1] = m.list.Active[idx-1], m.list.Active[idx]
 			m.cursor--
@@ -852,7 +852,7 @@ func (m model) renderFooter() string {
 		{"x", "done"},
 		{"⏎", "notes"},
 		{"d", "del"},
-		{"J/K", "move"},
+		{"J/K ⇧↑/↓", "move"},
 		{"⇥", "archive"},
 		{"?", "help"},
 		{"q", "quit"},
@@ -880,7 +880,7 @@ func (m model) helpView() string {
 		{"enter", "edit notes in $EDITOR"},
 		{"space / x", "mark done → archive"},
 		{"d", "delete task"},
-		{"J / K", "reorder task up/down"},
+		{"J / K / shift+up/down", "reorder task"},
 		{"tab", "toggle archive"},
 		{"r", "reload from disk"},
 		{"?", "toggle help"},

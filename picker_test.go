@@ -148,6 +148,28 @@ func TestPickerResetActionKeepsSessionState(t *testing.T) {
 	}
 }
 
+func TestPickerClearActionClearsSessionStateImmediately(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{
+			Name:        "s",
+			Label:       "PBC",
+			Server:      true,
+			Claude:      "CLAUDING",
+			Codex:       "CODEXING",
+			ClaudeLabel: "Thinking",
+			CodexLabel:  "Working",
+			PR:          &prInfo{Number: 315, State: "MERGED", Title: "fix"},
+		}},
+	})
+
+	m.applyPickerAction(pickerActionMsg{Action: "clear", Session: "s"})
+	row := m.rows[1].Session
+	if row.Label != "" || row.Server || row.Claude != "" || row.Codex != "" || row.ClaudeLabel != "" || row.CodexLabel != "" || row.PR != nil {
+		t.Fatalf("clear action left stale session state: %#v", row)
+	}
+}
+
 func TestPickerResetRefusesRowWithoutPath(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "g"},
