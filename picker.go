@@ -43,6 +43,7 @@ type sessionInfo struct {
 	Path        string
 	Root        string // git common root (group-level), stripped of scratch worktree dirs
 	Label       string
+	Recap       string // Claude session ai-title (one-line recap)
 	Tasks       []taskInfo
 }
 
@@ -79,7 +80,7 @@ type pickerModel struct {
 	deletePath     string
 	deleteBranch   string
 	deleteForce    bool
-	showTasks      bool
+	showDetails    bool
 	status         string
 	statusErr      bool
 	statusSetAt    time.Time
@@ -153,6 +154,12 @@ var (
 
 	pSubtitle = lipgloss.NewStyle().
 			Foreground(overlay1)
+
+	// Claude session recap (3rd line). A soft pastel purple for both the
+	// reference-mark glyph and the italic text.
+	recapPurple = lipgloss.Color("#ddcaf7")
+	pRecapIcon  = lipgloss.NewStyle().Foreground(recapPurple)
+	pRecapText  = lipgloss.NewStyle().Foreground(recapPurple).Italic(true)
 
 	pGroupLabel = lipgloss.NewStyle().
 			Foreground(overlay1).
@@ -331,11 +338,11 @@ func newPickerModel(rows []pickerRow) pickerModel {
 	li.CharLimit = 60
 
 	m := pickerModel{
-		rows:       rows,
-		filter:     ti,
-		labelInput: li,
-		showTasks:  true,
-		startedAt:  time.Now(),
+		rows:        rows,
+		filter:      ti,
+		labelInput:  li,
+		showDetails: true,
+		startedAt:   time.Now(),
 	}
 	m.rebuildVisible()
 	for i, vi := range m.visible {
@@ -353,7 +360,7 @@ func (m *pickerModel) rebuildVisible() {
 
 	if filter == "" {
 		for i, r := range m.rows {
-			if r.Kind == rowTask && !m.showTasks {
+			if r.Kind == rowTask && !m.showDetails {
 				continue
 			}
 			m.visible = append(m.visible, i)
@@ -393,7 +400,7 @@ func (m *pickerModel) rebuildVisible() {
 				m.visible = append(m.visible, i)
 			}
 		case rowTask:
-			if m.showTasks && r.Task != nil && matched[r.Task.SessionName] {
+			if m.showDetails && r.Task != nil && matched[r.Task.SessionName] {
 				m.visible = append(m.visible, i)
 			}
 		}
@@ -720,7 +727,7 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.previewPopupCmd()
 		case "tab":
-			m.showTasks = !m.showTasks
+			m.showDetails = !m.showDetails
 			m.rebuildVisible()
 			m.clampCursor()
 			return m, nil
@@ -1267,7 +1274,7 @@ func (m pickerModel) renderHelpOverlay() string {
 	b.WriteString("  " + join(bind("n", "name"), bind("c", "clear"), bind("r", "reset"), bind("s", "server")) + "\n\n")
 	b.WriteString(catS.Render("VIEW") + "\n")
 	b.WriteString("  " + join(bind("→", "preview"), bind("F", "big"), bind("P", "popup")) + "\n")
-	b.WriteString("  " + join(bind("tab", "show/hide todos"), bind("/", "filter")) + "\n\n")
+	b.WriteString("  " + join(bind("tab", "show/hide details"), bind("/", "filter")) + "\n\n")
 	b.WriteString(dim.Render("? or esc to close"))
 
 	box := lipgloss.NewStyle().
@@ -1409,7 +1416,13 @@ func (m pickerModel) renderInterior(regionHeight int) []string {
 // regionHeight lines at the given width.
 func (m pickerModel) renderLeftColumn(width, regionHeight int) []string {
 	lines := m.logoHeaderLines(width)
-	lines = append(lines, m.filterLine())
+	// Always keep one blank line under the logo. When filtering, the prompt
+	// renders below that spacer so it never collides with the logo's baseline.
+	if fl := m.filterLine(); fl != "" {
+		lines = append(lines, "", fl)
+	} else {
+		lines = append(lines, "")
+	}
 	listHeight := regionHeight - len(lines)
 	lines = append(lines, m.renderListLines(width, max(0, listHeight))...)
 	return padLines(lines, regionHeight)
@@ -1998,6 +2011,12 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString("\n        " + strings.Join(details, pSep.Render(" · ")))
 	}
 
+	// Recap line: below PR details, above todos. Hidden with the same `tab`
+	// toggle that hides todos (m.showDetails). fitANSI truncates to width.
+	if m.showDetails && s.Recap != "" {
+		line.WriteString("\n        " + pRecapIcon.Render("※") + " " + pRecapText.Render(s.Recap))
+	}
+
 	result := line.String()
 	return result
 }
@@ -2101,6 +2120,7 @@ func gatherSessions() []pickerRow {
 
 	var entries []groupEntry
 	homeDir, _ := os.UserHomeDir()
+	liveClaude := readClaudeSessions()
 
 	for _, sess := range sessions {
 		if sess == "" {
@@ -2167,6 +2187,13 @@ func gatherSessions() []pickerRow {
 		}
 
 		info.Label = state.Label
+
+		// Claude session recap (ai-title), resolved via Claude's live session
+		// registry: only a running claude whose cwd matches this session's pane
+		// (or pinned root) yields a recap. Idle workspaces have no live session,
+		// so they stay clean, and we never surface a stale title from a past
+		// session that merely shares the project dir.
+		info.Recap = recapForLiveSession(liveClaude, panePath, info.Path)
 
 		// Tasks
 		if info.Path != "" {
