@@ -22,6 +22,7 @@ const (
 	rowSpacer
 	rowSession
 	rowTask
+	rowRule
 )
 
 type prInfo struct {
@@ -167,6 +168,11 @@ var (
 
 	pGroupRule = lipgloss.NewStyle().
 			Foreground(surface0)
+
+	// Fainter than the group rule — a hairline between session blocks within a
+	// group. A touch above base (#1e1e2e) so it barely registers; tune to taste.
+	pSessionRule = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#2a2a3a"))
 
 	pCursor = lipgloss.NewStyle().
 		Foreground(blue).
@@ -1302,11 +1308,10 @@ func (m pickerModel) View() string {
 
 	var b strings.Builder
 
-	// Interior spans everything between a leading blank line and the
-	// trailing blank + footer (plus 1 spare). When a preview is open it
-	// claims this full height — logo and list share the left column.
-	regionHeight := max(1, m.height-4)
-	b.WriteString("\n")
+	// Interior runs from the top edge down to the trailing blank + footer
+	// (which take the last 2 rows). When a preview is open it claims this full
+	// height — logo and list share the left column.
+	regionHeight := max(1, m.height-2)
 	for _, line := range m.renderInterior(regionHeight) {
 		b.WriteString(line + "\n")
 	}
@@ -1926,12 +1931,24 @@ func (m pickerModel) renderRow(row pickerRow, selected bool) string {
 		return m.renderHeader(row)
 	case rowSpacer:
 		return ""
+	case rowRule:
+		return m.renderRule()
 	case rowSession:
 		return m.renderSession(row, selected)
 	case rowTask:
 		return m.renderTask(row, selected)
 	}
 	return ""
+}
+
+// renderRule draws a faint full-width hairline used to separate session blocks
+// within a group. fitANSI trims it to the available width.
+func (m pickerModel) renderRule() string {
+	w := m.width - 8
+	if w < 1 {
+		w = 1
+	}
+	return "    " + pSessionRule.Render(strings.Repeat("┄", w))
 }
 
 func (m pickerModel) renderHeader(row pickerRow) string {
@@ -1945,15 +1962,26 @@ func (m pickerModel) renderHeader(row pickerRow) string {
 	return "    " + label + rule
 }
 
+// isEmptySlot reports a freshly-provisioned / idle workspace with nothing in it
+// yet — no label, tasks, recap, AI activity, PR, or server role. These render
+// dim with a hollow glyph so active sessions own the visual weight.
+func (s *sessionInfo) isEmptySlot() bool {
+	return s.Label == "" && len(s.Tasks) == 0 && s.Recap == "" &&
+		s.Claude == "" && s.Codex == "" && s.PR == nil && !s.Server
+}
+
 func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	s := row.Session
 	var line strings.Builder
 	waiting := s.Claude == "WAITING" || s.Codex == "WAITING"
 	active := s.Claude != "" || s.Codex != ""
+	empty := s.isEmptySlot()
 
 	mainGlyph := " "
 	if isMainWorktreePath(s.Path) {
 		mainGlyph = pMainMark.Render("◇")
+	} else if empty {
+		mainGlyph = pMainMark.Render("◌")
 	}
 	// Prefix: left accent bar for waiting, cursor arrow for selected, then
 	// the main-worktree marker. Five-column total to keep alignment with
@@ -1971,7 +1999,10 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	line.WriteString(" ")
 
 	nameStyle := lipgloss.NewStyle().Foreground(teal)
-	if selected || active {
+	switch {
+	case empty && !selected:
+		nameStyle = lipgloss.NewStyle().Foreground(overlay0)
+	case selected || active:
 		nameStyle = nameStyle.Bold(true)
 	}
 	labelStyle := pNameDim
@@ -1982,7 +2013,9 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	// First line: {name} on {branch} | {label} ⚡ {AI}
 	line.WriteString(nameStyle.Render(s.Name))
 
-	if s.Branch != "" {
+	// Drop the redundant " on <branch>" when the branch just echoes the session
+	// name (e.g. an untouched workspace-N on workspace-N).
+	if s.Branch != "" && s.Branch != s.Name {
 		line.WriteString(pBranchDim.Render(" on ") + pBranch.Render(s.Branch))
 	}
 
@@ -2079,10 +2112,6 @@ func renderAIBadges(claude, codex, claudeLabel, codexLabel string, spinnerFrame 
 
 func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 	t := row.Task
-	connector := "├─"
-	if t.IsLast {
-		connector = "└─"
-	}
 
 	marker := pTaskMarker.Render("○")
 	title := pTask.Render(t.Title)
@@ -2094,9 +2123,9 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 		title = pTaskProgress.Render(t.Title)
 	}
 
-	line := "        " + pConnector.Render(connector) + " " + marker + " " + title
-
-	return line
+	// Markers align under the recap ※ column (indent 8); the tree connectors
+	// were rendered in surface1 (effectively invisible) and cost 3 columns.
+	return "        " + marker + " " + title
 }
 
 // Actions
@@ -2234,6 +2263,7 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 
 	var rows []pickerRow
 	currentGroup := ""
+	var prev *sessionInfo
 	for _, e := range entries {
 		if e.group != currentGroup {
 			if currentGroup != "" {
@@ -2241,11 +2271,17 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 			}
 			rows = append(rows, pickerRow{Kind: rowHeader, Group: e.group})
 			currentGroup = e.group
+			prev = nil
+		} else if prev != nil && !(prev.isEmptySlot() && e.session.isEmptySlot()) {
+			// Faint hairline between content-bearing blocks; consecutive idle
+			// slots stay packed (no rule between them).
+			rows = append(rows, pickerRow{Kind: rowRule, Group: e.group})
 		}
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
 		for i := range e.session.Tasks {
 			rows = append(rows, pickerRow{Kind: rowTask, Group: e.group, Task: &e.session.Tasks[i]})
 		}
+		prev = e.session
 	}
 
 	return rows

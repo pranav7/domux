@@ -87,7 +87,7 @@ func TestGeneratedTmuxConfigUsesHomeDomuxBinary(t *testing.T) {
 
 func TestGeneratedTmuxConfigUsesLargeSwitcherPopup(t *testing.T) {
 	config := generatedTmuxConfig()
-	if !strings.Contains(config, `bind-key s display-popup -E -w 95% -h 95% "$HOME/bin/domux sessions"`) {
+	if !strings.Contains(config, `bind-key s display-popup -E -w 95% -h 100% "$HOME/bin/domux sessions"`) {
 		t.Fatalf("generated tmux config should use large switcher popup")
 	}
 }
