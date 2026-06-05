@@ -16,6 +16,7 @@ The todolist <kbd>\<leader\></kbd> + <kbd>t</kbd>, is a simple tracker to rememb
 
 ### Commands
 <img width="962" height="311" alt="image" src="https://github.com/user-attachments/assets/ae7beb8d-d37c-4496-9578-249b8750fbc9" />
+
 There is also a utilities panel <kbd>\<leader\></kbd> + <kbd>u</kbd>, that currently only supports `caffeinate` on / off (and requires sudo in case you want to keep your mac awake even with the lid closed)
 
 That's it, feedback welcome!
