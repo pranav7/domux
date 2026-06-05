@@ -20,9 +20,9 @@ jobs:
             goarch: amd64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.22'
           cache: true
@@ -42,7 +42,7 @@ jobs:
           shasum -a 256 "dist/domux_${VERSION_BODY}_${GOOS}_${GOARCH}.tar.gz" \
             | sed "s| dist/| |" > "dist/domux_${VERSION_BODY}_${GOOS}_${GOARCH}.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: domux-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/domux_*
@@ -51,7 +51,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: domux-*
