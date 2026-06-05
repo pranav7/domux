@@ -4,12 +4,12 @@ domux helps me scale multiple sessions in a single project. It's built on top of
 
 There are two main parts to domux, the switcher and the todolist:
 
-### The Switcher
+### Switcher
 <img width="1140" height="588" alt="domux screenshot" src="https://github.com/user-attachments/assets/9e778d42-f3db-4394-9d70-9a06d6ef66d5" />
 
 The switcher <kbd>\<leader\></kbd> + <kbd>s</kbd> is a custom tmux session switcher, but rich with details like the branch a worktree is on, a name for your session, preview of the tasks attached to that session — and shows the status of what AI agent attached to that session is doing,  is it working or waiting for your input. It currently works with claude and codex.
 
-### The Todolist
+### Todolist
 <img width="1160" height="530" alt="image" src="https://github.com/user-attachments/assets/16ca123c-dbc7-44ec-bfc1-b6445ebf35ef" />
 
 The todolist <kbd>\<leader\></kbd> + <kbd>t</kbd>, is a simple tracker to remember what you were doing on that workspace.
