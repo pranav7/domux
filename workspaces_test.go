@@ -108,6 +108,40 @@ esac
 	}
 }
 
+func TestProvisionWorkspaceRecoversFromStaleWorktreeRegistration(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	// Simulate the worktree dir being deleted out from under git (rm -rf
+	// without `git worktree remove`) — leaves a stale registration that
+	// blocks `git branch -f workspace-1`.
+	if err := os.RemoveAll(res.Path); err != nil {
+		t.Fatalf("rm worktree: %v", err)
+	}
+
+	res2, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace after stale delete: %v", err)
+	}
+	if res2.Slot != 1 {
+		t.Fatalf("Slot = %d, want 1 (stale slot reused)", res2.Slot)
+	}
+	if !fileExists(res2.Path) {
+		t.Fatalf("worktree dir not created: %s", res2.Path)
+	}
+}
+
 func TestLowestFreeWorkspaceSlot(t *testing.T) {
 	cases := []struct {
 		name string

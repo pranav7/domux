@@ -134,6 +134,12 @@ func provisionWorkspace(root string) (workspaceResult, error) {
 		return workspaceResult{}, fmt.Errorf("git fetch origin %s: %w: %s", base, err, strings.TrimSpace(string(out)))
 	}
 
+	// Worktree dirs deleted out from under git (rm -rf without `git worktree
+	// remove`) leave stale registrations that block `git branch -f` on the
+	// same-named branch. Prune them; intact and locked worktrees are untouched.
+	// Best-effort — if git itself is broken the commands below fail loudly.
+	_ = exec.Command("git", "-C", root, "worktree", "prune").Run()
+
 	slot, err := lowestFreeWorkspaceSlot(root)
 	if err != nil {
 		return workspaceResult{}, err
