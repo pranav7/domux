@@ -1925,6 +1925,60 @@ func fitANSI(s string, width int) string {
 	return out
 }
 
+// wrapWords greedily wraps plain text into lines no wider than width display
+// columns, breaking on spaces. A single word wider than width is hard-split so
+// nothing overflows. Input must be unstyled — callers style each line after.
+func wrapWords(s string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	var lines []string
+	cur, curW := "", 0
+	for _, word := range strings.Fields(s) {
+		ww := lipgloss.Width(word)
+		// Hard-split a word too long to ever fit on its own line.
+		for ww > width {
+			if cur != "" {
+				lines = append(lines, cur)
+				cur, curW = "", 0
+			}
+			head, tail := splitToWidth(word, width)
+			lines = append(lines, head)
+			word, ww = tail, lipgloss.Width(tail)
+		}
+		if curW > 0 && curW+1+ww > width {
+			lines = append(lines, cur)
+			cur, curW = "", 0
+		}
+		if curW == 0 {
+			cur, curW = word, ww
+		} else {
+			cur, curW = cur+" "+word, curW+1+ww
+		}
+	}
+	if cur != "" {
+		lines = append(lines, cur)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+// splitToWidth splits s at the rune boundary just before it would exceed width
+// display columns, returning the head that fits and the remaining tail.
+func splitToWidth(s string, width int) (head, tail string) {
+	w := 0
+	for i, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > width {
+			return s[:i], s[i:]
+		}
+		w += rw
+	}
+	return s, ""
+}
+
 func (m pickerModel) renderRow(row pickerRow, selected bool) string {
 	switch row.Kind {
 	case rowHeader:
@@ -2044,10 +2098,24 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString("\n        " + strings.Join(details, pSep.Render(" · ")))
 	}
 
-	// Recap line: below PR details, above todos. Hidden with the same `tab`
-	// toggle that hides todos (m.showDetails). fitANSI truncates to width.
+	// Recap line(s): below PR details, above todos. Hidden with the same `tab`
+	// toggle that hides todos (m.showDetails). Wrapped across as many lines as
+	// needed so the full recap stays readable rather than truncated mid-word;
+	// continuation lines hang-indent under the recap text (past the "※ ").
 	if m.showDetails && s.Recap != "" {
-		line.WriteString("\n        " + pRecapIcon.Render("※") + " " + pRecapText.Render(s.Recap))
+		const indent = "        " // 8 cols, aligns with PR details
+		const cont = indent + "  " // continuation aligns under text (after "※ ")
+		avail := m.width - lipgloss.Width(cont)
+		if avail < 8 {
+			avail = 8 // degenerate width; fitANSI will trim the overflow
+		}
+		for i, seg := range wrapWords(s.Recap, avail) {
+			if i == 0 {
+				line.WriteString("\n" + indent + pRecapIcon.Render("※") + " " + pRecapText.Render(seg))
+			} else {
+				line.WriteString("\n" + cont + pRecapText.Render(seg))
+			}
+		}
 	}
 
 	result := line.String()

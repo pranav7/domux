@@ -275,18 +275,14 @@ func stdoutInner(content string) string {
 }
 
 // recapLine reduces a multi-sentence session recap to a tidy single clause:
-// collapses whitespace, drops a leading "Goal:" label, keeps just the first
-// sentence, and caps length. fitANSI further trims to column width.
+// collapses whitespace, drops a leading "Goal:" label, and keeps just the first
+// sentence. No length cap — the picker wraps the clause across as many lines as
+// it needs so the full recap stays readable instead of truncated mid-word.
 func recapLine(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	s = strings.TrimSpace(strings.TrimPrefix(s, "Goal:"))
 	if i := strings.Index(s, ". "); i >= 0 {
 		s = s[:i]
 	}
-	s = strings.TrimRight(s, ".")
-	const max = 120
-	if len(s) > max {
-		s = strings.TrimSpace(s[:max]) + "…"
-	}
-	return s
+	return strings.TrimRight(s, ".")
 }

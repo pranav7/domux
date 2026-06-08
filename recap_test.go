@@ -172,9 +172,10 @@ func TestRecapLine(t *testing.T) {
 			t.Errorf("recapLine(%q) = %q, want %q", in, got, want)
 		}
 	}
+	// No length cap: a long clause is returned whole (the picker wraps it).
 	long := "Goal: " + strings.Repeat("x", 200)
-	if got := recapLine(long); len([]rune(got)) > 121 || !strings.HasSuffix(got, "…") {
-		t.Errorf("recapLine(long) = %q (%d runes), want ≤121 runes capped with ellipsis", got, len([]rune(got)))
+	if got := recapLine(long); got != strings.Repeat("x", 200) {
+		t.Errorf("recapLine(long) = %q, want full uncapped clause", got)
 	}
 }
 

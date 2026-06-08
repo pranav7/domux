@@ -934,3 +934,56 @@ func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
 		t.Fatalf("expected 'no git root' status, got %q", pm.status)
 	}
 }
+
+func TestWrapWords(t *testing.T) {
+	// Greedy wrap, no word split when each word fits.
+	got := wrapWords("the quick brown fox jumps", 11)
+	want := []string{"the quick", "brown fox", "jumps"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("wrapWords = %q, want %q", got, want)
+	}
+	for _, line := range got {
+		if lipgloss.Width(line) > 11 {
+			t.Fatalf("line %q exceeds width 11", line)
+		}
+	}
+	// A single word wider than width is hard-split so nothing overflows.
+	split := wrapWords(strings.Repeat("x", 25), 10)
+	if len(split) != 3 || split[0] != strings.Repeat("x", 10) || split[2] != strings.Repeat("x", 5) {
+		t.Fatalf("hard-split = %q, want 10/10/5", split)
+	}
+}
+
+func TestRecapWrapsAcrossLinesUntruncated(t *testing.T) {
+	recap := "PR #391 hooks client-portal and Files-tab uploads into document " +
+		"categorization so TODO selectors find them; it's rebased and the conflict is gone"
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "ws", Recap: recap}},
+	})
+	m.width = 80
+	m.showDetails = true
+
+	width := 80
+	lines := m.renderRowLines(m.rows[0], true, width)
+	plain := stripTestANSI(strings.Join(lines, "\n"))
+
+	if strings.Contains(plain, "…") {
+		t.Fatalf("recap was truncated with ellipsis:\n%s", plain)
+	}
+	// Every word of the full recap must survive somewhere in the wrapped output.
+	for _, word := range strings.Fields(recap) {
+		if !strings.Contains(plain, word) {
+			t.Fatalf("recap word %q missing from wrapped output:\n%s", word, plain)
+		}
+	}
+	// And no rendered line may exceed the list width.
+	for _, line := range lines {
+		if lipgloss.Width(line) > width {
+			t.Fatalf("rendered line exceeds width %d: %q", width, line)
+		}
+	}
+	// The recap should actually wrap (more than the single first line + recap row).
+	if len(lines) < 3 {
+		t.Fatalf("expected recap to wrap onto multiple lines, got %d lines:\n%s", len(lines), plain)
+	}
+}
