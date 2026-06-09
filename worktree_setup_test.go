@@ -308,3 +308,38 @@ func TestSetupCommandNoConfIsNoOp(t *testing.T) {
 		t.Fatalf("no-conf setup should not error: %v", err)
 	}
 }
+
+func TestProvisionWorkspaceAppliesSetup(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	writeFileMode(t, filepath.Join(root, "CLAUDE.local.md"), "hi", 0644)
+	writeFileMode(t, filepath.Join(root, ".domux", worktreeConfName),
+		"link CLAUDE.local.md\nrun echo ready\n", 0644)
+
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 1 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	res, err := provisionWorkspace(root)
+	if err != nil {
+		t.Fatalf("provisionWorkspace: %v", err)
+	}
+	// link applied in the new worktree.
+	if _, err := os.Lstat(filepath.Join(res.Path, "CLAUDE.local.md")); err != nil {
+		t.Fatalf("CLAUDE.local.md not linked: %v", err)
+	}
+	// run command sent into the session via tmux send-keys.
+	b, _ := os.ReadFile(callFile)
+	if !strings.Contains(string(b), "send-keys") || !strings.Contains(string(b), "echo ready") {
+		t.Fatalf("run command not sent to session; tmux calls:\n%s", b)
+	}
+	// summary populated.
+	if res.SetupSummary == "" {
+		t.Fatalf("SetupSummary empty")
+	}
+}

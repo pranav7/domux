@@ -1002,10 +1002,14 @@ func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
 	m.statusErr = false
 	return func() tea.Msg {
 		res, err := provisionWorkspace(root)
+		value := res.Branch
+		if res.SetupSummary != "" {
+			value = fmt.Sprintf("%s (%s)", res.Branch, res.SetupSummary)
+		}
 		return pickerActionMsg{
 			Action:  "provision",
 			Session: res.Session,
-			Value:   res.Branch,
+			Value:   value,
 			Err:     err,
 		}
 	}
