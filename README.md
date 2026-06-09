@@ -1,5 +1,14 @@
 # domux
 
+**A tmux switcher that shows which of your parallel AI agents is waiting on you.**
+
+Run several Claude Code / Codex agents at once and you lose track of which one is still
+working and which is blocked on you. <kbd>\<leader\></kbd> + <kbd>s</kbd> shows every
+session — its branch, its todos, and live agent status (working vs. waiting) — so you jump
+straight to the one that needs you. <kbd>\<leader\></kbd> + <kbd>t</kbd> is a per-worktree
+todo list in plain markdown. It doesn't spawn agents or manage worktrees; it's a thin layer
+over the tmux you already run.
+
 domux helps me scale multiple sessions in a single project. It's built on top of tmux. I wanted something that extends my current workflow rather learning another tool. I am comfortable working in the terminal, and that's where I wanted this to work. It's simple, and it's not trying to do too much. There are a bunch of alternatives to this of course, but this works best for me, and it's quite scalable, yet simple. The beauty of the world we live in today is building software tailored to you. This is my take on an AI IDE built on top of the terminal. This is currently my daily driver.
 
 There are two main parts to domux, the switcher and the todolist:
