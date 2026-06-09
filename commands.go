@@ -81,6 +81,8 @@ func runCommand(name string, args []string) error {
 		return aiStateCommand(args)
 	case "workspace":
 		return workspaceCommand(args)
+	case "setup":
+		return setupCommand(args)
 	case "install":
 		return installCommand(args)
 	case "bootstrap":

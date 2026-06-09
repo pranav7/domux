@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -230,4 +231,67 @@ func tmuxSendKeys(session, command string) error {
 // escaped via the '\'' idiom.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// resolveMainCheckout returns the main checkout for a worktree path. For domux
+// workspace dirs it strips the .domux/worktrees/workspace-N suffix; otherwise it
+// asks git for the main worktree.
+func resolveMainCheckout(worktree string) (string, error) {
+	abs, err := filepath.Abs(worktree)
+	if err != nil {
+		return "", err
+	}
+	if root, ok := workspaceRootFromPath(abs); ok {
+		return root, nil
+	}
+	return gitMainWorktree(abs)
+}
+
+// gitMainWorktree returns the first (main) worktree path from `git worktree list`.
+func gitMainWorktree(dir string) (string, error) {
+	out, err := exec.Command("git", "-C", dir, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return "", fmt.Errorf("git worktree list: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			return strings.TrimSpace(path), nil
+		}
+	}
+	return "", fmt.Errorf("no worktree found for %s", dir)
+}
+
+// setupCommand implements `domux setup [--path DIR]`: applies the main checkout's
+// .domux/worktree.conf to DIR (default cwd), running `run` commands inline.
+func setupCommand(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	path := fs.String("path", ".", "worktree directory to set up")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	worktree, err := filepath.Abs(*path)
+	if err != nil {
+		return err
+	}
+	main, err := resolveMainCheckout(worktree)
+	if err != nil {
+		return err
+	}
+	results, err := runWorktreeSetup(main, worktree, inlineRunner(main, worktree))
+	if err != nil {
+		return err
+	}
+	if results == nil {
+		fmt.Printf("no %s in %s — nothing to set up\n",
+			filepath.Join(".domux", worktreeConfName), main)
+		return nil
+	}
+	for _, r := range results {
+		if !r.OK {
+			fmt.Fprintf(os.Stderr, "  skip %s %s: %s\n", r.Verb, r.Arg, r.Note)
+		}
+	}
+	fmt.Printf("worktree setup: %s\n", summarizeSetup(results))
+	return nil
 }

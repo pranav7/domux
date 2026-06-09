@@ -250,3 +250,55 @@ printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
 		t.Fatalf("third call wrong: %q", calls[2])
 	}
 }
+
+func TestResolveMainCheckoutFromWorkspacePath(t *testing.T) {
+	// Pure string strip — no git needed for the domux worktree convention.
+	wt := "/home/u/proj/.domux/worktrees/workspace-3"
+	main, err := resolveMainCheckout(wt)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if main != "/home/u/proj" {
+		t.Fatalf("main = %q, want /home/u/proj", main)
+	}
+}
+
+func TestResolveMainCheckoutFromPlainWorktree(t *testing.T) {
+	root := setupGitWorkspaceRepo(t) // root is the main checkout
+	wt := filepath.Join(t.TempDir(), "feature")
+	gitRun(t, root, "worktree", "add", "-b", "feature", wt)
+	main, err := resolveMainCheckout(wt)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	wantMain, _ := filepath.EvalSymlinks(root)
+	gotMain, _ := filepath.EvalSymlinks(main)
+	if gotMain != wantMain {
+		t.Fatalf("main = %q, want %q", gotMain, wantMain)
+	}
+}
+
+func TestSetupCommandEndToEnd(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	writeFileMode(t, filepath.Join(root, "seed.txt"), "S", 0644)
+	writeFileMode(t, filepath.Join(root, ".domux", worktreeConfName),
+		"copy seed.txt\nrun true\n", 0644)
+	wt := filepath.Join(t.TempDir(), "feature")
+	gitRun(t, root, "worktree", "add", "-b", "feature", wt)
+
+	if err := setupCommand([]string{"--path", wt}); err != nil {
+		t.Fatalf("setupCommand: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(wt, "seed.txt")); err != nil || string(b) != "S" {
+		t.Fatalf("seed.txt not copied: %q %v", b, err)
+	}
+}
+
+func TestSetupCommandNoConfIsNoOp(t *testing.T) {
+	root := setupGitWorkspaceRepo(t)
+	wt := filepath.Join(t.TempDir(), "feature")
+	gitRun(t, root, "worktree", "add", "-b", "feature", wt)
+	if err := setupCommand([]string{"--path", wt}); err != nil {
+		t.Fatalf("no-conf setup should not error: %v", err)
+	}
+}
