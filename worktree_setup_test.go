@@ -195,3 +195,55 @@ func TestRunWorktreeSetupAppliesConf(t *testing.T) {
 		t.Fatalf("results = %#v", results)
 	}
 }
+
+func TestInlineRunnerCwdAndEnv(t *testing.T) {
+	main := t.TempDir()
+	wt := t.TempDir()
+	run := inlineRunner(main, wt)
+	// Command runs via `sh -c` with cwd=wt; write a probe file relatively.
+	if err := run(`printf '%s\n%s\n%s\n' "$PWD" "$DOMUX_MAIN" "$DOMUX_WORKTREE" > probe`); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(wt, "probe"))
+	if err != nil {
+		t.Fatalf("probe not written in worktree: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	// macOS resolves TempDir through /private; compare via EvalSymlinks.
+	wantPWD, _ := filepath.EvalSymlinks(wt)
+	gotPWD, _ := filepath.EvalSymlinks(lines[0])
+	if gotPWD != wantPWD {
+		t.Fatalf("PWD = %q, want %q", gotPWD, wantPWD)
+	}
+	if lines[1] != main || lines[2] != wt {
+		t.Fatalf("env = %#v, want main=%q wt=%q", lines, main, wt)
+	}
+}
+
+func TestSessionRunnerSendsExportThenCommands(t *testing.T) {
+	callFile := filepath.Join(t.TempDir(), "calls")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+`, callFile)
+	run := sessionRunner("sess", "/main", "/wt")
+	if err := run("npm install"); err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	if err := run("echo done"); err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+	b, _ := os.ReadFile(callFile)
+	calls := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 tmux calls (export + 2 cmds), got %#v", calls)
+	}
+	if !strings.Contains(calls[0], "send-keys") || !strings.Contains(calls[0], "export DOMUX_MAIN") {
+		t.Fatalf("first call should export env: %q", calls[0])
+	}
+	if !strings.Contains(calls[1], "npm install") || !strings.Contains(calls[1], "Enter") {
+		t.Fatalf("second call wrong: %q", calls[1])
+	}
+	if !strings.Contains(calls[2], "echo done") {
+		t.Fatalf("third call wrong: %q", calls[2])
+	}
+}

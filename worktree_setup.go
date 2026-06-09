@@ -127,8 +127,6 @@ func copyInto(main, worktree, rel string) error {
 	return os.Rename(tmp, dst)
 }
 
-var _ = exec.Command // exec used by runners added in Task 4
-
 // summarizeSetup renders a one-line status like "linked 2, copied 1, ran 1, 1 skipped".
 func summarizeSetup(results []setupResult) string {
 	var linked, copied, ran, skipped int
@@ -182,4 +180,44 @@ func runWorktreeSetup(main, worktree string, run setupRunner) ([]setupResult, er
 		results = append(results, setupResult{Verb: "conf", OK: false, Note: w})
 	}
 	return results, nil
+}
+
+// inlineRunner runs commands via `sh -c` in the worktree, streaming to stdout/
+// stderr, with DOMUX_* env vars set. Used by the `domux setup` CLI.
+func inlineRunner(main, worktree string) setupRunner {
+	return func(command string) error {
+		cmd := exec.Command("sh", "-c", command)
+		cmd.Dir = worktree
+		cmd.Env = append(os.Environ(),
+			"DOMUX_MAIN="+main,
+			"DOMUX_WORKTREE="+worktree,
+			"DOMUX_ROOT="+main,
+		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+}
+
+// sessionRunner sends commands into a tmux session via send-keys so long-running
+// setup doesn't block the picker and the developer watches it in the new session.
+// The session's shell already has cwd = worktree; DOMUX_* vars are exported once,
+// lazily, on the first command.
+func sessionRunner(session, main, worktree string) setupRunner {
+	envSent := false
+	return func(command string) error {
+		if !envSent {
+			export := fmt.Sprintf("export DOMUX_MAIN=%q DOMUX_WORKTREE=%q DOMUX_ROOT=%q",
+				main, worktree, main)
+			if err := tmuxSendKeys(session, export); err != nil {
+				return err
+			}
+			envSent = true
+		}
+		return tmuxSendKeys(session, command)
+	}
+}
+
+func tmuxSendKeys(session, command string) error {
+	return exec.Command("tmux", "send-keys", "-t", session, command, "Enter").Run()
 }
