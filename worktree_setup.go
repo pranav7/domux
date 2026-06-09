@@ -168,6 +168,14 @@ func summarizeSetup(results []setupResult) string {
 // Returns (nil, nil) when no conf exists — setup is optional. Parse warnings are
 // folded into the results as not-OK entries so they show up in the summary.
 func runWorktreeSetup(main, worktree string, run setupRunner) ([]setupResult, error) {
+	// Guard against applying setup to the main checkout itself (e.g. `domux
+	// setup` run from the main checkout): a `link` directive would os.RemoveAll
+	// the real file and replace it with a self-referential symlink.
+	if mainInfo, err := os.Stat(main); err == nil {
+		if wtInfo, err := os.Stat(worktree); err == nil && os.SameFile(mainInfo, wtInfo) {
+			return nil, fmt.Errorf("refusing to apply worktree setup to the main checkout itself: %s", worktree)
+		}
+	}
 	confPath := filepath.Join(main, ".domux", worktreeConfName)
 	f, err := os.Open(confPath)
 	if err != nil {

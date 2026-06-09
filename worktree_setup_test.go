@@ -343,3 +343,20 @@ esac
 		t.Fatalf("SetupSummary empty")
 	}
 }
+
+func TestRunWorktreeSetupRefusesMainCheckoutItself(t *testing.T) {
+	main := t.TempDir()
+	writeFileMode(t, filepath.Join(main, ".domux", worktreeConfName), "link CLAUDE.local.md\n", 0644)
+	writeFileMode(t, filepath.Join(main, "CLAUDE.local.md"), "important", 0644)
+	_, err := runWorktreeSetup(main, main, func(string) error { return nil })
+	if err == nil {
+		t.Fatal("expected refusal when main == worktree")
+	}
+	// the real file must be intact (not removed/symlinked)
+	if b, _ := os.ReadFile(filepath.Join(main, "CLAUDE.local.md")); string(b) != "important" {
+		t.Fatalf("real file was clobbered: %q", b)
+	}
+	if fi, _ := os.Lstat(filepath.Join(main, "CLAUDE.local.md")); fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("real file became a symlink")
+	}
+}
