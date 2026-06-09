@@ -2,6 +2,8 @@
 
 **A tmux switcher that shows which of your parallel AI agents is waiting on you.**
 
+![domux switcher and per-worktree todos](assets/demo.gif)
+
 Run several Claude Code / Codex agents at once and you lose track of which one is still
 working and which is blocked on you. <kbd>\<leader\></kbd> + <kbd>s</kbd> shows every
 session — its branch, its todos, and live agent status (working vs. waiting) — so you jump
