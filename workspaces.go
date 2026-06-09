@@ -177,8 +177,13 @@ func provisionWorkspace(root string) (workspaceResult, error) {
 	}
 
 	// Best-effort: apply .domux/worktree.conf from the main checkout (root).
-	// run commands go into the new session so slow setup doesn't block the picker.
-	results, _ := runWorktreeSetup(root, path, sessionRunner(session, root, path))
+	// 'run' directives are dispatched into the new session so slow setup
+	// doesn't block the picker.
+	results, setupErr := runWorktreeSetup(root, path, sessionRunner(session, root, path))
+	summary := summarizeSetup(results)
+	if setupErr != nil && summary == "" {
+		summary = "setup error: " + setupErr.Error()
+	}
 
 	return workspaceResult{
 		Path:         path,
@@ -186,7 +191,7 @@ func provisionWorkspace(root string) (workspaceResult, error) {
 		Session:      session,
 		BaseBranch:   base,
 		Slot:         slot,
-		SetupSummary: summarizeSetup(results),
+		SetupSummary: summary,
 	}, nil
 }
 
