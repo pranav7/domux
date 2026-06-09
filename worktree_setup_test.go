@@ -144,3 +144,54 @@ func TestApplyWorktreeSetupIdempotent(t *testing.T) {
 		t.Fatalf("symlink wrong after re-run: %q", tgt)
 	}
 }
+
+func TestSummarizeSetup(t *testing.T) {
+	results := []setupResult{
+		{Verb: "link", OK: true},
+		{Verb: "link", OK: true},
+		{Verb: "copy", OK: true},
+		{Verb: "run", OK: true},
+		{Verb: "link", Arg: "x", OK: false, Note: "source missing: x"},
+	}
+	got := summarizeSetup(results)
+	if got != "linked 2, copied 1, ran 1, 1 skipped" {
+		t.Fatalf("summary = %q", got)
+	}
+	if summarizeSetup(nil) != "" {
+		t.Fatalf("empty summary should be blank")
+	}
+}
+
+func TestRunWorktreeSetupNoConf(t *testing.T) {
+	main := t.TempDir()
+	wt := t.TempDir()
+	results, err := runWorktreeSetup(main, wt, func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if results != nil {
+		t.Fatalf("expected nil results when no conf, got %#v", results)
+	}
+}
+
+func TestRunWorktreeSetupAppliesConf(t *testing.T) {
+	main := t.TempDir()
+	wt := t.TempDir()
+	writeFileMode(t, filepath.Join(main, "CLAUDE.local.md"), "hi", 0644)
+	writeFileMode(t, filepath.Join(main, ".domux", worktreeConfName),
+		"link CLAUDE.local.md\nrun echo hi\n", 0644)
+	var ran []string
+	results, err := runWorktreeSetup(main, wt, func(c string) error { ran = append(ran, c); return nil })
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, "CLAUDE.local.md")); err != nil {
+		t.Fatalf("link not applied: %v", err)
+	}
+	if len(ran) != 1 || ran[0] != "echo hi" {
+		t.Fatalf("ran = %#v", ran)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %#v", results)
+	}
+}

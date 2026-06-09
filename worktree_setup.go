@@ -128,3 +128,58 @@ func copyInto(main, worktree, rel string) error {
 }
 
 var _ = exec.Command // exec used by runners added in Task 4
+
+// summarizeSetup renders a one-line status like "linked 2, copied 1, ran 1, 1 skipped".
+func summarizeSetup(results []setupResult) string {
+	var linked, copied, ran, skipped int
+	for _, r := range results {
+		if !r.OK {
+			skipped++
+			continue
+		}
+		switch r.Verb {
+		case "link":
+			linked++
+		case "copy":
+			copied++
+		case "run":
+			ran++
+		}
+	}
+	var parts []string
+	if linked > 0 {
+		parts = append(parts, fmt.Sprintf("linked %d", linked))
+	}
+	if copied > 0 {
+		parts = append(parts, fmt.Sprintf("copied %d", copied))
+	}
+	if ran > 0 {
+		parts = append(parts, fmt.Sprintf("ran %d", ran))
+	}
+	if skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped", skipped))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// runWorktreeSetup reads <main>/.domux/worktree.conf and applies it to worktree.
+// Returns (nil, nil) when no conf exists — setup is optional. Parse warnings are
+// folded into the results as not-OK entries so they show up in the summary.
+func runWorktreeSetup(main, worktree string, run setupRunner) ([]setupResult, error) {
+	confPath := filepath.Join(main, ".domux", worktreeConfName)
+	f, err := os.Open(confPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	directives, warnings := parseWorktreeConf(f)
+	results := applyWorktreeSetup(main, worktree, directives, run)
+	for _, w := range warnings {
+		results = append(results, setupResult{Verb: "conf", OK: false, Note: w})
+	}
+	return results, nil
+}
