@@ -255,7 +255,7 @@ func gitMainWorktree(dir string) (string, error) {
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		if path, ok := strings.CutPrefix(line, "worktree "); ok {
-			return strings.TrimSpace(path), nil
+			return path, nil
 		}
 	}
 	return "", fmt.Errorf("no worktree found for %s", dir)
@@ -269,6 +269,12 @@ func setupCommand(args []string) error {
 	path := fs.String("path", ".", "worktree directory to set up")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if fs.NArg() > 1 {
+		return fmt.Errorf("setup accepts at most one directory")
+	}
+	if fs.NArg() == 1 {
+		*path = fs.Arg(0)
 	}
 	worktree, err := filepath.Abs(*path)
 	if err != nil {
@@ -287,9 +293,17 @@ func setupCommand(args []string) error {
 			filepath.Join(".domux", worktreeConfName), main)
 		return nil
 	}
+	if len(results) == 0 {
+		fmt.Printf("worktree setup: nothing to do\n")
+		return nil
+	}
 	for _, r := range results {
 		if !r.OK {
-			fmt.Fprintf(os.Stderr, "  skip %s %s: %s\n", r.Verb, r.Arg, r.Note)
+			if r.Arg != "" {
+				fmt.Fprintf(os.Stderr, "  skip %s %s: %s\n", r.Verb, r.Arg, r.Note)
+			} else {
+				fmt.Fprintf(os.Stderr, "  skip %s: %s\n", r.Verb, r.Note)
+			}
 		}
 	}
 	fmt.Printf("worktree setup: %s\n", summarizeSetup(results))

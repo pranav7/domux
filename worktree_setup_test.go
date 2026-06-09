@@ -278,6 +278,12 @@ func TestResolveMainCheckoutFromPlainWorktree(t *testing.T) {
 	}
 }
 
+func TestResolveMainCheckoutNotGit(t *testing.T) {
+	if _, err := resolveMainCheckout(t.TempDir()); err == nil {
+		t.Fatal("expected error for non-git dir")
+	}
+}
+
 func TestSetupCommandEndToEnd(t *testing.T) {
 	root := setupGitWorkspaceRepo(t)
 	writeFileMode(t, filepath.Join(root, "seed.txt"), "S", 0644)
