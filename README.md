@@ -216,8 +216,10 @@ domux setup [DIR]     # apply <main>/.domux/worktree.conf to DIR (default: cwd)
 ```
 
 Setup is best-effort: a missing source or a failed step is reported but never aborts
-the worktree. Check `worktree.conf` in (it's team-shared) but keep the worktrees
-themselves ignored — e.g. `/.domux/worktrees/` in `.gitignore`.
+the worktree. `run` failures surface when you call `domux setup` directly, but are
+not gated during provisioning (they run live in the new session). Commit
+`worktree.conf` (it's team-shared) but keep the worktrees themselves ignored — e.g.
+add `/.domux/worktrees/` to `.gitignore`.
 
 ## Commands
 
