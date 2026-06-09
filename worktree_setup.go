@@ -41,6 +41,9 @@ func parseWorktreeConf(r io.Reader) (directives []setupDirective, warnings []str
 			warnings = append(warnings, fmt.Sprintf("unknown directive %q", line))
 		}
 	}
+	if err := sc.Err(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("read error: %v", err))
+	}
 	return directives, warnings
 }
 
@@ -86,7 +89,7 @@ func applyWorktreeSetup(main, worktree string, directives []setupDirective, run 
 // first so re-runs are idempotent.
 func linkInto(main, worktree, rel string) error {
 	src := filepath.Join(main, rel)
-	if !fileExists(src) {
+	if _, err := os.Lstat(src); os.IsNotExist(err) {
 		return fmt.Errorf("source missing: %s", rel)
 	}
 	dst := filepath.Join(worktree, rel)
@@ -207,8 +210,8 @@ func sessionRunner(session, main, worktree string) setupRunner {
 	envSent := false
 	return func(command string) error {
 		if !envSent {
-			export := fmt.Sprintf("export DOMUX_MAIN=%q DOMUX_WORKTREE=%q DOMUX_ROOT=%q",
-				main, worktree, main)
+			export := fmt.Sprintf("export DOMUX_MAIN=%s DOMUX_WORKTREE=%s DOMUX_ROOT=%s",
+				shellSingleQuote(main), shellSingleQuote(worktree), shellSingleQuote(main))
 			if err := tmuxSendKeys(session, export); err != nil {
 				return err
 			}
@@ -220,4 +223,11 @@ func sessionRunner(session, main, worktree string) setupRunner {
 
 func tmuxSendKeys(session, command string) error {
 	return exec.Command("tmux", "send-keys", "-t", session, command, "Enter").Run()
+}
+
+// shellSingleQuote wraps s in single quotes so the shell treats it literally
+// (no $(...), backtick, or variable expansion). Embedded single quotes are
+// escaped via the '\'' idiom.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

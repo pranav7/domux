@@ -240,6 +240,9 @@ printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
 	if !strings.Contains(calls[0], "send-keys") || !strings.Contains(calls[0], "export DOMUX_MAIN") {
 		t.Fatalf("first call should export env: %q", calls[0])
 	}
+	if !strings.Contains(calls[0], "/main") || !strings.Contains(calls[0], "/wt") {
+		t.Fatalf("export missing path values: %q", calls[0])
+	}
 	if !strings.Contains(calls[1], "npm install") || !strings.Contains(calls[1], "Enter") {
 		t.Fatalf("second call wrong: %q", calls[1])
 	}
