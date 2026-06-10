@@ -2,4 +2,4 @@ domux
 dist/
 .DS_Store
 .worktrees/
-.claude-pipeline/
+.implement/
