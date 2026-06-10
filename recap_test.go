@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClaudeProjectDirName(t *testing.T) {
@@ -64,6 +65,72 @@ func TestRecapForLiveSession(t *testing.T) {
 	}
 }
 
+func TestBestLiveSession(t *testing.T) {
+	cwd := "/Users/p/projects/domux"
+	sessions := []claudeSession{
+		{SessionID: "old", Cwd: cwd, Pid: os.Getpid(), UpdatedAt: 100},
+		{SessionID: "new", Cwd: cwd, Pid: os.Getpid(), UpdatedAt: 200}, // most recent wins
+		{SessionID: "other", Cwd: "/elsewhere", Pid: os.Getpid(), UpdatedAt: 999},
+	}
+	if s, ok := bestLiveSession(sessions, cwd); !ok || s.SessionID != "new" {
+		t.Errorf("bestLiveSession(cwd) = %q,%v want new,true", s.SessionID, ok)
+	}
+	if _, ok := bestLiveSession(sessions, "/no/match"); ok {
+		t.Error("bestLiveSession(no match) should be false")
+	}
+	if _, ok := bestLiveSession(nil, cwd); ok {
+		t.Error("bestLiveSession(nil) should be false")
+	}
+	if _, ok := bestLiveSession(sessions); ok {
+		t.Error("bestLiveSession(no paths) should be false")
+	}
+}
+
+func TestScanRecapReturnsTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	writeLines(t, path, []string{
+		`{"type":"system","subtype":"away_summary","content":"Old recap.","timestamp":"2026-05-21T10:00:00.000Z"}`,
+		`{"type":"system","subtype":"away_summary","content":"New recap.","timestamp":"2026-05-21T12:30:00.500Z"}`,
+	})
+	summary, ts, _ := scanRecap(path)
+	if summary != "New recap" {
+		t.Fatalf("summary = %q, want New recap", summary)
+	}
+	want, _ := time.Parse(time.RFC3339, "2026-05-21T12:30:00.500Z")
+	if !ts.Equal(want) {
+		t.Errorf("summaryTime = %v, want %v (timestamp of freshest entry)", ts, want)
+	}
+	// ai-title fallback carries no timestamp → zero recapTime.
+	titlePath := filepath.Join(dir, "t.jsonl")
+	writeTranscript(t, titlePath, "Just a title")
+	if recap, rt := cachedRecap(titlePath); recap != "Just a title" || !rt.IsZero() {
+		t.Errorf("cachedRecap(title) = %q,%v want title with zero time", recap, rt)
+	}
+}
+
+func TestRecapVisibleAfterClear(t *testing.T) {
+	cleared := "2026-05-21T11:00:00Z"
+	before, _ := time.Parse(time.RFC3339, "2026-05-21T10:00:00Z")
+	after, _ := time.Parse(time.RFC3339, "2026-05-21T12:00:00Z")
+
+	if !recapVisibleAfterClear(before, "") {
+		t.Error("never-cleared workspace should always show its recap")
+	}
+	if recapVisibleAfterClear(before, cleared) {
+		t.Error("recap dated before clear should be hidden")
+	}
+	if recapVisibleAfterClear(time.Time{}, cleared) {
+		t.Error("ai-title fallback (zero time) should be hidden after a clear")
+	}
+	if !recapVisibleAfterClear(after, cleared) {
+		t.Error("recap written after clear should resurface")
+	}
+	if !recapVisibleAfterClear(before, "not-a-time") {
+		t.Error("unparseable clear time should not suppress")
+	}
+}
+
 func TestLastAITitle(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")
@@ -108,14 +175,14 @@ func TestScanRecapPrefersAwaySummary(t *testing.T) {
 	}
 	writeLines(t, path, lines)
 
-	summary, title := scanRecap(path)
+	summary, _, title := scanRecap(path)
 	if summary != "Building the latest recap line" {
 		t.Errorf("summary = %q, want first sentence of latest away_summary", summary)
 	}
 	if title != "Stale title" {
 		t.Errorf("title = %q, want %q", title, "Stale title")
 	}
-	if got := cachedRecap(path); got != "Building the latest recap line" {
+	if got, _ := cachedRecap(path); got != "Building the latest recap line" {
 		t.Errorf("cachedRecap = %q, want summary to win over title", got)
 	}
 }
@@ -131,7 +198,7 @@ func TestScanRecapManualRecapAndPairing(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"<command-name>/name</command-name>"}}`,
 		`{"type":"system","subtype":"local_command","content":"<local-command-stdout>renamed session</local-command-stdout>"}`,
 	})
-	if got := cachedRecap(path); got != "Manual recap" {
+	if got, _ := cachedRecap(path); got != "Manual recap" {
 		t.Errorf("cachedRecap = %q, want %q (recap paired + first sentence, /name stdout ignored)", got, "Manual recap")
 	}
 }
@@ -145,7 +212,7 @@ func TestScanRecapIgnoresQuotedMarkers(t *testing.T) {
 		`{"type":"ai-title","aiTitle":"Real title"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"the away_summary subtype and <command-name>/recap</command-name> and <local-command-stdout>fake</local-command-stdout>"}]}}`,
 	})
-	if got := cachedRecap(path); got != "Real title" {
+	if got, _ := cachedRecap(path); got != "Real title" {
 		t.Errorf("cachedRecap = %q, want %q (quoted markers ignored)", got, "Real title")
 	}
 }

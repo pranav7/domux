@@ -97,10 +97,9 @@ func pidAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-// recapForLiveSession returns the ai-title of the live Claude session whose cwd
-// exactly matches one of paths, preferring the most recently active. "" when no
-// live session matches.
-func recapForLiveSession(sessions []claudeSession, paths ...string) string {
+// bestLiveSession returns the most recently active live Claude session whose cwd
+// exactly matches one of paths, and true; (zero, false) when none match.
+func bestLiveSession(sessions []claudeSession, paths ...string) (claudeSession, bool) {
 	want := make(map[string]bool, len(paths))
 	for _, p := range paths {
 		if p != "" {
@@ -108,7 +107,7 @@ func recapForLiveSession(sessions []claudeSession, paths ...string) string {
 		}
 	}
 	if len(want) == 0 {
-		return ""
+		return claudeSession{}, false
 	}
 	var best claudeSession
 	found := false
@@ -120,20 +119,53 @@ func recapForLiveSession(sessions []claudeSession, paths ...string) string {
 			best, found = s, true
 		}
 	}
-	if !found {
-		return ""
-	}
+	return best, found
+}
+
+// recapForSession returns the recap of a specific live Claude session along with
+// the timestamp of the transcript entry it came from (zero when the recap is an
+// ai-title fallback, which carries no timestamp).
+func recapForSession(s claudeSession) (string, time.Time) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", time.Time{}
 	}
-	path := filepath.Join(home, ".claude", "projects", claudeProjectDirName(best.Cwd), best.SessionID+".jsonl")
+	path := filepath.Join(home, ".claude", "projects", claudeProjectDirName(s.Cwd), s.SessionID+".jsonl")
 	return cachedRecap(path)
 }
 
+// recapForLiveSession returns the ai-title of the live Claude session whose cwd
+// exactly matches one of paths, preferring the most recently active. "" when no
+// live session matches.
+func recapForLiveSession(sessions []claudeSession, paths ...string) string {
+	best, ok := bestLiveSession(sessions, paths...)
+	if !ok {
+		return ""
+	}
+	recap, _ := recapForSession(best)
+	return recap
+}
+
+// recapVisibleAfterClear reports whether a recap from a transcript entry stamped
+// recapTime should still show, given the workspace's last `clear` time (RFC3339,
+// "" = never cleared). A clear hides every recap dated at-or-before it; the line
+// reappears only once a fresh recap entry (newer timestamp) is written — so the
+// same Claude session shows its next recap, but not the stale one it had.
+func recapVisibleAfterClear(recapTime time.Time, clearedAt string) bool {
+	if clearedAt == "" {
+		return true
+	}
+	t, err := time.Parse(timeFormat, clearedAt)
+	if err != nil {
+		return true
+	}
+	return recapTime.After(t)
+}
+
 type recapCacheEntry struct {
-	mtime time.Time
-	title string
+	mtime     time.Time
+	title     string
+	recapTime time.Time
 }
 
 var (
@@ -141,28 +173,29 @@ var (
 	recapCache = map[string]recapCacheEntry{}
 )
 
-// cachedRecap returns the transcript's recap, caching by path + mtime so
-// periodic refreshes don't re-scan multi-MB transcripts. It prefers the last
-// user prompt (which updates every turn, so it stays fresh) and falls back to
-// the ai-title (which Claude generates once and rarely refreshes, so it goes
-// stale as a session moves on).
-func cachedRecap(path string) string {
+// cachedRecap returns the transcript's recap and the timestamp of the entry it
+// came from, caching by path + mtime so periodic refreshes don't re-scan
+// multi-MB transcripts. It prefers the freshest away_summary/manual /recap
+// (which carry a timestamp) and falls back to the ai-title (which Claude
+// generates once, rarely refreshes, and carries no timestamp — so its recapTime
+// is zero).
+func cachedRecap(path string) (string, time.Time) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return ""
+		return "", time.Time{}
 	}
 	recapMu.Lock()
 	defer recapMu.Unlock()
 	if e, ok := recapCache[path]; ok && e.mtime.Equal(info.ModTime()) {
-		return e.title
+		return e.title, e.recapTime
 	}
-	summary, title := scanRecap(path)
-	recap := summary
+	summary, summaryTime, title := scanRecap(path)
+	recap, recapTime := summary, summaryTime
 	if recap == "" {
-		recap = title
+		recap, recapTime = title, time.Time{}
 	}
-	recapCache[path] = recapCacheEntry{mtime: info.ModTime(), title: recap}
-	return recap
+	recapCache[path] = recapCacheEntry{mtime: info.ModTime(), title: recap, recapTime: recapTime}
+	return recap, recapTime
 }
 
 const (
@@ -187,10 +220,10 @@ const (
 // Reads line-by-line via bufio.Reader (not Scanner) so arbitrarily long
 // assistant/tool lines don't overflow; a cheap substring prefilter avoids
 // JSON-parsing the bulk of the transcript.
-func scanRecap(path string) (summary, title string) {
+func scanRecap(path string) (summary string, summaryTime time.Time, title string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return "", time.Time{}, ""
 	}
 	defer f.Close()
 
@@ -202,11 +235,12 @@ func scanRecap(path string) (summary, title string) {
 			// System entries (ai-title, away_summary, local_command) carry text at
 			// top-level .content; user entries carry it at .message.content.
 			var rec struct {
-				Type    string          `json:"type"`
-				Subtype string          `json:"subtype"`
-				AITitle string          `json:"aiTitle"`
-				Content json.RawMessage `json:"content"`
-				Message struct {
+				Type      string          `json:"type"`
+				Subtype   string          `json:"subtype"`
+				AITitle   string          `json:"aiTitle"`
+				Timestamp string          `json:"timestamp"`
+				Content   json.RawMessage `json:"content"`
+				Message   struct {
 					Content json.RawMessage `json:"content"`
 				} `json:"message"`
 			}
@@ -216,11 +250,11 @@ func scanRecap(path string) (summary, title string) {
 					title = rec.AITitle
 				case rec.Type == "system" && rec.Subtype == "away_summary":
 					if s := recapLine(jsonString(rec.Content)); s != "" {
-						summary = s
+						summary, summaryTime = s, parseRecapTime(rec.Timestamp)
 					}
 				case rec.Type == "system" && rec.Subtype == "local_command" && pendingRecap:
 					if inner := stdoutInner(jsonString(rec.Content)); inner != "" {
-						summary = recapLine(inner)
+						summary, summaryTime = recapLine(inner), parseRecapTime(rec.Timestamp)
 					}
 					pendingRecap = false
 				case rec.Type == "user":
@@ -237,7 +271,20 @@ func scanRecap(path string) (summary, title string) {
 			break
 		}
 	}
-	return summary, title
+	return summary, summaryTime, title
+}
+
+// parseRecapTime parses a transcript entry timestamp (RFC3339, e.g.
+// "2026-05-21T10:27:43.547Z"). Zero time on missing/unparseable input.
+func parseRecapTime(ts string) time.Time {
+	if ts == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func relevantRecapLine(line string) bool {
@@ -249,7 +296,7 @@ func relevantRecapLine(line string) bool {
 
 // lastAITitle returns only the last ai-title (used by tests and as a fallback).
 func lastAITitle(path string) string {
-	_, title := scanRecap(path)
+	_, _, title := scanRecap(path)
 	return title
 }
 

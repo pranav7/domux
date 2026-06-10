@@ -24,8 +24,12 @@ type SessionState struct {
 	AI              map[string]string `json:"ai,omitempty"`
 	AIWorkingLabel  string            `json:"ai_working_label,omitempty"`
 	AIWorkingLabels map[string]string `json:"ai_working_labels,omitempty"`
-	CreatedAt       string            `json:"created_at,omitempty"`
-	UpdatedAt       string            `json:"updated_at,omitempty"`
+	// RecapClearedAt (RFC3339) is when this workspace was last `clear`ed. The
+	// picker hides any recap dated at-or-before it, so a cleared workspace stops
+	// showing a stale recap but resurfaces once a fresh recap is written.
+	RecapClearedAt string `json:"recap_cleared_at,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
 }
 
 type AIStates struct {
