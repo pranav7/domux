@@ -584,6 +584,11 @@ func clearWorkspaceForSession(session, dir string, verbose bool) error {
 	state.Server = false
 	state.Workspace = ""
 	state.AI = map[string]string{}
+	// Stamp the clear time so the picker stops showing this workspace's recap.
+	// Recaps are derived live from Claude's transcripts, so blanking a field
+	// isn't enough — the picker hides any recap dated at-or-before this, and
+	// resurfaces it once a fresh recap (newer entry) is written.
+	state.RecapClearedAt = time.Now().Format(timeFormat)
 	if err := saveSessionState(state); err != nil {
 		return err
 	}

@@ -1114,6 +1114,7 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 				row.Session.PR = nil
 				row.Session.Server = false
 				row.Session.Tasks = nil
+				row.Session.Recap = ""
 			}
 		}
 		m.removeSessionTaskRows(msg.Session)
@@ -1456,7 +1457,8 @@ func (m pickerModel) logoHeaderLines(width int) []string {
 		statusBox = style.Render(m.status)
 	}
 
-	out := make([]string, len(logoLines))
+	out := make([]string, 1+len(logoLines))
+	out[0] = ""
 	for i, line := range logoLines {
 		rendered := "    " + logoStyle.Render(line)
 		if i == 0 && statusBox != "" {
@@ -1464,13 +1466,13 @@ func (m pickerModel) logoHeaderLines(width int) []string {
 			if pad < 1 {
 				pad = 1
 			}
-			out[i] = rendered + strings.Repeat(" ", pad) + statusBox
+			out[i+1] = rendered + strings.Repeat(" ", pad) + statusBox
 			continue
 		}
 		if i == 1 {
 			rendered += "  " + featureStyle.Render("switcher")
 		}
-		out[i] = rendered
+		out[i+1] = rendered
 	}
 	return out
 }
@@ -2107,7 +2109,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	// needed so the full recap stays readable rather than truncated mid-word;
 	// continuation lines hang-indent under the recap text (past the "※ ").
 	if m.showDetails && s.Recap != "" {
-		const indent = "        " // 8 cols, aligns with PR details
+		const indent = "        "  // 8 cols, aligns with PR details
 		const cont = indent + "  " // continuation aligns under text (after "※ ")
 		avail := m.width - lipgloss.Width(cont)
 		if avail < 8 {
@@ -2293,8 +2295,15 @@ func gatherSessions() []pickerRow {
 		// registry: only a running claude whose cwd matches this session's pane
 		// (or pinned root) yields a recap. Idle workspaces have no live session,
 		// so they stay clean, and we never surface a stale title from a past
-		// session that merely shares the project dir.
-		info.Recap = recapForLiveSession(liveClaude, panePath, info.Path)
+		// session that merely shares the project dir. A `clear` stamps
+		// state.RecapClearedAt; recaps dated at-or-before it stay hidden until a
+		// fresh one is written.
+		if best, ok := bestLiveSession(liveClaude, panePath, info.Path); ok {
+			recap, recapTime := recapForSession(best)
+			if recapVisibleAfterClear(recapTime, state.RecapClearedAt) {
+				info.Recap = recap
+			}
+		}
 
 		// Tasks
 		if info.Path != "" {

@@ -113,6 +113,34 @@ func TestClearWorkspaceClearsSessionTodos(t *testing.T) {
 	}
 }
 
+func TestClearWorkspaceStampsRecapClearedAt(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	session := "audrey-app"
+	root := "/Users/p/projects/audrey-app"
+
+	if err := saveSessionState(&SessionState{Name: session, Root: root}); err != nil {
+		t.Fatalf("saveSessionState: %v", err)
+	}
+
+	before := time.Now()
+	if err := clearWorkspaceForSession(session, "", false); err != nil {
+		t.Fatalf("clearWorkspaceForSession: %v", err)
+	}
+
+	got, err := loadSessionState(session)
+	if err != nil {
+		t.Fatalf("loadSessionState: %v", err)
+	}
+	ts, err := time.Parse(timeFormat, got.RecapClearedAt)
+	if err != nil {
+		t.Fatalf("RecapClearedAt = %q, not RFC3339: %v", got.RecapClearedAt, err)
+	}
+	if ts.Before(before.Truncate(time.Second)) {
+		t.Errorf("RecapClearedAt = %v, want >= clear time %v", ts, before)
+	}
+}
+
 func TestCloseTmuxSessionClearsStateAndKillsSession(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
