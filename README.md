@@ -191,6 +191,40 @@ hooks are installed.
 | `D` | Delete workspace sessions or close main sessions |
 | `q` / `Esc` | Quit |
 
+## Worktree Setup
+
+A new git worktree only checks out tracked files, so gitignored things a worktree
+needs to actually work — `CLAUDE.local.md`, `.env`, `node_modules`, build deps —
+are missing. A checked-in `.domux/worktree.conf` tells domux what to bring across
+and what to run for every worktree it provisions.
+
+```text
+# .domux/worktree.conf
+link CLAUDE.local.md          # symlink → main checkout (edit once, every worktree sees it)
+link .vscode/settings.json    # nested paths ok; works for files and directories
+copy .env                     # independent per-worktree copy (preserves mode)
+run  npm install              # setup command, runs in the new worktree
+```
+
+| Verb | What it does |
+|---|---|
+| `link <path>` | Symlink `<path>` to the same path in the main checkout. Single source of truth — works for files and directories. |
+| `copy <path>` | Copy the file from the main checkout into the worktree (independent, mode preserved). File-only; use `link` or `run cp -r` for directories. |
+| `run <cmd>` | Run a shell command in the new worktree. `$DOMUX_MAIN`, `$DOMUX_WORKTREE`, and `$DOMUX_ROOT` are available. |
+
+It runs automatically when the switcher provisions a workspace (`+`), and on demand
+against any worktree:
+
+```sh
+domux setup [DIR]     # apply <main>/.domux/worktree.conf to DIR (default: cwd)
+```
+
+Setup is best-effort: a missing source or a failed step is reported but never aborts
+the worktree. `run` failures surface when you call `domux setup` directly, but are
+not gated during provisioning (they run live in the new session). Commit
+`worktree.conf` (it's team-shared) but keep the worktrees themselves ignored — e.g.
+add `/.domux/worktrees/` to `.gitignore`.
+
 ## Commands
 
 | Command | Meaning |
@@ -204,6 +238,7 @@ hooks are installed.
 | `domux attach NAME` | Attach or switch to a tmux session |
 | `domux clear` | Reset and free the current workspace |
 | `domux reset-branch` | Reset only the current git branch |
+| `domux setup [DIR]` | Apply `.domux/worktree.conf` to a worktree |
 | `domux clear-state` | Clear domux state for current session |
 | `domux server` | Toggle server marker |
 | `domux commands` | Open utilities popup |

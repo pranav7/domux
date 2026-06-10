@@ -115,11 +115,12 @@ func workspaceBranch(n int) string {
 }
 
 type workspaceResult struct {
-	Path       string
-	Branch     string
-	Session    string
-	BaseBranch string
-	Slot       int
+	Path         string
+	Branch       string
+	Session      string
+	BaseBranch   string
+	Slot         int
+	SetupSummary string
 }
 
 // provisionWorkspace creates the next available workspace-N worktree under
@@ -175,12 +176,22 @@ func provisionWorkspace(root string) (workspaceResult, error) {
 		return workspaceResult{}, err
 	}
 
+	// Best-effort: apply .domux/worktree.conf from the main checkout (root).
+	// 'run' directives are dispatched into the new session so slow setup
+	// doesn't block the picker.
+	results, setupErr := runWorktreeSetup(root, path, sessionRunner(session, root, path))
+	summary := summarizeSetup(results)
+	if setupErr != nil && summary == "" {
+		summary = "setup error: " + setupErr.Error()
+	}
+
 	return workspaceResult{
-		Path:       path,
-		Branch:     branch,
-		Session:    session,
-		BaseBranch: base,
-		Slot:       slot,
+		Path:         path,
+		Branch:       branch,
+		Session:      session,
+		BaseBranch:   base,
+		Slot:         slot,
+		SetupSummary: summary,
 	}, nil
 }
 
