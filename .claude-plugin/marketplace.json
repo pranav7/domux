@@ -6,7 +6,7 @@
     {
       "name": "implement-pipeline",
       "source": "./plugins/implement-pipeline",
-      "description": "Hands-off implementation pipeline: simplify + lint + browser test + UX review + external code review."
+      "description": "Hands-off /implement pipeline: implement → simplify → lint → verify → review → PR, reusing Claude's built-in skills."
     }
   ]
 }

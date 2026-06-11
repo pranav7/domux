@@ -75,7 +75,7 @@ func TestPluginManifestIsValid(t *testing.T) {
 		t.Fatalf("plugin version is empty")
 	}
 	wantDeps := map[string]bool{
-		"code-simplifier": false,
+		"superpowers":     false,
 		"frontend-design": false,
 		"typescript-lsp":  false,
 		"pyright-lsp":     false,
@@ -98,9 +98,6 @@ func TestPluginManifestIsValid(t *testing.T) {
 func TestPluginSkillsHaveRequiredFrontmatter(t *testing.T) {
 	skills := []string{
 		"plugins/implement-pipeline/skills/implement-workflow/SKILL.md",
-		"plugins/implement-pipeline/skills/browser-test/SKILL.md",
-		"plugins/implement-pipeline/skills/ux-review/SKILL.md",
-		"plugins/implement-pipeline/skills/azcodex-review/SKILL.md",
 	}
 	for _, s := range skills {
 		data, err := os.ReadFile(s)

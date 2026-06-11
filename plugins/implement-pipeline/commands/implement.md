@@ -1,10 +1,8 @@
 ---
-description: Run the hands-off implementation pipeline (implement → simplify → lint → browser → UX → azcodex → PR).
-argument-hint: [path | "free text" | LIN-id | #issue | --resume | --from <stage> | --skip <stage,…> | --no-pr]
+description: Hands-off implementation pipeline — implement → simplify → lint → verify → review → PR, reusing Claude's built-in skills.
+argument-hint: [path | "free text" | LIN-id | #issue | --resume | --skip <stages> | --no-pr]
 ---
 
-Run the implement-pipeline orchestrator on `$ARGUMENTS`.
+Run the implementation pipeline on `$ARGUMENTS` by invoking the `implement-pipeline:implement-workflow` skill. It classifies the input, sequences the stages — reusing the built-in `/simplify`, `/verify`, and `/code-review` skills — judges each, and hands off to a PR.
 
-Invoke the `implement-pipeline:implement-workflow` skill with the arguments. The skill handles input classification, state, gates, and PR handoff.
-
-If $ARGUMENTS is empty, the orchestrator will resume an in-progress run, or pick the newest unfinished plan, or ask.
+Empty `$ARGUMENTS` → resume an in-progress run, else pick the newest unfinished plan, else ask.

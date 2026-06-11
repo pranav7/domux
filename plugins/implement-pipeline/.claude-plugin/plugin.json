@@ -1,11 +1,11 @@
 {
   "name": "implement-pipeline",
-  "version": "0.1.0",
-  "description": "Hands-off implementation pipeline orchestrating simplify, lint, browser test, UX review, and azcodex external review.",
+  "version": "0.2.0",
+  "description": "Hands-off /implement pipeline: sequences implement → simplify → lint → verify → review → PR by reusing Claude's built-in skills.",
   "author": { "name": "pranav7" },
   "homepage": "https://github.com/pranav7/domux",
   "dependencies": [
-    { "name": "code-simplifier",  "marketplace": "claude-plugins-official" },
+    { "name": "superpowers",      "marketplace": "claude-plugins-official" },
     { "name": "frontend-design",  "marketplace": "claude-plugins-official" },
     { "name": "typescript-lsp",   "marketplace": "claude-plugins-official" },
     { "name": "pyright-lsp",      "marketplace": "claude-plugins-official" }
