@@ -1,5 +1,5 @@
 ---
-name: implement-workflow
+name: implement
 description: Hands-off implementation pipeline. Picks up a spec / plan / issue / free-text task and runs it end to end — implement → simplify → lint → verify → review → PR — by reusing Claude's built-in skills. Use when the user runs /implement or asks to "implement X end to end".
 ---
 

@@ -97,7 +97,7 @@ func TestPluginManifestIsValid(t *testing.T) {
 
 func TestPluginSkillsHaveRequiredFrontmatter(t *testing.T) {
 	skills := []string{
-		"plugins/implement-pipeline/skills/implement-workflow/SKILL.md",
+		"plugins/implement-pipeline/skills/implement/SKILL.md",
 	}
 	for _, s := range skills {
 		data, err := os.ReadFile(s)
