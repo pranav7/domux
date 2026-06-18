@@ -17,7 +17,7 @@ Take one unit of work from idea to PR, hands-off. Every stage reuses a skill Cla
 | `LIN-<id>` | `/fix-linear-issue LIN-<id>` to load context, then run on the resulting diff. |
 | `#<n>` | `gh issue view <n> --json title,body` → treat as free text. |
 | `--resume` | Read `.implement/state.json`, skip completed stages. |
-| `--skip <a,b>` | Skip named stages (e.g. `--skip lint,verify`). |
+| `--skip <a,b>` | Skip named stages or analyze legs (e.g. `--skip lint,codex-review`). |
 | `--no-pr` | Stop after review; don't open a PR. |
 
 ## Before a new run (skip when `--resume`)
@@ -38,13 +38,24 @@ Run in order. Skip a stage if its trigger doesn't fire or it's listed in `--skip
    - `*.py` + `pyproject.toml` w/ ruff → `ruff check --fix . && ruff format .`
    - `*.ts/tsx/js/jsx` + biome → `npx --no-install biome check --apply .`; else eslint+prettier on the changed files.
    Residual errors after the fix → stop, report.
-4. **Verify** — invoke the built-in **`/verify`** skill (`Skill: verify`): it runs the app and exercises the change — frontend in the browser, backend via API. If UI changed (`*.tsx/jsx/html/css`, or under `pages/ app/ routes/ components/`): also run `frontend-design:frontend-design` for a design pass, and scope-check that every new UI element traces to a requirement (flag dead-end buttons / out-of-scope additions). Anything broken → stop, report.
-5. **Review** — invoke the built-in **`/code-review`** skill (`Skill: code-review`) on the diff. If `azcodex` is on `PATH`, also get an external second opinion (skip silently if absent):
-   ```bash
-   azcodex review --base "$BASE" "Review this diff for correctness, security, regressions, spec compliance. Tag each finding [CRITICAL] | [BLOCKING] | [NIT]."
-   ```
-6. **Address** — if review surfaced `[CRITICAL]` / `[BLOCKING]` items: apply the minimal fix for each, add/adjust tests, re-run stages 3–5 over the touched code. Max 2 passes, then escalate to the user. `[NIT]`s only if trivial.
-7. **PR** — `/commit-push-pr` (fallback `gh pr create -f`), then `/loop 5m /babysit` to watch CI and address review comments. Skipped when `--no-pr`.
+4. **Analyze** *(parallel fan-out)* — once lint has committed, the tree is frozen, so the read-only checks below are independent and run **concurrently**. Dispatch them as named sub-agents in a single message (see *Running the analyze fan-out*). Wait for all, then synthesize one finding list — dedupe overlaps, let your own read win ties:
+   - **verify** → `Skill: verify` — run the app and exercise the change (frontend in the browser, backend via API). Report anything broken.
+   - **code-review** → `Skill: code-review` on the diff — your own correctness/quality lens.
+   - **codex-review** → `Skill: codex-review` — external second opinion from a different model family (Codex / GPT-5.5 on Azure). Skips itself silently if `codex` is absent.
+   - **design** *(only if UI changed* — `*.tsx/jsx/html/css` or under `pages/ app/ routes/ components/`)* → `frontend-design:frontend-design` for a design pass; scope-check that every new UI element traces to a requirement (flag dead-end buttons / out-of-scope additions).
+5. **Address** — if the synthesized findings include any **BLOCKER** or **IMPORTANT** item (or `verify` found a breakage): apply the minimal fix for each, add/adjust tests, then re-run lint + a fresh **Analyze** pass over the touched code. Max 2 passes, then escalate to the user. NON-BLOCKERs only if trivial.
+6. **PR** — `/commit-push-pr` (fallback `gh pr create -f`), then `/loop 5m /babysit` to watch CI and address review comments. Skipped when `--no-pr`.
+
+### Running the analyze fan-out
+
+The legs are read-only and share no state, so they parallelize cleanly. Concurrency *and* a colour-coded display come from the same move: **one `Agent` call per leg, all in the same message** — concurrent dispatches run in parallel and the TUI renders each as its own colour-coded lane. Name the agents so the colours map to legs: `verify`, `code-review`, `codex-review`, `design`.
+
+Each sub-agent prompt must:
+- State the leg's single job, the skill to invoke (`Skill: <name>`), and pass `BASE` + any spec/plan path.
+- Be **read-only**: do not edit files or commit — only return findings. (Stage 5 is the only thing that mutates the tree, in the main thread, one fix at a time.)
+- Return a compact list tagged **BLOCKER / IMPORTANT / NON-BLOCKER** so synthesis is mechanical.
+
+If only one leg would actually run (no UI, `codex` absent, or `--skip` trims the rest), invoke it inline — no fan-out needed.
 
 ## State
 
@@ -61,6 +72,7 @@ Run in order. Skip a stage if its trigger doesn't fire or it's listed in `--skip
 ```
 /implement <run_id>
   base:    <base>
-  stages:  implement✓ simplify✓ lint✓ verify✓ review✓ address(0) pr✓
+  stages:  implement✓ simplify✓ lint✓ analyze✓ address(0) pr✓
+  analyze: verify✓ code-review✓ codex-review✓ design–
   PR:      <url | —>
 ```
