@@ -1,6 +1,6 @@
 {
   "name": "implement-pipeline",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Hands-off /implement pipeline: implement → simplify → lint → parallel analyze (verify + code-review + codex-review) → PR, reusing Claude's built-in skills. Includes a standalone /codex-review external-review skill.",
   "author": { "name": "pranav7" },
   "homepage": "https://github.com/pranav7/domux",
