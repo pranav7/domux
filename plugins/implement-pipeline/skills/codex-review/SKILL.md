@@ -9,6 +9,16 @@ Review the current changes through **Codex** — a different model family than C
 
 `azcodex` is the user's shell alias for `codex --profile azure` (Codex CLI, GPT-5.5, Azure endpoint). Aliases don't exist in non-interactive shells, so always call the full form: `codex --profile azure …`.
 
+## How `codex review` actually behaves (verified against codex-cli 0.141.0)
+
+Two hard constraints shape every command below — both confirmed by testing, not docs:
+
+1. **A custom prompt and a scope flag are mutually exclusive.** `codex review` takes *either* a positional `[PROMPT]` *or* one of `--uncommitted` / `--base <BRANCH>` / `--commit <SHA>` — never both. Passing both exits with an arg error and runs no review. So the brief can only ride along on the prompt-only form.
+2. **Prompt-only mode reviews ONLY the uncommitted working tree** (staged + unstaged + untracked). It does *not* auto-detect committed branch work — on a clean tree it returns "no current changes, 0 findings." To review committed work you must use a scope flag, which means you cannot also pass the brief.
+3. **`codex review` is NOT read-only under the user's config.** The base config sets `sandbox_mode = "workspace-write"`, and `review` will *edit files in place* to apply its own suggestions. Always pass `--sandbox read-only` so it can read the diff but cannot touch the tree. (Verified: with `--sandbox read-only` the review still runs and reports findings, but leaves every file byte-for-byte unchanged.)
+
+Consequence: to get the solution-level second opinion (the brief), review **before committing** while the tree is dirty. Once work is committed, you can still review it, but only code-level and without the brief.
+
 ## Preconditions
 
 - `command -v codex` must succeed. If not: report `codex not installed — skipping external review` and stop. (Inside /implement this is a silent skip, never a failure.)
@@ -32,15 +42,18 @@ BRIEF='Problem: … Approach: … Constraints: … Unsure about: …'
 
 ## 2. Pick the scope
 
-- Working tree dirty (`git status --porcelain` non-empty) → review uncommitted work with `--uncommitted`.
-- Clean but ahead of base → review the branch with `--base "$BASE"`, where `BASE = git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'` (default `main`).
-- Nothing to review → say so and stop.
+The scope decides which of the two forms you run (see the constraints above):
 
-## 3. Run Codex (read-only)
+- **Working tree dirty** (`git status --porcelain` non-empty) → **Path A (prompt-only)**. Review the uncommitted tree *with the brief* — the full solution + code review. This is the preferred path; review before committing whenever you can.
+- **Clean but ahead of base** → **Path B (scope flag)**. Review the branch with `--base "$BASE"`, where `BASE=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')` (default `main`). The brief cannot be passed here — this is a code-level review only. `git fetch origin` first so the base ref isn't stale.
+- **A single commit** → **Path B** with `--commit "$SHA"`.
+- **Nothing to review** → say so and stop.
 
-`codex review` is read-only by design — it never edits or commits. Redirect to a log file: Codex sometimes prepends a large model-list JSON and a `failed to refresh available models` line that can crowd out its summary, so capture to a file and read the tail rather than trusting inline stdout.
+## 3. Run Codex
 
-The prompt leads with the brief from step 1, then asks Codex to weigh in on both the approach and the code:
+Always pass `--sandbox read-only` (see constraint 3) so the review can read but never edit the tree. Redirect to a log file: Codex prepends a large model-list JSON and a `failed to refresh available models` line that crowds out its summary, so capture to a file and read the tail rather than trusting inline stdout.
+
+**Path A — uncommitted work, with the brief (preferred).** The prompt leads with the brief from step 1, then asks Codex to weigh in on both the approach and the code:
 
 ```bash
 mkdir -p .implement
@@ -51,11 +64,19 @@ $BRIEF
 Review the change on two levels. First, the SOLUTION: does this approach actually solve the stated problem? Is there a simpler, safer, or more correct way? Flag any design flaw, wrong abstraction, missed edge case, or mismatch between the brief and the diff. Second, the CODE: correctness bugs, security issues, regressions, and spec compliance.
 
 Tag every finding with exactly one of [BLOCKER] | [IMPORTANT] | [NON-BLOCKER]: [BLOCKER]=data loss / security / breaks prod / wrong approach / must-fix before merge; [IMPORTANT]=real bug, risk, or design concern worth fixing now; [NON-BLOCKER]=nit, style, or follow-up. End with a one-line count."
-codex --profile azure review --uncommitted "$PROMPT" > .implement/codex-review.log 2>&1
-# clean branch instead: codex --profile azure review --base "$BASE" "$PROMPT" > .implement/codex-review.log 2>&1
+codex --profile azure --sandbox read-only review "$PROMPT" > .implement/codex-review.log 2>&1
 ```
 
-Cap the run where `timeout` is available (`timeout 420 codex …`). On timeout → report `codex review timed out — inconclusive`.
+**Path B — committed work, no brief (code-level only).** A scope flag forbids a custom prompt, so Codex uses its built-in review instructions:
+
+```bash
+codex --profile azure --sandbox read-only review --base "$BASE"  > .implement/codex-review.log 2>&1
+# single commit instead: codex --profile azure --sandbox read-only review --commit "$SHA" > .implement/codex-review.log 2>&1
+```
+
+When you take Path B, say so in the final report: **"Author's brief was NOT passed to Codex — findings are code-level only, not solution-level."**
+
+Cap the run if a timeout tool exists — `gtimeout 420 codex …` (plain `timeout` is usually absent on macOS, so this is best-effort, not required). On timeout → report `codex review timed out — inconclusive`.
 
 ## 4. Read the result
 
@@ -74,7 +95,7 @@ Add anything Codex missed that you spot while checking. Re-bucket into final BLO
 ## Output
 
 ```
-/codex-review (scope: uncommitted | vs <base>)
+/codex-review (scope: uncommitted+brief | vs <base>, code-level only | commit <sha>, code-level only)
 
 BLOCKER
 - <finding> — codex: <claim>; you: <confirm + why>  (file:line)
@@ -88,4 +109,4 @@ NON-BLOCKER
 Summary: <n> blocker · <n> important · <n> non-blocker — PASS if 0 blocker & 0 important, else NEEDS FIXES
 ```
 
-Report inconclusive Codex runs as `INCONCLUSIVE`, not `PASS`.
+For Path B, the scope line must flag that the brief wasn't passed (code-level only). Report inconclusive Codex runs as `INCONCLUSIVE`, not `PASS`.
