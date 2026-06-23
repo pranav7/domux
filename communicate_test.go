@@ -240,3 +240,56 @@ func TestFormatPeerMessageKeepsBodyVerbatim(t *testing.T) {
 		t.Fatalf("message must start with the attribution prefix: %q", got)
 	}
 }
+
+func TestPeekStateLabel(t *testing.T) {
+	s := st("ws", "/r", "", map[string]string{
+		"claude:1_0": "CLAUDING",
+		"claude:2_0": "WAITING",
+		"claude:3_0": "IDLE",
+	})
+	cases := map[string]string{
+		"1.0": "working",
+		"2.0": "waiting",
+		"3.0": "idle", // IDLE normalizes to "" → idle
+		"9.0": "idle", // absent → idle
+	}
+	for pane, want := range cases {
+		if got := peekStateLabel(&s, pane); got != want {
+			t.Fatalf("peekStateLabel(%q) = %q, want %q", pane, got, want)
+		}
+	}
+}
+
+func TestPeekRowsFiltersToClaudePanesAndJoinsState(t *testing.T) {
+	panes := []tmuxPane{
+		{Spec: "workspace-2:1.0", Command: "2.1.186", Title: "w-2 task"},
+		{Spec: "workspace-2:2.0", Command: "zsh", Title: "shell"},
+		{Spec: "ghost:1.0", Command: "2.1.0", Title: "no state here"},
+	}
+	states := []SessionState{
+		st("workspace-2", "/r/workspace-2", "Billing", map[string]string{"claude:1_0": "CLAUDING"}),
+	}
+	rows := peekRows(panes, states)
+	if len(rows) != 2 {
+		t.Fatalf("peekRows = %d rows, want 2 (claude panes only)", len(rows))
+	}
+	// rows sorted by Target: "ghost:1.0" then "workspace-2:1.0"
+	if rows[0].Target != "ghost:1.0" || rows[0].State != "unknown" {
+		t.Fatalf("ghost row wrong: %+v", rows[0])
+	}
+	if rows[1].Target != "workspace-2:1.0" || rows[1].State != "working" || rows[1].Label != "Billing" || rows[1].Name != "workspace-2" {
+		t.Fatalf("workspace-2 row wrong: %+v", rows[1])
+	}
+}
+
+func TestSendCommandRejectsMissingMessage(t *testing.T) {
+	if err := sendCommand([]string{"workspace-2"}); err == nil {
+		t.Fatalf("send with no message should error")
+	}
+	if err := readCommand([]string{}); err == nil {
+		t.Fatalf("read with no name should error")
+	}
+	if err := peekCommand([]string{"extra"}); err == nil {
+		t.Fatalf("peek with args should error")
+	}
+}

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -380,4 +383,184 @@ func currentSenderName() string {
 		return state.Label
 	}
 	return session
+}
+
+// sendCommand: domux send [flags] <worktree> <message…>
+// Flags must precede the positionals (Go flag parsing stops at the first
+// non-flag arg).
+func sendCommand(args []string) error {
+	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	from := fs.String("from", "", "attribution name (defaults to the current session)")
+	pane := fs.String("pane", "", "target pane as window.pane, e.g. 1.0")
+	noEnter := fs.Bool("no-enter", false, "stage the text in the peer's input box without submitting")
+	wait := fs.Bool("wait", false, "wait until the peer is idle before sending")
+	waitTimeout := fs.Duration("wait-timeout", 60*time.Second, "max time to wait with --wait")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 2 {
+		return fmt.Errorf("usage: domux send [--from NAME] [--pane W.P] [--no-enter] [--wait] <worktree> <message…>")
+	}
+	name := rest[0]
+	message := strings.Join(rest[1:], " ")
+
+	t, err := resolveCommTarget(name, *pane)
+	if err != nil {
+		return err
+	}
+	if isOwnPane(t.Target) {
+		return fmt.Errorf("refusing to send to your own pane (%s)", t.Target)
+	}
+
+	attribution := *from
+	if attribution == "" {
+		attribution = currentSenderName()
+	}
+
+	queued := false
+	if *wait {
+		deadline := time.Now().Add(*waitTimeout)
+		for isPaneBusy(t) {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("peer %s still busy after %s — not sent (retry, or drop --wait to queue it)", t.Target, *waitTimeout)
+			}
+			time.Sleep(750 * time.Millisecond)
+		}
+	} else {
+		queued = isPaneBusy(t)
+	}
+
+	if err := tmuxSendLiteral(t.Target, formatPeerMessage(attribution, message)); err != nil {
+		return err
+	}
+	if !*noEnter {
+		if err := tmuxSendEnter(t.Target); err != nil {
+			return err
+		}
+	}
+
+	switch {
+	case *noEnter:
+		fmt.Printf("staged in %s (%s) — not submitted (--no-enter)\n", t.Name, t.Target)
+	case queued:
+		fmt.Printf("sent to %s (%s) — peer was generating, message queued\n", t.Name, t.Target)
+	default:
+		fmt.Printf("sent to %s (%s)\n", t.Name, t.Target)
+	}
+	return nil
+}
+
+// readCommand: domux read [flags] <worktree>
+func readCommand(args []string) error {
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	lines := fs.Int("lines", 50, "number of trailing lines to capture")
+	pane := fs.String("pane", "", "target pane as window.pane, e.g. 1.0")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: domux read [--lines N] [--pane W.P] <worktree>")
+	}
+	if *lines < 1 {
+		return fmt.Errorf("--lines must be >= 1")
+	}
+	t, err := resolveCommTarget(fs.Arg(0), *pane)
+	if err != nil {
+		return err
+	}
+	out, err := exec.Command("tmux", "capture-pane", "-t", t.Target, "-p", "-S", fmt.Sprintf("-%d", *lines)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux capture-pane -t %s: %w: %s", t.Target, err, strings.TrimSpace(string(out)))
+	}
+	os.Stdout.Write(out)
+	return nil
+}
+
+// peekCommand: domux peek — list running Claude agents across worktrees.
+func peekCommand(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("peek does not accept arguments")
+	}
+	panes, err := listAllPanes()
+	if err != nil {
+		return err
+	}
+	states, err := listSessionStates()
+	if err != nil {
+		return err
+	}
+	rows := peekRows(panes, states)
+	if len(rows) == 0 {
+		fmt.Println("no running Claude agents found")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSTATE\tTASK\tTARGET")
+	for _, r := range rows {
+		name := r.Name
+		if r.Label != "" {
+			name = fmt.Sprintf("%s (%s)", r.Name, r.Label)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", name, r.State, truncateTask(r.Task), r.Target)
+	}
+	return w.Flush()
+}
+
+// peekRow is one line of `domux peek` output.
+type peekRow struct {
+	Name   string // addressable session name
+	Label  string // human label, if any
+	Target string // session:pane
+	State  string // working / waiting / compacting / idle / unknown
+	Task   string // pane title (the agent's current task)
+}
+
+// peekRows turns live panes + session states into sorted peek rows, keeping only
+// panes that look like Claude agents.
+func peekRows(panes []tmuxPane, states []SessionState) []peekRow {
+	byName := map[string]SessionState{}
+	for _, s := range states {
+		byName[s.Name] = s
+	}
+	var rows []peekRow
+	for _, p := range panes {
+		if !looksLikeClaudeCommand(p.Command) {
+			continue
+		}
+		session, paneSpec := splitTarget(p.Spec)
+		row := peekRow{Name: session, Target: p.Spec, Task: p.Title, State: "unknown"}
+		if s, ok := byName[session]; ok {
+			row.Label = s.Label
+			row.State = peekStateLabel(&s, paneSpec)
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Target < rows[j].Target })
+	return rows
+}
+
+// peekStateLabel maps a pane's claude AI state to a peek-friendly word.
+func peekStateLabel(state *SessionState, paneSpec string) string {
+	key := "claude:" + strings.ReplaceAll(paneSpec, ".", "_")
+	switch normalizeAIState("claude", state.AI[key]) {
+	case "CLAUDING":
+		return "working"
+	case "WAITING":
+		return "waiting"
+	case "COMPACTING":
+		return "compacting"
+	default:
+		return "idle"
+	}
+}
+
+func truncateTask(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 50 {
+		return s[:47] + "..."
+	}
+	return s
 }
