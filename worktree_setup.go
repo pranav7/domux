@@ -236,7 +236,7 @@ func tmuxSendKeys(session, command string) error {
 
 // shellSingleQuote wraps s in single quotes so the shell treats it literally
 // (no $(...), backtick, or variable expansion). Embedded single quotes are
-// escaped via the '\” idiom.
+// escaped via the '\'' idiom.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
