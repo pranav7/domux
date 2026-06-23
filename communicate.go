@@ -29,7 +29,7 @@ type tmuxPane struct {
 
 var (
 	paneSpecRe      = regexp.MustCompile(`^\d+[._]\d+$`)
-	claudeVersionRe = regexp.MustCompile(`^\d+\.\d+`)
+	claudeVersionRe = regexp.MustCompile(`^\d+(\.\d+)+$`)
 )
 
 // matchSessionsByName returns states whose name, worktree dir basename, or

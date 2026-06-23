@@ -112,15 +112,18 @@ func TestClaudePaneSpecsFromStateSortedAndFiltered(t *testing.T) {
 
 func TestLooksLikeClaudeCommand(t *testing.T) {
 	cases := map[string]bool{
-		"2.1.186": true,
-		"2.1":     true,
-		"claude":  true,
-		"Claude":  true,
-		"zsh":     false,
-		"bash":    false,
-		"nvim":    false,
-		"node":    false,
-		"":        false,
+		"2.1.186":  true,
+		"2.1":      true,
+		"1.0.0":    true,
+		"claude":   true,
+		"Claude":   true,
+		"2.1.nvim": false,
+		"1.0x":     false,
+		"zsh":      false,
+		"bash":     false,
+		"nvim":     false,
+		"node":     false,
+		"":         false,
 	}
 	for in, want := range cases {
 		if got := looksLikeClaudeCommand(in); got != want {
