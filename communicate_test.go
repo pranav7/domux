@@ -293,3 +293,33 @@ func TestSendCommandRejectsMissingMessage(t *testing.T) {
 		t.Fatalf("peek with args should error")
 	}
 }
+
+func TestApplyExplicitPane(t *testing.T) {
+	got, err := applyExplicitPane(commTarget{Name: "x", Session: "ghost"}, "2_0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Pane != "2.0" || got.Target != "ghost:2.0" {
+		t.Fatalf("applyExplicitPane = pane %q target %q, want 2.0 / ghost:2.0", got.Pane, got.Target)
+	}
+	if _, err := applyExplicitPane(commTarget{Session: "ghost"}, "bogus"); err == nil {
+		t.Fatalf("invalid --pane should error")
+	}
+}
+
+func TestTruncateTaskRuneSafe(t *testing.T) {
+	long := strings.Repeat("✳", 60) // 60 multibyte runes
+	got := truncateTask(long)
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", got)
+	}
+	if strings.ContainsRune(got, '�') {
+		t.Fatalf("cut mid-rune (replacement char present): %q", got)
+	}
+	if r := []rune(strings.TrimSuffix(got, "...")); len(r) != 47 {
+		t.Fatalf("expected 47 runes before ellipsis, got %d", len(r))
+	}
+	if truncateTask("  hi  ") != "hi" {
+		t.Fatalf("short string should be trimmed and returned unchanged")
+	}
+}

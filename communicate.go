@@ -76,6 +76,19 @@ func normalizePaneSpec(s string) (string, bool) {
 	return strings.ReplaceAll(s, "_", "."), true
 }
 
+// applyExplicitPane sets t.Pane/t.Target from a user-supplied --pane value
+// (window.pane). Shared by the state-matched and live-fallback paths so an
+// explicit --pane is always honored.
+func applyExplicitPane(t commTarget, paneFlag string) (commTarget, error) {
+	spec, ok := normalizePaneSpec(paneFlag)
+	if !ok {
+		return commTarget{}, fmt.Errorf("invalid --pane %q (want window.pane, e.g. 1.0)", paneFlag)
+	}
+	t.Pane = spec
+	t.Target = t.Session + ":" + spec
+	return t, nil
+}
+
 // claudePaneSpecFromKey turns a SessionState.AI key like "claude:1_0" into the
 // pane spec "1.0". ok is false for non-claude or non-pane keys.
 func claudePaneSpecFromKey(aiKey string) (string, bool) {
@@ -188,13 +201,11 @@ func resolveCommTargetFromStates(name, paneFlag string, states []SessionState) (
 	t := commTarget{Name: name, Session: s.Name, Root: s.Root, Label: s.Label}
 
 	if paneFlag != "" {
-		spec, ok := normalizePaneSpec(paneFlag)
-		if !ok {
-			return commTarget{}, false, fmt.Errorf("invalid --pane %q (want window.pane, e.g. 1.0)", paneFlag)
+		resolved, err := applyExplicitPane(t, paneFlag)
+		if err != nil {
+			return commTarget{}, false, err
 		}
-		t.Pane = spec
-		t.Target = s.Name + ":" + spec
-		return t, false, nil
+		return resolved, false, nil
 	}
 
 	specs := claudePaneSpecsFromState(&s)
@@ -245,6 +256,8 @@ func listAllPanes() ([]tmuxPane, error) {
 	return parsePaneLines(string(out)), nil
 }
 
+// paneCurrentCommand returns the foreground command of a tmux pane
+// (best-effort; "" when the pane can't be queried).
 func paneCurrentCommand(target string) string {
 	if target == "" {
 		return ""
@@ -258,9 +271,17 @@ func paneCurrentCommand(target string) string {
 
 // resolveLivePane finds the Claude pane in t.Session by scanning live panes,
 // used when state alone couldn't pin it down.
-func resolveLivePane(t commTarget) (commTarget, error) {
+func resolveLivePane(t commTarget, paneFlag string) (commTarget, error) {
 	if !tmuxSessionExists(t.Session) {
 		return commTarget{}, fmt.Errorf("no worktree or tmux session matches %q (try: domux peek)", t.Name)
+	}
+	if paneFlag != "" {
+		resolved, err := applyExplicitPane(t, paneFlag)
+		if err != nil {
+			return commTarget{}, err
+		}
+		resolved.Command = paneCurrentCommand(resolved.Target)
+		return resolved, nil
 	}
 	panes, err := listSessionPanes(t.Session)
 	if err != nil {
@@ -305,7 +326,7 @@ func resolveCommTarget(name, paneFlag string) (commTarget, error) {
 		t.Command = paneCurrentCommand(t.Target)
 		return t, nil
 	}
-	return resolveLivePane(t)
+	return resolveLivePane(t, paneFlag)
 }
 
 // capturePaneTail returns the trimmed last `lines` of a pane (for busy diffing).
@@ -559,8 +580,9 @@ func peekStateLabel(state *SessionState, paneSpec string) string {
 
 func truncateTask(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) > 50 {
-		return s[:47] + "..."
+	r := []rune(s)
+	if len(r) > 50 {
+		return string(r[:47]) + "..."
 	}
 	return s
 }
