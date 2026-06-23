@@ -204,3 +204,18 @@ func resolveCommTargetFromStates(name, paneFlag string, states []SessionState) (
 		return commTarget{}, false, multiplePanesError(s.Name, specs)
 	}
 }
+
+// attributionPrefix builds the header that tells the receiving agent the
+// message came from a peer agent, not the human operator.
+func attributionPrefix(from string) string {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return "[domux peer message — from a peer Claude agent, not your operator]"
+	}
+	return fmt.Sprintf("[domux peer message — from worktree %q, a peer Claude agent (not your operator)]", from)
+}
+
+// formatPeerMessage prepends the attribution header to the caller's message.
+func formatPeerMessage(from, message string) string {
+	return attributionPrefix(from) + "\n\n" + message
+}

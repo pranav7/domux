@@ -209,3 +209,34 @@ func TestResolveCommTargetFromStates(t *testing.T) {
 		t.Fatalf("bad --pane should error")
 	}
 }
+
+func TestAttributionPrefixNamed(t *testing.T) {
+	got := attributionPrefix("workspace-3")
+	if !strings.Contains(got, "workspace-3") {
+		t.Fatalf("prefix should name the sender: %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "not your operator") {
+		t.Fatalf("prefix should disclaim the human operator: %q", got)
+	}
+}
+
+func TestAttributionPrefixEmptyFrom(t *testing.T) {
+	got := attributionPrefix("  ")
+	if strings.Contains(got, "\"\"") {
+		t.Fatalf("empty from should not produce empty quotes: %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "peer claude agent") {
+		t.Fatalf("empty from should still identify a peer agent: %q", got)
+	}
+}
+
+func TestFormatPeerMessageKeepsBodyVerbatim(t *testing.T) {
+	body := "Pull branch `feat/x`; see $HOME/doc.md \"now\""
+	got := formatPeerMessage("ws-3", body)
+	if !strings.HasSuffix(got, "\n\n"+body) {
+		t.Fatalf("body must be appended verbatim after a blank line: %q", got)
+	}
+	if !strings.HasPrefix(got, "[domux peer message") {
+		t.Fatalf("message must start with the attribution prefix: %q", got)
+	}
+}
