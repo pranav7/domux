@@ -255,6 +255,31 @@ Script-friendly output:
 | `domux --list` | Print active tasks |
 | `domux --version` | Print version |
 
+## Talk to agents in other worktrees
+
+When you run several worktrees side by side (see `domux start` / workspaces),
+the Claude agent in one worktree can message the agent in another — addressing
+it **by name**, never by hunting for tmux panes. This powers handoffs like
+"I built X on branch Y, please pull it in."
+
+```sh
+domux peek                              # list running agents: name, state, task, target
+domux send workspace-2 "Pushed the fix on branch eng-225; please rebase onto it."
+domux read --lines 80 workspace-2       # read the peer's recent output
+```
+
+- **Name** resolves against a session's name, its worktree dir/branch basename,
+  or its domux label.
+- `domux send` prefixes every message so the peer knows it came from a **peer
+  agent, not the human** (`--from NAME` overrides the attribution). The text is
+  sent literally through tmux, so quotes, backticks, and paths need no escaping.
+- By default a message sent to a busy peer is **queued** by Claude Code; pass
+  `--wait` to block until the peer is idle first, or `--no-enter` to stage the
+  text without submitting it.
+
+The same workflow is available to agents as the `/domux-communicate` plugin
+skill (`plugins/domux-communicate`).
+
 ## Optional Claude and Codex Hooks
 
 If you use Claude Code or Codex, `domux` can install hooks that update tmux and
