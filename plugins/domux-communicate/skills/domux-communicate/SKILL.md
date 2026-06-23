@@ -55,10 +55,10 @@ peer's input as a "Pasted text" block but still submit in full.
 
 `send` refuses to message your own pane.
 
-## 3. Read the reply — `domux read <name> [--lines N]`
+## 3. Read the reply — `domux read [--lines N] [--pane W.P] <worktree>`
 
 ```
-domux read workspace-2 --lines 80
+domux read --lines 80 workspace-2
 ```
 
 Prints the peer pane's recent output (default 50 lines). Use it to confirm the
@@ -69,7 +69,7 @@ peer picked up your message and see what it did.
 ```
 domux peek                                   # find the peer, check it's idle/waiting
 domux send workspace-2 "<the handoff>"       # hand it off (attributed to you)
-domux read workspace-2 --lines 80            # later: see that it acted on it
+domux read --lines 80 workspace-2            # later: see that it acted on it
 ```
 
 ## When it can't resolve a name
