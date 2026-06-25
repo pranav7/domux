@@ -1,6 +1,13 @@
-Start a new task: **$ARGUMENTS**
+---
+name: domux-start
+description: Use when starting or kicking off a new task in a tmux+domux workbench — sets up the workspace before any code: resolves the git worktree root, branches off fresh origin/main, labels the domux session so the human can find it in the switcher, then begins the task. Invoke at the start of task-shaped requests in a domux/tmux session, whether triggered as /domux-start <task> or auto-detected.
+---
 
-You're being kicked off in a tmux+domux workbench. Set up the workspace before touching code.
+# /domux-start — kick off a task in a tmux+domux workbench
+
+You're being kicked off in a tmux+domux workbench. The task to start is
+whatever you were asked to do — the argument passed to `/domux-start`, or the
+request you're currently acting on. Set up the workspace before touching code.
 
 ## What domux is
 
@@ -32,7 +39,7 @@ session is meant to be a fresh, short-lived branch off `origin/main`.
 4. **Label the session** so it shows up in the domux switcher:
    `domux label set "<2–4 word task title>"`. Current tmux session is auto-detected.
 
-5. **Acknowledge in one line**, then start the task: $ARGUMENTS
+5. **Acknowledge in one line**, then start the task.
 
 ## domux quick reference
 

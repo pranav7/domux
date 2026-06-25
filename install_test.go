@@ -84,52 +84,6 @@ func TestPatchedClaudeSettingsPreservesExistingStatusLine(t *testing.T) {
 	}
 }
 
-func TestInstallClaudeWritesStartTaskCommand(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	if err := installClaude([]string{"--apply"}); err != nil {
-		t.Fatalf("installClaude: %v", err)
-	}
-	path := filepath.Join(homeDir, ".claude", "commands", "start-task.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("expected %s: %v", path, err)
-	}
-	got := string(data)
-	if !strings.Contains(got, "$ARGUMENTS") {
-		t.Fatalf("start-task.md missing $ARGUMENTS placeholder:\n%s", got)
-	}
-	if !strings.Contains(got, "domux label set") {
-		t.Fatalf("start-task.md should instruct on labeling the session")
-	}
-}
-
-func TestInstallClaudeStartTaskIsIdempotent(t *testing.T) {
-	homeDir := t.TempDir()
-	t.Setenv("HOME", homeDir)
-
-	if err := installClaude([]string{"--apply"}); err != nil {
-		t.Fatalf("first installClaude: %v", err)
-	}
-	if err := installClaude([]string{"--apply"}); err != nil {
-		t.Fatalf("second installClaude: %v", err)
-	}
-	entries, err := os.ReadDir(filepath.Join(homeDir, ".claude", "commands"))
-	if err != nil {
-		t.Fatalf("read commands dir: %v", err)
-	}
-	var backups int
-	for _, entry := range entries {
-		if strings.Contains(entry.Name(), ".domux-backup-") {
-			backups++
-		}
-	}
-	if backups != 0 {
-		t.Fatalf("expected no backup files when content is unchanged, got %d", backups)
-	}
-}
-
 func TestPatchedCodexHooksUsesCodexEvents(t *testing.T) {
 	hooks := patchedCodexHooks(map[string]any{})
 	events, _ := hooks["hooks"].(map[string]any)

@@ -1,0 +1,7 @@
+{
+  "name": "domux-communicate",
+  "version": "0.1.0",
+  "description": "Talk to the Claude agent in another domux worktree: address a peer by name to send it a message and read its output (domux send/read/peek).",
+  "author": { "name": "pranav7" },
+  "homepage": "https://github.com/pranav7/domux"
+}

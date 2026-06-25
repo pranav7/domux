@@ -100,6 +100,12 @@ func runCommand(name string, args []string) error {
 		return migrateCommand(args)
 	case "claude-statusline":
 		return claudeStatuslineCommand(args)
+	case "send":
+		return sendCommand(args)
+	case "read":
+		return readCommand(args)
+	case "peek":
+		return peekCommand(args)
 	default:
 		return fmt.Errorf("unknown command %q", name)
 	}
