@@ -12,6 +12,11 @@
       "name": "domux-communicate",
       "source": "./plugins/domux-communicate",
       "description": "Message the Claude agent in another domux worktree: domux send/read/peek + the /domux-communicate skill."
+    },
+    {
+      "name": "domux-start",
+      "source": "./plugins/domux-start",
+      "description": "Kick off a task in a tmux+domux worktree: branch off fresh main, label the session, then start — the /domux-start skill."
     }
   ]
 }

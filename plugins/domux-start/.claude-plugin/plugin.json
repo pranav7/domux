@@ -1,0 +1,7 @@
+{
+  "name": "domux-start",
+  "version": "0.1.0",
+  "description": "Kick off a new task in a tmux+domux worktree: resolve the workspace, branch off fresh main, label the session, then start coding.",
+  "author": { "name": "pranav7" },
+  "homepage": "https://github.com/pranav7/domux"
+}
