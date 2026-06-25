@@ -299,8 +299,10 @@ domux install claude --apply
 domux install codex --apply
 ```
 
-The Claude install also writes a `/start-task` command that tells Claude how to
-use domux, tmux sessions, and git worktrees before it starts coding.
+The task-kickoff workflow (set up the worktree, branch off fresh `main`, label
+the session, then start coding) ships as the `domux-start` Claude Code plugin,
+installed from the domux marketplace alongside the others. Invoke it with
+`/domux-start <task>`.
 
 There is also an optional Claude Code plugin for an `/implement` pipeline. See
 [`docs/implement-pipeline.md`](docs/implement-pipeline.md) if you want that. It

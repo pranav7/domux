@@ -1,7 +1,6 @@
 package main
 
 import (
-	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,11 +12,6 @@ import (
 	"strings"
 	"time"
 )
-
-//go:embed assets/claude/commands/start-task.md
-var claudeStartTaskCommand string
-
-const claudeStartTaskFile = "start-task.md"
 
 func installCommand(args []string) error {
 	if len(args) == 0 {
@@ -109,12 +103,10 @@ func installClaude(args []string) error {
 	if err != nil {
 		return err
 	}
-	cmdPath := filepath.Join(homeDir, ".claude", "commands", claudeStartTaskFile)
 	marketplaceSource := claudePluginMarketplaceSource()
 	if !*apply {
 		data, _ := json.MarshalIndent(next, "", "  ")
 		fmt.Printf("Would patch %s with domux hooks/statusLine:\n\n%s\n", path, data)
-		fmt.Printf("\nWould write %s (the /start-task slash command).\n", cmdPath)
 		printPluginInstallPlan(marketplaceSource)
 		return nil
 	}
@@ -133,32 +125,7 @@ func installClaude(args []string) error {
 		return fmt.Errorf("cannot write %s: %w", path, err)
 	}
 	fmt.Printf("patched %s\n", path)
-	if err := writeClaudeCommand(cmdPath, claudeStartTaskCommand); err != nil {
-		return err
-	}
 	return runPluginInstall(marketplaceSource)
-}
-
-func writeClaudeCommand(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("cannot create %s: %w", filepath.Dir(path), err)
-	}
-	existing, err := os.ReadFile(path)
-	if err == nil && string(existing) == content {
-		return nil
-	}
-	if err == nil {
-		if err := backupIfExists(path); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("cannot read %s: %w", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		return fmt.Errorf("cannot write %s: %w", path, err)
-	}
-	fmt.Printf("wrote %s\n", path)
-	return nil
 }
 
 // claudePluginMarketplaceSource returns the path/repo to register as the
