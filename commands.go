@@ -39,6 +39,8 @@ func runCommand(name string, args []string) error {
 		return runTUI(ctx.TodoPath)
 	case "start":
 		return startSession(args)
+	case "resume":
+		return resumeCommand(args)
 	case "attach":
 		return attachSessionCommand(args)
 	case "adopt":
@@ -149,6 +151,37 @@ func startSession(args []string) error {
 
 	sessionName := nextSessionName(filepath.Base(root))
 	return createOrAttachSession(sessionName, root)
+}
+
+func resumeCommand(args []string) error {
+	fs := flag.NewFlagSet("resume", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 1 {
+		return fmt.Errorf("resume accepts at most one project name")
+	}
+	filter := ""
+	if fs.NArg() == 1 {
+		filter = fs.Arg(0)
+	}
+
+	states, err := listSessionStates()
+	if err != nil {
+		return err
+	}
+	recreate, prune := planResume(states, filter)
+	if len(recreate) == 0 && len(prune) == 0 {
+		if filter != "" {
+			if groups := availableResumeGroups(states); len(groups) > 0 {
+				return fmt.Errorf("no saved sessions for %q (available: %s)", filter, strings.Join(groups, ", "))
+			}
+		}
+		fmt.Println("no saved sessions to resume")
+		return nil
+	}
+	return runPickerResuming(recreate, prune)
 }
 
 func singleMatchingStartSession(matches []string) (string, bool) {
