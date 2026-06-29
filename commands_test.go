@@ -744,3 +744,26 @@ func TestAIWorkingLabelsPersistPerAgentUntilWorkingEnds(t *testing.T) {
 		t.Fatalf("working labels kept after waiting: %#v", state.AIWorkingLabels)
 	}
 }
+
+func TestResumeCommandNoSavedSessions(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := resumeCommand(nil); err != nil {
+		t.Fatalf("resumeCommand with no sessions = %v, want nil", err)
+	}
+}
+
+func TestResumeCommandUnknownProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir() // group name = filepath.Base(root)
+	if err := saveSessionState(&SessionState{Name: "s", Root: root}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := resumeCommand([]string{"definitely-not-a-group"})
+	if err == nil {
+		t.Fatalf("resumeCommand unknown project = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "definitely-not-a-group") {
+		t.Fatalf("error = %v, want mention of the project", err)
+	}
+}

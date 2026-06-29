@@ -21,6 +21,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, "  domux sessions     Alias for switcher\n\n")
 	fmt.Fprintf(os.Stderr, "Sessions:\n")
 	fmt.Fprintf(os.Stderr, "  domux start [DIR]  Start or resume a pinned tmux work session\n")
+	fmt.Fprintf(os.Stderr, "  domux resume [PROJ]  Recreate saved sessions after a restart (all, or one project)\n")
 	fmt.Fprintf(os.Stderr, "  domux adopt [DIR]  Pin the current tmux session to a directory\n")
 	fmt.Fprintf(os.Stderr, "  domux attach NAME  Attach/switch to a tmux session\n")
 	fmt.Fprintf(os.Stderr, "  domux clear        Reset/free the current tmux workspace\n")
