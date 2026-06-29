@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type resumeStatus string
@@ -118,4 +121,58 @@ func executeResumeStep(t resumeTarget) resumeTarget {
 	}
 	t.Status = resumeRecreated
 	return t
+}
+
+// resumeJob tracks sequential progress through a queue of resume targets
+// (prune entries first, then recreate). One step runs at a time; record()
+// advances the cursor and tallies the outcome.
+type resumeJob struct {
+	queue      []resumeTarget
+	pos        int
+	done       bool
+	nRecreated int
+	nRunning   int
+	nPruned    int
+	nFailed    int
+}
+
+func (j *resumeJob) nextTarget() (resumeTarget, bool) {
+	if j.pos >= len(j.queue) {
+		return resumeTarget{}, false
+	}
+	return j.queue[j.pos], true
+}
+
+func (j *resumeJob) record(t resumeTarget) {
+	switch {
+	case t.Err != nil:
+		j.nFailed++
+	case t.Status == resumeRecreated:
+		j.nRecreated++
+	case t.Status == resumeRunning:
+		j.nRunning++
+	case t.Status == resumePruned:
+		j.nPruned++
+	}
+	j.pos++
+}
+
+func (j *resumeJob) summary() string {
+	s := fmt.Sprintf("restored %d · running %d · pruned %d", j.nRecreated, j.nRunning, j.nPruned)
+	if j.nFailed > 0 {
+		s += fmt.Sprintf(" · %d failed", j.nFailed)
+	}
+	return s
+}
+
+type resumeStepMsg struct {
+	target resumeTarget
+}
+
+// resumeStepCmd runs one resume step off the bubbletea event loop and reports
+// the result back as a resumeStepMsg.
+func resumeStepCmd(t resumeTarget) tea.Cmd {
+	return func() tea.Msg {
+		return resumeStepMsg{target: executeResumeStep(t)}
+	}
 }

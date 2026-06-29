@@ -153,3 +153,63 @@ func TestExecuteResumeStepPruneRemovesState(t *testing.T) {
 		t.Fatalf("legacy file not removed: %s", legacy)
 	}
 }
+
+func TestResumeJobRecordAndNext(t *testing.T) {
+	j := &resumeJob{queue: []resumeTarget{{Name: "a"}, {Name: "b"}}}
+
+	first, ok := j.nextTarget()
+	if !ok || first.Name != "a" {
+		t.Fatalf("nextTarget = %q ok=%v, want a", first.Name, ok)
+	}
+	j.record(resumeTarget{Name: "a", Status: resumeRecreated})
+	if j.pos != 1 || j.nRecreated != 1 {
+		t.Fatalf("pos=%d nRecreated=%d, want 1/1", j.pos, j.nRecreated)
+	}
+	second, ok := j.nextTarget()
+	if !ok || second.Name != "b" {
+		t.Fatalf("nextTarget = %q ok=%v, want b", second.Name, ok)
+	}
+	j.record(resumeTarget{Name: "b", Status: resumePruned})
+	if _, ok := j.nextTarget(); ok {
+		t.Fatalf("nextTarget should be exhausted")
+	}
+}
+
+func TestResumeJobRecordCountsByStatus(t *testing.T) {
+	j := &resumeJob{}
+	j.record(resumeTarget{Status: resumeRecreated})
+	j.record(resumeTarget{Status: resumeRunning})
+	j.record(resumeTarget{Status: resumePruned})
+	j.record(resumeTarget{Err: os.ErrPermission})
+	if j.nRecreated != 1 || j.nRunning != 1 || j.nPruned != 1 || j.nFailed != 1 {
+		t.Fatalf("counts = %#v, want 1 each", j)
+	}
+}
+
+func TestResumeJobSummary(t *testing.T) {
+	j := &resumeJob{nRecreated: 6, nPruned: 1}
+	if got := j.summary(); got != "restored 6 · running 0 · pruned 1" {
+		t.Fatalf("summary = %q", got)
+	}
+	j.nFailed = 2
+	if got := j.summary(); !strings.Contains(got, "2 failed") {
+		t.Fatalf("summary = %q, want failed count", got)
+	}
+}
+
+func TestResumeStepCmdPrunes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := saveSessionState(&SessionState{Name: "dead", Root: "/nonexistent"}); err != nil {
+		t.Fatal(err)
+	}
+
+	msg := resumeStepCmd(resumeTarget{Name: "dead", Prune: true})()
+	step, ok := msg.(resumeStepMsg)
+	if !ok {
+		t.Fatalf("msg type = %T, want resumeStepMsg", msg)
+	}
+	if step.target.Status != resumePruned {
+		t.Fatalf("Status = %q, want pruned", step.target.Status)
+	}
+}
