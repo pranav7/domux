@@ -987,3 +987,54 @@ func TestRecapWrapsAcrossLinesUntruncated(t *testing.T) {
 		t.Fatalf("expected recap to wrap onto multiple lines, got %d lines:\n%s", len(lines), plain)
 	}
 }
+
+func TestResumeJobAdvancesSequentially(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	m.resume = &resumeJob{queue: []resumeTarget{
+		{Name: "a", Prune: true},
+		{Name: "b", Prune: true},
+	}}
+
+	n1, cmd1 := m.Update(resumeStepMsg{target: resumeTarget{Name: "a", Status: resumePruned}})
+	m = n1.(pickerModel)
+	if cmd1 == nil {
+		t.Fatalf("expected a follow-up step cmd")
+	}
+	if m.resume.pos != 1 || m.resume.nPruned != 1 || m.resume.done {
+		t.Fatalf("after step 1: pos=%d pruned=%d done=%v", m.resume.pos, m.resume.nPruned, m.resume.done)
+	}
+
+	n2, _ := m.Update(resumeStepMsg{target: resumeTarget{Name: "b", Status: resumePruned}})
+	m = n2.(pickerModel)
+	if !m.resume.done {
+		t.Fatalf("expected done after final step")
+	}
+	if m.resume.nPruned != 2 {
+		t.Fatalf("nPruned = %d, want 2", m.resume.nPruned)
+	}
+	if !strings.Contains(m.status, "pruned 2") {
+		t.Fatalf("status = %q, want summary", m.status)
+	}
+}
+
+func TestResumeBannerRendersProgress(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	m.resume = &resumeJob{queue: make([]resumeTarget, 2), pos: 1}
+
+	banner := m.resumeBanner()
+	if !strings.Contains(banner, "restoring") || !strings.Contains(banner, "/2") {
+		t.Fatalf("banner = %q, want restoring N/2", banner)
+	}
+
+	m.resume.done = true
+	if got := m.resumeBanner(); got != "" {
+		t.Fatalf("done banner = %q, want empty", got)
+	}
+}

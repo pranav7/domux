@@ -96,6 +96,7 @@ type pickerModel struct {
 	previewErr     error
 	previewBig     bool
 	helpOpen       bool
+	resume         *resumeJob
 }
 
 type pickerActionMsg struct {
@@ -295,6 +296,27 @@ func runPicker() error {
 	return err
 }
 
+func runPickerResuming(recreate, prune []resumeTarget) error {
+	queue := make([]resumeTarget, 0, len(prune)+len(recreate))
+	queue = append(queue, prune...)
+	queue = append(queue, recreate...)
+	m := newPickerModel(gatherSessions())
+	m.resume = &resumeJob{queue: queue}
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}
+
+// resumeBanner is the live progress line shown in the logo status box while a
+// resume job runs. Empty when there's no job or it's finished (the final
+// summary then renders through the normal m.status path).
+func (m pickerModel) resumeBanner() string {
+	if m.resume == nil || m.resume.done {
+		return ""
+	}
+	return fmt.Sprintf("restoring %d/%d…", m.resume.pos, len(m.resume.queue))
+}
+
 func runPickerForSessionNames(names []string) error {
 	keep := map[string]bool{}
 	for _, name := range names {
@@ -431,6 +453,13 @@ func (m pickerModel) Init() tea.Cmd {
 	if m.status != "" && !m.statusSetAt.IsZero() {
 		cmds = append(cmds, statusExpireCmd(m.statusSetAt))
 	}
+	if m.resume != nil {
+		if t, ok := m.resume.nextTarget(); ok {
+			cmds = append(cmds, resumeStepCmd(t))
+		} else {
+			m.resume.done = true
+		}
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -512,6 +541,19 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusErr = true
 		}
 		return m, windowSizeCmd(m.width, m.height)
+
+	case resumeStepMsg:
+		if m.resume == nil {
+			return m, nil
+		}
+		m.resume.record(msg.target)
+		if t, ok := m.resume.nextTarget(); ok {
+			return m, resumeStepCmd(t)
+		}
+		m.resume.done = true
+		m.status = m.resume.summary()
+		m.statusErr = m.resume.nFailed > 0
+		return m, nil
 
 	case tea.KeyMsg:
 		key := msg.String()
@@ -1448,13 +1490,19 @@ func (m pickerModel) logoHeaderLines(width int) []string {
 	logoStyle := lipgloss.NewStyle().Foreground(mauve).Bold(true)
 	featureStyle := lipgloss.NewStyle().Foreground(overlay1).Italic(true)
 
+	statusText := m.status
+	statusErr := m.statusErr
+	if banner := m.resumeBanner(); banner != "" {
+		statusText = banner
+		statusErr = false
+	}
 	statusBox := ""
-	if m.status != "" {
+	if statusText != "" {
 		style := pStatus
-		if m.statusErr {
+		if statusErr {
 			style = pStatusErr
 		}
-		statusBox = style.Render(m.status)
+		statusBox = style.Render(statusText)
 	}
 
 	out := make([]string, 1+len(logoLines))
