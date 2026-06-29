@@ -328,6 +328,41 @@ func TestPickerFilterEnterAllowsShortcutsOnFilteredList(t *testing.T) {
 	}
 }
 
+func TestPickerEnterRecordsSelectionAndQuits(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "audrey-app"}},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm := next.(pickerModel)
+
+	// Enter must record the chosen session and return tea.Quit — the attach is
+	// deferred to runPickerProgram so it never runs while bubbletea owns the
+	// tty. (We can't compare tea.Cmd values directly, but it must be non-nil.)
+	if pm.selected != "audrey-app" {
+		t.Fatalf("selected = %q, want audrey-app", pm.selected)
+	}
+	if cmd == nil {
+		t.Fatalf("enter should return a quit command")
+	}
+}
+
+func TestPickerEnterOnNonSessionRowDoesNothing(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowSession, Session: &sessionInfo{Name: "only"}},
+	})
+	// Selecting a header (non-session) row must not record a selection.
+	pm, cmd := m.selectRow(pickerRow{Kind: rowHeader, Group: "g"})
+	if pm.(pickerModel).selected != "" {
+		t.Fatalf("selected = %q, want empty", pm.(pickerModel).selected)
+	}
+	if cmd != nil {
+		t.Fatalf("selecting a non-session row should be a no-op")
+	}
+}
+
 func TestPickerRightOpensPreview(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newPickerModel([]pickerRow{

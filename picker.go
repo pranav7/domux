@@ -97,6 +97,10 @@ type pickerModel struct {
 	previewBig     bool
 	helpOpen       bool
 	resume         *resumeJob
+	// selected is the session the user chose with enter. It is read by
+	// runPickerProgram after the tea program exits — the attach happens once
+	// bubbletea has released the terminal, never inline (see runPickerProgram).
+	selected string
 }
 
 type pickerActionMsg struct {
@@ -288,23 +292,42 @@ var (
 			Foreground(red)
 )
 
-func runPicker() error {
-	rows := gatherSessions()
-	m := newPickerModel(rows)
+// runPickerProgram runs the picker and, after the program exits and bubbletea
+// has released the terminal, attaches to the session the user selected.
+//
+// The attach MUST happen here and not from inside Update: from a plain shell
+// (e.g. `domux switcher`/`domux resume` after a reboot, with $TMUX unset) the
+// attach path is `tmux attach-session`, which seizes the controlling tty. If
+// that runs while bubbletea still owns the terminal in alt-screen/raw mode,
+// the two fight over the tty — the session never mounts and the terminal is
+// left unusable. Quitting first lets tmux take a clean tty. Inside tmux the
+// attach is a `switch-client` and would be safe inline, but routing both
+// through here keeps one code path.
+func runPickerProgram(m pickerModel) error {
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	final, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if fm, ok := final.(pickerModel); ok && fm.selected != "" {
+		debugLog("picker: attaching to selected session %q (in_tmux=%v)", fm.selected, inTmuxClientEnv())
+		switchSession(fm.selected)
+	}
+	return nil
+}
+
+func runPicker() error {
+	return runPickerProgram(newPickerModel(gatherSessions()))
 }
 
 func runPickerResuming(recreate, prune []resumeTarget) error {
 	queue := make([]resumeTarget, 0, len(prune)+len(recreate))
 	queue = append(queue, prune...)
 	queue = append(queue, recreate...)
+	debugLog("resume: starting picker with %d recreate, %d prune", len(recreate), len(prune))
 	m := newPickerModel(gatherSessions())
 	m.resume = &resumeJob{queue: queue}
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	return runPickerProgram(m)
 }
 
 // resumeBanner is the live progress line shown in the logo status box while a
@@ -351,9 +374,7 @@ func runPickerForSessionNames(names []string) error {
 	m := newPickerModel(filtered)
 	m.status = "matching sessions for this directory"
 	m.statusSetAt = time.Now()
-	p := tea.NewProgram(m, tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	return runPickerProgram(m)
 }
 
 func newPickerModel(rows []pickerRow) pickerModel {
@@ -743,7 +764,7 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.visible) == 0 {
 				return m, nil
 			}
-			return m, m.selectRow(m.rows[m.visible[m.cursor]])
+			return m.selectRow(m.rows[m.visible[m.cursor]])
 		case "up", "k":
 			m.moveCursor(-1)
 			if m.previewOpen {
@@ -902,16 +923,16 @@ func (m pickerModel) ignoringStartupInput() bool {
 	return !m.startedAt.IsZero() && time.Since(m.startedAt) < tuiStartupInputGrace
 }
 
-func (m pickerModel) selectRow(row pickerRow) tea.Cmd {
-	switch row.Kind {
-	case rowSession:
-		name := row.Session.Name
-		return tea.Sequence(
-			func() tea.Msg { switchSession(name); return nil },
-			tea.Quit,
-		)
+// selectRow records the chosen session and quits the picker. The attach is
+// deferred to runPickerProgram, which runs it only after bubbletea has fully
+// released the terminal — attaching inline corrupts the tty from a plain shell
+// (see runPickerProgram).
+func (m pickerModel) selectRow(row pickerRow) (tea.Model, tea.Cmd) {
+	if row.Kind == rowSession && row.Session != nil {
+		m.selected = row.Session.Name
+		return m, tea.Quit
 	}
-	return nil
+	return m, nil
 }
 
 func (m pickerModel) selectedSession() *sessionInfo {
