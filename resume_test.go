@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +76,80 @@ func TestPlanResumeSkipsBlankNameOrRoot(t *testing.T) {
 	recreate, prune := planResume(states, "")
 	if len(recreate) != 0 || len(prune) != 0 {
 		t.Fatalf("recreate=%#v prune=%#v, want both empty", recreate, prune)
+	}
+}
+
+func TestExecuteResumeStepRecreatesMissingSession(t *testing.T) {
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 1 ;;
+new-session) exit 0 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+
+	got := executeResumeStep(resumeTarget{Name: "sess", Root: root})
+	if got.Err != nil {
+		t.Fatalf("unexpected err: %v", got.Err)
+	}
+	if got.Status != resumeRecreated {
+		t.Fatalf("Status = %q, want recreated", got.Status)
+	}
+	data, _ := os.ReadFile(callFile)
+	if !strings.Contains(string(data), "new-session") {
+		t.Fatalf("tmux new-session not invoked; calls=%q", data)
+	}
+	st, err := loadSessionState("sess")
+	if err != nil || st.Root != root {
+		t.Fatalf("session state Root = %q (err %v), want %q", st.Root, err, root)
+	}
+}
+
+func TestExecuteResumeStepSkipsExistingSession(t *testing.T) {
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 0 ;;
+*) exit 0 ;;
+esac
+`, callFile)
+	t.Setenv("HOME", t.TempDir())
+
+	got := executeResumeStep(resumeTarget{Name: "sess", Root: t.TempDir()})
+	if got.Status != resumeRunning {
+		t.Fatalf("Status = %q, want already running", got.Status)
+	}
+	data, _ := os.ReadFile(callFile)
+	if strings.Contains(string(data), "new-session") {
+		t.Fatalf("should not create existing session; calls=%q", data)
+	}
+}
+
+func TestExecuteResumeStepPruneRemovesState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := saveSessionState(&SessionState{Name: "dead", Root: "/nonexistent"}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(home, ".tmux-label-dead")
+	if err := os.WriteFile(legacy, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := executeResumeStep(resumeTarget{Name: "dead", Prune: true})
+	if got.Status != resumePruned || got.Err != nil {
+		t.Fatalf("Status=%q Err=%v, want pruned/nil", got.Status, got.Err)
+	}
+	p, _ := sessionStatePath("dead")
+	if fileExists(p) {
+		t.Fatalf("state file not removed: %s", p)
+	}
+	if fileExists(legacy) {
+		t.Fatalf("legacy file not removed: %s", legacy)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -86,4 +87,35 @@ func availableResumeGroups(states []SessionState) []string {
 	}
 	sort.Strings(groups)
 	return groups
+}
+
+// executeResumeStep performs one target's side effect: prune removes its state
+// files; recreate creates a detached tmux session at the saved root (skipping
+// sessions tmux already has) and re-pins Root/TodoPath. Errors are captured on
+// the returned target, not propagated — the caller tallies them and continues.
+func executeResumeStep(t resumeTarget) resumeTarget {
+	if t.Prune {
+		if home, err := os.UserHomeDir(); err == nil {
+			_ = clearSessionStateFiles(home, t.Name)
+		}
+		if err := removeSessionState(t.Name); err != nil {
+			t.Err = err
+		}
+		t.Status = resumePruned
+		return t
+	}
+	if tmuxSessionExists(t.Name) {
+		t.Status = resumeRunning
+		return t
+	}
+	if err := createTmuxSession(t.Name, t.Root); err != nil {
+		t.Err = err
+		return t
+	}
+	if _, err := setSessionRoot(t.Name, t.Root); err != nil {
+		t.Err = err
+		return t
+	}
+	t.Status = resumeRecreated
+	return t
 }
