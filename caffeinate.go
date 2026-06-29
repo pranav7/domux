@@ -7,10 +7,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 )
+
+// caffeinateSupported reports whether the keep-awake feature can actually run.
+// It is macOS-only: it shells out to `caffeinate(8)` and (in full mode) drives
+// launchd + pmset. On every other OS the feature is disabled and reports
+// "unsupported" rather than erroring noisily from a tmux binding or popup.
+func caffeinateSupported() bool {
+	return runtime.GOOS == "darwin"
+}
+
+func errCaffeinateUnsupported() error {
+	return fmt.Errorf("caffeinate is only supported on macOS (current OS: %s)", runtime.GOOS)
+}
 
 type caffeinateMode string
 
@@ -98,6 +111,10 @@ func installCaffeinatePartial() error {
 }
 
 func installCaffeinateFull() error {
+	if !caffeinateSupported() {
+		fmt.Printf("Full caffeinate mode is macOS-only; nothing to install on %s.\n", runtime.GOOS)
+		return installCaffeinatePartial()
+	}
 	fmt.Println("Full caffeinate mode prevents lid-close sleep via a launchd daemon + pmset.")
 	fmt.Printf("This will write %s and %s using sudo.\n", caffeinatePlistPath, caffeinateSudoersDst)
 	if !confirm(os.Stdin, "Proceed? [y/N]: ") {
@@ -233,6 +250,9 @@ func pidIsCaffeinate(pid int) bool {
 }
 
 func caffeinateOn() error {
+	if !caffeinateSupported() {
+		return errCaffeinateUnsupported()
+	}
 	if caffeinateRunning() {
 		return nil
 	}
@@ -282,6 +302,18 @@ func caffeinateCommand(args []string) error {
 		sub = args[0]
 	}
 	switch sub {
+	case "status", "on", "off", "toggle":
+		// valid subcommand
+	default:
+		return fmt.Errorf("usage: domux caffeinate [status|on|off|toggle]")
+	}
+	// On unsupported platforms every variant is a graceful no-op so the tmux
+	// `K` binding / commands popup report "unsupported" instead of erroring.
+	if !caffeinateSupported() {
+		fmt.Println(caffeinateStatusLabel())
+		return nil
+	}
+	switch sub {
 	case "status":
 		fmt.Println(caffeinateStatusLabel())
 		return nil
@@ -312,6 +344,9 @@ func caffeinateCommand(args []string) error {
 }
 
 func caffeinateStatusLabel() string {
+	if !caffeinateSupported() {
+		return "caffeinate: unsupported"
+	}
 	if caffeinateRunning() {
 		return "caffeinate: on"
 	}

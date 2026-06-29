@@ -87,8 +87,12 @@ func TestCaffeinateStatusLabel(t *testing.T) {
 	if !strings.HasPrefix(got, "caffeinate: ") {
 		t.Fatalf("expected prefix 'caffeinate: ', got %q", got)
 	}
-	if got != "caffeinate: off" {
-		t.Fatalf("expected off when no PID file, got %q", got)
+	want := "caffeinate: off"
+	if !caffeinateSupported() {
+		want = "caffeinate: unsupported"
+	}
+	if got != want {
+		t.Fatalf("expected %q when no PID file, got %q", want, got)
 	}
 }
 
