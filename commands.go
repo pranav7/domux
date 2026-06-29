@@ -267,6 +267,7 @@ func createTmuxSession(name, root string) error {
 func attachTmuxSession(name string) error {
 	clearWaitingState(name)
 	if inTmuxClientEnv() {
+		debugLog("attach: switch-client -> %q", name)
 		cmd := exec.Command("tmux", tmuxAttachArgs(true, name)...)
 		out, err := cmd.CombinedOutput()
 		if err == nil {
@@ -277,12 +278,17 @@ func attachTmuxSession(name string) error {
 			return err
 		}
 	}
+	debugLog("attach: attach-session -> %q", name)
 	cmd := exec.Command("tmux", tmuxAttachArgs(false, name)...)
 	cmd.Env = withoutTmuxEnv(os.Environ())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	err := cmd.Run()
+	if err != nil {
+		debugLog("attach: attach-session -> %q failed: %v", name, err)
+	}
+	return err
 }
 
 func inTmuxClientEnv() bool {

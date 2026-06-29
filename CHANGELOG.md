@@ -4,6 +4,27 @@ All notable changes to domux are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`domux resume`** — recreate saved tmux work sessions after a restart. Bare
+  `domux resume` restores every saved session; `domux resume <project>`
+  restores just one group. Progress shows in the switcher, which you land in so
+  you can see what came back. Sessions whose worktree directory is gone are
+  skipped and their stale state files pruned.
+- **`DOMUX_DEBUG` trace log** — set `DOMUX_DEBUG=1` (default file
+  `~/.local/share/domux/debug.log`) or `DOMUX_DEBUG=/path/to.log` to trace the
+  session attach path. Off by default.
+
+### Fixed
+
+- **Switcher no longer corrupts the terminal when launched from a plain shell.**
+  Selecting a session ran `tmux attach-session` while the picker still held the
+  terminal, so the two fought over the tty and left it unusable (most visible
+  via `domux resume` after a reboot). The attach now happens only after the
+  picker has exited and released the terminal.
+
 ## [0.2.0] - 2026-06-25
 
 A feature release: per-worktree setup, inter-worktree agent messaging, and a
