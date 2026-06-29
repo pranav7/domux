@@ -31,7 +31,11 @@ type resumeTarget struct {
 }
 
 // resumeGroup derives the picker-group key for a root, mirroring gatherSessions:
-// a workspace-N worktree groups under its main checkout.
+// a workspace-N worktree groups under its main checkout. Unlike gatherSessions
+// it does not git-normalize first — it assumes root is already a git toplevel,
+// which setSessionRoot guarantees for every saved state. If a future change
+// ever pins a subdirectory as Root, this would need the same `git rev-parse
+// --show-toplevel` step gatherSessions uses, or group filtering would miss.
 func resumeGroup(root string) string {
 	if main, ok := workspaceRootFromPath(root); ok {
 		return filepath.Base(main)
