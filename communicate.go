@@ -367,6 +367,13 @@ func isPaneBusy(t commTarget) bool {
 	return paneBusyByCapture(t.Target)
 }
 
+// pasteSettleDelay separates the literal paste from the Enter keypress.
+// Claude Code coalesces rapid input into a single paste; an Enter arriving
+// inside that window is absorbed into the pasted text as a newline instead of
+// submitting the prompt. The swallow window measured against a live pane is
+// <100ms even for multi-KB messages; 500ms leaves comfortable margin.
+const pasteSettleDelay = 500 * time.Millisecond
+
 func tmuxSendLiteral(target, text string) error {
 	out, err := exec.Command("tmux", "send-keys", "-t", target, "-l", text).CombinedOutput()
 	if err != nil {
@@ -457,6 +464,7 @@ func sendCommand(args []string) error {
 		return err
 	}
 	if !*noEnter {
+		time.Sleep(pasteSettleDelay)
 		if err := tmuxSendEnter(t.Target); err != nil {
 			return err
 		}
