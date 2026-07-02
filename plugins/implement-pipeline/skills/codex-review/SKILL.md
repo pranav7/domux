@@ -7,7 +7,7 @@ description: Use when running /codex-review, when you want an external second-op
 
 Review the current changes through **Codex** — a different model family than Claude — then layer your own judgement on top. A second family reviewing the same diff catches failure modes that same-family review misses. Brief Codex on the problem and the approach first, so it can also give a second opinion on whether the solution is the right one — not just hunt for code-level bugs. Codex is one more reviewer whose findings you verify, **not** ground truth.
 
-`azcodex` is the user's shell alias for `codex --profile azure` (Codex CLI, GPT-5.5, Azure endpoint). Aliases don't exist in non-interactive shells, so always call the full form: `codex --profile azure …`.
+`codex` is the user's shell alias for `codex --profile azure` (Codex CLI, GPT-5.5, Azure endpoint), and the alias IS loaded in Claude's shell. Call plain `codex …` and NEVER pass `--profile azure` yourself — the alias already injects it, and a doubled flag makes the CLI exit with `the argument '--profile <CONFIG_PROFILE_V2>' cannot be used multiple times`. (Fallback: only if `type codex` shows no alias — e.g. on another machine — add `--profile azure` back.)
 
 ## How `codex review` actually behaves (verified against codex-cli 0.141.0)
 
@@ -64,14 +64,14 @@ $BRIEF
 Review the change on two levels. First, the SOLUTION: does this approach actually solve the stated problem? Is there a simpler, safer, or more correct way? Flag any design flaw, wrong abstraction, missed edge case, or mismatch between the brief and the diff. Second, the CODE: correctness bugs, security issues, regressions, and spec compliance.
 
 Tag every finding with exactly one of [BLOCKER] | [IMPORTANT] | [NON-BLOCKER]: [BLOCKER]=data loss / security / breaks prod / wrong approach / must-fix before merge; [IMPORTANT]=real bug, risk, or design concern worth fixing now; [NON-BLOCKER]=nit, style, or follow-up. End with a one-line count."
-codex --profile azure --sandbox read-only review "$PROMPT" > .implement/codex-review.log 2>&1
+codex --sandbox read-only review "$PROMPT" > .implement/codex-review.log 2>&1
 ```
 
 **Path B — committed work, no brief (code-level only).** A scope flag forbids a custom prompt, so Codex uses its built-in review instructions:
 
 ```bash
-codex --profile azure --sandbox read-only review --base "$BASE"  > .implement/codex-review.log 2>&1
-# single commit instead: codex --profile azure --sandbox read-only review --commit "$SHA" > .implement/codex-review.log 2>&1
+codex --sandbox read-only review --base "$BASE"  > .implement/codex-review.log 2>&1
+# single commit instead: codex --sandbox read-only review --commit "$SHA" > .implement/codex-review.log 2>&1
 ```
 
 When you take Path B, say so in the final report: **"Author's brief was NOT passed to Codex — findings are code-level only, not solution-level."**
