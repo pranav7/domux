@@ -965,8 +965,8 @@ func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
 	if !pm.statusErr {
 		t.Fatalf("expected error status, got %q", pm.status)
 	}
-	if pm.status == "" || !strings.Contains(pm.status, "no git root") {
-		t.Fatalf("expected 'no git root' status, got %q", pm.status)
+	if pm.status == "" || !strings.Contains(pm.status, "press w to add a window") {
+		t.Fatalf("expected guidance to mention 'press w to add a window', got %q", pm.status)
 	}
 }
 
@@ -1071,5 +1071,308 @@ func TestResumeBannerRendersProgress(t *testing.T) {
 	m.resume.done = true
 	if got := m.resumeBanner(); got != "" {
 		t.Fatalf("done banner = %q, want empty", got)
+	}
+}
+
+func TestParseWindowLines(t *testing.T) {
+	out := "1\tprod uk\t0\t/Users/x/projects/audrey\n" +
+		"2\tmerge queue\t1\t/Users/x/projects/audrey\n"
+	got := parseWindowLines(out)
+	if len(got) != 2 {
+		t.Fatalf("got %d windows, want 2", len(got))
+	}
+	if got[0].Index != 1 || got[0].Name != "prod uk" || got[0].Active {
+		t.Errorf("window 0 = %+v, want {Index:1 Name:%q Active:false}", got[0], "prod uk")
+	}
+	if got[1].Index != 2 || got[1].Name != "merge queue" || !got[1].Active {
+		t.Errorf("window 1 = %+v, want {Index:2 Name:%q Active:true}", got[1], "merge queue")
+	}
+	if got[1].Path != "/Users/x/projects/audrey" {
+		t.Errorf("window 1 Path = %q", got[1].Path)
+	}
+}
+
+func TestParseWindowLinesEmpty(t *testing.T) {
+	if got := parseWindowLines(""); len(got) != 0 {
+		t.Errorf("empty output = %+v, want no windows", got)
+	}
+}
+
+func TestParseWindowLinesMalformed(t *testing.T) {
+	// A line with fewer than 4 tab-separated fields is skipped.
+	out := "1\tshort\n2\tname\t1\t/path\n"
+	got := parseWindowLines(out)
+	if len(got) != 1 || got[0].Index != 2 {
+		t.Errorf("short-line skip: got %+v, want only window 2", got)
+	}
+	// A line whose index is not a parseable integer is skipped.
+	out = "x\tname\t0\t/path\n3\tgood\t1\t/path2\n"
+	got = parseWindowLines(out)
+	if len(got) != 1 || got[0].Index != 3 {
+		t.Errorf("non-int index skip: got %+v, want only window 3", got)
+	}
+}
+
+func TestRowsFromEntriesWindowRows(t *testing.T) {
+	// >1 window → one rowWindow per window, under the session, above tasks.
+	multi := &sessionInfo{
+		Name: "domux", Path: "/p",
+		Windows: []windowInfo{{Index: 1, Name: "a"}, {Index: 2, Name: "b"}},
+		Tasks:   []taskInfo{{Title: "t1"}},
+	}
+	rows := rowsFromEntries([]groupEntry{{group: "domux", session: multi}})
+
+	var kinds []rowKind
+	for _, r := range rows {
+		kinds = append(kinds, r.Kind)
+	}
+	// header, session, window, window, task
+	want := []rowKind{rowHeader, rowSession, rowWindow, rowWindow, rowTask}
+	if len(kinds) != len(want) {
+		t.Fatalf("kinds = %v, want %v", kinds, want)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Fatalf("kinds = %v, want %v", kinds, want)
+		}
+	}
+}
+
+func TestRowsFromEntriesSingleWindowNoWindowRows(t *testing.T) {
+	single := &sessionInfo{
+		Name: "solo", Path: "/p",
+		Windows: []windowInfo{{Index: 1, Name: "a"}},
+	}
+	rows := rowsFromEntries([]groupEntry{{group: "solo", session: single}})
+	for _, r := range rows {
+		if r.Kind == rowWindow {
+			t.Fatalf("single-window session must not emit rowWindow, got rows %+v", rows)
+		}
+	}
+}
+
+func TestRenderWindowActiveAndBadge(t *testing.T) {
+	m := pickerModel{width: 120}
+	active := pickerRow{Kind: rowWindow, Window: &windowInfo{
+		Index: 2, Name: "merge queue", Active: true, Claude: "WAITING",
+	}}
+	out := m.renderWindow(active, false)
+	if !strings.Contains(out, "2") || !strings.Contains(out, "merge queue") {
+		t.Errorf("renderWindow missing index/name: %q", out)
+	}
+}
+
+func TestRenderWindowRecapGatedByDetails(t *testing.T) {
+	win := &windowInfo{Index: 1, Name: "a", Recap: "reshaped the pipeline"}
+
+	off := pickerModel{width: 120, showDetails: false}
+	if strings.Contains(off.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false), "reshaped the pipeline") {
+		t.Errorf("recap must be hidden when showDetails is off")
+	}
+
+	on := pickerModel{width: 120, showDetails: true}
+	if !strings.Contains(on.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false), "reshaped the pipeline") {
+		t.Errorf("recap must show when showDetails is on")
+	}
+}
+
+func TestSelectRowWindowTarget(t *testing.T) {
+	sess := &sessionInfo{Name: "domux", Path: "/p",
+		Windows: []windowInfo{{Index: 1, Name: "a"}, {Index: 2, Name: "b"}}}
+	winRow := pickerRow{Kind: rowWindow, Session: sess, Window: &sess.Windows[1]}
+
+	m := pickerModel{}
+	updated, _ := m.selectRow(winRow)
+	pm := updated.(pickerModel)
+	if pm.selected != "domux:2" {
+		t.Errorf("selected = %q, want domux:2", pm.selected)
+	}
+}
+
+func TestSelectRowSessionTargetUnchanged(t *testing.T) {
+	sess := &sessionInfo{Name: "domux"}
+	m := pickerModel{}
+	updated, _ := m.selectRow(pickerRow{Kind: rowSession, Session: sess})
+	pm := updated.(pickerModel)
+	if pm.selected != "domux" {
+		t.Errorf("selected = %q, want domux", pm.selected)
+	}
+}
+
+func TestWindowRowIsSelectable(t *testing.T) {
+	sess := &sessionInfo{Name: "test"}
+	if !isSelectablePickerRow(pickerRow{Kind: rowWindow, Session: sess, Window: &windowInfo{Index: 1}}) {
+		t.Errorf("rowWindow should be selectable")
+	}
+}
+
+func TestNewWindowArgs(t *testing.T) {
+	got := newWindowArgs("domux", "merge queue", "/Users/x/projects/audrey")
+	want := []string{"new-window", "-t", "domux", "-n", "merge queue", "-c", "/Users/x/projects/audrey"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestNewWindowArgsNoCwd(t *testing.T) {
+	got := newWindowArgs("domux", "scratch", "")
+	want := []string{"new-window", "-t", "domux", "-n", "scratch"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestWindowNamingFlow(t *testing.T) {
+	sess := &sessionInfo{Name: "domux", Path: "/p", Windows: []windowInfo{{Index: 1}, {Index: 2}}}
+	m := pickerModel{
+		rows:    []pickerRow{{Kind: rowSession, Session: sess}},
+		visible: []int{0},
+		cursor:  0,
+	}
+	m.startWindowNaming()
+	if !m.windowNaming || m.windowTarget != "domux" || m.windowCwd != "/p" {
+		t.Fatalf("startWindowNaming state = naming:%v target:%q cwd:%q", m.windowNaming, m.windowTarget, m.windowCwd)
+	}
+}
+
+func TestRefreshRowsRestoresWindowCursor(t *testing.T) {
+	// Build initial rows with session + 2 windows
+	sess := &sessionInfo{
+		Name:    "domux",
+		Path:    "/p",
+		Windows: []windowInfo{{Index: 1, Name: "w1"}, {Index: 2, Name: "w2"}},
+	}
+	initialRows := rowsFromEntries([]groupEntry{{group: "domux", session: sess}})
+
+	// Find window-index-2 row
+	win2Idx := -1
+	for i, r := range initialRows {
+		if r.Kind == rowWindow && r.Window != nil && r.Window.Index == 2 {
+			win2Idx = i
+			break
+		}
+	}
+	if win2Idx == -1 {
+		t.Fatal("could not find window-index-2 row in initial rows")
+	}
+
+	// Build model with cursor on window 2
+	m := pickerModel{rows: initialRows}
+	m.rebuildVisible()
+	m.cursor = 0
+	for i, vi := range m.visible {
+		if m.rows[vi].Kind == rowWindow && m.rows[vi].Window != nil && m.rows[vi].Window.Index == 2 {
+			m.cursor = i
+			break
+		}
+	}
+
+	// Build fresh rows (same session, same windows)
+	newSess := &sessionInfo{
+		Name:    "domux",
+		Path:    "/p",
+		Windows: []windowInfo{{Index: 1, Name: "w1"}, {Index: 2, Name: "w2"}},
+	}
+	newRows := rowsFromEntries([]groupEntry{{group: "domux", session: newSess}})
+
+	// Refresh
+	m.refreshRows(newRows)
+
+	// Cursor should still be on window-index-2, not on the session row
+	if m.cursor >= len(m.visible) {
+		t.Fatalf("cursor %d out of bounds (visible len %d)", m.cursor, len(m.visible))
+	}
+	row := m.rows[m.visible[m.cursor]]
+	if row.Kind != rowWindow {
+		t.Fatalf("after refresh, cursor on Kind %v, want rowWindow", row.Kind)
+	}
+	if row.Window == nil || row.Window.Index != 2 {
+		t.Fatalf("after refresh, cursor on window %v, want Index=2", row.Window)
+	}
+}
+
+func TestRefreshRowsRestoresSessionCursor(t *testing.T) {
+	// Build rows with session + 2 windows
+	sess := &sessionInfo{
+		Name:    "domux",
+		Path:    "/p",
+		Windows: []windowInfo{{Index: 1, Name: "w1"}, {Index: 2, Name: "w2"}},
+	}
+	initialRows := rowsFromEntries([]groupEntry{{group: "domux", session: sess}})
+
+	m := pickerModel{rows: initialRows}
+	m.rebuildVisible()
+	m.cursor = 0
+	// Position cursor on the SESSION row
+	for i, vi := range m.visible {
+		if m.rows[vi].Kind == rowSession {
+			m.cursor = i
+			break
+		}
+	}
+
+	// Build fresh rows
+	newSess := &sessionInfo{
+		Name:    "domux",
+		Path:    "/p",
+		Windows: []windowInfo{{Index: 1, Name: "w1"}, {Index: 2, Name: "w2"}},
+	}
+	newRows := rowsFromEntries([]groupEntry{{group: "domux", session: newSess}})
+
+	// Refresh
+	m.refreshRows(newRows)
+
+	// Cursor should still be on the session row
+	if m.cursor >= len(m.visible) {
+		t.Fatalf("cursor %d out of bounds (visible len %d)", m.cursor, len(m.visible))
+	}
+	row := m.rows[m.visible[m.cursor]]
+	if row.Kind != rowSession {
+		t.Fatalf("after refresh, cursor on Kind %v, want rowSession", row.Kind)
+	}
+	if row.Session == nil || row.Session.Name != "domux" {
+		t.Fatalf("after refresh, cursor on session %v, want domux", row.Session)
+	}
+}
+
+func TestRenderSessionRecapSuppressedForMultiWindow(t *testing.T) {
+	m := pickerModel{showDetails: true, width: 80}
+	// Session with 2 windows
+	sess := &sessionInfo{
+		Name:    "domux",
+		Recap:   "some recap text",
+		Windows: []windowInfo{{Index: 1}, {Index: 2}},
+	}
+	row := pickerRow{Kind: rowSession, Session: sess}
+	out := m.renderSession(row, false)
+	if strings.Contains(out, "some recap text") {
+		t.Fatal("renderSession included recap for multi-window session")
+	}
+}
+
+func TestRenderSessionRecapShownForSingleWindow(t *testing.T) {
+	m := pickerModel{showDetails: true, width: 80}
+	// Session with 1 window (or 0)
+	sess := &sessionInfo{
+		Name:    "domux",
+		Recap:   "some recap text",
+		Windows: []windowInfo{{Index: 1}},
+	}
+	row := pickerRow{Kind: rowSession, Session: sess}
+	out := m.renderSession(row, false)
+	if !strings.Contains(out, "some recap text") {
+		t.Fatal("renderSession omitted recap for single-window session")
+	}
+
+	// Also test with 0 windows
+	sess.Windows = nil
+	out = m.renderSession(row, false)
+	if !strings.Contains(out, "some recap text") {
+		t.Fatal("renderSession omitted recap for 0-window session")
 	}
 }

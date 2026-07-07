@@ -265,7 +265,8 @@ func createTmuxSession(name, root string) error {
 }
 
 func attachTmuxSession(name string) error {
-	clearWaitingState(name)
+	sessionName, _, _ := strings.Cut(name, ":")
+	clearWaitingState(sessionName)
 	if inTmuxClientEnv() {
 		debugLog("attach: switch-client -> %q", name)
 		cmd := exec.Command("tmux", tmuxAttachArgs(true, name)...)

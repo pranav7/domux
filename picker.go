@@ -22,6 +22,7 @@ const (
 	rowSpacer
 	rowSession
 	rowTask
+	rowWindow
 	rowRule
 )
 
@@ -40,7 +41,7 @@ type sessionInfo struct {
 	ClaudeLabel string
 	CodexLabel  string
 	Server      bool
-	Windows     int
+	Windows     []windowInfo
 	Path        string
 	Root        string // git common root (group-level), stripped of scratch worktree dirs
 	Label       string
@@ -57,11 +58,24 @@ type taskInfo struct {
 	Path        string
 }
 
+type windowInfo struct {
+	Index       int
+	Name        string
+	Active      bool
+	Path        string // window's active-pane cwd
+	Claude      string
+	Codex       string
+	ClaudeLabel string
+	CodexLabel  string
+	Recap       string
+}
+
 type pickerRow struct {
 	Kind    rowKind
 	Group   string
 	Session *sessionInfo
 	Task    *taskInfo
+	Window  *windowInfo
 }
 
 type pickerModel struct {
@@ -73,6 +87,9 @@ type pickerModel struct {
 	labelInput     textinput.Model
 	labelEditing   bool
 	labelTarget    string
+	windowNaming   bool
+	windowTarget   string // session name to add the window to
+	windowCwd      string // cwd for the new window
 	confirmDelete  bool
 	deleteAction   string
 	deleteSession  string
@@ -457,7 +474,8 @@ func (m *pickerModel) rebuildVisible() {
 }
 
 func isSelectablePickerRow(row pickerRow) bool {
-	return row.Kind == rowSession && row.Session != nil
+	return (row.Kind == rowSession && row.Session != nil) ||
+		(row.Kind == rowWindow && row.Window != nil && row.Session != nil)
 }
 
 // isMainWorktreePath returns true when path looks like the main checkout of a
@@ -647,6 +665,51 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.windowNaming {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.windowNaming = false
+				m.windowTarget = ""
+				m.windowCwd = ""
+				m.labelInput.SetValue("")
+				return m, nil
+			case "enter":
+				target := m.windowTarget
+				cwd := m.windowCwd
+				name := strings.TrimSpace(m.labelInput.Value())
+				m.windowNaming = false
+				m.windowTarget = ""
+				m.windowCwd = ""
+				m.labelInput.SetValue("")
+				if target == "" || name == "" {
+					return m, nil
+				}
+				m.status = fmt.Sprintf("adding window %q to %s", name, target)
+				m.statusErr = false
+				return m, func() tea.Msg {
+					return pickerActionMsg{
+						Action:  "window",
+						Session: target,
+						Value:   name,
+						Err:     newWindowInSession(target, name, cwd),
+					}
+				}
+			case "backspace":
+				v := m.labelInput.Value()
+				if len(v) > 0 {
+					m.labelInput.SetValue(v[:len(v)-1])
+				}
+				return m, nil
+			default:
+				if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
+					m.labelInput.SetValue(m.labelInput.Value() + key)
+				}
+				return m, nil
+			}
+		}
+
 		if m.labelEditing {
 			switch key {
 			case "ctrl+c":
@@ -831,6 +894,9 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "+":
 			return m, m.provisionInFocusedGroup()
+		case "w":
+			m.startWindowNaming()
+			return m, nil
 		case "D":
 			return m, m.deleteOrCloseSelectedSession()
 		case "?":
@@ -898,16 +964,35 @@ func (m *pickerModel) refreshRows(rows []pickerRow) {
 		return
 	}
 	selectedName := ""
+	selectedWindow := 0
+	hadWindow := false
 	if len(m.visible) > 0 && m.cursor < len(m.visible) {
 		row := m.rows[m.visible[m.cursor]]
 		if row.Session != nil {
 			selectedName = row.Session.Name
+			if row.Kind == rowWindow && row.Window != nil {
+				selectedWindow = row.Window.Index
+				hadWindow = true
+			}
 		}
 	}
 	m.rows = rows
 	m.rebuildVisible()
 	m.cursor = 0
 	if selectedName != "" {
+		// If we were on a window row, try to restore to that exact window first
+		if hadWindow {
+			for i, vi := range m.visible {
+				row := m.rows[vi]
+				if row.Kind == rowWindow && row.Session != nil && row.Session.Name == selectedName &&
+					row.Window != nil && row.Window.Index == selectedWindow {
+					m.cursor = i
+					m.clampCursor()
+					return
+				}
+			}
+		}
+		// Fall back to session row match
 		for i, vi := range m.visible {
 			row := m.rows[vi]
 			if row.Session != nil && row.Session.Name == selectedName {
@@ -928,9 +1013,17 @@ func (m pickerModel) ignoringStartupInput() bool {
 // released the terminal — attaching inline corrupts the tty from a plain shell
 // (see runPickerProgram).
 func (m pickerModel) selectRow(row pickerRow) (tea.Model, tea.Cmd) {
-	if row.Kind == rowSession && row.Session != nil {
-		m.selected = row.Session.Name
-		return m, tea.Quit
+	switch row.Kind {
+	case rowSession:
+		if row.Session != nil {
+			m.selected = row.Session.Name
+			return m, tea.Quit
+		}
+	case rowWindow:
+		if row.Session != nil && row.Window != nil {
+			m.selected = fmt.Sprintf("%s:%d", row.Session.Name, row.Window.Index)
+			return m, tea.Quit
+		}
 	}
 	return m, nil
 }
@@ -1035,6 +1128,31 @@ func (m *pickerModel) startLabelEdit() {
 	m.labelInput.SetValue(session.Label)
 }
 
+func (m *pickerModel) startWindowNaming() {
+	session := m.selectedSession()
+	cwd := ""
+	target := ""
+	if session != nil {
+		target = session.Name
+		cwd = session.Path
+	} else if len(m.visible) > 0 && m.cursor < len(m.visible) {
+		row := m.rows[m.visible[m.cursor]]
+		if row.Kind == rowWindow && row.Session != nil {
+			target = row.Session.Name
+			if row.Window != nil {
+				cwd = row.Window.Path
+			}
+		}
+	}
+	if target == "" {
+		return
+	}
+	m.windowNaming = true
+	m.windowTarget = target
+	m.windowCwd = cwd
+	m.labelInput.SetValue("")
+}
+
 func (m *pickerModel) setSelectedServer() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil {
@@ -1055,7 +1173,7 @@ func (m *pickerModel) setSelectedServer() tea.Cmd {
 func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil || session.Root == "" {
-		m.status = "no git root for this row"
+		m.status = "no git root — press w to add a window"
 		m.statusErr = true
 		return nil
 	}
@@ -1147,6 +1265,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("close %s failed: %v", msg.Session, msg.Err)
 		case "delete":
 			m.status = fmt.Sprintf("delete %s failed: %v", pickerActionTarget(msg), msg.Err)
+		case "window":
+			m.status = fmt.Sprintf("add window to %s failed: %v", msg.Session, msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -1194,6 +1314,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 	case "provision":
 		m.status = fmt.Sprintf("provisioned %s", msg.Value)
 		m.statusErr = false
+	case "window":
+		m.status = fmt.Sprintf("added window %q to %s", msg.Value, msg.Session)
 	case "delete":
 		m.removeSessionRows(msg.Session)
 		m.status = fmt.Sprintf("removed %s", pickerActionTarget(msg))
@@ -1329,6 +1451,23 @@ func (m pickerModel) renderLabelOverlay() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+func (m pickerModel) renderWindowNamingOverlay() string {
+	innerWidth := 36
+	value := m.labelInput.Value()
+	title := lipgloss.NewStyle().Foreground(peach).Bold(true).Render("new window")
+	target := lipgloss.NewStyle().Foreground(overlay1).Render("for " + m.windowTarget)
+	inputLine := lipgloss.NewStyle().Foreground(text).Render(value) +
+		lipgloss.NewStyle().Foreground(peach).Render("▌")
+	hint := lipgloss.NewStyle().Foreground(overlay0).Render("enter to confirm · esc to cancel")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(peach).
+		Padding(1, 2).
+		Width(innerWidth).
+		Render(title + "\n" + target + "\n\n" + inputLine + "\n\n" + hint)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m pickerModel) renderHelpOverlay() string {
 	keyS := lipgloss.NewStyle().Foreground(mauve).Bold(true)
 	descS := lipgloss.NewStyle().Foreground(text)
@@ -1344,7 +1483,7 @@ func (m pickerModel) renderHelpOverlay() string {
 	b.WriteString(catS.Render("MOVE") + "\n")
 	b.WriteString("  " + join(bind("↑↓ / j k", "move"), bind("g / G", "top / bottom")) + "\n\n")
 	b.WriteString(catS.Render("SESSION") + "\n")
-	b.WriteString("  " + join(bind("⏎", "switch"), bind("+", "new"), bind("D", "close/delete")) + "\n")
+	b.WriteString("  " + join(bind("⏎", "switch"), bind("+", "new"), bind("w", "new window"), bind("D", "close/delete")) + "\n")
 	b.WriteString("  " + join(bind("n", "name"), bind("c", "clear"), bind("r", "reset"), bind("s", "server")) + "\n\n")
 	b.WriteString(catS.Render("VIEW") + "\n")
 	b.WriteString("  " + join(bind("→", "preview"), bind("F", "big"), bind("P", "popup")) + "\n")
@@ -1369,6 +1508,9 @@ func (m pickerModel) View() string {
 	}
 	if m.confirmDelete {
 		return m.renderConfirmOverlay()
+	}
+	if m.windowNaming {
+		return m.renderWindowNamingOverlay()
 	}
 	if m.labelEditing {
 		return m.renderLabelOverlay()
@@ -2066,6 +2208,8 @@ func (m pickerModel) renderRow(row pickerRow, selected bool) string {
 		return m.renderSession(row, selected)
 	case rowTask:
 		return m.renderTask(row, selected)
+	case rowWindow:
+		return m.renderWindow(row, selected)
 	}
 	return ""
 }
@@ -2177,7 +2321,8 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	// toggle that hides todos (m.showDetails). Wrapped across as many lines as
 	// needed so the full recap stays readable rather than truncated mid-word;
 	// continuation lines hang-indent under the recap text (past the "※ ").
-	if m.showDetails && s.Recap != "" {
+	// For multi-window sessions, recap is rendered under each window row, not here.
+	if m.showDetails && s.Recap != "" && len(s.Windows) <= 1 {
 		const indent = "        "  // 8 cols, aligns with PR details
 		const cont = indent + "  " // continuation aligns under text (after "※ ")
 		avail := m.width - lipgloss.Width(cont)
@@ -2271,13 +2416,105 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 	return "        " + marker + " " + title
 }
 
+// renderWindow renders a tmux window as an indented, jumpable sub-row under its
+// session. Layout mirrors renderTask (indent 8, aligned with the recap ※
+// column). The active window's glyph is highlighted; the AI badge reuses
+// renderAIBadges; the recap hangs under the row and is gated by showDetails —
+// the same tab toggle used for session recaps.
+func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
+	w := row.Window
+	glyphStyle := lipgloss.NewStyle().Foreground(overlay0)
+	nameStyle := lipgloss.NewStyle().Foreground(overlay0)
+	if w.Active {
+		glyphStyle = lipgloss.NewStyle().Foreground(teal).Bold(true)
+		nameStyle = lipgloss.NewStyle().Foreground(teal)
+	}
+	if selected {
+		nameStyle = nameStyle.Bold(true)
+	}
+
+	var line strings.Builder
+	// Prefix: cursor arrow when selected, else blank; 8-col indent to align with
+	// tasks/recap.
+	if selected {
+		line.WriteString("      " + pCursor.Render("›") + " ")
+	} else {
+		line.WriteString("        ")
+	}
+	line.WriteString(glyphStyle.Render("▸") + " ")
+	line.WriteString(nameStyle.Render(fmt.Sprintf("%d · %s", w.Index, w.Name)))
+	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
+
+	if m.showDetails && w.Recap != "" {
+		const indent = "          " // 10 cols, under the window name
+		avail := m.width - lipgloss.Width(indent)
+		if avail < 8 {
+			avail = 8
+		}
+		for i, seg := range wrapWords(w.Recap, avail) {
+			if i == 0 {
+				line.WriteString("\n" + indent + pRecapIcon.Render("※") + " " + pRecapText.Render(seg))
+			} else {
+				line.WriteString("\n" + indent + "  " + pRecapText.Render(seg))
+			}
+		}
+	}
+	return line.String()
+}
+
 // Actions
 
 func switchSession(name string) {
 	_ = attachTmuxSession(name)
 }
 
+// newWindowArgs builds the `tmux new-window` argv for creating a named window in
+// session at cwd. cwd is omitted when empty (tmux inherits the session default).
+func newWindowArgs(session, name, cwd string) []string {
+	args := []string{"new-window", "-t", session, "-n", name}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	return args
+}
+
+// newWindowInSession creates a new named tmux window in session, rooted at cwd.
+func newWindowInSession(session, name, cwd string) error {
+	out, err := exec.Command("tmux", newWindowArgs(session, name, cwd)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux new-window -t %s: %w: %s", session, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // Data gathering
+
+// parseWindowLines parses `tmux list-windows -F
+// "#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}"`
+// output into windowInfo values (AI/Recap fields left zero — filled by caller).
+func parseWindowLines(out string) []windowInfo {
+	var windows []windowInfo
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		idx, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		windows = append(windows, windowInfo{
+			Index:  idx,
+			Name:   parts[1],
+			Active: parts[2] == "1",
+			Path:   parts[3],
+		})
+	}
+	return windows
+}
 
 func gatherSessions() []pickerRow {
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
@@ -2353,9 +2590,27 @@ func gatherSessions() []pickerRow {
 		info.CodexLabel = aiStates.CodexLabel
 		info.Server = state.Server
 
-		winOut, err := exec.Command("tmux", "list-windows", "-t", sess).Output()
+		winOut, err := exec.Command("tmux", "list-windows", "-t", sess, "-F",
+			"#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}").Output()
 		if err == nil {
-			info.Windows = len(strings.Split(strings.TrimSpace(string(winOut)), "\n"))
+			windows := parseWindowLines(string(winOut))
+			winStates := aggregateAIStatesByWindow(state)
+			for i := range windows {
+				w := &windows[i]
+				if s, ok := winStates[w.Index]; ok {
+					w.Claude, w.Codex = s.Claude, s.Codex
+					w.ClaudeLabel, w.CodexLabel = s.ClaudeLabel, s.CodexLabel
+				}
+				if w.Path != "" {
+					if best, ok := bestLiveSession(liveClaude, w.Path); ok {
+						recap, recapTime := recapForSession(best)
+						if recapVisibleAfterClear(recapTime, state.RecapClearedAt) {
+							w.Recap = recap
+						}
+					}
+				}
+			}
+			info.Windows = windows
 		}
 
 		info.Label = state.Label
@@ -2428,6 +2683,16 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 			rows = append(rows, pickerRow{Kind: rowRule, Group: e.group})
 		}
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
+		if len(e.session.Windows) > 1 {
+			for i := range e.session.Windows {
+				rows = append(rows, pickerRow{
+					Kind:    rowWindow,
+					Group:   e.group,
+					Session: e.session,
+					Window:  &e.session.Windows[i],
+				})
+			}
+		}
 		for i := range e.session.Tasks {
 			rows = append(rows, pickerRow{Kind: rowTask, Group: e.group, Task: &e.session.Tasks[i]})
 		}
