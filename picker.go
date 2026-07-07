@@ -22,6 +22,7 @@ const (
 	rowSpacer
 	rowSession
 	rowTask
+	rowWindow
 	rowRule
 )
 
@@ -74,6 +75,7 @@ type pickerRow struct {
 	Group   string
 	Session *sessionInfo
 	Task    *taskInfo
+	Window  *windowInfo
 }
 
 type pickerModel struct {
@@ -2078,6 +2080,8 @@ func (m pickerModel) renderRow(row pickerRow, selected bool) string {
 		return m.renderSession(row, selected)
 	case rowTask:
 		return m.renderTask(row, selected)
+	case rowWindow:
+		return m.renderWindow(row, selected)
 	}
 	return ""
 }
@@ -2283,6 +2287,52 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 	return "        " + marker + " " + title
 }
 
+// renderWindow renders a tmux window as an indented, jumpable sub-row under its
+// session. Layout mirrors renderTask (indent 8, aligned with the recap ※
+// column). The active window's glyph is highlighted; the AI badge reuses
+// renderAIBadges; the recap hangs under the row and is gated by showDetails —
+// the same tab toggle used for session recaps.
+func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
+	w := row.Window
+	glyphStyle := lipgloss.NewStyle().Foreground(overlay0)
+	nameStyle := lipgloss.NewStyle().Foreground(overlay0)
+	if w.Active {
+		glyphStyle = lipgloss.NewStyle().Foreground(teal).Bold(true)
+		nameStyle = lipgloss.NewStyle().Foreground(teal)
+	}
+	if selected {
+		nameStyle = nameStyle.Bold(true)
+	}
+
+	var line strings.Builder
+	// Prefix: cursor arrow when selected, else blank; 8-col indent to align with
+	// tasks/recap.
+	if selected {
+		line.WriteString("      " + pCursor.Render("›") + " ")
+	} else {
+		line.WriteString("        ")
+	}
+	line.WriteString(glyphStyle.Render("▸") + " ")
+	line.WriteString(nameStyle.Render(fmt.Sprintf("%d · %s", w.Index, w.Name)))
+	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
+
+	if m.showDetails && w.Recap != "" {
+		const indent = "          " // 10 cols, under the window name
+		avail := m.width - lipgloss.Width(indent)
+		if avail < 8 {
+			avail = 8
+		}
+		for i, seg := range wrapWords(w.Recap, avail) {
+			if i == 0 {
+				line.WriteString("\n" + indent + pRecapIcon.Render("※") + " " + pRecapText.Render(seg))
+			} else {
+				line.WriteString("\n" + indent + "  " + pRecapText.Render(seg))
+			}
+		}
+	}
+	return line.String()
+}
+
 // Actions
 
 func switchSession(name string) {
@@ -2485,6 +2535,11 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 			rows = append(rows, pickerRow{Kind: rowRule, Group: e.group})
 		}
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
+		if len(e.session.Windows) > 1 {
+			for i := range e.session.Windows {
+				rows = append(rows, pickerRow{Kind: rowWindow, Group: e.group, Window: &e.session.Windows[i]})
+			}
+		}
 		for i := range e.session.Tasks {
 			rows = append(rows, pickerRow{Kind: rowTask, Group: e.group, Task: &e.session.Tasks[i]})
 		}

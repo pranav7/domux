@@ -1112,3 +1112,66 @@ func TestParseWindowLinesMalformed(t *testing.T) {
 		t.Errorf("non-int index skip: got %+v, want only window 3", got)
 	}
 }
+
+func TestRowsFromEntriesWindowRows(t *testing.T) {
+	// >1 window → one rowWindow per window, under the session, above tasks.
+	multi := &sessionInfo{
+		Name: "domux", Path: "/p",
+		Windows: []windowInfo{{Index: 1, Name: "a"}, {Index: 2, Name: "b"}},
+		Tasks:   []taskInfo{{Title: "t1"}},
+	}
+	rows := rowsFromEntries([]groupEntry{{group: "domux", session: multi}})
+
+	var kinds []rowKind
+	for _, r := range rows {
+		kinds = append(kinds, r.Kind)
+	}
+	// header, session, window, window, task
+	want := []rowKind{rowHeader, rowSession, rowWindow, rowWindow, rowTask}
+	if len(kinds) != len(want) {
+		t.Fatalf("kinds = %v, want %v", kinds, want)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Fatalf("kinds = %v, want %v", kinds, want)
+		}
+	}
+}
+
+func TestRowsFromEntriesSingleWindowNoWindowRows(t *testing.T) {
+	single := &sessionInfo{
+		Name: "solo", Path: "/p",
+		Windows: []windowInfo{{Index: 1, Name: "a"}},
+	}
+	rows := rowsFromEntries([]groupEntry{{group: "solo", session: single}})
+	for _, r := range rows {
+		if r.Kind == rowWindow {
+			t.Fatalf("single-window session must not emit rowWindow, got rows %+v", rows)
+		}
+	}
+}
+
+func TestRenderWindowActiveAndBadge(t *testing.T) {
+	m := pickerModel{width: 120}
+	active := pickerRow{Kind: rowWindow, Window: &windowInfo{
+		Index: 2, Name: "merge queue", Active: true, Claude: "WAITING",
+	}}
+	out := m.renderWindow(active, false)
+	if !strings.Contains(out, "2") || !strings.Contains(out, "merge queue") {
+		t.Errorf("renderWindow missing index/name: %q", out)
+	}
+}
+
+func TestRenderWindowRecapGatedByDetails(t *testing.T) {
+	win := &windowInfo{Index: 1, Name: "a", Recap: "reshaped the pipeline"}
+
+	off := pickerModel{width: 120, showDetails: false}
+	if strings.Contains(off.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false), "reshaped the pipeline") {
+		t.Errorf("recap must be hidden when showDetails is off")
+	}
+
+	on := pickerModel{width: 120, showDetails: true}
+	if !strings.Contains(on.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false), "reshaped the pipeline") {
+		t.Errorf("recap must show when showDetails is on")
+	}
+}
