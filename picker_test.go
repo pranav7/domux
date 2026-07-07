@@ -1376,3 +1376,43 @@ func TestRenderSessionRecapShownForSingleWindow(t *testing.T) {
 		t.Fatal("renderSession omitted recap for 0-window session")
 	}
 }
+
+// The AI status badge belongs to the window it comes from. For a multi-window
+// session it renders on the window row, not the session row, so it must not
+// appear on both. The CLAUDING spinner glyph (frame 2 → claudeSpinnerFrames[1])
+// only ever comes from renderAIBadges, so it is a reliable marker for "a badge
+// was drawn here".
+func TestRenderSessionBadgeSuppressedForMultiWindow(t *testing.T) {
+	m := pickerModel{width: 80, spinnerFrame: 2}
+	glyph := claudeSpinnerFrames[1]
+	sess := &sessionInfo{
+		Name:    "domux",
+		Claude:  "CLAUDING",
+		Windows: []windowInfo{{Index: 1}, {Index: 2, Claude: "CLAUDING"}},
+	}
+	out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	if strings.Contains(out, glyph) {
+		t.Fatalf("renderSession drew an AI badge for a multi-window session: %q", out)
+	}
+}
+
+func TestRenderSessionBadgeShownForSingleWindow(t *testing.T) {
+	m := pickerModel{width: 80, spinnerFrame: 2}
+	glyph := claudeSpinnerFrames[1]
+	sess := &sessionInfo{
+		Name:    "domux",
+		Claude:  "CLAUDING",
+		Windows: []windowInfo{{Index: 1, Claude: "CLAUDING"}},
+	}
+	out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	if !strings.Contains(out, glyph) {
+		t.Fatalf("renderSession omitted the AI badge for a single-window session: %q", out)
+	}
+
+	// And with no windows at all (the common case), the badge still shows.
+	sess.Windows = nil
+	out = m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	if !strings.Contains(out, glyph) {
+		t.Fatalf("renderSession omitted the AI badge for a 0-window session: %q", out)
+	}
+}

@@ -2302,8 +2302,12 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString(" " + pServer.Render("⚡"))
 	}
 
-	// AI badge (spinner + working label)
-	line.WriteString(renderAIBadges(s.Claude, s.Codex, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
+	// AI badge (spinner + working label). For a multi-window session the badge
+	// belongs to the window it comes from and is rendered on that window row, so
+	// suppress it here to avoid showing the same status twice.
+	if len(s.Windows) <= 1 {
+		line.WriteString(renderAIBadges(s.Claude, s.Codex, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
+	}
 
 	if s.PR != nil {
 		pr := fmt.Sprintf("PR#%d", s.PR.Number)
