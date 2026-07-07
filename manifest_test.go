@@ -30,7 +30,7 @@ func TestMarketplaceManifestIsValid(t *testing.T) {
 	if len(m.Plugins) == 0 {
 		t.Fatalf("marketplace has no plugins")
 	}
-	wantPlugins := map[string]bool{"implement-pipeline": false, "domux-communicate": false}
+	wantPlugins := map[string]bool{"domux-start": false, "domux-communicate": false}
 	for _, p := range m.Plugins {
 		if _, ok := wantPlugins[p.Name]; ok {
 			wantPlugins[p.Name] = true
@@ -62,53 +62,31 @@ func TestMarketplaceManifestIsValid(t *testing.T) {
 }
 
 func TestPluginManifestIsValid(t *testing.T) {
-	path := filepath.Join("plugins", "implement-pipeline", ".claude-plugin", "plugin.json")
+	path := filepath.Join("plugins", "domux-start", ".claude-plugin", "plugin.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read plugin.json: %v", err)
 	}
 	var p struct {
-		Name         string `json:"name"`
-		Version      string `json:"version"`
-		Description  string `json:"description"`
-		Dependencies []struct {
-			Name        string `json:"name"`
-			Marketplace string `json:"marketplace"`
-		} `json:"dependencies"`
+		Name        string `json:"name"`
+		Version     string `json:"version"`
+		Description string `json:"description"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatalf("parse plugin.json: %v", err)
 	}
-	if p.Name != "implement-pipeline" {
-		t.Fatalf("plugin name = %q, want \"implement-pipeline\"", p.Name)
+	if p.Name != "domux-start" {
+		t.Fatalf("plugin name = %q, want \"domux-start\"", p.Name)
 	}
-	if p.Version == "" {
-		t.Fatalf("plugin version is empty")
-	}
-	wantDeps := map[string]bool{
-		"superpowers":     false,
-		"frontend-design": false,
-		"typescript-lsp":  false,
-		"pyright-lsp":     false,
-	}
-	for _, dep := range p.Dependencies {
-		if dep.Marketplace != "claude-plugins-official" {
-			t.Fatalf("dependency %q has marketplace %q, want \"claude-plugins-official\"", dep.Name, dep.Marketplace)
-		}
-		if _, ok := wantDeps[dep.Name]; ok {
-			wantDeps[dep.Name] = true
-		}
-	}
-	for name, found := range wantDeps {
-		if !found {
-			t.Fatalf("plugin manifest missing dependency on %q", name)
-		}
+	if p.Version == "" || p.Description == "" {
+		t.Fatalf("plugin version/description must be set: %+v", p)
 	}
 }
 
 func TestPluginSkillsHaveRequiredFrontmatter(t *testing.T) {
 	skills := []string{
-		"plugins/implement-pipeline/skills/implement/SKILL.md",
+		"plugins/domux-start/skills/domux-start/SKILL.md",
+		"plugins/domux-communicate/skills/domux-communicate/SKILL.md",
 	}
 	for _, s := range skills {
 		data, err := os.ReadFile(s)

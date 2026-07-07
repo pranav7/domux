@@ -90,7 +90,7 @@ set-option -g status-right '#($HOME/bin/domux status "#{session_name}" "#{pane_c
 func installClaude(args []string) error {
 	fs := flag.NewFlagSet("install claude", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	apply := fs.Bool("apply", false, "patch ~/.claude/settings.json + install implement-pipeline plugin")
+	apply := fs.Bool("apply", false, "patch ~/.claude/settings.json + install domux plugins")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -164,17 +164,24 @@ func detectLocalMarketplaceRoot() string {
 	return ""
 }
 
+// domuxPlugins are the Claude Code plugins shipped from the domux marketplace
+// and installed by `domux install claude --apply`. The generic /implement loop
+// no longer lives here — it moved to the user's dotfiles as Claude skills.
+var domuxPlugins = []string{"domux-start", "domux-communicate"}
+
 func printPluginInstallPlan(source string) {
 	if !commandExists("claude") {
 		fmt.Println()
-		fmt.Println("Would install implement-pipeline plugin, but `claude` CLI is not on PATH.")
+		fmt.Println("Would install domux plugins, but `claude` CLI is not on PATH.")
 		fmt.Println("Install Claude Code first: https://claude.com/claude-code")
 		return
 	}
 	fmt.Println()
 	fmt.Println("Would also run:")
 	fmt.Printf("  claude plugin marketplace add %s\n", source)
-	fmt.Println("  claude plugin install implement-pipeline@domux")
+	for _, p := range domuxPlugins {
+		fmt.Printf("  claude plugin install %s@domux\n", p)
+	}
 }
 
 func runPluginInstall(source string) error {
@@ -183,7 +190,9 @@ func runPluginInstall(source string) error {
 		fmt.Println("warning: `claude` CLI not on PATH — skipping plugin install.")
 		fmt.Println("Install Claude Code (https://claude.com/claude-code), then run:")
 		fmt.Printf("  claude plugin marketplace add %s\n", source)
-		fmt.Println("  claude plugin install implement-pipeline@domux")
+		for _, p := range domuxPlugins {
+			fmt.Printf("  claude plugin install %s@domux\n", p)
+		}
 		return nil
 	}
 	addCmd := exec.Command("claude", "plugin", "marketplace", "add", source)
@@ -192,13 +201,15 @@ func runPluginInstall(source string) error {
 	if err := addCmd.Run(); err != nil {
 		return fmt.Errorf("claude plugin marketplace add: %w", err)
 	}
-	installCmd := exec.Command("claude", "plugin", "install", "implement-pipeline@domux")
-	installCmd.Stdout = os.Stdout
-	installCmd.Stderr = os.Stderr
-	if err := installCmd.Run(); err != nil {
-		return fmt.Errorf("claude plugin install: %w", err)
+	for _, p := range domuxPlugins {
+		installCmd := exec.Command("claude", "plugin", "install", p+"@domux")
+		installCmd.Stdout = os.Stdout
+		installCmd.Stderr = os.Stderr
+		if err := installCmd.Run(); err != nil {
+			return fmt.Errorf("claude plugin install %s: %w", p, err)
+		}
+		fmt.Printf("installed %s plugin\n", p)
 	}
-	fmt.Println("installed implement-pipeline plugin")
 	return nil
 }
 

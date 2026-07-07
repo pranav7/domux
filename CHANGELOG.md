@@ -17,6 +17,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `~/.local/share/domux/debug.log`) or `DOMUX_DEBUG=/path/to.log` to trace the
   session attach path. Off by default.
 
+### Removed
+
+- **`implement-pipeline` plugin** — the generic `/implement` and `/codex-review`
+  loop no longer ships from the domux marketplace; it now lives in the user's
+  dotfiles as Claude skills. domux keeps only its own `domux-start` and
+  `domux-communicate` plugins, and `domux install claude --apply` installs those.
+
 ### Fixed
 
 - **Switcher no longer corrupts the terminal when launched from a plain shell.**
