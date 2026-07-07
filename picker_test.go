@@ -1205,3 +1205,37 @@ func TestWindowRowIsSelectable(t *testing.T) {
 		t.Errorf("rowWindow should be selectable")
 	}
 }
+
+func TestNewWindowArgs(t *testing.T) {
+	got := newWindowArgs("domux", "merge queue", "/Users/x/projects/audrey")
+	want := []string{"new-window", "-t", "domux", "-n", "merge queue", "-c", "/Users/x/projects/audrey"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestNewWindowArgsNoCwd(t *testing.T) {
+	got := newWindowArgs("domux", "scratch", "")
+	want := []string{"new-window", "-t", "domux", "-n", "scratch"}
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+}
+
+func TestWindowNamingFlow(t *testing.T) {
+	sess := &sessionInfo{Name: "domux", Path: "/p", Windows: []windowInfo{{Index: 1}, {Index: 2}}}
+	m := pickerModel{
+		rows:    []pickerRow{{Kind: rowSession, Session: sess}},
+		visible: []int{0},
+		cursor:  0,
+	}
+	m.startWindowNaming()
+	if !m.windowNaming || m.windowTarget != "domux" || m.windowCwd != "/p" {
+		t.Fatalf("startWindowNaming state = naming:%v target:%q cwd:%q", m.windowNaming, m.windowTarget, m.windowCwd)
+	}
+}

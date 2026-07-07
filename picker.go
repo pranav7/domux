@@ -87,6 +87,9 @@ type pickerModel struct {
 	labelInput     textinput.Model
 	labelEditing   bool
 	labelTarget    string
+	windowNaming   bool
+	windowTarget   string // session name to add the window to
+	windowCwd      string // cwd for the new window
 	confirmDelete  bool
 	deleteAction   string
 	deleteSession  string
@@ -662,6 +665,51 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.windowNaming {
+			switch key {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				m.windowNaming = false
+				m.windowTarget = ""
+				m.windowCwd = ""
+				m.labelInput.SetValue("")
+				return m, nil
+			case "enter":
+				target := m.windowTarget
+				cwd := m.windowCwd
+				name := strings.TrimSpace(m.labelInput.Value())
+				m.windowNaming = false
+				m.windowTarget = ""
+				m.windowCwd = ""
+				m.labelInput.SetValue("")
+				if target == "" || name == "" {
+					return m, nil
+				}
+				m.status = fmt.Sprintf("adding window %q to %s", name, target)
+				m.statusErr = false
+				return m, func() tea.Msg {
+					return pickerActionMsg{
+						Action:  "window",
+						Session: target,
+						Value:   name,
+						Err:     newWindowInSession(target, name, cwd),
+					}
+				}
+			case "backspace":
+				v := m.labelInput.Value()
+				if len(v) > 0 {
+					m.labelInput.SetValue(v[:len(v)-1])
+				}
+				return m, nil
+			default:
+				if len(key) == 1 && key[0] >= 32 && key[0] < 127 {
+					m.labelInput.SetValue(m.labelInput.Value() + key)
+				}
+				return m, nil
+			}
+		}
+
 		if m.labelEditing {
 			switch key {
 			case "ctrl+c":
@@ -846,6 +894,9 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "+":
 			return m, m.provisionInFocusedGroup()
+		case "w":
+			m.startWindowNaming()
+			return m, nil
 		case "D":
 			return m, m.deleteOrCloseSelectedSession()
 		case "?":
@@ -1058,6 +1109,31 @@ func (m *pickerModel) startLabelEdit() {
 	m.labelInput.SetValue(session.Label)
 }
 
+func (m *pickerModel) startWindowNaming() {
+	session := m.selectedSession()
+	cwd := ""
+	target := ""
+	if session != nil {
+		target = session.Name
+		cwd = session.Path
+	} else if len(m.visible) > 0 && m.cursor < len(m.visible) {
+		row := m.rows[m.visible[m.cursor]]
+		if row.Kind == rowWindow && row.Session != nil {
+			target = row.Session.Name
+			if row.Window != nil {
+				cwd = row.Window.Path
+			}
+		}
+	}
+	if target == "" {
+		return
+	}
+	m.windowNaming = true
+	m.windowTarget = target
+	m.windowCwd = cwd
+	m.labelInput.SetValue("")
+}
+
 func (m *pickerModel) setSelectedServer() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil {
@@ -1170,6 +1246,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("close %s failed: %v", msg.Session, msg.Err)
 		case "delete":
 			m.status = fmt.Sprintf("delete %s failed: %v", pickerActionTarget(msg), msg.Err)
+		case "window":
+			m.status = fmt.Sprintf("add window to %s failed: %v", msg.Session, msg.Err)
 		default:
 			m.status = msg.Err.Error()
 		}
@@ -1217,6 +1295,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 	case "provision":
 		m.status = fmt.Sprintf("provisioned %s", msg.Value)
 		m.statusErr = false
+	case "window":
+		m.status = fmt.Sprintf("added window %q to %s", msg.Value, msg.Session)
 	case "delete":
 		m.removeSessionRows(msg.Session)
 		m.status = fmt.Sprintf("removed %s", pickerActionTarget(msg))
@@ -1352,6 +1432,23 @@ func (m pickerModel) renderLabelOverlay() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+func (m pickerModel) renderWindowNamingOverlay() string {
+	innerWidth := 36
+	value := m.labelInput.Value()
+	title := lipgloss.NewStyle().Foreground(peach).Bold(true).Render("new window")
+	target := lipgloss.NewStyle().Foreground(overlay1).Render("for " + m.windowTarget)
+	inputLine := lipgloss.NewStyle().Foreground(text).Render(value) +
+		lipgloss.NewStyle().Foreground(peach).Render("▌")
+	hint := lipgloss.NewStyle().Foreground(overlay0).Render("enter to confirm · esc to cancel")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(peach).
+		Padding(1, 2).
+		Width(innerWidth).
+		Render(title + "\n" + target + "\n\n" + inputLine + "\n\n" + hint)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m pickerModel) renderHelpOverlay() string {
 	keyS := lipgloss.NewStyle().Foreground(mauve).Bold(true)
 	descS := lipgloss.NewStyle().Foreground(text)
@@ -1392,6 +1489,9 @@ func (m pickerModel) View() string {
 	}
 	if m.confirmDelete {
 		return m.renderConfirmOverlay()
+	}
+	if m.windowNaming {
+		return m.renderWindowNamingOverlay()
 	}
 	if m.labelEditing {
 		return m.renderLabelOverlay()
@@ -2346,6 +2446,25 @@ func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 
 func switchSession(name string) {
 	_ = attachTmuxSession(name)
+}
+
+// newWindowArgs builds the `tmux new-window` argv for creating a named window in
+// session at cwd. cwd is omitted when empty (tmux inherits the session default).
+func newWindowArgs(session, name, cwd string) []string {
+	args := []string{"new-window", "-t", session, "-n", name}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	return args
+}
+
+// newWindowInSession creates a new named tmux window in session, rooted at cwd.
+func newWindowInSession(session, name, cwd string) error {
+	out, err := exec.Command("tmux", newWindowArgs(session, name, cwd)...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux new-window -t %s: %w: %s", session, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Data gathering
