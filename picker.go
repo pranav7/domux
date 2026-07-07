@@ -964,16 +964,35 @@ func (m *pickerModel) refreshRows(rows []pickerRow) {
 		return
 	}
 	selectedName := ""
+	selectedWindow := 0
+	hadWindow := false
 	if len(m.visible) > 0 && m.cursor < len(m.visible) {
 		row := m.rows[m.visible[m.cursor]]
 		if row.Session != nil {
 			selectedName = row.Session.Name
+			if row.Kind == rowWindow && row.Window != nil {
+				selectedWindow = row.Window.Index
+				hadWindow = true
+			}
 		}
 	}
 	m.rows = rows
 	m.rebuildVisible()
 	m.cursor = 0
 	if selectedName != "" {
+		// If we were on a window row, try to restore to that exact window first
+		if hadWindow {
+			for i, vi := range m.visible {
+				row := m.rows[vi]
+				if row.Kind == rowWindow && row.Session != nil && row.Session.Name == selectedName &&
+					row.Window != nil && row.Window.Index == selectedWindow {
+					m.cursor = i
+					m.clampCursor()
+					return
+				}
+			}
+		}
+		// Fall back to session row match
 		for i, vi := range m.visible {
 			row := m.rows[vi]
 			if row.Session != nil && row.Session.Name == selectedName {
@@ -2302,7 +2321,8 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	// toggle that hides todos (m.showDetails). Wrapped across as many lines as
 	// needed so the full recap stays readable rather than truncated mid-word;
 	// continuation lines hang-indent under the recap text (past the "※ ").
-	if m.showDetails && s.Recap != "" {
+	// For multi-window sessions, recap is rendered under each window row, not here.
+	if m.showDetails && s.Recap != "" && len(s.Windows) <= 1 {
 		const indent = "        "  // 8 cols, aligns with PR details
 		const cont = indent + "  " // continuation aligns under text (after "※ ")
 		avail := m.width - lipgloss.Width(cont)
