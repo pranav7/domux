@@ -1073,3 +1073,27 @@ func TestResumeBannerRendersProgress(t *testing.T) {
 		t.Fatalf("done banner = %q, want empty", got)
 	}
 }
+
+func TestParseWindowLines(t *testing.T) {
+	out := "1\tprod uk\t0\t/Users/x/projects/audrey\n" +
+		"2\tmerge queue\t1\t/Users/x/projects/audrey\n"
+	got := parseWindowLines(out)
+	if len(got) != 2 {
+		t.Fatalf("got %d windows, want 2", len(got))
+	}
+	if got[0].Index != 1 || got[0].Name != "prod uk" || got[0].Active {
+		t.Errorf("window 0 = %+v, want {Index:1 Name:%q Active:false}", got[0], "prod uk")
+	}
+	if got[1].Index != 2 || got[1].Name != "merge queue" || !got[1].Active {
+		t.Errorf("window 1 = %+v, want {Index:2 Name:%q Active:true}", got[1], "merge queue")
+	}
+	if got[1].Path != "/Users/x/projects/audrey" {
+		t.Errorf("window 1 Path = %q", got[1].Path)
+	}
+}
+
+func TestParseWindowLinesEmpty(t *testing.T) {
+	if got := parseWindowLines(""); len(got) != 0 {
+		t.Errorf("empty output = %+v, want no windows", got)
+	}
+}

@@ -40,7 +40,7 @@ type sessionInfo struct {
 	ClaudeLabel string
 	CodexLabel  string
 	Server      bool
-	Windows     int
+	Windows     []windowInfo
 	Path        string
 	Root        string // git common root (group-level), stripped of scratch worktree dirs
 	Label       string
@@ -55,6 +55,18 @@ type taskInfo struct {
 	IsLast      bool
 	SessionName string
 	Path        string
+}
+
+type windowInfo struct {
+	Index       int
+	Name        string
+	Active      bool
+	Path        string // window's active-pane cwd
+	Claude      string
+	Codex       string
+	ClaudeLabel string
+	CodexLabel  string
+	Recap       string
 }
 
 type pickerRow struct {
@@ -2279,6 +2291,33 @@ func switchSession(name string) {
 
 // Data gathering
 
+// parseWindowLines parses `tmux list-windows -F
+// "#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}"`
+// output into windowInfo values (AI/Recap fields left zero — filled by caller).
+func parseWindowLines(out string) []windowInfo {
+	var windows []windowInfo
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		idx, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		windows = append(windows, windowInfo{
+			Index:  idx,
+			Name:   parts[1],
+			Active: parts[2] == "1",
+			Path:   parts[3],
+		})
+	}
+	return windows
+}
+
 func gatherSessions() []pickerRow {
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
@@ -2353,9 +2392,27 @@ func gatherSessions() []pickerRow {
 		info.CodexLabel = aiStates.CodexLabel
 		info.Server = state.Server
 
-		winOut, err := exec.Command("tmux", "list-windows", "-t", sess).Output()
+		winOut, err := exec.Command("tmux", "list-windows", "-t", sess, "-F",
+			"#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}").Output()
 		if err == nil {
-			info.Windows = len(strings.Split(strings.TrimSpace(string(winOut)), "\n"))
+			windows := parseWindowLines(string(winOut))
+			winStates := aggregateAIStatesByWindow(state)
+			for i := range windows {
+				w := &windows[i]
+				if s, ok := winStates[w.Index]; ok {
+					w.Claude, w.Codex = s.Claude, s.Codex
+					w.ClaudeLabel, w.CodexLabel = s.ClaudeLabel, s.CodexLabel
+				}
+				if w.Path != "" {
+					if best, ok := bestLiveSession(liveClaude, w.Path); ok {
+						recap, recapTime := recapForSession(best)
+						if recapVisibleAfterClear(recapTime, state.RecapClearedAt) {
+							w.Recap = recap
+						}
+					}
+				}
+			}
+			info.Windows = windows
 		}
 
 		info.Label = state.Label
