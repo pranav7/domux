@@ -1097,3 +1097,18 @@ func TestParseWindowLinesEmpty(t *testing.T) {
 		t.Errorf("empty output = %+v, want no windows", got)
 	}
 }
+
+func TestParseWindowLinesMalformed(t *testing.T) {
+	// A line with fewer than 4 tab-separated fields is skipped.
+	out := "1\tshort\n2\tname\t1\t/path\n"
+	got := parseWindowLines(out)
+	if len(got) != 1 || got[0].Index != 2 {
+		t.Errorf("short-line skip: got %+v, want only window 2", got)
+	}
+	// A line whose index is not a parseable integer is skipped.
+	out = "x\tname\t0\t/path\n3\tgood\t1\t/path2\n"
+	got = parseWindowLines(out)
+	if len(got) != 1 || got[0].Index != 3 {
+		t.Errorf("non-int index skip: got %+v, want only window 3", got)
+	}
+}
