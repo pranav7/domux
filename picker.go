@@ -471,7 +471,8 @@ func (m *pickerModel) rebuildVisible() {
 }
 
 func isSelectablePickerRow(row pickerRow) bool {
-	return row.Kind == rowSession && row.Session != nil
+	return (row.Kind == rowSession && row.Session != nil) ||
+		(row.Kind == rowWindow && row.Window != nil && row.Session != nil)
 }
 
 // isMainWorktreePath returns true when path looks like the main checkout of a
@@ -942,9 +943,17 @@ func (m pickerModel) ignoringStartupInput() bool {
 // released the terminal — attaching inline corrupts the tty from a plain shell
 // (see runPickerProgram).
 func (m pickerModel) selectRow(row pickerRow) (tea.Model, tea.Cmd) {
-	if row.Kind == rowSession && row.Session != nil {
-		m.selected = row.Session.Name
-		return m, tea.Quit
+	switch row.Kind {
+	case rowSession:
+		if row.Session != nil {
+			m.selected = row.Session.Name
+			return m, tea.Quit
+		}
+	case rowWindow:
+		if row.Session != nil && row.Window != nil {
+			m.selected = fmt.Sprintf("%s:%d", row.Session.Name, row.Window.Index)
+			return m, tea.Quit
+		}
 	}
 	return m, nil
 }
@@ -2537,7 +2546,12 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
 		if len(e.session.Windows) > 1 {
 			for i := range e.session.Windows {
-				rows = append(rows, pickerRow{Kind: rowWindow, Group: e.group, Window: &e.session.Windows[i]})
+				rows = append(rows, pickerRow{
+					Kind:    rowWindow,
+					Group:   e.group,
+					Session: e.session,
+					Window:  &e.session.Windows[i],
+				})
 			}
 		}
 		for i := range e.session.Tasks {

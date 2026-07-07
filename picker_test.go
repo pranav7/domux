@@ -1175,3 +1175,33 @@ func TestRenderWindowRecapGatedByDetails(t *testing.T) {
 		t.Errorf("recap must show when showDetails is on")
 	}
 }
+
+func TestSelectRowWindowTarget(t *testing.T) {
+	sess := &sessionInfo{Name: "domux", Path: "/p",
+		Windows: []windowInfo{{Index: 1, Name: "a"}, {Index: 2, Name: "b"}}}
+	winRow := pickerRow{Kind: rowWindow, Session: sess, Window: &sess.Windows[1]}
+
+	m := pickerModel{}
+	updated, _ := m.selectRow(winRow)
+	pm := updated.(pickerModel)
+	if pm.selected != "domux:2" {
+		t.Errorf("selected = %q, want domux:2", pm.selected)
+	}
+}
+
+func TestSelectRowSessionTargetUnchanged(t *testing.T) {
+	sess := &sessionInfo{Name: "domux"}
+	m := pickerModel{}
+	updated, _ := m.selectRow(pickerRow{Kind: rowSession, Session: sess})
+	pm := updated.(pickerModel)
+	if pm.selected != "domux" {
+		t.Errorf("selected = %q, want domux", pm.selected)
+	}
+}
+
+func TestWindowRowIsSelectable(t *testing.T) {
+	sess := &sessionInfo{Name: "test"}
+	if !isSelectablePickerRow(pickerRow{Kind: rowWindow, Session: sess, Window: &windowInfo{Index: 1}}) {
+		t.Errorf("rowWindow should be selectable")
+	}
+}
