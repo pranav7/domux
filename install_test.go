@@ -270,8 +270,8 @@ func TestInstallClaudePreviewMentionsPluginCommands(t *testing.T) {
 	if !strings.Contains(stdout, "claude plugin marketplace add") {
 		t.Fatalf("preview should mention `claude plugin marketplace add`; got:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "claude plugin install implement-pipeline@domux") {
-		t.Fatalf("preview should mention `claude plugin install implement-pipeline@domux`; got:\n%s", stdout)
+	if !strings.Contains(stdout, "claude plugin install domux-start@domux") {
+		t.Fatalf("preview should mention `claude plugin install domux-start@domux`; got:\n%s", stdout)
 	}
 }
 

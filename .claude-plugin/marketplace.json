@@ -4,11 +4,6 @@
   "allowCrossMarketplaceDependenciesOn": ["claude-plugins-official"],
   "plugins": [
     {
-      "name": "implement-pipeline",
-      "source": "./plugins/implement-pipeline",
-      "description": "Hands-off /implement pipeline: implement → simplify → lint → verify → review → PR, reusing Claude's built-in skills."
-    },
-    {
       "name": "domux-communicate",
       "source": "./plugins/domux-communicate",
       "description": "Message the Claude agent in another domux worktree: domux send/read/peek + the /domux-communicate skill."

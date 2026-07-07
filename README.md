@@ -304,10 +304,6 @@ the session, then start coding) ships as the `domux-start` Claude Code plugin,
 installed from the domux marketplace alongside the others. Invoke it with
 `/domux-start <task>`.
 
-There is also an optional Claude Code plugin for an `/implement` pipeline. See
-[`docs/implement-pipeline.md`](docs/implement-pipeline.md) if you want that. It
-is not required for the normal domux workflow.
-
 ## Caffeinate
 
 `domux commands` opens a small utilities popup. The first utility is caffeinate.
