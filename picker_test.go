@@ -965,8 +965,8 @@ func TestPickerPlusIgnoresRowWithoutRoot(t *testing.T) {
 	if !pm.statusErr {
 		t.Fatalf("expected error status, got %q", pm.status)
 	}
-	if pm.status == "" || !strings.Contains(pm.status, "no git root") {
-		t.Fatalf("expected 'no git root' status, got %q", pm.status)
+	if pm.status == "" || !strings.Contains(pm.status, "press w to add a window") {
+		t.Fatalf("expected guidance to mention 'press w to add a window', got %q", pm.status)
 	}
 }
 

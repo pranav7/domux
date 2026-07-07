@@ -1154,7 +1154,7 @@ func (m *pickerModel) setSelectedServer() tea.Cmd {
 func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil || session.Root == "" {
-		m.status = "no git root for this row"
+		m.status = "no git root — press w to add a window"
 		m.statusErr = true
 		return nil
 	}
@@ -1464,7 +1464,7 @@ func (m pickerModel) renderHelpOverlay() string {
 	b.WriteString(catS.Render("MOVE") + "\n")
 	b.WriteString("  " + join(bind("↑↓ / j k", "move"), bind("g / G", "top / bottom")) + "\n\n")
 	b.WriteString(catS.Render("SESSION") + "\n")
-	b.WriteString("  " + join(bind("⏎", "switch"), bind("+", "new"), bind("D", "close/delete")) + "\n")
+	b.WriteString("  " + join(bind("⏎", "switch"), bind("+", "new"), bind("w", "new window"), bind("D", "close/delete")) + "\n")
 	b.WriteString("  " + join(bind("n", "name"), bind("c", "clear"), bind("r", "reset"), bind("s", "server")) + "\n\n")
 	b.WriteString(catS.Render("VIEW") + "\n")
 	b.WriteString("  " + join(bind("→", "preview"), bind("F", "big"), bind("P", "popup")) + "\n")
