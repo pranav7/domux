@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -478,6 +479,62 @@ func aggregateAIStatesFromSession(state *SessionState) AIStates {
 		states.CodexLabel = aiWorkingLabelForAgent(state, "codex", usedLabels)
 	}
 	return states
+}
+
+// aggregateAIStatesByWindow buckets state.AI entries by tmux window index
+// instead of collapsing every pane into one session-level status. The AI keys
+// are "agent:window_pane" (e.g. "claude:2_0"); the leading integer of the
+// window_pane half is the window index. WAITING wins over COMPACTING wins over
+// the plain working states, per mergeAIState — same precedence used
+// session-wide. Windows with no AI keys are absent from the returned map.
+func aggregateAIStatesByWindow(state *SessionState) map[int]AIStates {
+	out := map[int]AIStates{}
+	if state == nil {
+		return out
+	}
+	for key, value := range state.AI {
+		_, paneKey, ok := strings.Cut(key, ":")
+		if !ok {
+			continue
+		}
+		winStr, _, ok := strings.Cut(paneKey, "_")
+		if !ok {
+			continue
+		}
+		win, err := strconv.Atoi(winStr)
+		if err != nil {
+			continue
+		}
+		agent := inferAgentFromAIKey(key)
+		if agent == "" {
+			agent = inferAgentFromAIValue(value)
+		}
+		if agent == "" {
+			agent = "claude"
+		}
+		value = normalizeAIState(agent, value)
+		s := out[win]
+		switch agent {
+		case "codex":
+			s.Codex = mergeAIState(s.Codex, value)
+		default:
+			s.Claude = mergeAIState(s.Claude, value)
+		}
+		out[win] = s
+	}
+	// Assign working labels per window, mirroring aggregateAIStatesFromSession.
+	for win, s := range out {
+		usedLabels := map[string]bool{}
+		if s.Claude == "CLAUDING" {
+			s.ClaudeLabel = aiWorkingLabelForAgent(state, "claude", usedLabels)
+			usedLabels[s.ClaudeLabel] = true
+		}
+		if s.Codex == "CODEXING" {
+			s.CodexLabel = aiWorkingLabelForAgent(state, "codex", usedLabels)
+		}
+		out[win] = s
+	}
+	return out
 }
 
 func workingAIAgents(state *SessionState) map[string]bool {
