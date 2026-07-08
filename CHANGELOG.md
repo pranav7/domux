@@ -6,7 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-08
+
+OpenCode joins Claude and Codex as a first-class domux agent integration.
+This release also includes the recent switcher work for tmux windows as
+session sub-rows.
+
 ### Added
+
+- **OpenCode hooks** — `domux install opencode --apply` installs a global
+  OpenCode plugin at `~/.config/opencode/plugins/domux.js`. The plugin marks
+  OpenCode as active while it works, waiting when permissions are requested,
+  and clears the state when the session goes idle or exits.
+- **OpenCode status badges** — OpenCode activity now appears alongside Claude
+  and Codex in the tmux status line and switcher. Active OpenCode sessions show
+  a darker pink, shimmering `Coding` badge.
+- **OpenCode bootstrap/doctor checks** — `domux bootstrap` detects OpenCode and
+  installs the plugin when present; `domux doctor` reports the plugin status.
+- **Tmux window sub-rows in the switcher** — multi-window sessions can now show
+  each tmux window separately, including per-window AI state and recap.
+- **Named tmux window creation** — press `w` in the switcher to add a named
+  window to a session.
 
 - **`domux resume`** — recreate saved tmux work sessions after a restart. Bare
   `domux resume` restores every saved session; `domux resume <project>`
@@ -25,6 +45,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `domux-communicate` plugins, and `domux install claude --apply` installs those.
 
 ### Fixed
+
+- AI badges are no longer duplicated between a multi-window session row and its
+  individual window row.
+- The picker keeps the cursor on the selected window row across refreshes.
 
 - **Switcher no longer corrupts the terminal when launched from a plain shell.**
   Selecting a session ran `tmux attach-session` while the picker still held the
@@ -79,5 +103,6 @@ Baseline for this changelog. See the
 [v0.1.4 release](https://github.com/pranav7/domux/releases/tag/v0.1.4) and
 earlier tags for prior history.
 
+[0.3.0]: https://github.com/pranav7/domux/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/pranav7/domux/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/pranav7/domux/releases/tag/v0.1.4
