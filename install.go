@@ -15,9 +15,9 @@ import (
 
 func installCommand(args []string) error {
 	if len(args) == 0 {
-		fmt.Println("Usage: domux install tmux|claude|codex [--apply] | caffeinate [--full]")
+		fmt.Println("Usage: domux install tmux|claude|codex|opencode [--apply] | caffeinate [--full]")
 		fmt.Println()
-		fmt.Println("tmux/claude/codex: preview-only by default. Pass --apply to write.")
+		fmt.Println("tmux/claude/codex/opencode: preview-only by default. Pass --apply to write.")
 		fmt.Println("caffeinate: registers partial mode immediately. Pass --full for lid-close prevention (requires sudo).")
 		return nil
 	}
@@ -28,6 +28,8 @@ func installCommand(args []string) error {
 		return installClaude(args[1:])
 	case "codex":
 		return installCodex(args[1:])
+	case "opencode":
+		return installOpencode(args[1:])
 	case "caffeinate":
 		return installCaffeinate(args[1:])
 	default:
@@ -296,6 +298,92 @@ func installCodex(args []string) error {
 	return nil
 }
 
+func installOpencode(args []string) error {
+	fs := flag.NewFlagSet("install opencode", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	apply := fs.Bool("apply", false, "write ~/.config/opencode/plugins/domux.js")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot get home directory: %w", err)
+	}
+	path := filepath.Join(homeDir, ".config", "opencode", "plugins", "domux.js")
+	content := generatedOpencodePlugin()
+	if !*apply {
+		fmt.Printf("Would write %s with domux OpenCode plugin:\n\n%s\n", path, content)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("cannot create %s: %w", filepath.Dir(path), err)
+	}
+	if err := backupIfExists(path); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return fmt.Errorf("cannot write %s: %w", path, err)
+	}
+	fmt.Printf("wrote %s\n", path)
+	fmt.Println("Restart opencode for the plugin to load.")
+	return nil
+}
+
+func generatedOpencodePlugin() string {
+	domuxPath := "domux"
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		domuxPath = filepath.Join(homeDir, "bin", "domux")
+	}
+	pathJSON, _ := json.Marshal(domuxPath)
+	return fmt.Sprintf(strings.TrimSpace(`
+const domux = %s
+
+async function run(args) {
+  try {
+    const proc = Bun.spawn([domux, ...args], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+    await proc.exited
+  } catch {
+  }
+}
+
+async function coding() {
+  await run(["ai-state", "--agent", "opencode", "CODING"])
+}
+
+async function waiting() {
+  await run(["ai-state", "--agent", "opencode", "WAITING"])
+}
+
+async function clear() {
+  await run(["ai-state", "--agent", "opencode", "--all", "clear"])
+}
+
+export const DomuxPlugin = async () => ({
+  "tool.execute.before": coding,
+  "tool.execute.after": coding,
+  event: async ({ event }) => {
+    switch (event.type) {
+      case "message.updated":
+      case "permission.replied":
+        await coding()
+        break
+      case "permission.asked":
+        await waiting()
+        break
+      case "session.idle":
+      case "session.error":
+      case "session.deleted":
+        await clear()
+        break
+    }
+  },
+})
+`), string(pathJSON)) + "\n"
+}
+
 func patchedCodexHooks(settings map[string]any) map[string]any {
 	if settings == nil {
 		settings = map[string]any{}
@@ -460,6 +548,8 @@ func doctorCommand(args []string) error {
 	checks = append(checks, checkResult("Claude settings", fileExists(claudeSettings), claudeSettings))
 	codexHooks := filepath.Join(homeDir, ".codex", "hooks.json")
 	checks = append(checks, checkResult("Codex hooks", fileExists(codexHooks), codexHooks))
+	opencodePlugin := filepath.Join(homeDir, ".config", "opencode", "plugins", "domux.js")
+	checks = append(checks, checkResult("OpenCode plugin", fileExists(opencodePlugin), opencodePlugin))
 	caffPath, err := caffeinateConfigPath()
 	checks = append(checks, checkResult("caffeinate", err == nil && fileExists(caffPath), caffPath))
 

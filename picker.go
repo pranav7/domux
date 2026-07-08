@@ -38,6 +38,7 @@ type sessionInfo struct {
 	PR          *prInfo
 	Claude      string
 	Codex       string
+	OpenCode    string
 	ClaudeLabel string
 	CodexLabel  string
 	Server      bool
@@ -65,6 +66,7 @@ type windowInfo struct {
 	Path        string // window's active-pane cwd
 	Claude      string
 	Codex       string
+	OpenCode    string
 	ClaudeLabel string
 	CodexLabel  string
 	Recap       string
@@ -222,6 +224,12 @@ var (
 			Bold(true)
 
 	pSpinnerCodex = pBadgeCodexing
+
+	pBadgeOpenCoding = lipgloss.NewStyle().
+				Foreground(pink).
+				Bold(true)
+
+	pSpinnerOpenCode = pBadgeOpenCoding
 
 	pSpinnerCompacting = lipgloss.NewStyle().
 				Foreground(compactPurple).
@@ -1842,7 +1850,7 @@ func (m pickerModel) renderPreviewTitle() string {
 		if session.Branch != "" {
 			title += pSep.Render(" / ") + pPreviewMeta.Render(session.Branch)
 		}
-		badges := renderAIBadges(session.Claude, session.Codex, session.ClaudeLabel, session.CodexLabel, m.spinnerFrame)
+		badges := renderAIBadges(session.Claude, session.Codex, session.OpenCode, session.ClaudeLabel, session.CodexLabel, m.spinnerFrame)
 		if badges != "" {
 			title += badges
 		}
@@ -1902,6 +1910,8 @@ func preferredPreviewPane(state *SessionState) string {
 		agentRank := 1
 		if agent == "claude" {
 			agentRank = 0
+		} else if agent == "opencode" {
+			agentRank = 2
 		}
 		if rank > bestRank ||
 			(rank == bestRank && agentRank < bestAgent) ||
@@ -1920,7 +1930,7 @@ func aiKeyAgentPane(key, value string) (string, string) {
 	agent, pane, ok := strings.Cut(key, ":")
 	if ok {
 		agent = strings.ToLower(agent)
-		if agent != "claude" && agent != "codex" {
+		if !isSupportedAIAgent(agent) {
 			agent = inferAgentFromAIValue(value)
 		}
 	} else {
@@ -2240,14 +2250,14 @@ func (m pickerModel) renderHeader(row pickerRow) string {
 // dim with a hollow glyph so active sessions own the visual weight.
 func (s *sessionInfo) isEmptySlot() bool {
 	return s.Label == "" && len(s.Tasks) == 0 && s.Recap == "" &&
-		s.Claude == "" && s.Codex == "" && s.PR == nil && !s.Server
+		s.Claude == "" && s.Codex == "" && s.OpenCode == "" && s.PR == nil && !s.Server
 }
 
 func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	s := row.Session
 	var line strings.Builder
-	waiting := s.Claude == "WAITING" || s.Codex == "WAITING"
-	active := s.Claude != "" || s.Codex != ""
+	waiting := s.Claude == "WAITING" || s.Codex == "WAITING" || s.OpenCode == "WAITING"
+	active := s.Claude != "" || s.Codex != "" || s.OpenCode != ""
 	empty := s.isEmptySlot()
 
 	mainGlyph := " "
@@ -2306,7 +2316,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	// belongs to the window it comes from and is rendered on that window row, so
 	// suppress it here to avoid showing the same status twice.
 	if len(s.Windows) <= 1 {
-		line.WriteString(renderAIBadges(s.Claude, s.Codex, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
+		line.WriteString(renderAIBadges(s.Claude, s.Codex, s.OpenCode, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
 	}
 
 	if s.PR != nil {
@@ -2364,22 +2374,25 @@ func prStyleForState(state string) lipgloss.Style {
 // Shimmer endpoints — dim/bright pair that the wave interpolates between.
 // Kept off-brand-dim so the trailing chars fade out without going invisible.
 const (
-	claudeShimmerDim     = "#B85E47"
-	claudeShimmerBright  = "#FFC9B0"
-	codexShimmerDim      = "#6478A8"
-	codexShimmerBright   = "#C8DAFF"
-	compactShimmerDim    = "#6F6FCF"
-	compactShimmerBright = "#D8D8FF"
+	claudeShimmerDim      = "#B85E47"
+	claudeShimmerBright   = "#FFC9B0"
+	codexShimmerDim       = "#6478A8"
+	codexShimmerBright    = "#C8DAFF"
+	openCodePinkHex       = "#C678B8"
+	openCodeShimmerDim    = "#9F5D93"
+	openCodeShimmerBright = "#F0B5E3"
+	compactShimmerDim     = "#6F6FCF"
+	compactShimmerBright  = "#D8D8FF"
 )
 
-func renderAIBadges(claude, codex, claudeLabel, codexLabel string, spinnerFrame int) string {
+func renderAIBadges(claude, codex, opencode, claudeLabel, codexLabel string, spinnerFrame int) string {
 	var line strings.Builder
 	// Icon advances every 2 ticks (~160ms).
 	frame := claudeSpinnerFrames[(spinnerFrame/2)%len(claudeSpinnerFrames)]
 	// COMPACTING short-circuits — render once with a fixed "Compacting…" label
 	// regardless of which agent slot carries it. Suppress the per-agent working
 	// badges since the same agent is mid-compaction, not working.
-	if claude == "COMPACTING" || codex == "COMPACTING" {
+	if claude == "COMPACTING" || codex == "COMPACTING" || opencode == "COMPACTING" {
 		line.WriteString(" " + pSpinnerCompacting.Render(frame) + " " + shimmerText("Compacting…", spinnerFrame, compactShimmerDim, compactShimmerBright))
 		return line.String()
 	}
@@ -2398,6 +2411,10 @@ func renderAIBadges(claude, codex, claudeLabel, codexLabel string, spinnerFrame 
 			codexLabel = stableAIWorkingLabelExcept("codex:"+claude+":"+codex, usedLabels)
 		}
 		line.WriteString(" " + pSpinnerCodex.Render(frame) + " " + shimmerText(codexLabel, spinnerFrame, codexShimmerDim, codexShimmerBright))
+	}
+	switch opencode {
+	case "CODING":
+		line.WriteString(" " + pSpinnerOpenCode.Render(frame) + " " + shimmerText("Coding", spinnerFrame, openCodeShimmerDim, openCodeShimmerBright))
 	}
 	return line.String()
 }
@@ -2445,7 +2462,7 @@ func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 		line.WriteString("        ")
 	}
 	line.WriteString(nameStyle.Render(fmt.Sprintf("%d · %s", w.Index, w.Name)))
-	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
+	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.OpenCode, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
 
 	if m.showDetails && w.Recap != "" {
 		const indent = "        " // 8 cols, aligns under the window name
@@ -2588,6 +2605,7 @@ func gatherSessions() []pickerRow {
 		aiStates := aggregateAIStatesFromSession(state)
 		info.Claude = aiStates.Claude
 		info.Codex = aiStates.Codex
+		info.OpenCode = aiStates.OpenCode
 		info.ClaudeLabel = aiStates.ClaudeLabel
 		info.CodexLabel = aiStates.CodexLabel
 		info.Server = state.Server
@@ -2600,7 +2618,7 @@ func gatherSessions() []pickerRow {
 			for i := range windows {
 				w := &windows[i]
 				if s, ok := winStates[w.Index]; ok {
-					w.Claude, w.Codex = s.Claude, s.Codex
+					w.Claude, w.Codex, w.OpenCode = s.Claude, s.Codex, s.OpenCode
 					w.ClaudeLabel, w.CodexLabel = s.ClaudeLabel, s.CodexLabel
 				}
 				if w.Path != "" {

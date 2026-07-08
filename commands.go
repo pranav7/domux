@@ -510,6 +510,7 @@ func printTmuxStatus(args []string) error {
 	aiStates := aggregateAIStatesFromSession(ctx.State)
 	status += tmuxAIBadge("claude", aiStates.Claude)
 	status += tmuxAIBadge("codex", aiStates.Codex)
+	status += tmuxAIBadge("opencode", aiStates.OpenCode)
 	if ctx.State != nil && ctx.State.Server {
 		status += "#[default]#[fg=#f9e2af,bold] ⚡"
 	}
@@ -523,6 +524,10 @@ func tmuxAIBadge(agent, state string) string {
 		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CLAUDE WAITING #[default]#[fg=#f38ba8]#[default]"
 	case agent == "codex" && state == "WAITING":
 		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CODEX WAITING #[default]#[fg=#f38ba8]#[default]"
+	case agent == "opencode" && state == "WAITING":
+		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] OPENCODE WAITING #[default]#[fg=#f38ba8]#[default]"
+	case agent == "opencode" && state == "CODING":
+		return "#[default]#[fg=#C678B8,bold] Coding #[default]"
 	case agent == "claude" && state == "COMPACTING":
 		return "#[default]#[fg=#AFAFFF,bold] ✦ Compacting… ✦ #[default]"
 	case agent == "codex" && state == "COMPACTING":
@@ -698,7 +703,13 @@ func clearSessionStateFiles(homeDir, session string) error {
 	if err := removeHomeFile(homeDir, ".tmux-codex-"+session); err != nil {
 		return err
 	}
-	return removeHomeFilesWithPrefix(homeDir, ".tmux-codex-"+session+"_")
+	if err := removeHomeFilesWithPrefix(homeDir, ".tmux-codex-"+session+"_"); err != nil {
+		return err
+	}
+	if err := removeHomeFile(homeDir, ".tmux-opencode-"+session); err != nil {
+		return err
+	}
+	return removeHomeFilesWithPrefix(homeDir, ".tmux-opencode-"+session+"_")
 }
 
 func setServerSessionByName(session string) error {

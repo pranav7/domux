@@ -7,11 +7,12 @@ import (
 )
 
 func TestPlanBootstrapAllPresent(t *testing.T) {
-	steps := planBootstrap(bootstrapEnv{HasBrew: true, HasTmux: true, HasClaude: true, HasCodex: true})
+	steps := planBootstrap(bootstrapEnv{HasBrew: true, HasTmux: true, HasClaude: true, HasCodex: true, HasOpenCode: true})
 	want := []string{
 		"write ~/.config/domux/domux.tmux",
 		"patch ~/.claude/settings.json (Claude Code detected)",
 		"patch ~/.codex/hooks.json (Codex detected)",
+		"write ~/.config/opencode/plugins/domux.js (OpenCode detected)",
 		"register caffeinate (partial — no sudo)",
 	}
 	if got := stepLabels(steps); !slices.Equal(got, want) {
@@ -38,8 +39,8 @@ func TestPlanBootstrapTmuxAndBrewMissingSkipsBrewStep(t *testing.T) {
 func TestPlanBootstrapSkipsAbsentAITools(t *testing.T) {
 	steps := planBootstrap(bootstrapEnv{HasBrew: true, HasTmux: true})
 	for _, s := range steps {
-		if strings.Contains(s.Label, "settings.json") || strings.Contains(s.Label, "hooks.json") {
-			t.Fatalf("should not include claude/codex steps when absent, got %q", s.Label)
+		if strings.Contains(s.Label, "settings.json") || strings.Contains(s.Label, "hooks.json") || strings.Contains(s.Label, "opencode") {
+			t.Fatalf("should not include AI tool steps when absent, got %q", s.Label)
 		}
 	}
 }

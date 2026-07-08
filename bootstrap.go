@@ -12,10 +12,11 @@ import (
 )
 
 type bootstrapEnv struct {
-	HasBrew   bool
-	HasTmux   bool
-	HasClaude bool
-	HasCodex  bool
+	HasBrew     bool
+	HasTmux     bool
+	HasClaude   bool
+	HasCodex    bool
+	HasOpenCode bool
 }
 
 type bootstrapStep struct {
@@ -26,10 +27,11 @@ type bootstrapStep struct {
 func detectBootstrapEnv() bootstrapEnv {
 	homeDir, _ := os.UserHomeDir()
 	return bootstrapEnv{
-		HasBrew:   commandExists("brew"),
-		HasTmux:   commandExists("tmux"),
-		HasClaude: commandExists("claude") || dirExists(filepath.Join(homeDir, ".claude")),
-		HasCodex:  commandExists("codex") || dirExists(filepath.Join(homeDir, ".codex")),
+		HasBrew:     commandExists("brew"),
+		HasTmux:     commandExists("tmux"),
+		HasClaude:   commandExists("claude") || dirExists(filepath.Join(homeDir, ".claude")),
+		HasCodex:    commandExists("codex") || dirExists(filepath.Join(homeDir, ".codex")),
+		HasOpenCode: commandExists("opencode") || dirExists(filepath.Join(homeDir, ".config", "opencode")),
 	}
 }
 
@@ -55,6 +57,12 @@ func planBootstrap(env bootstrapEnv) []bootstrapStep {
 		steps = append(steps, bootstrapStep{
 			Label: "patch ~/.codex/hooks.json (Codex detected)",
 			Run:   func() error { return installCodex([]string{"--apply"}) },
+		})
+	}
+	if env.HasOpenCode {
+		steps = append(steps, bootstrapStep{
+			Label: "write ~/.config/opencode/plugins/domux.js (OpenCode detected)",
+			Run:   func() error { return installOpencode([]string{"--apply"}) },
 		})
 	}
 	steps = append(steps, bootstrapStep{

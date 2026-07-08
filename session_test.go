@@ -6,10 +6,11 @@ import (
 
 func TestAggregateAIStatesByWindow(t *testing.T) {
 	state := &SessionState{AI: map[string]string{
-		"claude:1_0": "CLAUDING",
-		"claude:2_0": "WAITING",
-		"codex:2_0":  "CODEXING",
-		"claude:2_1": "CLAUDING", // second pane in window 2; WAITING must still win
+		"claude:1_0":   "CLAUDING",
+		"claude:2_0":   "WAITING",
+		"codex:2_0":    "CODEXING",
+		"opencode:2_2": "CODING",
+		"claude:2_1":   "CLAUDING", // second pane in window 2; WAITING must still win
 	}}
 
 	got := aggregateAIStatesByWindow(state)
@@ -22,6 +23,9 @@ func TestAggregateAIStatesByWindow(t *testing.T) {
 	}
 	if got[2].Codex != "CODEXING" {
 		t.Errorf("window 2 Codex = %q, want CODEXING", got[2].Codex)
+	}
+	if got[2].OpenCode != "CODING" {
+		t.Errorf("window 2 OpenCode = %q, want CODING", got[2].OpenCode)
 	}
 	if _, ok := got[3]; ok {
 		t.Errorf("window 3 should be absent, got %+v", got[3])

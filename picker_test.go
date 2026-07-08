@@ -541,6 +541,7 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 	cases := []sessionInfo{
 		{Name: "claude-session", Claude: "WAITING"},
 		{Name: "codex-session", Codex: "WAITING"},
+		{Name: "opencode-session", OpenCode: "WAITING"},
 	}
 
 	for _, tc := range cases {
@@ -552,16 +553,16 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 		if !strings.Contains(got, "▎") {
 			t.Fatalf("%s missing waiting marker: %q", tc.Name, got)
 		}
-		if strings.Contains(got, "CLAUDE WAITING") || strings.Contains(got, "CODEX WAITING") {
+		if strings.Contains(got, "CLAUDE WAITING") || strings.Contains(got, "CODEX WAITING") || strings.Contains(got, "OPENCODE WAITING") {
 			t.Fatalf("%s rendered waiting badge: %q", tc.Name, got)
 		}
 	}
 }
 
 func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
-	frame0 := renderAIBadges("CLAUDING", "", "Calculating", "", 0)
-	frame1 := renderAIBadges("CLAUDING", "", "Calculating", "", 1)
-	frame3 := renderAIBadges("CLAUDING", "", "Calculating", "", 3)
+	frame0 := renderAIBadges("CLAUDING", "", "", "Calculating", "", 0)
+	frame1 := renderAIBadges("CLAUDING", "", "", "Calculating", "", 1)
+	frame3 := renderAIBadges("CLAUDING", "", "", "Calculating", "", 3)
 
 	if !strings.Contains(frame0, claudeSpinnerFrames[0]) {
 		t.Fatalf("frame 0 missing %q: %q", claudeSpinnerFrames[0], frame0)
@@ -611,12 +612,28 @@ func TestShimmerBouncesBack(t *testing.T) {
 }
 
 func TestWorkingBadgesUseAgentLabels(t *testing.T) {
-	got := stripTestANSI(renderAIBadges("CLAUDING", "CODEXING", "Pondering", "Computing", 0))
+	got := stripTestANSI(renderAIBadges("CLAUDING", "CODEXING", "", "Pondering", "Computing", 0))
 	if !strings.Contains(got, "Pondering") {
 		t.Fatalf("missing Claude label: %q", got)
 	}
 	if !strings.Contains(got, "Computing") {
 		t.Fatalf("missing Codex label: %q", got)
+	}
+}
+
+func TestOpenCodeWorkingBadgeShowsPinkCoding(t *testing.T) {
+	got := stripTestANSI(renderAIBadges("", "", "CODING", "", "", 0))
+	if !strings.Contains(got, "Coding") {
+		t.Fatalf("OpenCode badge should render fixed Coding label: %q", got)
+	}
+	if openCodePinkHex != "#C678B8" {
+		t.Fatalf("OpenCode badge colour = %q, want #C678B8", openCodePinkHex)
+	}
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+	if renderAIBadges("", "", "CODING", "", "", 6) == renderAIBadges("", "", "CODING", "", "", 7) {
+		t.Fatalf("OpenCode Coding shimmer should advance between frames")
 	}
 }
 
