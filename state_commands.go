@@ -115,13 +115,13 @@ func aiStateCommand(args []string) error {
 	fs.SetOutput(os.Stderr)
 	sessionFlag := fs.String("session", "", "tmux session name")
 	paneFlag := fs.String("pane", "", "pane key")
-	agentFlag := fs.String("agent", "", "ai agent: claude or codex")
+	agentFlag := fs.String("agent", "", "ai agent: claude, codex, or opencode")
 	allFlag := fs.Bool("all", false, "apply to all panes for the agent")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("ai-state requires CLAUDING, CODEXING, COMPACTING, WAITING, IDLE, clear, or toggle")
+		return fmt.Errorf("ai-state requires CLAUDING, CODEXING, CODING, COMPACTING, WAITING, IDLE, clear, or toggle")
 	}
 	session := *sessionFlag
 	if session == "" {
@@ -139,8 +139,8 @@ func aiStateCommand(args []string) error {
 	if agent == "" {
 		agent = "claude"
 	}
-	if agent != "claude" && agent != "codex" {
-		return fmt.Errorf("ai-state agent must be claude or codex")
+	if !isSupportedAIAgent(agent) {
+		return fmt.Errorf("ai-state agent must be claude, codex, or opencode")
 	}
 	if *allFlag {
 		if *paneFlag != "" {
@@ -295,10 +295,22 @@ func clearAIStateForAgent(session, agent string) error {
 }
 
 func workingAIState(agent string) string {
+	if agent == "opencode" {
+		return "CODING"
+	}
 	if agent == "codex" {
 		return "CODEXING"
 	}
 	return "CLAUDING"
+}
+
+func isSupportedAIAgent(agent string) bool {
+	switch agent {
+	case "claude", "codex", "opencode":
+		return true
+	default:
+		return false
+	}
 }
 
 func clearWaitingState(session string) {
@@ -318,7 +330,7 @@ func clearWaitingState(session string) {
 	if homeDir == "" {
 		return
 	}
-	for _, agent := range []string{"claude", "codex"} {
+	for _, agent := range []string{"claude", "codex", "opencode"} {
 		pattern := filepath.Join(homeDir, ".tmux-"+agent+"-"+session+"_*")
 		matches, _ := filepath.Glob(pattern)
 		for _, path := range matches {

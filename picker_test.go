@@ -541,6 +541,7 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 	cases := []sessionInfo{
 		{Name: "claude-session", Claude: "WAITING"},
 		{Name: "codex-session", Codex: "WAITING"},
+		{Name: "opencode-session", OpenCode: "WAITING"},
 	}
 
 	for _, tc := range cases {
@@ -552,16 +553,16 @@ func TestPickerWaitingStatesUseDotWithoutWaitingBadge(t *testing.T) {
 		if !strings.Contains(got, "▎") {
 			t.Fatalf("%s missing waiting marker: %q", tc.Name, got)
 		}
-		if strings.Contains(got, "CLAUDE WAITING") || strings.Contains(got, "CODEX WAITING") {
+		if strings.Contains(got, "CLAUDE WAITING") || strings.Contains(got, "CODEX WAITING") || strings.Contains(got, "OPENCODE WAITING") {
 			t.Fatalf("%s rendered waiting badge: %q", tc.Name, got)
 		}
 	}
 }
 
 func TestWorkingBadgeShowsSpinnerFrameAndRandomLabel(t *testing.T) {
-	frame0 := renderAIBadges("CLAUDING", "", "Calculating", "", 0)
-	frame1 := renderAIBadges("CLAUDING", "", "Calculating", "", 1)
-	frame3 := renderAIBadges("CLAUDING", "", "Calculating", "", 3)
+	frame0 := renderAIBadges("CLAUDING", "", "", "Calculating", "", 0)
+	frame1 := renderAIBadges("CLAUDING", "", "", "Calculating", "", 1)
+	frame3 := renderAIBadges("CLAUDING", "", "", "Calculating", "", 3)
 
 	if !strings.Contains(frame0, claudeSpinnerFrames[0]) {
 		t.Fatalf("frame 0 missing %q: %q", claudeSpinnerFrames[0], frame0)
@@ -611,12 +612,28 @@ func TestShimmerBouncesBack(t *testing.T) {
 }
 
 func TestWorkingBadgesUseAgentLabels(t *testing.T) {
-	got := stripTestANSI(renderAIBadges("CLAUDING", "CODEXING", "Pondering", "Computing", 0))
+	got := stripTestANSI(renderAIBadges("CLAUDING", "CODEXING", "", "Pondering", "Computing", 0))
 	if !strings.Contains(got, "Pondering") {
 		t.Fatalf("missing Claude label: %q", got)
 	}
 	if !strings.Contains(got, "Computing") {
 		t.Fatalf("missing Codex label: %q", got)
+	}
+}
+
+func TestOpenCodeWorkingBadgeShowsPinkCoding(t *testing.T) {
+	got := stripTestANSI(renderAIBadges("", "", "CODING", "", "", 0))
+	if !strings.Contains(got, "Coding") {
+		t.Fatalf("OpenCode badge should render fixed Coding label: %q", got)
+	}
+	if openCodePinkHex != "#C678B8" {
+		t.Fatalf("OpenCode badge colour = %q, want #C678B8", openCodePinkHex)
+	}
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+	if renderAIBadges("", "", "CODING", "", "", 6) == renderAIBadges("", "", "CODING", "", "", 7) {
+		t.Fatalf("OpenCode Coding shimmer should advance between frames")
 	}
 }
 
@@ -1374,5 +1391,45 @@ func TestRenderSessionRecapShownForSingleWindow(t *testing.T) {
 	out = m.renderSession(row, false)
 	if !strings.Contains(out, "some recap text") {
 		t.Fatal("renderSession omitted recap for 0-window session")
+	}
+}
+
+// The AI status badge belongs to the window it comes from. For a multi-window
+// session it renders on the window row, not the session row, so it must not
+// appear on both. The CLAUDING spinner glyph (frame 2 → claudeSpinnerFrames[1])
+// only ever comes from renderAIBadges, so it is a reliable marker for "a badge
+// was drawn here".
+func TestRenderSessionBadgeSuppressedForMultiWindow(t *testing.T) {
+	m := pickerModel{width: 80, spinnerFrame: 2}
+	glyph := claudeSpinnerFrames[1]
+	sess := &sessionInfo{
+		Name:    "domux",
+		Claude:  "CLAUDING",
+		Windows: []windowInfo{{Index: 1}, {Index: 2, Claude: "CLAUDING"}},
+	}
+	out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	if strings.Contains(out, glyph) {
+		t.Fatalf("renderSession drew an AI badge for a multi-window session: %q", out)
+	}
+}
+
+func TestRenderSessionBadgeShownForSingleWindow(t *testing.T) {
+	m := pickerModel{width: 80, spinnerFrame: 2}
+	glyph := claudeSpinnerFrames[1]
+	sess := &sessionInfo{
+		Name:    "domux",
+		Claude:  "CLAUDING",
+		Windows: []windowInfo{{Index: 1, Claude: "CLAUDING"}},
+	}
+	out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	if !strings.Contains(out, glyph) {
+		t.Fatalf("renderSession omitted the AI badge for a single-window session: %q", out)
+	}
+
+	// And with no windows at all (the common case), the badge still shows.
+	sess.Windows = nil
+	out = m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	if !strings.Contains(out, glyph) {
+		t.Fatalf("renderSession omitted the AI badge for a 0-window session: %q", out)
 	}
 }

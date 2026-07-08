@@ -21,6 +21,8 @@ func TestClearSessionStateFilesRemovesLegacySessionMetadata(t *testing.T) {
 		".tmux-claude-" + session + "_0_0",
 		".tmux-codex-" + session,
 		".tmux-codex-" + session + "_0_1",
+		".tmux-opencode-" + session,
+		".tmux-opencode-" + session + "_0_2",
 	}
 	for _, name := range files {
 		if err := os.WriteFile(filepath.Join(homeDir, name), []byte("value\n"), 0644); err != nil {
@@ -201,10 +203,11 @@ esac
 
 func TestAggregateAIStatesKeepsClaudeAndCodexSeparate(t *testing.T) {
 	state := &SessionState{AI: map[string]string{
-		"claude:0_0": "WAITING",
-		"claude:0_1": "CLAUDING",
-		"codex:0_2":  "CODEXING",
-		"codex:0_3":  "WAITING",
+		"claude:0_0":   "WAITING",
+		"claude:0_1":   "CLAUDING",
+		"codex:0_2":    "CODEXING",
+		"codex:0_3":    "WAITING",
+		"opencode:0_4": "CODING",
 	}}
 
 	got := aggregateAIStatesFromSession(state)
@@ -214,6 +217,9 @@ func TestAggregateAIStatesKeepsClaudeAndCodexSeparate(t *testing.T) {
 	}
 	if got.Codex != "WAITING" {
 		t.Fatalf("Codex = %q", got.Codex)
+	}
+	if got.OpenCode != "CODING" {
+		t.Fatalf("OpenCode = %q", got.OpenCode)
 	}
 }
 
@@ -260,6 +266,19 @@ func TestTmuxAIBadgesUseAgentWaitingLabels(t *testing.T) {
 	}
 	if got := tmuxAIBadge("codex", "WAITING"); !strings.Contains(got, "CODEX WAITING") {
 		t.Fatalf("Codex badge = %q", got)
+	}
+	if got := tmuxAIBadge("opencode", "WAITING"); !strings.Contains(got, "OPENCODE WAITING") {
+		t.Fatalf("OpenCode badge = %q", got)
+	}
+}
+
+func TestTmuxAIBadgeRendersOpenCodeCodingPink(t *testing.T) {
+	got := tmuxAIBadge("opencode", "CODING")
+	if !strings.Contains(got, "Coding") {
+		t.Fatalf("OpenCode coding badge = %q", got)
+	}
+	if !strings.Contains(got, "#C678B8") {
+		t.Fatalf("OpenCode coding badge missing pink colour: %q", got)
 	}
 }
 

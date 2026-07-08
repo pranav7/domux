@@ -36,6 +36,7 @@ type SessionState struct {
 type AIStates struct {
 	Claude      string
 	Codex       string
+	OpenCode    string
 	ClaudeLabel string
 	CodexLabel  string
 }
@@ -141,6 +142,7 @@ func saveSessionState(state *SessionState) error {
 	if state.AI != nil {
 		delete(state.AI, "claude:legacy")
 		delete(state.AI, "codex:legacy")
+		delete(state.AI, "opencode:legacy")
 	}
 	pruneAIWorkingLabels(state)
 	if state.AI != nil && len(state.AI) == 0 {
@@ -236,10 +238,13 @@ func mergeLegacyState(state *SessionState) {
 	}
 	pruneStaleAIStates(state, homeDir, "claude")
 	pruneStaleAIStates(state, homeDir, "codex")
+	pruneStaleAIStates(state, homeDir, "opencode")
 	mergeLegacyAIStateFiles(state, homeDir, "claude")
 	mergeLegacyAIStateFiles(state, homeDir, "codex")
+	mergeLegacyAIStateFiles(state, homeDir, "opencode")
 	mergeFreshLegacyAIStateFile(state, homeDir, "claude")
 	mergeFreshLegacyAIStateFile(state, homeDir, "codex")
+	mergeFreshLegacyAIStateFile(state, homeDir, "opencode")
 }
 
 // pruneStaleAIStates drops JSON AI entries whose backing per-pane legacy file
@@ -328,7 +333,7 @@ func mergeFreshLegacyAIStateFile(state *SessionState, homeDir, agent string) {
 
 // legacyAIStateIsStale decides whether an unbacked legacy state file should be
 // believed. Pre/PostToolUse hooks touch the working-state file on every tool
-// call, so a CLAUDING/CODEXING value with an mtime older than ~30s means the
+// call, so a CLAUDING/CODEXING/CODING value with an mtime older than ~30s means the
 // agent died without firing Stop. WAITING blocks on the user and shouldn't
 // expire from mtime alone — give it a generous ceiling. COMPACTING is bracketed
 // by PreCompact/PostCompact but compaction itself can take a while, so give it
@@ -336,11 +341,11 @@ func mergeFreshLegacyAIStateFile(state *SessionState, homeDir, agent string) {
 func legacyAIStateIsStale(value string, mtime time.Time) bool {
 	age := time.Since(mtime)
 	switch normalizeAIStateValue(value) {
-	case "CLAUDING", "CODEXING":
+	case "CLAUDING", "CODEXING", "CODING":
 		return age > 30*time.Second
 	case "COMPACTING":
 		return age > 5*time.Minute
-	case "WAITING", "CLAUDE WAITING", "CODEX WAITING":
+	case "WAITING", "CLAUDE WAITING", "CODEX WAITING", "OPENCODE WAITING":
 		return age > 30*time.Minute
 	default:
 		return true
@@ -440,13 +445,16 @@ func focusedOrTopItem(list *List, state *SessionState) (Item, bool) {
 
 func aggregateAIStateFromSession(state *SessionState) string {
 	states := aggregateAIStatesFromSession(state)
-	if states.Claude == "WAITING" || states.Codex == "WAITING" {
+	if states.Claude == "WAITING" || states.Codex == "WAITING" || states.OpenCode == "WAITING" {
 		return "WAITING"
 	}
 	if states.Claude != "" {
 		return states.Claude
 	}
-	return states.Codex
+	if states.Codex != "" {
+		return states.Codex
+	}
+	return states.OpenCode
 }
 
 func aggregateAIStatesFromSession(state *SessionState) AIStates {
@@ -466,6 +474,8 @@ func aggregateAIStatesFromSession(state *SessionState) AIStates {
 		switch agent {
 		case "codex":
 			states.Codex = mergeAIState(states.Codex, value)
+		case "opencode":
+			states.OpenCode = mergeAIState(states.OpenCode, value)
 		default:
 			states.Claude = mergeAIState(states.Claude, value)
 		}
@@ -517,6 +527,8 @@ func aggregateAIStatesByWindow(state *SessionState) map[int]AIStates {
 		switch agent {
 		case "codex":
 			s.Codex = mergeAIState(s.Codex, value)
+		case "opencode":
+			s.OpenCode = mergeAIState(s.OpenCode, value)
 		default:
 			s.Claude = mergeAIState(s.Claude, value)
 		}
@@ -672,7 +684,7 @@ func aiStateRank(value string) int {
 		return 3
 	case "COMPACTING":
 		return 2
-	case "CLAUDING", "CODEXING":
+	case "CLAUDING", "CODEXING", "CODING":
 		return 1
 	default:
 		return 0
@@ -685,7 +697,7 @@ func inferAgentFromAIKey(key string) string {
 		return ""
 	}
 	switch strings.ToLower(agent) {
-	case "claude", "codex":
+	case "claude", "codex", "opencode":
 		return strings.ToLower(agent)
 	default:
 		return ""
@@ -696,6 +708,8 @@ func inferAgentFromAIValue(value string) string {
 	switch normalizeAIStateValue(value) {
 	case "CODEXING", "CODEX WAITING":
 		return "codex"
+	case "CODING", "OPENCODING", "OPENCODE CODING", "OPENCODE WAITING":
+		return "opencode"
 	case "CLAUDING", "CLAUDE WAITING":
 		return "claude"
 	default:
@@ -710,13 +724,17 @@ func normalizeAIState(agent, value string) string {
 	switch value {
 	case "", "IDLE", "CLEAR":
 		return ""
-	case "CLAUDE WAITING", "CODEX WAITING", "WAITING":
+	case "CLAUDE WAITING", "CODEX WAITING", "OPENCODE WAITING", "WAITING":
 		return "WAITING"
 	case "COMPACTING":
 		return "COMPACTING"
 	case "CODEXING":
 		if agent == "codex" {
 			return "CODEXING"
+		}
+	case "CODING", "OPENCODING", "OPENCODE CODING":
+		if agent == "opencode" {
+			return "CODING"
 		}
 	case "CLAUDING":
 		if agent == "claude" {

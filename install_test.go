@@ -127,6 +127,27 @@ func TestCodexDomuxHookUsesAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestGeneratedOpencodePluginMarksCodingAndClears(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	plugin := generatedOpencodePlugin()
+	if !strings.Contains(plugin, filepath.Join(homeDir, "bin", "domux")) {
+		t.Fatalf("plugin should use absolute domux path, got:\n%s", plugin)
+	}
+	for _, want := range []string{
+		`"ai-state", "--agent", "opencode", "CODING"`,
+		`"ai-state", "--agent", "opencode", "WAITING"`,
+		`"ai-state", "--agent", "opencode", "--all", "clear"`,
+		`"permission.asked"`,
+		`"session.idle"`,
+	} {
+		if !strings.Contains(plugin, want) {
+			t.Fatalf("plugin missing %s:\n%s", want, plugin)
+		}
+	}
+}
+
 func TestPatchedCodexHooksPrunesOldWrappedDomuxHooks(t *testing.T) {
 	oldCommand := `PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" "$HOME/bin/domux" ai-state --agent codex CODEXING`
 	hooks := patchedCodexHooks(map[string]any{
