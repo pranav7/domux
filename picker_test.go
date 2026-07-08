@@ -1130,6 +1130,26 @@ func TestParseWindowLinesMalformed(t *testing.T) {
 	}
 }
 
+func TestParsePaneTTYLines(t *testing.T) {
+	// `tmux list-panes -s -F "#{window_index}\t#{pane_tty}"` — a window may have
+	// several panes, so ttys bucket per window index.
+	out := "1\t/dev/ttys001\n1\t/dev/ttys003\n2\t/dev/ttys011\n"
+	got := parsePaneTTYLines(out)
+	if len(got[1]) != 2 || got[1][0] != "/dev/ttys001" || got[1][1] != "/dev/ttys003" {
+		t.Errorf("window 1 ttys = %+v, want both panes", got[1])
+	}
+	if len(got[2]) != 1 || got[2][0] != "/dev/ttys011" {
+		t.Errorf("window 2 ttys = %+v, want ttys011", got[2])
+	}
+	if got := parsePaneTTYLines(""); len(got) != 0 {
+		t.Errorf("empty output = %+v, want no entries", got)
+	}
+	// Malformed lines — non-int index, or no tab at all — are skipped.
+	if got := parsePaneTTYLines("x\t/dev/ttys001\nno-tab-here\n"); len(got) != 0 {
+		t.Errorf("malformed lines should be skipped, got %+v", got)
+	}
+}
+
 func TestRowsFromEntriesWindowRows(t *testing.T) {
 	// >1 window → one rowWindow per window, under the session, above tasks.
 	multi := &sessionInfo{

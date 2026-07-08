@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -46,6 +48,7 @@ type claudeSession struct {
 	Cwd       string
 	Pid       int
 	UpdatedAt int64
+	TTY       string // controlling tty (e.g. "ttys011"), derived from Pid via ps
 }
 
 // readClaudeSessions returns the entries from Claude's live session registry.
@@ -82,9 +85,63 @@ func readClaudeSessions() []claudeSession {
 		if !pidAlive(rec.Pid) {
 			continue
 		}
-		out = append(out, claudeSession{rec.SessionID, rec.Cwd, rec.Pid, rec.UpdatedAt})
+		out = append(out, claudeSession{SessionID: rec.SessionID, Cwd: rec.Cwd, Pid: rec.Pid, UpdatedAt: rec.UpdatedAt})
+	}
+	// Derive each session's controlling tty from its pid so a recap can be pinned
+	// to the exact tmux pane it runs in (a pane's tty == the tty of the claude
+	// process inside it). Without this, multiple claude sessions sharing one cwd
+	// (e.g. several tmux windows in the same repo) are indistinguishable by cwd
+	// and every window row shows the same recap.
+	ttys := ttysForPids(out)
+	for i := range out {
+		out[i].TTY = ttys[out[i].Pid]
 	}
 	return out
+}
+
+// ttysForPids returns each session's controlling tty keyed by pid via a single
+// batched `ps` call. Pids with no controlling tty ("??") are absent from the map.
+func ttysForPids(sessions []claudeSession) map[int]string {
+	if len(sessions) == 0 {
+		return nil
+	}
+	pids := make([]string, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Pid > 0 {
+			pids = append(pids, strconv.Itoa(s.Pid))
+		}
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+	out, err := exec.Command("ps", "-o", "pid=,tty=", "-p", strings.Join(pids, ",")).Output()
+	if err != nil {
+		return nil
+	}
+	return parsePsTTYLines(string(out))
+}
+
+// parsePsTTYLines parses `ps -o pid=,tty=` output ("  49115 ttys011") into a
+// pid→tty map. Lines whose tty marks no controlling terminal ("??" on macOS, "?"
+// on Linux) or is blank are skipped, so an empty tty never becomes a match key.
+func parsePsTTYLines(out string) map[int]string {
+	result := map[int]string{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		tty := fields[1]
+		if tty == "" || tty == "?" || tty == "??" {
+			continue
+		}
+		result[pid] = tty
+	}
+	return result
 }
 
 // pidAlive reports whether pid is a live process. EPERM means alive but owned
@@ -113,6 +170,40 @@ func bestLiveSession(sessions []claudeSession, paths ...string) (claudeSession, 
 	found := false
 	for _, s := range sessions {
 		if !want[s.Cwd] {
+			continue
+		}
+		if !found || s.UpdatedAt > best.UpdatedAt {
+			best, found = s, true
+		}
+	}
+	return best, found
+}
+
+// normalizeTTY strips the "/dev/" prefix tmux reports on pane_tty so it compares
+// equal to the bare tty name ps emits (e.g. "/dev/ttys011" → "ttys011").
+func normalizeTTY(tty string) string {
+	return strings.TrimPrefix(strings.TrimSpace(tty), "/dev/")
+}
+
+// bestLiveSessionByTTY returns the most recently active live Claude session whose
+// controlling tty matches one of ttys, and true. This pins a recap to the exact
+// tmux pane running it — the reliable way to tell apart several claude sessions
+// that share a cwd (multiple windows in one repo). Empty ttys never match, so a
+// detached/ttyless session is never mis-assigned to a pane.
+func bestLiveSessionByTTY(sessions []claudeSession, ttys ...string) (claudeSession, bool) {
+	want := make(map[string]bool, len(ttys))
+	for _, t := range ttys {
+		if n := normalizeTTY(t); n != "" {
+			want[n] = true
+		}
+	}
+	if len(want) == 0 {
+		return claudeSession{}, false
+	}
+	var best claudeSession
+	found := false
+	for _, s := range sessions {
+		if s.TTY == "" || !want[normalizeTTY(s.TTY)] {
 			continue
 		}
 		if !found || s.UpdatedAt > best.UpdatedAt {

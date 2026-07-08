@@ -86,6 +86,65 @@ func TestBestLiveSession(t *testing.T) {
 	}
 }
 
+func TestBestLiveSessionByTTY(t *testing.T) {
+	cwd := "/Users/p/projects/audrey"
+	// Three live Claude sessions sharing one cwd — the exact shape that made
+	// every window row show the same recap when matched by cwd alone.
+	sessions := []claudeSession{
+		{SessionID: "w1", Cwd: cwd, Pid: 1, UpdatedAt: 100, TTY: "ttys001"},
+		{SessionID: "w2", Cwd: cwd, Pid: 2, UpdatedAt: 200, TTY: "ttys011"},
+		{SessionID: "detached", Cwd: cwd, Pid: 3, UpdatedAt: 300, TTY: ""},
+	}
+	// Each pane's tty resolves to its OWN session despite the shared cwd. tmux's
+	// "/dev/" prefix is stripped before comparison.
+	if s, ok := bestLiveSessionByTTY(sessions, "/dev/ttys001"); !ok || s.SessionID != "w1" {
+		t.Errorf("ttys001 => %q,%v want w1,true", s.SessionID, ok)
+	}
+	if s, ok := bestLiveSessionByTTY(sessions, "/dev/ttys011"); !ok || s.SessionID != "w2" {
+		t.Errorf("ttys011 => %q,%v want w2,true", s.SessionID, ok)
+	}
+	if _, ok := bestLiveSessionByTTY(sessions, "/dev/ttys999"); ok {
+		t.Error("unmatched tty should not resolve")
+	}
+	// Empty ttys on either side must never match — else the detached session
+	// (TTY "") would be handed to any pane whose tty failed to resolve.
+	if _, ok := bestLiveSessionByTTY(sessions, "", "/dev/"); ok {
+		t.Error("empty ttys should not resolve to the detached session")
+	}
+	if _, ok := bestLiveSessionByTTY(nil, "/dev/ttys001"); ok {
+		t.Error("no sessions should not resolve")
+	}
+	// Two sessions sharing a tty (e.g. a stale registry entry) → most recent wins.
+	dup := []claudeSession{
+		{SessionID: "stale", Cwd: cwd, Pid: 4, UpdatedAt: 50, TTY: "ttys002"},
+		{SessionID: "fresh", Cwd: cwd, Pid: 5, UpdatedAt: 500, TTY: "ttys002"},
+	}
+	if s, ok := bestLiveSessionByTTY(dup, "ttys002"); !ok || s.SessionID != "fresh" {
+		t.Errorf("shared tty => %q,%v want fresh,true", s.SessionID, ok)
+	}
+}
+
+func TestParsePsTTYLines(t *testing.T) {
+	// "??" (macOS) and "?" (Linux) both mean "no controlling terminal".
+	out := "  49115 ttys001\n  56103 ttys011\n  78813 ??\n  333 ?\n  700 pts/3\nbogus line\n  12 \n"
+	got := parsePsTTYLines(out)
+	if got[49115] != "ttys001" || got[56103] != "ttys011" {
+		t.Errorf("parsePsTTYLines = %+v, want ttys001/ttys011 for 49115/56103", got)
+	}
+	if got[700] != "pts/3" {
+		t.Errorf("linux pts tty: got[700] = %q, want pts/3", got[700])
+	}
+	if _, ok := got[78813]; ok {
+		t.Errorf("pid with ?? (no controlling tty) should be omitted, got %+v", got)
+	}
+	if _, ok := got[333]; ok {
+		t.Errorf("pid with ? (linux, no controlling tty) should be omitted, got %+v", got)
+	}
+	if _, ok := got[12]; ok {
+		t.Errorf("pid with empty tty should be omitted, got %+v", got)
+	}
+}
+
 func TestScanRecapReturnsTimestamp(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.jsonl")

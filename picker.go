@@ -2535,6 +2535,30 @@ func parseWindowLines(out string) []windowInfo {
 	return windows
 }
 
+// parsePaneTTYLines parses `tmux list-panes -s -F "#{window_index}\t#{pane_tty}"`
+// output into a window-index → pane-ttys map. A window may hold several panes
+// (e.g. domux's Claude pane beside a working pane), so all of a window's pane
+// ttys bucket together; the recap lookup matches a claude session against any of
+// them. Lines missing a tty or with a non-integer index are skipped.
+func parsePaneTTYLines(out string) map[int][]string {
+	result := map[int][]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		idxStr, tty, ok := strings.Cut(line, "\t")
+		if !ok || tty == "" {
+			continue
+		}
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			continue
+		}
+		result[idx] = append(result[idx], tty)
+	}
+	return result
+}
+
 func gatherSessions() []pickerRow {
 	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
@@ -2615,18 +2639,29 @@ func gatherSessions() []pickerRow {
 		if err == nil {
 			windows := parseWindowLines(string(winOut))
 			winStates := aggregateAIStatesByWindow(state)
+			// Pane ttys per window pin each window's recap to the claude session
+			// actually running in it. Matching by cwd alone can't tell apart
+			// multiple claude sessions in the same repo (several windows), which
+			// made every window row show the same recap.
+			paneOut, _ := exec.Command("tmux", "list-panes", "-s", "-t", sess, "-F",
+				"#{window_index}\t#{pane_tty}").Output()
+			winTTYs := parsePaneTTYLines(string(paneOut))
 			for i := range windows {
 				w := &windows[i]
 				if s, ok := winStates[w.Index]; ok {
 					w.Claude, w.Codex, w.OpenCode = s.Claude, s.Codex, s.OpenCode
 					w.ClaudeLabel, w.CodexLabel = s.ClaudeLabel, s.CodexLabel
 				}
-				if w.Path != "" {
-					if best, ok := bestLiveSession(liveClaude, w.Path); ok {
-						recap, recapTime := recapForSession(best)
-						if recapVisibleAfterClear(recapTime, state.RecapClearedAt) {
-							w.Recap = recap
-						}
+				// Prefer a tty-pinned match; fall back to cwd so windows whose
+				// claude tty didn't resolve still get their (best-effort) recap.
+				best, ok := bestLiveSessionByTTY(liveClaude, winTTYs[w.Index]...)
+				if !ok && w.Path != "" {
+					best, ok = bestLiveSession(liveClaude, w.Path)
+				}
+				if ok {
+					recap, recapTime := recapForSession(best)
+					if recapVisibleAfterClear(recapTime, state.RecapClearedAt) {
+						w.Recap = recap
 					}
 				}
 			}
