@@ -2427,10 +2427,8 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 // the same tab toggle used for session recaps.
 func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 	w := row.Window
-	glyphStyle := lipgloss.NewStyle().Foreground(overlay0)
 	nameStyle := lipgloss.NewStyle().Foreground(overlay0)
 	if w.Active {
-		glyphStyle = lipgloss.NewStyle().Foreground(teal).Bold(true)
 		nameStyle = lipgloss.NewStyle().Foreground(teal)
 	}
 	if selected {
@@ -2438,19 +2436,19 @@ func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 	}
 
 	var line strings.Builder
-	// Prefix: cursor arrow when selected, else blank; 8-col indent to align with
-	// tasks/recap.
+	// Prefix: cursor arrow when selected, else blank; 8-col indent so the window
+	// name aligns with task markers and the recap column. The active window is
+	// distinguished by the teal name color (no leading glyph).
 	if selected {
 		line.WriteString("      " + pCursor.Render("›") + " ")
 	} else {
 		line.WriteString("        ")
 	}
-	line.WriteString(glyphStyle.Render("▸") + " ")
 	line.WriteString(nameStyle.Render(fmt.Sprintf("%d · %s", w.Index, w.Name)))
 	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
 
 	if m.showDetails && w.Recap != "" {
-		const indent = "          " // 10 cols, under the window name
+		const indent = "        " // 8 cols, aligns under the window name
 		avail := m.width - lipgloss.Width(indent)
 		if avail < 8 {
 			avail = 8
