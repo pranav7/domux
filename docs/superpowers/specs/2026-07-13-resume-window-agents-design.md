@@ -74,7 +74,9 @@ func readAgentSessions() []agentSession
 func bestAgentSession(sessions []agentSession, paths ...string) (agentSession, bool)
 ```
 
-**Claude:** Already implemented — `~/.claude/sessions/<pid>.json` has `sessionId` + `cwd` + `updatedAt` (a real field in the JSON, milliseconds since epoch — not derived from mtime; see `readClaudeSessions`). Map to `agentSession{Agent: "claude", SessionID: sessionId, Cwd: cwd, UpdatedAt: updatedAt}`.
+**Claude:** `~/.claude/sessions/<pid>.json` has `sessionId` + `cwd` + `updatedAt` (a real field in the JSON, milliseconds since epoch — not derived from mtime).
+
+**Critical: do not reuse `readClaudeSessions()` as-is.** It filters entries through `pidAlive(rec.Pid)`, which is correct for the picker's live recap (only show a recap for a session that's actually running right now) but **wrong for resume** — the entire point of `domux resume` is recovering from a reboot, at which point every prior pid is by definition dead, and `pidAlive` would zero out every candidate. Add a second reader, e.g. `readClaudeSessionsForResume()` (or refactor `readClaudeSessions` to take an `includeDead bool` / skip the alive filter), that reads the same files without the liveness gate. Map each to `agentSession{Agent: "claude", SessionID: sessionId, Cwd: cwd, UpdatedAt: updatedAt}`.
 
 **Codex:** Parse `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — each file's first line is `session_meta`. `payload.id` always matches the UUID in the filename (use this field — `payload.session_id` is the *parent* thread ID for subagent-spawned rollouts and diverges from the filename in that case). **Skip rollouts where `payload.thread_source == "subagent"`** — those are sub-thread transcripts spawned by review/subagent work, not resumable top-level sessions; the parent session already has its own separate rollout file which gets picked up normally. Use `payload.id` and `payload.cwd`. No `updatedAt` field exists in the payload, so use the file's mtime (`os.Stat`) as the last-updated signal. Map to `agentSession{Agent: "codex", SessionID: payload.id, Cwd: payload.cwd, UpdatedAt: mtimeMillis}`.
 
