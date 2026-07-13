@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -251,6 +252,159 @@ func recapVisibleAfterClear(recapTime time.Time, clearedAt string) bool {
 		return true
 	}
 	return recapTime.After(t)
+}
+
+// agentSession is one resumable agent conversation, keyed by the working
+// directory it ran in and the time it was last touched. Unlike claudeSession
+// (which gates on a live pid for recaps) these are read for `domux resume`,
+// where every prior pid is dead after a reboot — so liveness is deliberately
+// not a filter here.
+type agentSession struct {
+	Agent     string // "claude" | "codex" | "opencode"
+	SessionID string
+	Cwd       string
+	UpdatedAt int64 // unix millis
+}
+
+// readClaudeSessionsForResume reads the same ~/.claude/sessions/*.json registry
+// as readClaudeSessions but WITHOUT the pidAlive filter: resume runs after a
+// reboot, when every recorded pid is dead by definition, so filtering on
+// liveness would hide exactly the sessions we want to bring back.
+func readClaudeSessionsForResume() []agentSession {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Join(home, ".claude", "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []agentSession
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var rec struct {
+			SessionID string `json:"sessionId"`
+			Cwd       string `json:"cwd"`
+			UpdatedAt int64  `json:"updatedAt"`
+		}
+		if json.Unmarshal(data, &rec) != nil || rec.SessionID == "" {
+			continue
+		}
+		out = append(out, agentSession{Agent: "claude", SessionID: rec.SessionID, Cwd: rec.Cwd, UpdatedAt: rec.UpdatedAt})
+	}
+	return out
+}
+
+// readCodexSessions reads Codex rollout transcripts under
+// ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. Only the first line
+// (session_meta) is parsed; the file mtime stands in for a last-updated time
+// since the payload carries none. Subagent rollouts are skipped — their
+// payload.id is a sub-thread, not a resumable top-level session.
+func readCodexSessions() []agentSession {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*.jsonl"))
+	if err != nil {
+		return nil
+	}
+	var out []agentSession
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		var rec struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID           string `json:"id"`
+				Cwd          string `json:"cwd"`
+				ThreadSource string `json:"thread_source"`
+			} `json:"payload"`
+		}
+		if sc.Scan() {
+			_ = json.Unmarshal(sc.Bytes(), &rec)
+		}
+		f.Close()
+		if rec.Type != "session_meta" || rec.Payload.ID == "" || rec.Payload.ThreadSource == "subagent" {
+			continue
+		}
+		out = append(out, agentSession{Agent: "codex", SessionID: rec.Payload.ID, Cwd: rec.Payload.Cwd, UpdatedAt: info.ModTime().UnixMilli()})
+	}
+	return out
+}
+
+// readOpencodeSessions shells out to `opencode session list --format json`. On
+// any error (opencode not installed, non-zero exit, bad JSON) it returns nil —
+// a missing agent must never break resume for the others.
+func readOpencodeSessions() []agentSession {
+	out, err := exec.Command("opencode", "session", "list", "--format", "json").Output()
+	if err != nil {
+		return nil
+	}
+	var recs []struct {
+		ID        string `json:"id"`
+		Directory string `json:"directory"`
+		Updated   int64  `json:"updated"`
+	}
+	if json.Unmarshal(out, &recs) != nil {
+		return nil
+	}
+	sessions := make([]agentSession, 0, len(recs))
+	for _, r := range recs {
+		if r.ID == "" {
+			continue
+		}
+		sessions = append(sessions, agentSession{Agent: "opencode", SessionID: r.ID, Cwd: r.Directory, UpdatedAt: r.Updated})
+	}
+	return sessions
+}
+
+// readAgentSessions reads all three agent session registries and returns a
+// unified list ordered by UpdatedAt descending (most recent first), so
+// bestAgentSession can return the first cwd match.
+func readAgentSessions() []agentSession {
+	var out []agentSession
+	out = append(out, readClaudeSessionsForResume()...)
+	out = append(out, readCodexSessions()...)
+	out = append(out, readOpencodeSessions()...)
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out
+}
+
+// bestAgentSession returns the most recently updated session whose cwd exactly
+// matches one of paths, and true; (zero, false) when none match. sessions must
+// already be sorted UpdatedAt-descending (readAgentSessions does this).
+func bestAgentSession(sessions []agentSession, paths ...string) (agentSession, bool) {
+	want := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		if p != "" {
+			want[p] = true
+		}
+	}
+	if len(want) == 0 {
+		return agentSession{}, false
+	}
+	for _, s := range sessions {
+		if want[s.Cwd] {
+			return s, true
+		}
+	}
+	return agentSession{}, false
 }
 
 type recapCacheEntry struct {

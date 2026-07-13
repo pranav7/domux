@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -318,4 +319,148 @@ func writeTranscript(t *testing.T, path, title string) {
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestReadClaudeSessionsForResumeIncludesDeadPids(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A dead pid (0x7FFFFFFE) — readClaudeSessions would drop it, but resume must keep it.
+	rec := `{"pid":2147483646,"sessionId":"dead-sess","cwd":"/p/domux","updatedAt":1700}`
+	if err := os.WriteFile(filepath.Join(dir, "2147483646.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readClaudeSessionsForResume()
+	if len(got) != 1 || got[0].SessionID != "dead-sess" || got[0].Cwd != "/p/domux" || got[0].UpdatedAt != 1700 {
+		t.Fatalf("readClaudeSessionsForResume() = %+v, want one dead-sess entry", got)
+	}
+	if got[0].Agent != "claude" {
+		t.Fatalf("agent = %q, want claude", got[0].Agent)
+	}
+}
+
+func TestReadCodexSessions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	day := filepath.Join(home, ".codex", "sessions", "2026", "07", "13")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	top := `{"timestamp":"t","type":"session_meta","payload":{"id":"top-uuid","cwd":"/p/audrey","thread_source":"user"}}` + "\n{\"type\":\"message\"}\n"
+	sub := `{"timestamp":"t","type":"session_meta","payload":{"id":"sub-uuid","cwd":"/p/audrey","thread_source":"subagent"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(day, "rollout-top.jsonl"), []byte(top), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(day, "rollout-sub.jsonl"), []byte(sub), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Malformed file must not crash the reader.
+	if err := os.WriteFile(filepath.Join(day, "rollout-bad.jsonl"), []byte("not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readCodexSessions()
+	if len(got) != 1 {
+		t.Fatalf("readCodexSessions() = %+v, want exactly the top-level session", got)
+	}
+	if got[0].SessionID != "top-uuid" || got[0].Cwd != "/p/audrey" || got[0].Agent != "codex" {
+		t.Fatalf("codex session = %+v", got[0])
+	}
+	if got[0].UpdatedAt == 0 {
+		t.Fatalf("codex UpdatedAt should be the file mtime, got 0")
+	}
+}
+
+func TestReadOpencodeSessions(t *testing.T) {
+	callFile := filepath.Join(t.TempDir(), "call")
+	installFakeOpencode(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_OPENCODE_CALL"
+cat <<'JSON'
+[{"id":"ses_1","title":"a","updated":1783952921264,"directory":"/p/domux"},
+ {"id":"ses_2","title":"b","updated":1783952584360,"directory":"/p/audrey"}]
+JSON
+`, callFile)
+
+	got := readOpencodeSessions()
+	if len(got) != 2 {
+		t.Fatalf("readOpencodeSessions() = %+v, want 2", got)
+	}
+	if got[0].SessionID != "ses_1" || got[0].Cwd != "/p/domux" || got[0].UpdatedAt != 1783952921264 || got[0].Agent != "opencode" {
+		t.Fatalf("opencode session[0] = %+v", got[0])
+	}
+}
+
+func TestReadOpencodeSessionsMissingBinaryReturnsNil(t *testing.T) {
+	// Point PATH at an empty dir so `opencode` is not found.
+	t.Setenv("PATH", t.TempDir())
+	if got := readOpencodeSessions(); got != nil {
+		t.Fatalf("missing opencode should yield nil, got %+v", got)
+	}
+}
+
+func TestBestAgentSession(t *testing.T) {
+	// Sorted UpdatedAt-descending, as readAgentSessions guarantees.
+	sessions := []agentSession{
+		{Agent: "codex", SessionID: "cx", Cwd: "/p/domux", UpdatedAt: 300},
+		{Agent: "claude", SessionID: "cl", Cwd: "/p/domux", UpdatedAt: 200},
+		{Agent: "opencode", SessionID: "oc", Cwd: "/p/audrey", UpdatedAt: 100},
+	}
+	// Two agents share /p/domux; the more-recent (codex, 300) wins.
+	if s, ok := bestAgentSession(sessions, "/p/domux"); !ok || s.SessionID != "cx" {
+		t.Fatalf("bestAgentSession(/p/domux) = %+v,%v want cx,true", s, ok)
+	}
+	if s, ok := bestAgentSession(sessions, "/p/audrey"); !ok || s.Agent != "opencode" {
+		t.Fatalf("bestAgentSession(/p/audrey) = %+v,%v want opencode,true", s, ok)
+	}
+	if _, ok := bestAgentSession(sessions, "/no/match"); ok {
+		t.Fatal("no-match should be false")
+	}
+	if _, ok := bestAgentSession(sessions); ok {
+		t.Fatal("no-paths should be false")
+	}
+}
+
+func TestReadAgentSessionsSortsMostRecentFirst(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Only Claude here (no codex dir, opencode shimmed to nothing) — enough to
+	// confirm the unified reader returns claude entries and doesn't crash on
+	// missing codex/opencode.
+	t.Setenv("PATH", t.TempDir()) // opencode not found → nil
+	dir := filepath.Join(home, ".claude", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeClaudeSessionFile(t, dir, "1", "older", "/p/a", 100)
+	writeClaudeSessionFile(t, dir, "2", "newer", "/p/b", 500)
+
+	got := readAgentSessions()
+	if len(got) != 2 {
+		t.Fatalf("readAgentSessions() = %+v, want 2", got)
+	}
+	if got[0].SessionID != "newer" || got[1].SessionID != "older" {
+		t.Fatalf("not sorted most-recent-first: %+v", got)
+	}
+}
+
+func writeClaudeSessionFile(t *testing.T, dir, pid, sid, cwd string, updated int64) {
+	t.Helper()
+	rec := `{"pid":` + pid + `,"sessionId":"` + sid + `","cwd":"` + cwd + `","updatedAt":` + strconv.FormatInt(updated, 10) + `}`
+	if err := os.WriteFile(filepath.Join(dir, pid+".json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func installFakeOpencode(t *testing.T, script, callFile string) {
+	t.Helper()
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode: %v", err)
+	}
+	t.Setenv("DOMUX_OPENCODE_CALL", callFile)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

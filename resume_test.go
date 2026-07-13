@@ -197,6 +197,140 @@ func TestResumeJobSummary(t *testing.T) {
 	}
 }
 
+func TestResumeJobSummaryCountsWindowsAndAgents(t *testing.T) {
+	j := &resumeJob{}
+	j.record(resumeTarget{Status: resumeRecreated, nWindows: 3, nAgents: 2})
+	j.record(resumeTarget{Status: resumeRecreated, nWindows: 2, nAgents: 2})
+	got := j.summary()
+	if !strings.Contains(got, "restored 2 (5 windows, 4 agents resumed)") {
+		t.Fatalf("summary = %q, want window/agent counts", got)
+	}
+}
+
+func TestResumeAgentLaunchLine(t *testing.T) {
+	cases := []struct {
+		agent, id, cwd string
+		wantContains   []string
+	}{
+		{"claude", "sid-1", "/p/a", []string{"cd '/p/a'", "command -v claude", "claude --resume 'sid-1'"}},
+		{"codex", "sid-2", "/p/b", []string{"codex resume 'sid-2'", "command -v codex"}},
+		{"opencode", "sid-3", "", []string{"opencode --session 'sid-3'"}},
+		{"unknown", "x", "/p", nil},
+	}
+	for _, tc := range cases {
+		got := resumeAgentLaunchLine(tc.agent, tc.id, tc.cwd)
+		if tc.wantContains == nil {
+			if got != "" {
+				t.Fatalf("%s: expected empty line, got %q", tc.agent, got)
+			}
+			continue
+		}
+		for _, sub := range tc.wantContains {
+			if !strings.Contains(got, sub) {
+				t.Fatalf("%s: line %q missing %q", tc.agent, got, sub)
+			}
+		}
+	}
+	// cwd omitted → no cd prefix.
+	if strings.Contains(resumeAgentLaunchLine("opencode", "s", ""), "cd ") {
+		t.Fatal("empty cwd should not produce a cd prefix")
+	}
+}
+
+func TestExecuteResumeStepRecreatesWindowsAndLaunchesAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+
+	// Seed a saved state with a 2-window layout; window 1's cwd matches a claude
+	// session so an agent launch is expected there.
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := `{"pid":2147483646,"sessionId":"resume-me","cwd":"` + root + `","updatedAt":900}`
+	if err := os.WriteFile(filepath.Join(home, ".claude", "sessions", "2147483646.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	// Fake tmux: has-session says "no", list-windows reports two windows so the
+	// recreate path has real indices to target, everything else logs + succeeds.
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 1 ;;
+list-windows) printf '1\n2\n' ;;
+esac
+exit 0
+`, callFile)
+
+	// Pre-seed the saved window layout into the state file (before the resume run,
+	// which reads it back). saveSessionState would re-snapshot via the fake tmux,
+	// but the fake's list-windows returns only indices (not the 3-field snapshot
+	// format), so snapshotWindows yields nil and our seeded Windows survive.
+	seed := loadSessionStateWithLegacy("sess")
+	seed.Name = "sess"
+	seed.Root = root
+	seed.Windows = []WindowSnapshot{
+		{Index: 1, Name: "main", Cwd: root},
+		{Index: 2, Name: "scratch", Cwd: "/no/agent/here"},
+	}
+	if err := saveSessionState(seed); err != nil {
+		t.Fatal(err)
+	}
+
+	got := executeResumeStep(resumeTarget{Name: "sess", Root: root})
+	if got.Err != nil {
+		t.Fatalf("unexpected err: %v", got.Err)
+	}
+	if got.Status != resumeRecreated {
+		t.Fatalf("status = %q, want recreated", got.Status)
+	}
+	if got.nWindows != 2 {
+		t.Fatalf("nWindows = %d, want 2", got.nWindows)
+	}
+	if got.nAgents != 1 {
+		t.Fatalf("nAgents = %d, want 1 (only window 1 matched a claude session)", got.nAgents)
+	}
+	data, _ := os.ReadFile(callFile)
+	calls := string(data)
+	if !strings.Contains(calls, "rename-window") {
+		t.Fatalf("expected window 1 rename; calls=%q", calls)
+	}
+	if !strings.Contains(calls, "new-window") {
+		t.Fatalf("expected window 2 creation; calls=%q", calls)
+	}
+	if !strings.Contains(calls, "send-keys") || !strings.Contains(calls, "resume-me") {
+		t.Fatalf("expected send-keys with the claude session id; calls=%q", calls)
+	}
+}
+
+func TestExecuteResumeStepNoWindowsWhenLayoutEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 1 ;;
+esac
+exit 0
+`, callFile)
+
+	got := executeResumeStep(resumeTarget{Name: "fresh", Root: root})
+	if got.Status != resumeRecreated || got.Err != nil {
+		t.Fatalf("status=%q err=%v, want recreated/nil", got.Status, got.Err)
+	}
+	if got.nWindows != 0 || got.nAgents != 0 {
+		t.Fatalf("nWindows=%d nAgents=%d, want 0/0 for a session with no saved layout", got.nWindows, got.nAgents)
+	}
+	data, _ := os.ReadFile(callFile)
+	if strings.Contains(string(data), "send-keys") {
+		t.Fatalf("no agents should be launched; calls=%q", data)
+	}
+}
+
 func TestResumeStepCmdPrunes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -231,6 +231,11 @@ var (
 
 	pSpinnerOpenCode = pBadgeOpenCoding
 
+	// Per-window agent markers (✳/C/O) shown between a window's index and name.
+	pAgentClaude   = lipgloss.NewStyle().Foreground(lipgloss.Color(claudeBrandHex))
+	pAgentCodex    = lipgloss.NewStyle().Foreground(blue)
+	pAgentOpenCode = lipgloss.NewStyle().Foreground(pink)
+
 	pSpinnerCompacting = lipgloss.NewStyle().
 				Foreground(compactPurple).
 				Bold(true)
@@ -2260,15 +2265,15 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	active := s.Claude != "" || s.Codex != "" || s.OpenCode != ""
 	empty := s.isEmptySlot()
 
+	// A hollow ◌ marks a freshly-provisioned idle slot; everything else gets a
+	// plain space so the column still aligns. (The old ◇ main-worktree marker was
+	// dropped — every session now shows its windows, making it redundant.)
 	mainGlyph := " "
-	if isMainWorktreePath(s.Path) {
-		mainGlyph = pMainMark.Render("◇")
-	} else if empty {
+	if empty {
 		mainGlyph = pMainMark.Render("◌")
 	}
 	// Prefix: left accent bar for waiting, cursor arrow for selected, then
-	// the main-worktree marker. Five-column total to keep alignment with
-	// non-session rows.
+	// the slot marker. Five-column total to keep alignment with non-session rows.
 	switch {
 	case waiting && selected:
 		line.WriteString("  " + pWaitingDot.Render("▎") + pCursor.Render("›") + mainGlyph)
@@ -2312,12 +2317,9 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString(" " + pServer.Render("⚡"))
 	}
 
-	// AI badge (spinner + working label). For a multi-window session the badge
-	// belongs to the window it comes from and is rendered on that window row, so
-	// suppress it here to avoid showing the same status twice.
-	if len(s.Windows) <= 1 {
-		line.WriteString(renderAIBadges(s.Claude, s.Codex, s.OpenCode, s.ClaudeLabel, s.CodexLabel, m.spinnerFrame))
-	}
+	// No AI badge on the session line: windows are always expanded, so the badge
+	// (spinner + working label) belongs to the window row it comes from. Showing
+	// it here too would double-render the same status.
 
 	if s.PR != nil {
 		pr := fmt.Sprintf("PR#%d", s.PR.Number)
@@ -2331,26 +2333,9 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString("\n        " + strings.Join(details, pSep.Render(" · ")))
 	}
 
-	// Recap line(s): below PR details, above todos. Hidden with the same `tab`
-	// toggle that hides todos (m.showDetails). Wrapped across as many lines as
-	// needed so the full recap stays readable rather than truncated mid-word;
-	// continuation lines hang-indent under the recap text (past the "※ ").
-	// For multi-window sessions, recap is rendered under each window row, not here.
-	if m.showDetails && s.Recap != "" && len(s.Windows) <= 1 {
-		const indent = "        "  // 8 cols, aligns with PR details
-		const cont = indent + "  " // continuation aligns under text (after "※ ")
-		avail := m.width - lipgloss.Width(cont)
-		if avail < 8 {
-			avail = 8 // degenerate width; fitANSI will trim the overflow
-		}
-		for i, seg := range wrapWords(s.Recap, avail) {
-			if i == 0 {
-				line.WriteString("\n" + indent + pRecapIcon.Render("※") + " " + pRecapText.Render(seg))
-			} else {
-				line.WriteString("\n" + cont + pRecapText.Render(seg))
-			}
-		}
-	}
+	// No recap on the session line either — like the AI badge, the recap ※ block
+	// now hangs under the window row it belongs to (see renderWindow). PR details
+	// above are the session line's last content.
 
 	result := line.String()
 	return result
@@ -2442,6 +2427,23 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 // column). The active window's glyph is highlighted; the AI badge reuses
 // renderAIBadges; the recap hangs under the row and is gated by showDetails —
 // the same tab toggle used for session recaps.
+// windowAgentGlyph returns the one-cell agent marker shown between a window's
+// index and name: ✳ (claude, orange), C (codex, blue), O (opencode, pink), or a
+// blank space when no agent is attached. Claude > Codex > OpenCode if more than
+// one is somehow set (one agent per window is the norm).
+func windowAgentGlyph(w *windowInfo) string {
+	switch {
+	case w.Claude != "":
+		return pAgentClaude.Render("✳")
+	case w.Codex != "":
+		return pAgentCodex.Render("C")
+	case w.OpenCode != "":
+		return pAgentOpenCode.Render("O")
+	default:
+		return " "
+	}
+}
+
 func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 	w := row.Window
 	nameStyle := lipgloss.NewStyle().Foreground(overlay0)
@@ -2461,7 +2463,9 @@ func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 	} else {
 		line.WriteString("        ")
 	}
-	line.WriteString(nameStyle.Render(fmt.Sprintf("%d · %s", w.Index, w.Name)))
+	// {index} {agent-glyph} {name} — the glyph replaces the old middle-dot and
+	// identifies which agent is attached (✳ claude / C codex / O opencode / blank).
+	line.WriteString(nameStyle.Render(strconv.Itoa(w.Index)) + " " + windowAgentGlyph(w) + " " + nameStyle.Render(w.Name))
 	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.OpenCode, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
 
 	if m.showDetails && w.Recap != "" {
@@ -2738,15 +2742,16 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 			rows = append(rows, pickerRow{Kind: rowRule, Group: e.group})
 		}
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
-		if len(e.session.Windows) > 1 {
-			for i := range e.session.Windows {
-				rows = append(rows, pickerRow{
-					Kind:    rowWindow,
-					Group:   e.group,
-					Session: e.session,
-					Window:  &e.session.Windows[i],
-				})
-			}
+		// Always expand windows as sub-rows — even a single-window session. The
+		// session line carries only session-level info; per-window agent status and
+		// recap live on these rows.
+		for i := range e.session.Windows {
+			rows = append(rows, pickerRow{
+				Kind:    rowWindow,
+				Group:   e.group,
+				Session: e.session,
+				Window:  &e.session.Windows[i],
+			})
 		}
 		for i := range e.session.Tasks {
 			rows = append(rows, pickerRow{Kind: rowTask, Group: e.group, Task: &e.session.Tasks[i]})

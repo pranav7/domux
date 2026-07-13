@@ -872,30 +872,6 @@ func TestPickerPlusSetsProvisioningStatus(t *testing.T) {
 	}
 }
 
-func TestRenderSessionMarksMainWorktree(t *testing.T) {
-	mainRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
-		Name: "audrey-app",
-		Path: "/r/audrey-app",
-		Root: "/r/audrey-app",
-	}}
-	wsRow := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
-		Name: "workspace-1",
-		Path: "/r/audrey-app/.domux/worktrees/workspace-1",
-		Root: "/r/audrey-app",
-	}}
-	m := newPickerModel([]pickerRow{mainRow, wsRow})
-
-	mainOut := m.renderSession(mainRow, false)
-	wsOut := m.renderSession(wsRow, false)
-
-	if !strings.Contains(mainOut, "◇") {
-		t.Fatalf("main row missing ◇ glyph:\n%s", mainOut)
-	}
-	if strings.Contains(wsOut, "◇") {
-		t.Fatalf("workspace row should not have ◇ glyph:\n%s", wsOut)
-	}
-}
-
 func TestRenderSessionKeepsLabelInlineAndMovesPRToIndentedLine(t *testing.T) {
 	row := pickerRow{Kind: rowSession, Group: "audrey-app", Session: &sessionInfo{
 		Name:   "workspace-1",
@@ -1009,8 +985,10 @@ func TestWrapWords(t *testing.T) {
 func TestRecapWrapsAcrossLinesUntruncated(t *testing.T) {
 	recap := "PR #391 hooks client-portal and Files-tab uploads into document " +
 		"categorization so TODO selectors find them; it's rebased and the conflict is gone"
+	// Recap now hangs under the window row, so exercise the wrapping there.
+	sess := &sessionInfo{Name: "ws", Windows: []windowInfo{{Index: 1, Name: "main", Recap: recap}}}
 	m := newPickerModel([]pickerRow{
-		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "ws", Recap: recap}},
+		{Kind: rowWindow, Group: "g", Session: sess, Window: &sess.Windows[0]},
 	})
 	m.width = 80
 	m.showDetails = true
@@ -1175,16 +1153,22 @@ func TestRowsFromEntriesWindowRows(t *testing.T) {
 	}
 }
 
-func TestRowsFromEntriesSingleWindowNoWindowRows(t *testing.T) {
+func TestRowsFromEntriesSingleWindowEmitsWindowRow(t *testing.T) {
+	// Windows are always expanded now — a single-window session emits exactly one
+	// rowWindow under its session row.
 	single := &sessionInfo{
 		Name: "solo", Path: "/p",
 		Windows: []windowInfo{{Index: 1, Name: "a"}},
 	}
 	rows := rowsFromEntries([]groupEntry{{group: "solo", session: single}})
+	windowRows := 0
 	for _, r := range rows {
 		if r.Kind == rowWindow {
-			t.Fatalf("single-window session must not emit rowWindow, got rows %+v", rows)
+			windowRows++
 		}
+	}
+	if windowRows != 1 {
+		t.Fatalf("single-window session should emit exactly one rowWindow, got %d; rows %+v", windowRows, rows)
 	}
 }
 
@@ -1210,6 +1194,55 @@ func TestRenderWindowRecapGatedByDetails(t *testing.T) {
 	on := pickerModel{width: 120, showDetails: true}
 	if !strings.Contains(on.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false), "reshaped the pipeline") {
 		t.Errorf("recap must show when showDetails is on")
+	}
+}
+
+func TestWindowAgentGlyph(t *testing.T) {
+	cases := []struct {
+		name   string
+		w      *windowInfo
+		glyph  string
+		absent []string
+	}{
+		{"claude", &windowInfo{Claude: "CLAUDING"}, "✳", []string{"C", "O"}},
+		{"codex", &windowInfo{Codex: "CODEXING"}, "C", []string{"✳", "O"}},
+		{"opencode", &windowInfo{OpenCode: "CODING"}, "O", []string{"✳"}},
+		{"none", &windowInfo{}, "", []string{"✳", "C", "O"}},
+		{"claude-wins", &windowInfo{Claude: "CLAUDING", Codex: "CODEXING"}, "✳", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := stripTestANSI(windowAgentGlyph(tc.w))
+			if tc.glyph == "" {
+				if strings.TrimSpace(out) != "" {
+					t.Fatalf("no-agent glyph should be blank, got %q", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tc.glyph) {
+				t.Fatalf("glyph = %q, want to contain %q", out, tc.glyph)
+			}
+			for _, a := range tc.absent {
+				if strings.Contains(out, a) {
+					t.Fatalf("glyph %q must not contain %q", out, a)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderWindowShowsAgentGlyphNotMiddleDot(t *testing.T) {
+	m := pickerModel{width: 120}
+	// No agent badge here, so the only place a "·" could appear is the old
+	// index/name separator — which the agent glyph now replaces.
+	win := &windowInfo{Index: 1, Name: "main", Claude: "CLAUDING"}
+	out := stripTestANSI(m.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false))
+	if !strings.Contains(out, "1 ✳ main") {
+		t.Fatalf("renderWindow should render `index glyph name` (got %q)", out)
+	}
+	idle := stripTestANSI(m.renderWindow(pickerRow{Kind: rowWindow, Window: &windowInfo{Index: 2, Name: "scratch"}}, false))
+	if strings.Contains(idle, "·") {
+		t.Fatalf("renderWindow should no longer use the · separator: %q", idle)
 	}
 }
 
@@ -1377,79 +1410,46 @@ func TestRefreshRowsRestoresSessionCursor(t *testing.T) {
 	}
 }
 
-func TestRenderSessionRecapSuppressedForMultiWindow(t *testing.T) {
+// Windows are always expanded now, so the recap ※ block always hangs under the
+// window row it belongs to — never on the session line, regardless of window
+// count.
+func TestRenderSessionNeverShowsRecap(t *testing.T) {
 	m := pickerModel{showDetails: true, width: 80}
-	// Session with 2 windows
-	sess := &sessionInfo{
-		Name:    "domux",
-		Recap:   "some recap text",
-		Windows: []windowInfo{{Index: 1}, {Index: 2}},
-	}
-	row := pickerRow{Kind: rowSession, Session: sess}
-	out := m.renderSession(row, false)
-	if strings.Contains(out, "some recap text") {
-		t.Fatal("renderSession included recap for multi-window session")
+	for _, wins := range [][]windowInfo{nil, {{Index: 1}}, {{Index: 1}, {Index: 2}}} {
+		sess := &sessionInfo{Name: "domux", Recap: "some recap text", Windows: wins}
+		out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+		if strings.Contains(out, "some recap text") {
+			t.Fatalf("renderSession included recap on the session line (windows=%d): %q", len(wins), out)
+		}
 	}
 }
 
-func TestRenderSessionRecapShownForSingleWindow(t *testing.T) {
-	m := pickerModel{showDetails: true, width: 80}
-	// Session with 1 window (or 0)
-	sess := &sessionInfo{
-		Name:    "domux",
-		Recap:   "some recap text",
-		Windows: []windowInfo{{Index: 1}},
-	}
-	row := pickerRow{Kind: rowSession, Session: sess}
-	out := m.renderSession(row, false)
-	if !strings.Contains(out, "some recap text") {
-		t.Fatal("renderSession omitted recap for single-window session")
-	}
-
-	// Also test with 0 windows
-	sess.Windows = nil
-	out = m.renderSession(row, false)
-	if !strings.Contains(out, "some recap text") {
-		t.Fatal("renderSession omitted recap for 0-window session")
-	}
-}
-
-// The AI status badge belongs to the window it comes from. For a multi-window
-// session it renders on the window row, not the session row, so it must not
-// appear on both. The CLAUDING spinner glyph (frame 2 → claudeSpinnerFrames[1])
-// only ever comes from renderAIBadges, so it is a reliable marker for "a badge
-// was drawn here".
-func TestRenderSessionBadgeSuppressedForMultiWindow(t *testing.T) {
+// Same for the AI status badge: it belongs to the window row, never the session
+// line. The CLAUDING spinner glyph (frame 2 → claudeSpinnerFrames[1]) only ever
+// comes from renderAIBadges, so it is a reliable marker for "a badge was drawn".
+func TestRenderSessionNeverShowsBadge(t *testing.T) {
 	m := pickerModel{width: 80, spinnerFrame: 2}
 	glyph := claudeSpinnerFrames[1]
-	sess := &sessionInfo{
-		Name:    "domux",
-		Claude:  "CLAUDING",
-		Windows: []windowInfo{{Index: 1}, {Index: 2, Claude: "CLAUDING"}},
-	}
-	out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
-	if strings.Contains(out, glyph) {
-		t.Fatalf("renderSession drew an AI badge for a multi-window session: %q", out)
+	for _, wins := range [][]windowInfo{nil, {{Index: 1, Claude: "CLAUDING"}}, {{Index: 1}, {Index: 2, Claude: "CLAUDING"}}} {
+		sess := &sessionInfo{Name: "domux", Claude: "CLAUDING", Windows: wins}
+		out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+		if strings.Contains(out, glyph) {
+			t.Fatalf("renderSession drew an AI badge on the session line (windows=%d): %q", len(wins), out)
+		}
 	}
 }
 
-func TestRenderSessionBadgeShownForSingleWindow(t *testing.T) {
-	m := pickerModel{width: 80, spinnerFrame: 2}
+// The badge and recap that the session line no longer shows must still render on
+// the window row.
+func TestRenderWindowShowsBadgeAndRecap(t *testing.T) {
+	m := pickerModel{width: 80, spinnerFrame: 2, showDetails: true}
 	glyph := claudeSpinnerFrames[1]
-	sess := &sessionInfo{
-		Name:    "domux",
-		Claude:  "CLAUDING",
-		Windows: []windowInfo{{Index: 1, Claude: "CLAUDING"}},
-	}
-	out := m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
+	win := &windowInfo{Index: 1, Name: "main", Claude: "CLAUDING", Recap: "some recap text"}
+	out := m.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false)
 	if !strings.Contains(out, glyph) {
-		t.Fatalf("renderSession omitted the AI badge for a single-window session: %q", out)
+		t.Fatalf("renderWindow omitted the AI badge: %q", out)
 	}
-
-	// And with no windows at all (the common case), the badge still shows.
-	sess.Windows = nil
-	out = m.renderSession(pickerRow{Kind: rowSession, Session: sess}, false)
-	if !strings.Contains(out, glyph) {
-		t.Fatalf("renderSession omitted the AI badge for a 0-window session: %q", out)
+	if !strings.Contains(out, "some recap text") {
+		t.Fatalf("renderWindow omitted the recap: %q", out)
 	}
 }

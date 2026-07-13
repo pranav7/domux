@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -29,8 +30,17 @@ type SessionState struct {
 	// picker hides any recap dated at-or-before it, so a cleared workspace stops
 	// showing a stale recap but resurfaces once a fresh recap is written.
 	RecapClearedAt string `json:"recap_cleared_at,omitempty"`
-	CreatedAt      string `json:"created_at,omitempty"`
-	UpdatedAt      string `json:"updated_at,omitempty"`
+	// Windows is the last-seen tmux window layout, refreshed on every save while
+	// inside tmux. `domux resume` replays it to recreate windows after a reboot.
+	Windows   []WindowSnapshot `json:"windows,omitempty"`
+	CreatedAt string           `json:"created_at,omitempty"`
+	UpdatedAt string           `json:"updated_at,omitempty"`
+}
+
+type WindowSnapshot struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+	Cwd   string `json:"cwd,omitempty"`
 }
 
 type AIStates struct {
@@ -125,9 +135,45 @@ func loadSessionStateWithLegacy(session string) *SessionState {
 	return state
 }
 
+// snapshotWindows captures session's current tmux window layout, or nil when
+// tmux is unavailable / errors / the session has no windows. Best-effort: any
+// failure yields nil so a save never fails on account of the snapshot. The
+// session name is passed explicitly (not currentTmuxSession) so the snapshot is
+// correct even when saving state for a session other than the caller's own.
+func snapshotWindows(session string) []WindowSnapshot {
+	out, err := exec.Command("tmux", "list-windows", "-t", session, "-F",
+		"#{window_index}\t#{window_name}\t#{pane_current_path}").Output()
+	if err != nil {
+		return nil
+	}
+	var windows []WindowSnapshot
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		idx, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		windows = append(windows, WindowSnapshot{Index: idx, Name: parts[1], Cwd: parts[2]})
+	}
+	return windows
+}
+
 func saveSessionState(state *SessionState) error {
 	if state == nil || state.Name == "" {
 		return fmt.Errorf("session state needs a name")
+	}
+	// Refresh the window layout from live tmux. When tmux is unavailable (e.g. a
+	// hook or `domux resume` running from a bare shell) snapshotWindows returns
+	// nil and we keep the last-good layout already loaded on state — never
+	// overwrite a real snapshot with an empty one.
+	if wins := snapshotWindows(state.Name); wins != nil {
+		state.Windows = wins
 	}
 	now := time.Now().Format(timeFormat)
 	if state.CreatedAt == "" {
