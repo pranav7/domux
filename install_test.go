@@ -28,6 +28,19 @@ func captureInstallClaude(t *testing.T, args []string) (string, string, error) {
 	return string(outBytes), string(errBytes), err
 }
 
+func TestGeneratedTmuxConfigSetsWindowDefaults(t *testing.T) {
+	cfg := generatedTmuxConfig()
+	for _, want := range []string{
+		"set-option -g base-index 1",
+		"set-option -g pane-base-index 1",
+		"set-option -g renumber-windows on",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Fatalf("generated tmux config missing %q:\n%s", want, cfg)
+		}
+	}
+}
+
 func TestPatchedClaudeSettingsAddsCompactHooks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	settings, err := patchedClaudeSettings(path)

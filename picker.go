@@ -231,11 +231,6 @@ var (
 
 	pSpinnerOpenCode = pBadgeOpenCoding
 
-	// Per-window agent markers (✳/C/O) shown between a window's index and name.
-	pAgentClaude   = lipgloss.NewStyle().Foreground(lipgloss.Color(claudeBrandHex))
-	pAgentCodex    = lipgloss.NewStyle().Foreground(blue)
-	pAgentOpenCode = lipgloss.NewStyle().Foreground(pink)
-
 	pSpinnerCompacting = lipgloss.NewStyle().
 				Foreground(compactPurple).
 				Bold(true)
@@ -425,7 +420,7 @@ func newPickerModel(rows []pickerRow) pickerModel {
 	}
 	m.rebuildVisible()
 	for i, vi := range m.visible {
-		if isSelectablePickerRow(m.rows[vi]) {
+		if m.rowSelectable(vi) {
 			m.cursor = i
 			break
 		}
@@ -442,16 +437,29 @@ func (m *pickerModel) rebuildVisible() {
 			if r.Kind == rowTask && !m.showDetails {
 				continue
 			}
+			if r.Kind == rowWindow && (r.Session == nil || !r.Session.hasLiveActivity()) {
+				continue
+			}
 			m.visible = append(m.visible, i)
 		}
 		return
 	}
 
 	filterLower := strings.ToLower(filter)
+	// A session matches when its own name matches, or any of its windows' names
+	// match — so filtering by a window name (e.g. "merge queue") surfaces the
+	// session that owns it. Window rows carry their session pointer, so a single
+	// pass over rows populates the matched set for both kinds.
 	matched := make(map[string]bool)
 	for _, r := range m.rows {
-		if r.Kind == rowSession && r.Session != nil {
-			if strings.Contains(strings.ToLower(r.Session.Name), filterLower) {
+		switch r.Kind {
+		case rowSession:
+			if r.Session != nil && strings.Contains(strings.ToLower(r.Session.Name), filterLower) {
+				matched[r.Session.Name] = true
+			}
+		case rowWindow:
+			if r.Session != nil && r.Window != nil &&
+				strings.Contains(strings.ToLower(r.Window.Name), filterLower) {
 				matched[r.Session.Name] = true
 			}
 		}
@@ -478,6 +486,11 @@ func (m *pickerModel) rebuildVisible() {
 				}
 				m.visible = append(m.visible, i)
 			}
+		case rowWindow:
+			// Filtering expands matches so window-name search remains actionable.
+			if r.Session != nil && matched[r.Session.Name] {
+				m.visible = append(m.visible, i)
+			}
 		case rowTask:
 			if m.showDetails && r.Task != nil && matched[r.Task.SessionName] {
 				m.visible = append(m.visible, i)
@@ -489,6 +502,28 @@ func (m *pickerModel) rebuildVisible() {
 func isSelectablePickerRow(row pickerRow) bool {
 	return (row.Kind == rowSession && row.Session != nil) ||
 		(row.Kind == rowWindow && row.Window != nil && row.Session != nil)
+}
+
+// rowSelectable keeps one navigation level per session: expanded sessions use
+// their window rows; collapsed sessions use the session row.
+func (m pickerModel) rowSelectable(vi int) bool {
+	if vi < 0 || vi >= len(m.rows) {
+		return false
+	}
+	row := m.rows[vi]
+	if !isSelectablePickerRow(row) {
+		return false
+	}
+	if row.Kind == rowSession {
+		for _, visibleIndex := range m.visible {
+			visibleRow := m.rows[visibleIndex]
+			if visibleRow.Kind == rowWindow && visibleRow.Session != nil &&
+				visibleRow.Session.Name == row.Session.Name {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // isMainWorktreePath returns true when path looks like the main checkout of a
@@ -891,7 +926,7 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "g":
 			for i, vi := range m.visible {
-				if isSelectablePickerRow(m.rows[vi]) {
+				if m.rowSelectable(vi) {
 					m.cursor = i
 					break
 				}
@@ -899,7 +934,7 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "G":
 			for i := len(m.visible) - 1; i >= 0; i-- {
-				if isSelectablePickerRow(m.rows[m.visible[i]]) {
+				if m.rowSelectable(m.visible[i]) {
 					m.cursor = i
 					break
 				}
@@ -1041,12 +1076,17 @@ func (m pickerModel) selectRow(row pickerRow) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// selectedSession returns the session the cursor is on. The cursor normally
+// rests on a window row (session rows aren't selectable once expanded), so we
+// resolve the session from either a session row or a window row — both carry the
+// Session pointer. This keeps session-level actions (clear/reset/label/server/
+// provision/delete) working from a window row.
 func (m pickerModel) selectedSession() *sessionInfo {
 	if len(m.visible) == 0 || m.cursor < 0 || m.cursor >= len(m.visible) {
 		return nil
 	}
 	row := m.rows[m.visible[m.cursor]]
-	if row.Kind != rowSession {
+	if row.Kind != rowSession && row.Kind != rowWindow {
 		return nil
 	}
 	return row.Session
@@ -1143,25 +1183,20 @@ func (m *pickerModel) startLabelEdit() {
 
 func (m *pickerModel) startWindowNaming() {
 	session := m.selectedSession()
-	cwd := ""
-	target := ""
-	if session != nil {
-		target = session.Name
-		cwd = session.Path
-	} else if len(m.visible) > 0 && m.cursor < len(m.visible) {
-		row := m.rows[m.visible[m.cursor]]
-		if row.Kind == rowWindow && row.Session != nil {
-			target = row.Session.Name
-			if row.Window != nil {
-				cwd = row.Window.Path
-			}
-		}
-	}
-	if target == "" {
+	if session == nil {
 		return
 	}
+	// Root the new window at the current window's cwd when the cursor is on a
+	// window row; otherwise fall back to the session's path.
+	cwd := session.Path
+	if len(m.visible) > 0 && m.cursor < len(m.visible) {
+		row := m.rows[m.visible[m.cursor]]
+		if row.Kind == rowWindow && row.Window != nil && row.Window.Path != "" {
+			cwd = row.Window.Path
+		}
+	}
 	m.windowNaming = true
-	m.windowTarget = target
+	m.windowTarget = session.Name
 	m.windowCwd = cwd
 	m.labelInput.SetValue("")
 }
@@ -1379,7 +1414,7 @@ func (m *pickerModel) moveCursor(dir int) {
 		return
 	}
 	for i := m.cursor + dir; i >= 0 && i < len(m.visible); i += dir {
-		if isSelectablePickerRow(m.rows[m.visible[i]]) {
+		if m.rowSelectable(m.visible[i]) {
 			m.cursor = i
 			return
 		}
@@ -1394,17 +1429,17 @@ func (m *pickerModel) clampCursor() {
 	if m.cursor >= len(m.visible) {
 		m.cursor = len(m.visible) - 1
 	}
-	if isSelectablePickerRow(m.rows[m.visible[m.cursor]]) {
+	if m.rowSelectable(m.visible[m.cursor]) {
 		return
 	}
 	for i := m.cursor + 1; i < len(m.visible); i++ {
-		if isSelectablePickerRow(m.rows[m.visible[i]]) {
+		if m.rowSelectable(m.visible[i]) {
 			m.cursor = i
 			return
 		}
 	}
 	for i := m.cursor - 1; i >= 0; i-- {
-		if isSelectablePickerRow(m.rows[m.visible[i]]) {
+		if m.rowSelectable(m.visible[i]) {
 			m.cursor = i
 			return
 		}
@@ -2258,6 +2293,24 @@ func (s *sessionInfo) isEmptySlot() bool {
 		s.Claude == "" && s.Codex == "" && s.OpenCode == "" && s.PR == nil && !s.Server
 }
 
+// hasLiveActivity controls window expansion. Waiting agents remain expanded:
+// they are live sessions needing a precise window target, not dormant shells.
+func (s *sessionInfo) hasLiveActivity() bool {
+	if s == nil {
+		return false
+	}
+	if s.Claude != "" || s.Codex != "" || s.OpenCode != "" || s.Recap != "" {
+		return true
+	}
+	for i := range s.Windows {
+		w := &s.Windows[i]
+		if w.Claude != "" || w.Codex != "" || w.OpenCode != "" || w.Recap != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	s := row.Session
 	var line strings.Builder
@@ -2266,8 +2319,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	empty := s.isEmptySlot()
 
 	// A hollow ◌ marks a freshly-provisioned idle slot; everything else gets a
-	// plain space so the column still aligns. (The old ◇ main-worktree marker was
-	// dropped — every session now shows its windows, making it redundant.)
+	// plain space so the column still aligns.
 	mainGlyph := " "
 	if empty {
 		mainGlyph = pMainMark.Render("◌")
@@ -2317,9 +2369,12 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString(" " + pServer.Render("⚡"))
 	}
 
-	// No AI badge on the session line: windows are always expanded, so the badge
-	// (spinner + working label) belongs to the window row it comes from. Showing
-	// it here too would double-render the same status.
+	if !s.hasLiveActivity() && len(s.Windows) > 1 {
+		line.WriteString(pBranchDim.Render(fmt.Sprintf(" · %d windows", len(s.Windows))))
+	}
+
+	// Active sessions put AI badges on their expanded window rows. Idle sessions
+	// have no badge to duplicate.
 
 	if s.PR != nil {
 		pr := fmt.Sprintf("PR#%d", s.PR.Number)
@@ -2333,9 +2388,7 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 		line.WriteString("\n        " + strings.Join(details, pSep.Render(" · ")))
 	}
 
-	// No recap on the session line either — like the AI badge, the recap ※ block
-	// now hangs under the window row it belongs to (see renderWindow). PR details
-	// above are the session line's last content.
+	// Live recaps hang under the expanded window row they belong to.
 
 	result := line.String()
 	return result
@@ -2424,26 +2477,10 @@ func (m pickerModel) renderTask(row pickerRow, _ bool) string {
 
 // renderWindow renders a tmux window as an indented, jumpable sub-row under its
 // session. Layout mirrors renderTask (indent 8, aligned with the recap ※
-// column). The active window's glyph is highlighted; the AI badge reuses
-// renderAIBadges; the recap hangs under the row and is gated by showDetails —
-// the same tab toggle used for session recaps.
-// windowAgentGlyph returns the one-cell agent marker shown between a window's
-// index and name: ✳ (claude, orange), C (codex, blue), O (opencode, pink), or a
-// blank space when no agent is attached. Claude > Codex > OpenCode if more than
-// one is somehow set (one agent per window is the norm).
-func windowAgentGlyph(w *windowInfo) string {
-	switch {
-	case w.Claude != "":
-		return pAgentClaude.Render("✳")
-	case w.Codex != "":
-		return pAgentCodex.Render("C")
-	case w.OpenCode != "":
-		return pAgentOpenCode.Render("O")
-	default:
-		return " "
-	}
-}
-
+// column). The active window's name is highlighted; which agent is attached is
+// conveyed by the AI badge (spinner + working label) rather than a per-window
+// icon; the recap hangs under the row and is gated by showDetails — the same tab
+// toggle used for session recaps.
 func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 	w := row.Window
 	nameStyle := lipgloss.NewStyle().Foreground(overlay0)
@@ -2463,9 +2500,9 @@ func (m pickerModel) renderWindow(row pickerRow, selected bool) string {
 	} else {
 		line.WriteString("        ")
 	}
-	// {index} {agent-glyph} {name} — the glyph replaces the old middle-dot and
-	// identifies which agent is attached (✳ claude / C codex / O opencode / blank).
-	line.WriteString(nameStyle.Render(strconv.Itoa(w.Index)) + " " + windowAgentGlyph(w) + " " + nameStyle.Render(w.Name))
+	// {index} {name} — the attached agent is identified by the AI badge that
+	// follows (spinner + working label), so no per-window icon is needed.
+	line.WriteString(nameStyle.Render(strconv.Itoa(w.Index)) + "  " + nameStyle.Render(w.Name))
 	line.WriteString(renderAIBadges(w.Claude, w.Codex, w.OpenCode, w.ClaudeLabel, w.CodexLabel, m.spinnerFrame))
 
 	if m.showDetails && w.Recap != "" {
@@ -2742,9 +2779,8 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 			rows = append(rows, pickerRow{Kind: rowRule, Group: e.group})
 		}
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
-		// Always expand windows as sub-rows — even a single-window session. The
-		// session line carries only session-level info; per-window agent status and
-		// recap live on these rows.
+		// Keep every window in the row model. Default visibility collapses dormant
+		// sessions; live activity and filtering expose these rows.
 		for i := range e.session.Windows {
 			rows = append(rows, pickerRow{
 				Kind:    rowWindow,

@@ -270,6 +270,65 @@ func TestPickerFilterSkipsLeadingSpacer(t *testing.T) {
 	}
 }
 
+func TestPickerFilterMatchesWindowName(t *testing.T) {
+	// Filtering by a window name should surface the owning session *and* keep its
+	// window rows visible — even though the session name itself doesn't match.
+	m := newPickerModel(rowsFromEntries([]groupEntry{
+		{group: "audrey", session: &sessionInfo{
+			Name:    "audrey",
+			Windows: []windowInfo{{Index: 1, Name: "prod uk"}, {Index: 2, Name: "merge queue"}},
+		}},
+		{group: "domux", session: &sessionInfo{
+			Name:    "domux",
+			Windows: []windowInfo{{Index: 1, Name: "main"}},
+		}},
+	}))
+	m.filter.SetValue("merge queue")
+	m.rebuildVisible()
+
+	var sawSession, sawWindow bool
+	for _, vi := range m.visible {
+		row := m.rows[vi]
+		if row.Kind == rowSession && row.Session != nil && row.Session.Name == "audrey" {
+			sawSession = true
+		}
+		if row.Kind == rowWindow && row.Window != nil && row.Window.Name == "merge queue" {
+			sawWindow = true
+		}
+		if row.Session != nil && row.Session.Name == "domux" {
+			t.Fatalf("domux should not match window filter %q", m.filter.Value())
+		}
+	}
+	if !sawSession {
+		t.Fatalf("window-name filter should surface the owning session; visible=%v", m.visible)
+	}
+	if !sawWindow {
+		t.Fatalf("window-name filter should keep the matching window row; visible=%v", m.visible)
+	}
+}
+
+func TestPickerFilterKeepsWindowRowsForSessionMatch(t *testing.T) {
+	// Filtering expands matching sessions so precise window targets remain usable.
+	m := newPickerModel(rowsFromEntries([]groupEntry{
+		{group: "domux", session: &sessionInfo{
+			Name:    "domux",
+			Windows: []windowInfo{{Index: 1, Name: "main"}, {Index: 2, Name: "scratch"}},
+		}},
+	}))
+	m.filter.SetValue("domux")
+	m.rebuildVisible()
+
+	windowRows := 0
+	for _, vi := range m.visible {
+		if m.rows[vi].Kind == rowWindow {
+			windowRows++
+		}
+	}
+	if windowRows != 2 {
+		t.Fatalf("session-name match should keep both window rows, got %d", windowRows)
+	}
+}
+
 func TestPickerFilterEnterAllowsShortcutsOnFilteredList(t *testing.T) {
 	m := newPickerModel(rowsFromEntries([]groupEntry{
 		{group: "g", session: &sessionInfo{Name: "alpha"}},
@@ -1154,8 +1213,7 @@ func TestRowsFromEntriesWindowRows(t *testing.T) {
 }
 
 func TestRowsFromEntriesSingleWindowEmitsWindowRow(t *testing.T) {
-	// Windows are always expanded now — a single-window session emits exactly one
-	// rowWindow under its session row.
+	// All windows remain in the row model; visibility decides whether they expand.
 	single := &sessionInfo{
 		Name: "solo", Path: "/p",
 		Windows: []windowInfo{{Index: 1, Name: "a"}},
@@ -1169,6 +1227,59 @@ func TestRowsFromEntriesSingleWindowEmitsWindowRow(t *testing.T) {
 	}
 	if windowRows != 1 {
 		t.Fatalf("single-window session should emit exactly one rowWindow, got %d; rows %+v", windowRows, rows)
+	}
+}
+
+func TestPickerCollapsesInactiveWindows(t *testing.T) {
+	sess := &sessionInfo{
+		Name:    "idle",
+		Windows: []windowInfo{{Index: 1, Name: "shell"}, {Index: 2, Name: "logs"}},
+	}
+	m := newPickerModel(rowsFromEntries([]groupEntry{{group: "g", session: sess}}))
+
+	for _, vi := range m.visible {
+		if m.rows[vi].Kind == rowWindow {
+			t.Fatalf("inactive window should be collapsed: %+v", m.rows[vi])
+		}
+	}
+	row := m.rows[m.visible[m.cursor]]
+	if row.Kind != rowSession || row.Session == nil || row.Session.Name != "idle" {
+		t.Fatalf("cursor = %+v, want collapsed session row", row)
+	}
+}
+
+func TestPickerExpandsLiveSessionWindows(t *testing.T) {
+	sess := &sessionInfo{
+		Name:    "live",
+		Claude:  "WAITING",
+		Windows: []windowInfo{{Index: 1, Name: "shell"}, {Index: 2, Name: "agent", Claude: "WAITING"}},
+	}
+	m := newPickerModel(rowsFromEntries([]groupEntry{{group: "g", session: sess}}))
+
+	windowRows := 0
+	for _, vi := range m.visible {
+		if m.rows[vi].Kind == rowWindow {
+			windowRows++
+		}
+	}
+	if windowRows != 2 {
+		t.Fatalf("live session window rows = %d, want 2", windowRows)
+	}
+	if row := m.rows[m.visible[m.cursor]]; row.Kind != rowWindow {
+		t.Fatalf("cursor = %+v, want first live window", row)
+	}
+}
+
+func TestRenderInactiveSessionShowsCollapsedWindowCount(t *testing.T) {
+	sess := &sessionInfo{
+		Name:    "idle",
+		Windows: []windowInfo{{Index: 1}, {Index: 2}, {Index: 3}},
+	}
+	out := stripTestANSI((pickerModel{width: 80}).renderSession(
+		pickerRow{Kind: rowSession, Session: sess}, false,
+	))
+	if !strings.Contains(out, "3 windows") {
+		t.Fatalf("collapsed session missing window count: %q", out)
 	}
 }
 
@@ -1197,52 +1308,16 @@ func TestRenderWindowRecapGatedByDetails(t *testing.T) {
 	}
 }
 
-func TestWindowAgentGlyph(t *testing.T) {
-	cases := []struct {
-		name   string
-		w      *windowInfo
-		glyph  string
-		absent []string
-	}{
-		{"claude", &windowInfo{Claude: "CLAUDING"}, "✳", []string{"C", "O"}},
-		{"codex", &windowInfo{Codex: "CODEXING"}, "C", []string{"✳", "O"}},
-		{"opencode", &windowInfo{OpenCode: "CODING"}, "O", []string{"✳"}},
-		{"none", &windowInfo{}, "", []string{"✳", "C", "O"}},
-		{"claude-wins", &windowInfo{Claude: "CLAUDING", Codex: "CODEXING"}, "✳", nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			out := stripTestANSI(windowAgentGlyph(tc.w))
-			if tc.glyph == "" {
-				if strings.TrimSpace(out) != "" {
-					t.Fatalf("no-agent glyph should be blank, got %q", out)
-				}
-				return
-			}
-			if !strings.Contains(out, tc.glyph) {
-				t.Fatalf("glyph = %q, want to contain %q", out, tc.glyph)
-			}
-			for _, a := range tc.absent {
-				if strings.Contains(out, a) {
-					t.Fatalf("glyph %q must not contain %q", out, a)
-				}
-			}
-		})
-	}
-}
-
-func TestRenderWindowShowsAgentGlyphNotMiddleDot(t *testing.T) {
+func TestRenderWindowShowsIndexNameNoMiddleDot(t *testing.T) {
 	m := pickerModel{width: 120}
-	// No agent badge here, so the only place a "·" could appear is the old
-	// index/name separator — which the agent glyph now replaces.
-	win := &windowInfo{Index: 1, Name: "main", Claude: "CLAUDING"}
-	out := stripTestANSI(m.renderWindow(pickerRow{Kind: rowWindow, Window: win}, false))
-	if !strings.Contains(out, "1 ✳ main") {
-		t.Fatalf("renderWindow should render `index glyph name` (got %q)", out)
-	}
+	// The window row is just `index name` now — no agent glyph, no middle-dot
+	// separator. Use an agent-less window so no badge (which uses "·") appears.
 	idle := stripTestANSI(m.renderWindow(pickerRow{Kind: rowWindow, Window: &windowInfo{Index: 2, Name: "scratch"}}, false))
-	if strings.Contains(idle, "·") {
-		t.Fatalf("renderWindow should no longer use the · separator: %q", idle)
+	if !strings.Contains(idle, "2  scratch") {
+		t.Fatalf("renderWindow should render `index name` (got %q)", idle)
+	}
+	if strings.Contains(idle, "·") || strings.Contains(idle, "✳") {
+		t.Fatalf("renderWindow should not use a separator glyph: %q", idle)
 	}
 }
 
@@ -1273,6 +1348,59 @@ func TestWindowRowIsSelectable(t *testing.T) {
 	sess := &sessionInfo{Name: "test"}
 	if !isSelectablePickerRow(pickerRow{Kind: rowWindow, Session: sess, Window: &windowInfo{Index: 1}}) {
 		t.Errorf("rowWindow should be selectable")
+	}
+}
+
+func TestSessionRowWithWindowsNotSelectable(t *testing.T) {
+	// A live session's visible window rows own navigation.
+	sess := &sessionInfo{
+		Name:    "domux",
+		Path:    "/p",
+		Claude:  "WAITING",
+		Windows: []windowInfo{{Index: 1, Name: "main"}, {Index: 2, Name: "scratch"}},
+	}
+	m := newPickerModel(rowsFromEntries([]groupEntry{{group: "domux", session: sess}}))
+
+	row := m.rows[m.visible[m.cursor]]
+	if row.Kind != rowWindow || row.Window == nil || row.Window.Index != 1 {
+		t.Fatalf("initial cursor = %+v, want first window row", row)
+	}
+
+	// Neither moving down-then-up nor jumping to top (g) should ever land on the
+	// session row.
+	m.moveCursor(1)
+	m.moveCursor(-1)
+	if got := m.rows[m.visible[m.cursor]]; got.Kind == rowSession {
+		t.Fatalf("navigation landed on session row: %+v", got)
+	}
+
+	// Every visible session-with-windows row must be non-selectable.
+	for _, vi := range m.visible {
+		r := m.rows[vi]
+		if r.Kind == rowSession && m.rowSelectable(vi) {
+			t.Fatalf("session row with windows should not be selectable: %+v", r)
+		}
+	}
+}
+
+func TestSelectedSessionResolvesFromWindowRow(t *testing.T) {
+	// With the cursor on a window row, session-level actions must still resolve
+	// the owning session (clear/reset/label/server/provision/delete).
+	sess := &sessionInfo{
+		Name:    "domux",
+		Path:    "/p",
+		Label:   "PBC",
+		Claude:  "WAITING",
+		Windows: []windowInfo{{Index: 1, Name: "main"}},
+	}
+	m := newPickerModel(rowsFromEntries([]groupEntry{{group: "domux", session: sess}}))
+
+	if row := m.rows[m.visible[m.cursor]]; row.Kind != rowWindow {
+		t.Fatalf("expected cursor on window row, got %+v", row)
+	}
+	got := m.selectedSession()
+	if got == nil || got.Name != "domux" {
+		t.Fatalf("selectedSession from window row = %+v, want domux", got)
 	}
 }
 
@@ -1315,6 +1443,7 @@ func TestRefreshRowsRestoresWindowCursor(t *testing.T) {
 	sess := &sessionInfo{
 		Name:    "domux",
 		Path:    "/p",
+		Claude:  "WAITING",
 		Windows: []windowInfo{{Index: 1, Name: "w1"}, {Index: 2, Name: "w2"}},
 	}
 	initialRows := rowsFromEntries([]groupEntry{{group: "domux", session: sess}})
@@ -1346,6 +1475,7 @@ func TestRefreshRowsRestoresWindowCursor(t *testing.T) {
 	newSess := &sessionInfo{
 		Name:    "domux",
 		Path:    "/p",
+		Claude:  "WAITING",
 		Windows: []windowInfo{{Index: 1, Name: "w1"}, {Index: 2, Name: "w2"}},
 	}
 	newRows := rowsFromEntries([]groupEntry{{group: "domux", session: newSess}})
@@ -1367,7 +1497,8 @@ func TestRefreshRowsRestoresWindowCursor(t *testing.T) {
 }
 
 func TestRefreshRowsRestoresSessionCursor(t *testing.T) {
-	// Build rows with session + 2 windows
+	// A collapsed idle session owns navigation even though window rows remain in
+	// the model. Its session cursor must survive refresh.
 	sess := &sessionInfo{
 		Name:    "domux",
 		Path:    "/p",
@@ -1386,7 +1517,6 @@ func TestRefreshRowsRestoresSessionCursor(t *testing.T) {
 		}
 	}
 
-	// Build fresh rows
 	newSess := &sessionInfo{
 		Name:    "domux",
 		Path:    "/p",
@@ -1410,9 +1540,7 @@ func TestRefreshRowsRestoresSessionCursor(t *testing.T) {
 	}
 }
 
-// Windows are always expanded now, so the recap ※ block always hangs under the
-// window row it belongs to — never on the session line, regardless of window
-// count.
+// Live recaps hang under their window row, never on the session line.
 func TestRenderSessionNeverShowsRecap(t *testing.T) {
 	m := pickerModel{showDetails: true, width: 80}
 	for _, wins := range [][]windowInfo{nil, {{Index: 1}}, {{Index: 1}, {Index: 2}}} {
@@ -1424,9 +1552,7 @@ func TestRenderSessionNeverShowsRecap(t *testing.T) {
 	}
 }
 
-// Same for the AI status badge: it belongs to the window row, never the session
-// line. The CLAUDING spinner glyph (frame 2 → claudeSpinnerFrames[1]) only ever
-// comes from renderAIBadges, so it is a reliable marker for "a badge was drawn".
+// AI badges belong to window rows, never the session line.
 func TestRenderSessionNeverShowsBadge(t *testing.T) {
 	m := pickerModel{width: 80, spinnerFrame: 2}
 	glyph := claudeSpinnerFrames[1]
