@@ -49,6 +49,22 @@ func TestParseUsageSkipsMissingWindows(t *testing.T) {
 	}
 }
 
+func TestParseUsageSkipsWindowMissingUtilization(t *testing.T) {
+	// A window object present but missing the utilization field is a partial
+	// schema drift — it must be skipped, not rendered as a fabricated 0%.
+	body := []byte(`{
+		"five_hour":  {"utilization": 15, "resets_at": "2026-07-21T19:29:00Z"},
+		"seven_day":  {"resets_at": "2026-07-27T19:59:00Z"}
+	}`)
+	snap, err := parseUsage(body, time.Now())
+	if err != nil {
+		t.Fatalf("parseUsage: %v", err)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Label != "Current session" {
+		t.Fatalf("expected only the session window, got %#v", snap.Windows)
+	}
+}
+
 func TestParseUsageErrorsOnGarbage(t *testing.T) {
 	if _, err := parseUsage([]byte(`not json`), time.Now()); err == nil {
 		t.Fatalf("expected error on malformed JSON")

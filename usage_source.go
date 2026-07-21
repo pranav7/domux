@@ -33,8 +33,12 @@ type UsageSnapshot struct {
 // GET /api/oauth/usage. If the real field names differ, fix them HERE — the
 // struct tags are the single source of coupling to the endpoint.
 type rawUsageWindow struct {
-	Utilization float64 `json:"utilization"` // NOTE: assumed 0-100. If the API sends 0..1 fractions, multiply by 100 in parseUsage.
-	ResetsAt    string  `json:"resets_at"`
+	// Utilization is a pointer so a window object present but missing the
+	// utilization field (a partial schema drift) is distinguishable from a
+	// genuine 0% — the former is skipped rather than rendered as a fabricated
+	// 0% bar, preserving the "never fabricate" contract.
+	Utilization *float64 `json:"utilization"` // NOTE: assumed 0-100. If the API sends 0..1 fractions, multiply by 100 in parseUsage.
+	ResetsAt    string   `json:"resets_at"`
 }
 
 type rawUsage struct {
@@ -52,10 +56,10 @@ func parseUsage(data []byte, now time.Time) (UsageSnapshot, error) {
 	}
 	snap := UsageSnapshot{FetchedAt: now}
 	add := func(label string, w *rawUsageWindow) {
-		if w == nil {
+		if w == nil || w.Utilization == nil {
 			return
 		}
-		win := UsageWindow{Label: label, Percent: clampPercent(w.Utilization)}
+		win := UsageWindow{Label: label, Percent: clampPercent(*w.Utilization)}
 		if t, err := time.Parse(time.RFC3339, w.ResetsAt); err == nil {
 			win.ResetsAt = t
 		}
