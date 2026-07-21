@@ -40,6 +40,8 @@ Both use the Catppuccin Mocha palette declared in `tui.go`.
 
 **Tmux interop is `exec.Command` only.** No library — just shell out (`currentTmuxSession`, `tmuxSessionExists`, `attachTmuxSession`, etc.). After mutating session state that affects the status bar, call `refreshTmuxClient` (`tmux refresh-client -S`).
 
+**Claude usage provider (`usage_source.go`).** The only outbound HTTP in the repo: reads the Claude OAuth token (env `DOMUX_CLAUDE_TOKEN` → `~/.claude/.credentials.json` → macOS Keychain via `security`) and calls `GET /api/oauth/usage`. All fragile external contact — endpoint URL, `anthropic-beta` value, Keychain service/account, and the response field names (`CONFIRM-AT-VERIFY` constants) — is isolated here so a schema change is a one-file fix; `usage.go`/`picker.go` see only the normalized `UsageSnapshot`. Two invariants: **never log/persist/render the token**, and **never fabricate a number on schema drift** — parse into pointer fields and skip a window when a value is absent (an absent `utilization` must not become `0%`). Failures return a sentinel/generic error the UI renders as an honest "unavailable" state. `DOMUX_USAGE_FIXTURE` renders a captured JSON with no network for tests/verification.
+
 ## Conventions
 
 - Atomic writes: write to `path + ".tmp"` then `os.Rename` (see `saveList`, `saveSessionState`). Use this pattern for any new on-disk state.

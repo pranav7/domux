@@ -89,6 +89,16 @@ by the user running the read-only grep on their own machine.)
 If any of these is wrong at runtime, the failure surfaces as the honest "unavailable"
 state, not a crash or a fabricated number.
 
+> **Status (as-built, 2026-07-21):** Implemented on `main`. The constants remain
+> best-guess in `usage_source.go` with `CONFIRM-AT-VERIFY` markers — **still to be pinned
+> against one live response.** Env overrides ship for verifying without pinning:
+> `DOMUX_USAGE_FIXTURE=<path>` (render a captured JSON with no network) and
+> `DOMUX_CLAUDE_TOKEN=<tok>` (supply the token directly, bypassing the Keychain).
+> Hardening learned in review: a window present but missing its `utilization` field is now
+> **skipped, not rendered as 0%** (partial schema drift must not fabricate a number). When
+> pinning the real field names, keep that invariant — prefer pointer fields + skip-on-nil
+> over defaulting to zero.
+
 ## Architecture
 
 Three isolated units, mirroring the existing `picker.go` + `pr_cache.go` + palette-in-`tui.go`
