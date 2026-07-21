@@ -1742,6 +1742,18 @@ func (m pickerModel) renderLeftColumn(width, regionHeight int) []string {
 
 // logoHeaderLines renders the two-line block-art logo (with optional status
 // box right-aligned to width) plus the "switcher" tag.
+// rightAlignPad returns the space count to push a right-hand segment of width
+// rightW to the right edge of a line of the given total width, given the
+// left-hand content already occupies leftW columns. It reserves a 4-column
+// margin and never returns less than 1 (so the two segments never touch).
+func rightAlignPad(width, leftW, rightW int) int {
+	pad := width - leftW - rightW - 4
+	if pad < 1 {
+		return 1
+	}
+	return pad
+}
+
 func (m pickerModel) logoHeaderLines(width int) []string {
 	logoLines := []string{
 		"█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀",
@@ -1770,10 +1782,7 @@ func (m pickerModel) logoHeaderLines(width int) []string {
 	for i, line := range logoLines {
 		rendered := "    " + logoStyle.Render(line)
 		if i == 0 && statusBox != "" {
-			pad := width - lipgloss.Width(rendered) - lipgloss.Width(statusBox) - 4
-			if pad < 1 {
-				pad = 1
-			}
+			pad := rightAlignPad(width, lipgloss.Width(rendered), lipgloss.Width(statusBox))
 			out[i+1] = rendered + strings.Repeat(" ", pad) + statusBox
 			continue
 		}
@@ -1783,10 +1792,7 @@ func (m pickerModel) logoHeaderLines(width int) []string {
 			// collides with the transient status toast on the logo's first line.
 			if m.usage != nil {
 				if indicator := renderUsageIndicator(*m.usage); indicator != "" {
-					pad := width - lipgloss.Width(rendered) - lipgloss.Width(indicator) - 4
-					if pad < 1 {
-						pad = 1
-					}
+					pad := rightAlignPad(width, lipgloss.Width(rendered), lipgloss.Width(indicator))
 					rendered += strings.Repeat(" ", pad) + indicator
 				}
 			}
