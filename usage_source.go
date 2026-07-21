@@ -191,7 +191,7 @@ func tokenFromCredentialsFile() (string, error) {
 }
 
 func tokenFromKeychain() (string, error) {
-	account := os.Getenv("USER")
+	account := os.Getenv("USER") // CONFIRM-AT-VERIFY (-a account label for the Keychain item)
 	out, err := exec.Command("security", "find-generic-password", "-s", keychainService, "-a", account, "-w").Output()
 	if err != nil {
 		return "", err
