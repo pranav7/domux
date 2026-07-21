@@ -110,6 +110,67 @@ func setSessionLabel(session, label string) error {
 	return refreshTmuxClient()
 }
 
+// clearWindowNameCommand resets the target window's tmux title back to
+// automatic-rename (the live pane command), undoing any manual rename-window.
+// Defaults to the current session/window so it works both from a CLI
+// invocation and from the bind-key that passes them explicitly.
+func clearWindowNameCommand(args []string) error {
+	fs := flag.NewFlagSet("clear-window-name", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	sessionFlag := fs.String("session", "", "tmux session name")
+	windowFlag := fs.String("window", "", "tmux window index")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("clear-window-name does not accept arguments")
+	}
+	session := *sessionFlag
+	if session == "" {
+		var err error
+		session, err = currentTmuxSession()
+		if err != nil {
+			return err
+		}
+	}
+	window := *windowFlag
+	if window == "" {
+		window = currentTmuxWindowIndex()
+	}
+	return clearTmuxWindowName(session, window)
+}
+
+func currentTmuxWindowIndex() string {
+	out, err := execOutput("tmux", tmuxDisplayArgs("#{window_index}")...)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// clearTmuxWindowName reverts target's name to what automatic-rename would
+// show. rename-window always disables automatic-rename regardless of the
+// name given (per tmux(1)), so re-enable it explicitly afterward — and rename
+// to the live automatic-rename-format value first so the title updates
+// immediately rather than waiting on the next pane activity to recompute it.
+func clearTmuxWindowName(session, window string) error {
+	target := session
+	if window != "" {
+		target = session + ":" + window
+	}
+	liveName, err := execOutput("tmux", "display-message", "-t", target, "-p", "#{automatic-rename-format}")
+	if err != nil {
+		return fmt.Errorf("tmux display-message %s: %w", target, err)
+	}
+	if out, err := exec.Command("tmux", "rename-window", "-t", target, liveName).CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux rename-window %s: %w: %s", target, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("tmux", "set-window-option", "-t", target, "automatic-rename", "on").CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux set-window-option %s: %w: %s", target, err, strings.TrimSpace(string(out)))
+	}
+	return refreshTmuxClient()
+}
+
 func aiStateCommand(args []string) error {
 	fs := flag.NewFlagSet("ai-state", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)

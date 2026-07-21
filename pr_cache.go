@@ -53,6 +53,14 @@ func currentPRRefreshSessions() ([]prRefreshSession, error) {
 					session.Root = root
 				}
 			}
+			// A session sitting on the repo's default branch has no PR of its
+			// own to show — `gh pr list --head main` matches any historical PR
+			// that happened to be opened head=main (e.g. a same-branch PR merged
+			// months ago), surfacing a stale badge that never clears because the
+			// next refresh tick just looks it up again.
+			if base, err := defaultBaseBranch(path); err == nil && session.Branch == base {
+				session.Branch = ""
+			}
 		}
 		sessions = append(sessions, session)
 	}

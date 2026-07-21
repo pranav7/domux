@@ -79,6 +79,8 @@ func runCommand(name string, args []string) error {
 		return setServerSession()
 	case "label":
 		return labelCommand(args)
+	case "clear-window-name":
+		return clearWindowNameCommand(args)
 	case "ai-state":
 		return aiStateCommand(args)
 	case "workspace":

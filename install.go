@@ -91,6 +91,7 @@ bind-key f run-shell '$HOME/bin/domux clear-state' \; display-message "domux ses
 
 bind-key N command-prompt -p "Session label:" "run-shell '$HOME/bin/domux label --session \"#{session_name}\" set \"%%\"'"
 bind-key n run-shell '$HOME/bin/domux label --session "#{session_name}" clear' \; display-message "domux label cleared"
+bind-key R run-shell '$HOME/bin/domux clear-window-name --session "#{session_name}" --window "#{window_index}"' \; display-message "domux window name cleared"
 
 set-option -g status-right '#($HOME/bin/domux status "#{session_name}" "#{pane_current_path}") #[fg=#{@tertiary-bg},bg=#{status-bg}]#[fg=#{status-fg},bg=#{@tertiary-bg}] %H:%M #[fg=#{@tertiary-bg},bg=#{status-bg}] #[fg=#{@quaternary-bg},bg=#{status-bg}]#[fg=#{status-fg},bg=#{@quaternary-bg}] %d-%b-%y   '
 `) + "\n"

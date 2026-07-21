@@ -78,6 +78,37 @@ func TestRefreshPRCachesWritesDedupeAndPrunes(t *testing.T) {
 	assertMissing(t, filepath.Join(homeDir, ".tmux-pr-detached"))
 }
 
+func TestCurrentPRRefreshSessionsSkipsDefaultBranch(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	root := setupGitWorkspaceRepo(t)
+
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1 $2" in
+"list-sessions -F") echo "onmain" ;;
+"display-message -t") echo "`+root+`" ;;
+esac
+exit 0
+`, callFile)
+
+	sessions, err := currentPRRefreshSessions()
+	if err != nil {
+		t.Fatalf("currentPRRefreshSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v, want 1", sessions)
+	}
+	// A session sitting on the repo's default branch has no PR of its own;
+	// `gh pr list --head main` would match any stale historical PR opened
+	// head=main instead, so the branch must be blanked to skip the lookup.
+	if sessions[0].Branch != "" {
+		t.Fatalf("Branch = %q, want empty for default-branch session", sessions[0].Branch)
+	}
+}
+
 func TestRefreshPRCachesKeepsCacheOnLookupError(t *testing.T) {
 	homeDir := t.TempDir()
 	path := filepath.Join(homeDir, ".tmux-pr-s1")
