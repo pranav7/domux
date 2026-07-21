@@ -153,8 +153,13 @@ func newUsageProvider() UsageProvider {
 	if path := strings.TrimSpace(os.Getenv("DOMUX_USAGE_FIXTURE")); path != "" {
 		return fixtureUsageProvider{path: path}
 	}
+	// No http.Client.Timeout: the caller (usageFetchCmd) supplies a ctx
+	// deadline that propagates via http.NewRequestWithContext, so a timeout
+	// unwraps cleanly to context.DeadlineExceeded (a client Timeout would race
+	// it and produce an error that does not, muddying the "network timeout"
+	// reason the TUI shows).
 	return httpUsageProvider{
-		client:   &http.Client{Timeout: usageFetchTimeout},
+		client:   &http.Client{},
 		tokenFn:  readClaudeToken,
 		endpoint: usageEndpoint,
 	}
