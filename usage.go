@@ -179,3 +179,11 @@ func renderUsageLabel(label string) string {
 	}
 	return uLabel.Render(label[:i]) + uFable.Render(fable) + uLabel.Render(label[i+len(fable):])
 }
+
+// runUsage opens the usage popup (a read-only bubbletea program).
+func runUsage() error {
+	m := newUsageModel(newUsageProvider())
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}

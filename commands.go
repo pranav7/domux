@@ -24,6 +24,11 @@ func runCommand(name string, args []string) error {
 			return fmt.Errorf("%s does not accept arguments", name)
 		}
 		return runPicker()
+	case "usage":
+		if len(args) != 0 {
+			return fmt.Errorf("usage does not accept arguments")
+		}
+		return runUsage()
 	case "todo":
 		if len(args) != 0 {
 			return fmt.Errorf("todo does not accept arguments")
