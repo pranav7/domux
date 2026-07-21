@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,5 +67,86 @@ func TestClampPercent(t *testing.T) {
 		if got := clampPercent(in); got != want {
 			t.Fatalf("clampPercent(%v) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// roundTripFunc lets a test stand in for the network without a server.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}
+}
+
+func TestTokenFromCredentialsJSON(t *testing.T) {
+	tok, err := tokenFromCredentialsJSON([]byte(`{"claudeAiOauth":{"accessToken":"abc123"}}`))
+	if err != nil || tok != "abc123" {
+		t.Fatalf("token=%q err=%v", tok, err)
+	}
+	if _, err := tokenFromCredentialsJSON([]byte(`{"claudeAiOauth":{}}`)); err == nil {
+		t.Fatalf("expected error when accessToken missing")
+	}
+}
+
+func TestFetchSetsAuthAndBetaHeaders(t *testing.T) {
+	var gotURL, gotAuth, gotBeta string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		gotAuth = r.Header.Get("Authorization")
+		gotBeta = r.Header.Get("anthropic-beta")
+		return jsonResponse(200, `{"five_hour":{"utilization":15,"resets_at":"2026-07-21T19:29:00Z"}}`), nil
+	})}
+	p := httpUsageProvider{client: client, tokenFn: func() (string, error) { return "tok", nil }, endpoint: usageEndpoint}
+	snap, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if gotURL != usageEndpoint {
+		t.Fatalf("URL = %q", gotURL)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Fatalf("Authorization = %q", gotAuth)
+	}
+	if gotBeta != anthropicBetaOAuth {
+		t.Fatalf("anthropic-beta = %q", gotBeta)
+	}
+	if len(snap.Windows) != 1 {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+}
+
+func TestFetchMapsAuthFailure(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(401, `{"error":"unauthorized"}`), nil
+	})}
+	p := httpUsageProvider{client: client, tokenFn: func() (string, error) { return "tok", nil }, endpoint: usageEndpoint}
+	if _, err := p.Fetch(context.Background()); err != errAuthRejected {
+		t.Fatalf("err = %v, want errAuthRejected", err)
+	}
+}
+
+func TestFetchMapsMissingToken(t *testing.T) {
+	p := httpUsageProvider{
+		client:   &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return jsonResponse(200, "{}"), nil })},
+		tokenFn:  func() (string, error) { return "", errNoCredentials },
+		endpoint: usageEndpoint,
+	}
+	if _, err := p.Fetch(context.Background()); err != errNoCredentials {
+		t.Fatalf("err = %v, want errNoCredentials", err)
+	}
+}
+
+func TestFetchMapsNon200(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(500, `oops`), nil
+	})}
+	p := httpUsageProvider{client: client, tokenFn: func() (string, error) { return "tok", nil }, endpoint: usageEndpoint}
+	if _, err := p.Fetch(context.Background()); err == nil || err == errAuthRejected {
+		t.Fatalf("expected a generic non-200 error, got %v", err)
 	}
 }
