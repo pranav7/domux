@@ -187,3 +187,32 @@ func runUsage() error {
 	_, err := p.Run()
 	return err
 }
+
+// renderUsageIndicator renders the compact top-right switcher indicator, e.g.
+// "ses 15% · wk 24% · fab 4%", each percentage in its pressure color. Returns
+// "" for an empty snapshot so the caller hides the indicator entirely — it
+// never fabricates numbers.
+func renderUsageIndicator(snap UsageSnapshot) string {
+	if len(snap.Windows) == 0 {
+		return ""
+	}
+	segs := make([]string, 0, len(snap.Windows))
+	for _, w := range snap.Windows {
+		pct := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(fmt.Sprintf("%d%%", w.Percent))
+		segs = append(segs, usageTag(w.Label)+" "+pct)
+	}
+	return strings.Join(segs, uLabel.Render(" · "))
+}
+
+// usageTag maps a window label to its short colored tag ("ses"/"wk"/"fab"),
+// with the Fable tag in crimson to match the popup.
+func usageTag(label string) string {
+	switch {
+	case strings.Contains(label, "Fable"):
+		return uFable.Render("fab")
+	case strings.Contains(label, "session"):
+		return uLabel.Render("ses")
+	default:
+		return uLabel.Render("wk")
+	}
+}

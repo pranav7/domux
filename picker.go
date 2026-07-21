@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -116,6 +117,8 @@ type pickerModel struct {
 	previewBig     bool
 	helpOpen       bool
 	resume         *resumeJob
+	usageProvider  UsageProvider  // fetches the top-right usage indicator (nil-safe)
+	usage          *UsageSnapshot // last successful usage snapshot; nil until first success
 	// selected is the session the user chose with enter. It is read by
 	// runPickerProgram after the tea program exits — the attach happens once
 	// bubbletea has released the terminal, never inline (see runPickerProgram).
@@ -141,6 +144,15 @@ type pickerSpinnerMsg struct{}
 
 type pickerPRRefreshTickMsg struct{}
 
+// pickerUsageRefreshMsg carries a freshly fetched usage snapshot (ok=false when
+// the fetch failed, in which case the last-good snapshot is kept).
+type pickerUsageRefreshMsg struct {
+	Snapshot UsageSnapshot
+	OK       bool
+}
+
+type pickerUsageTickMsg struct{}
+
 type pickerStatusExpireMsg struct{ at time.Time }
 
 type pickerPreviewMsg struct {
@@ -162,6 +174,7 @@ type pickerPopupClosedMsg struct {
 const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
 const pickerPRRefreshInterval = 60 * time.Second
+const pickerUsageRefreshInterval = 60 * time.Second
 const pickerSpinnerInterval = 80 * time.Millisecond
 const pickerPreviewInterval = 500 * time.Millisecond
 const pickerStatusTTL = 5 * time.Second
@@ -412,11 +425,12 @@ func newPickerModel(rows []pickerRow) pickerModel {
 	li.CharLimit = 60
 
 	m := pickerModel{
-		rows:        rows,
-		filter:      ti,
-		labelInput:  li,
-		showDetails: true,
-		startedAt:   time.Now(),
+		rows:          rows,
+		filter:        ti,
+		labelInput:    li,
+		showDetails:   true,
+		startedAt:     time.Now(),
+		usageProvider: newUsageProvider(),
 	}
 	m.rebuildVisible()
 	for i, vi := range m.visible {
@@ -536,7 +550,7 @@ func isMainWorktreePath(path string) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd(), pickerPRRefreshCmd()}
+	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd(), pickerPRRefreshCmd(), pickerUsageRefreshCmd(m.usageProvider)}
 	if m.status != "" && !m.statusSetAt.IsZero() {
 		cmds = append(cmds, statusExpireCmd(m.statusSetAt))
 	}
@@ -601,6 +615,17 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pickerPRRefreshTickMsg:
 		return m, pickerPRRefreshCmd()
+
+	case pickerUsageRefreshMsg:
+		if msg.OK {
+			snap := msg.Snapshot
+			m.usage = &snap
+		}
+		// On failure keep the last-good snapshot (m.usage unchanged).
+		return m, pickerUsageTickCmd()
+
+	case pickerUsageTickMsg:
+		return m, pickerUsageRefreshCmd(m.usageProvider)
 
 	case pickerSpinnerMsg:
 		// Wrap at LCM-ish large number so both the icon (mod 10) and the
@@ -979,6 +1004,30 @@ func pickerPRRefreshCmd() tea.Cmd {
 func pickerPRRefreshTickCmd() tea.Cmd {
 	return tea.Tick(pickerPRRefreshInterval, func(time.Time) tea.Msg {
 		return pickerPRRefreshTickMsg{}
+	})
+}
+
+// pickerUsageRefreshCmd fetches the usage snapshot off the render thread (like
+// pickerPRRefreshCmd), so a slow or failing usage call never stalls the picker.
+// A nil provider yields OK=false and the indicator simply stays hidden.
+func pickerUsageRefreshCmd(p UsageProvider) tea.Cmd {
+	return func() tea.Msg {
+		if p == nil {
+			return pickerUsageRefreshMsg{OK: false}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), usageFetchTimeout)
+		defer cancel()
+		snap, err := p.Fetch(ctx)
+		if err != nil {
+			return pickerUsageRefreshMsg{OK: false}
+		}
+		return pickerUsageRefreshMsg{Snapshot: snap, OK: true}
+	}
+}
+
+func pickerUsageTickCmd() tea.Cmd {
+	return tea.Tick(pickerUsageRefreshInterval, func(time.Time) tea.Msg {
+		return pickerUsageTickMsg{}
 	})
 }
 
@@ -1730,6 +1779,17 @@ func (m pickerModel) logoHeaderLines(width int) []string {
 		}
 		if i == 1 {
 			rendered += "  " + featureStyle.Render("switcher")
+			// Right-align the usage indicator on the feature line so it never
+			// collides with the transient status toast on the logo's first line.
+			if m.usage != nil {
+				if indicator := renderUsageIndicator(*m.usage); indicator != "" {
+					pad := width - lipgloss.Width(rendered) - lipgloss.Width(indicator) - 4
+					if pad < 1 {
+						pad = 1
+					}
+					rendered += strings.Repeat(" ", pad) + indicator
+				}
+			}
 		}
 		out[i+1] = rendered
 	}

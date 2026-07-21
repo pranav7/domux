@@ -1579,3 +1579,24 @@ func TestRenderWindowShowsBadgeAndRecap(t *testing.T) {
 		t.Fatalf("renderWindow omitted the recap: %q", out)
 	}
 }
+
+// The top-right usage indicator appears on the logo's feature line when a
+// snapshot is present, and is omitted entirely when usage is nil.
+func TestLogoHeaderShowsUsageIndicator(t *testing.T) {
+	snap := UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current session", Percent: 15},
+		{Label: "Current week (all models)", Percent: 24},
+		{Label: "Current week (Fable)", Percent: 4},
+	}}
+	withUsage := pickerModel{width: 120, usage: &snap}
+	got := stripTestANSI(strings.Join(withUsage.logoHeaderLines(120), "\n"))
+	if !strings.Contains(got, "ses 15% · wk 24% · fab 4%") {
+		t.Fatalf("logo header missing usage indicator:\n%s", got)
+	}
+
+	withoutUsage := pickerModel{width: 120}
+	got = stripTestANSI(strings.Join(withoutUsage.logoHeaderLines(120), "\n"))
+	if strings.Contains(got, "%") {
+		t.Fatalf("logo header should have no indicator when usage is nil:\n%s", got)
+	}
+}

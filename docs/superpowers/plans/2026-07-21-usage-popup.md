@@ -972,6 +972,45 @@ git commit -m "feat: wire domux usage subcommand and tmux bind-key"
 
 ---
 
+---
+
+### Task 6: Switcher top-right usage indicator (mid-run scope addition)
+
+**Added mid-run** (user request + screenshot): render a compact 3-segment usage indicator
+in the picker's top-right corner — the three limits as short percentages, each in its own
+pressure color. Reuses the Task 3 `UsageProvider` and Task 2 `barColor`.
+
+**Files:**
+- Modify: `usage.go` (add pure `renderUsageIndicator`)
+- Modify: `picker.go` (model fields, slow-poll cmds, wire into Init/Update, right-align in `logoHeaderLines`)
+- Test: `usage_test.go` (indicator string) + `picker_test.go` (logo integration)
+
+**Interfaces:**
+- Consumes: `UsageProvider`, `UsageSnapshot`, `barColor`, `uLabel`/`uFable`, `newUsageProvider`.
+- Produces: `func renderUsageIndicator(snap UsageSnapshot) string`, `func usageTag(label string) string`.
+
+**Design:**
+- `renderUsageIndicator` is pure: `""` for an empty snapshot (silent degrade — NEVER fabricate),
+  else `<tag> <pct>%` per window joined by ` · `. Tag from label: contains "Fable"→"fab"
+  (crimson via `uFable`), contains "session"→"ses", else "wk". `<pct>%` colored by `barColor`.
+- Picker gains `usageProvider UsageProvider` and `usage *UsageSnapshot` (nil until first
+  success). Slow poll mirrors the PR-refresh cycle: `pickerUsageRefreshCmd` (a `func() tea.Msg`
+  that Fetches off the render thread) on Init → on `pickerUsageRefreshMsg`, store snapshot (only
+  on success; keep last-good on error) and schedule `pickerUsageTickCmd` → on
+  `pickerUsageTickMsg`, re-fetch. `const pickerUsageRefreshInterval = 60 * time.Second`.
+  Fetch uses a `context.WithTimeout(usageFetchTimeout)` — never blocks the 2s session tick.
+- `logoHeaderLines` right-aligns the indicator on the feature line (logo line 1, the
+  "switcher" line) so it never collides with the transient status toast on line 0. Hidden
+  when `m.usage == nil`.
+- `newPickerModel` defaults `usageProvider = newUsageProvider()`.
+
+Steps: TDD `renderUsageIndicator`/`usageTag` (empty→"", 3 windows→"ses 15% · wk 24% · fab 4%"
+under `stripANSI`, tag mapping); then wire the picker fields/cmds/logo; add a `picker_test.go`
+case asserting `logoHeaderLines` contains the indicator text when `usage` is set and omits it
+when nil; build/vet/test; commit `feat: show usage indicator in switcher top-right`.
+
+---
+
 ## Self-Review
 
 **Spec coverage:**

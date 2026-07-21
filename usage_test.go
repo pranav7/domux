@@ -130,3 +130,35 @@ func TestUsageRefreshKeyRefetches(t *testing.T) {
 		t.Fatalf("r should reset state to loading, got %v", next.(usageModel).state)
 	}
 }
+
+func TestRenderUsageIndicatorEmpty(t *testing.T) {
+	if got := renderUsageIndicator(UsageSnapshot{}); got != "" {
+		t.Fatalf("empty snapshot should render nothing, got %q", got)
+	}
+}
+
+func TestRenderUsageIndicatorSegments(t *testing.T) {
+	snap := UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current session", Percent: 15},
+		{Label: "Current week (all models)", Percent: 24},
+		{Label: "Current week (Fable)", Percent: 4},
+	}}
+	got := stripANSI(renderUsageIndicator(snap))
+	want := "ses 15% · wk 24% · fab 4%"
+	if got != want {
+		t.Fatalf("indicator = %q, want %q", got, want)
+	}
+}
+
+func TestUsageTagMapping(t *testing.T) {
+	cases := map[string]string{
+		"Current session":           "ses",
+		"Current week (all models)": "wk",
+		"Current week (Fable)":      "fab",
+	}
+	for label, want := range cases {
+		if got := stripANSI(usageTag(label)); got != want {
+			t.Fatalf("usageTag(%q) = %q, want %q", label, got, want)
+		}
+	}
+}
