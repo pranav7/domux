@@ -227,7 +227,7 @@ func (m usageModel) View() string {
 			b.WriteString(bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used") + "\n")
 			// Reset time on its own line below the bar, indented under it.
 			if !w.ResetsAt.IsZero() {
-				b.WriteString(uReset.Render("Resets "+w.ResetsAt.Local().Format("Jan 2 3:04pm")) + "\n")
+				b.WriteString(uReset.Render("Resets "+w.ResetsAt.Local().Format("Mon Jan 2 3:04pm")) + "\n")
 			}
 			if i < len(m.snapshot.Windows)-1 {
 				b.WriteString("\n")
