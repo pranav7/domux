@@ -84,7 +84,7 @@ set-option -g renumber-windows on
 bind-key s display-popup -E -w 95% -h 100% "$HOME/bin/domux sessions"
 bind-key t display-popup -E -w 60% -h 50% -d "#{pane_current_path}" "$HOME/bin/domux"
 bind-key u display-popup -E -w 50% -h 30% "$HOME/bin/domux commands"
-bind-key U display-popup -E -w 60 -h 32 "$HOME/bin/domux usage"
+bind-key U display-popup -E -B -w 52 -h 26 "$HOME/bin/domux usage"
 
 bind-key i run-shell '$HOME/bin/domux ai-state --session "#{session_name}" --pane "#{window_index}_#{pane_index}" toggle'
 bind-key v run-shell '$HOME/bin/domux server --session "#{session_name}" toggle'

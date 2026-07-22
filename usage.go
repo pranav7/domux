@@ -158,20 +158,21 @@ var (
 		Padding(1, 3)
 )
 
-// blockGlyphs is a chunky 5-row, 6-column block font for the CLAUDE CODE
-// wordmark — thick strokes so it reads like the real Claude Code brick banner
-// (stacked CLAUDE / CODE), not the thin half-block picker logo.
+// blockGlyphs is a thin 3-row half-block font (same family as the picker's
+// DOMUX logo) for the CLAUDE CODE wordmark. Half-block strokes (▀ ▄) keep the
+// letters legible and separated at small size, unlike solid ██ bricks which
+// merge into an unreadable mass in a terminal.
 var blockGlyphs = map[rune][]string{
-	'C': {"██████", "██    ", "██    ", "██    ", "██████"},
-	'L': {"██    ", "██    ", "██    ", "██    ", "██████"},
-	'A': {"██████", "██  ██", "██████", "██  ██", "██  ██"},
-	'U': {"██  ██", "██  ██", "██  ██", "██  ██", "██████"},
-	'D': {"█████ ", "██  ██", "██  ██", "██  ██", "█████ "},
-	'E': {"██████", "██    ", "█████ ", "██    ", "██████"},
-	'O': {"██████", "██  ██", "██  ██", "██  ██", "██████"},
+	'C': {"█▀▀", "█  ", "█▄▄"},
+	'L': {"█  ", "█  ", "█▄▄"},
+	'A': {"█▀█", "█▀█", "█ █"},
+	'U': {"█ █", "█ █", "█▄█"},
+	'D': {"█▀▄", "█ █", "█▄▀"},
+	'E': {"█▀▀", "█▀ ", "█▄▄"},
+	'O': {"█▀█", "█ █", "█▄█"},
 }
 
-const blockGlyphRows = 5
+const blockGlyphRows = 3
 
 // renderBlockWord assembles a word into blockGlyphRows text rows, one glyph
 // beside the next with a single-column gap.
@@ -189,8 +190,8 @@ func renderBlockWord(word string) []string {
 	return rows
 }
 
-// renderClaudeCodeLogo stacks CLAUDE over CODE in the brand terracotta brick
-// font, with a muted "usage" caption trailing the wordmark's final row.
+// renderClaudeCodeLogo stacks CLAUDE over CODE in the brand terracotta
+// half-block font, with a muted "usage" caption trailing the final row.
 func renderClaudeCodeLogo() string {
 	logo := lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
 	rows := append(renderBlockWord("CLAUDE"), renderBlockWord("CODE")...)
