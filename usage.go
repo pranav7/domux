@@ -12,9 +12,11 @@ import (
 
 const usageBarWidth = 20
 
-// fableCrimson highlights the word "Fable" wherever it appears. Distinct from
-// the palette's pinkish `red` used for >=90% bar pressure.
-var fableCrimson = lipgloss.Color("#DC143C")
+// fableCrimson highlights the word "Fable" wherever it appears. This is the
+// same muted, light-brick red the statusline uses for the Fable/Sonnet model
+// name (~/dotfiles/claude/statusline-command.sh), distinct from the palette's
+// pinkish `red` used for >=90% bar pressure.
+var fableCrimson = lipgloss.Color("#C2797A")
 
 // renderBar returns a plain (no ANSI) meter: `━` for filled cells, `╌` for
 // empty, matching the statusline meter style. Coloring is applied by the caller.
