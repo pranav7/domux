@@ -158,22 +158,46 @@ var (
 		Padding(1, 3)
 )
 
-// claudeCodeLogo is the "CLAUDE CODE" wordmark in a 3-row half-block font
-// (same family as the picker's DOMUX logo), rendered in the brand terracotta.
-var claudeCodeLogo = []string{
-	"█▀▀ █   █▀█ █ █ █▀▄ █▀▀   █▀▀ █▀█ █▀▄ █▀▀",
-	"█   █   █▀█ █ █ █ █ █▀▀   █   █ █ █ █ █▀▀",
-	"█▄▄ █▄▄ █ █ █▄█ █▄▀ █▄▄   █▄▄ █▄█ █▄▀ █▄▄",
+// blockGlyphs is a chunky 5-row, 6-column block font for the CLAUDE CODE
+// wordmark — thick strokes so it reads like the real Claude Code brick banner
+// (stacked CLAUDE / CODE), not the thin half-block picker logo.
+var blockGlyphs = map[rune][]string{
+	'C': {"██████", "██    ", "██    ", "██    ", "██████"},
+	'L': {"██    ", "██    ", "██    ", "██    ", "██████"},
+	'A': {"██████", "██  ██", "██████", "██  ██", "██  ██"},
+	'U': {"██  ██", "██  ██", "██  ██", "██  ██", "██████"},
+	'D': {"█████ ", "██  ██", "██  ██", "██  ██", "█████ "},
+	'E': {"██████", "██    ", "█████ ", "██    ", "██████"},
+	'O': {"██████", "██  ██", "██  ██", "██  ██", "██████"},
 }
 
-// renderClaudeCodeLogo returns the block-art wordmark lines colored in the
-// brand terracotta, with a muted "usage" caption trailing the final row.
+const blockGlyphRows = 5
+
+// renderBlockWord assembles a word into blockGlyphRows text rows, one glyph
+// beside the next with a single-column gap.
+func renderBlockWord(word string) []string {
+	rows := make([]string, blockGlyphRows)
+	for _, ch := range word {
+		g := blockGlyphs[ch]
+		for r := 0; r < blockGlyphRows; r++ {
+			if rows[r] != "" {
+				rows[r] += " "
+			}
+			rows[r] += g[r]
+		}
+	}
+	return rows
+}
+
+// renderClaudeCodeLogo stacks CLAUDE over CODE in the brand terracotta brick
+// font, with a muted "usage" caption trailing the wordmark's final row.
 func renderClaudeCodeLogo() string {
 	logo := lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
+	rows := append(renderBlockWord("CLAUDE"), renderBlockWord("CODE")...)
 	var b strings.Builder
-	for i, line := range claudeCodeLogo {
+	for i, line := range rows {
 		b.WriteString(logo.Render(line))
-		if i == len(claudeCodeLogo)-1 {
+		if i == len(rows)-1 {
 			b.WriteString("  " + uTitle.Render("usage"))
 		}
 		b.WriteString("\n")
@@ -199,14 +223,12 @@ func (m usageModel) View() string {
 		for i, w := range m.snapshot.Windows {
 			b.WriteString(renderUsageLabel(w.Label) + "\n")
 			bar := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(renderBar(w.Percent, usageBarWidth))
-			line := bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used")
+			b.WriteString(bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used") + "\n")
+			// Reset time on its own line below the bar, indented under it.
 			if !w.ResetsAt.IsZero() {
-				line += uReset.Render("   Resets " + w.ResetsAt.Local().Format("Jan 2 3:04pm"))
+				b.WriteString(uReset.Render("Resets "+w.ResetsAt.Local().Format("Jan 2 3:04pm")) + "\n")
 			}
-			b.WriteString(line)
 			if i < len(m.snapshot.Windows)-1 {
-				b.WriteString("\n\n")
-			} else {
 				b.WriteString("\n")
 			}
 		}
