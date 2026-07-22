@@ -25,8 +25,11 @@ func runCommand(name string, args []string) error {
 		}
 		return runPicker()
 	case "usage":
+		if len(args) == 1 && args[0] == "--raw" {
+			return runUsageRaw()
+		}
 		if len(args) != 0 {
-			return fmt.Errorf("usage does not accept arguments")
+			return fmt.Errorf("usage accepts no arguments (or --raw to dump the response body)")
 		}
 		return runUsage()
 	case "todo":

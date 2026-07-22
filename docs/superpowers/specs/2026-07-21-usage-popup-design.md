@@ -89,15 +89,20 @@ by the user running the read-only grep on their own machine.)
 If any of these is wrong at runtime, the failure surfaces as the honest "unavailable"
 state, not a crash or a fabricated number.
 
-> **Status (as-built, 2026-07-21):** Implemented on `main`. The constants remain
-> best-guess in `usage_source.go` with `CONFIRM-AT-VERIFY` markers — **still to be pinned
-> against one live response.** Env overrides ship for verifying without pinning:
-> `DOMUX_USAGE_FIXTURE=<path>` (render a captured JSON with no network) and
-> `DOMUX_CLAUDE_TOKEN=<tok>` (supply the token directly, bypassing the Keychain).
-> Hardening learned in review: a window present but missing its `utilization` field is now
-> **skipped, not rendered as 0%** (partial schema drift must not fabricate a number). When
-> pinning the real field names, keep that invariant — prefer pointer fields + skip-on-nil
-> over defaulting to zero.
+> **Status (as-built, 2026-07-22):** Implemented on `main` and **pinned against a live
+> response.** All four former `CONFIRM-AT-VERIFY` constants are confirmed: Keychain service
+> `"Claude Code-credentials"` + account `$USER`, `anthropic-beta: oauth-2025-04-20`, and
+> percent on a 0–100 scale. **Schema correction:** the three windows come from a
+> self-describing `limits` array — `[{kind: "session"|"weekly_all"|"weekly_scoped", percent,
+> resets_at, scope:{model:{display_name}}}]` — NOT the flat `seven_day_opus` field, which is
+> `null` live. The **Fable** window is the `weekly_scoped` limit whose
+> `scope.model.display_name` is "Fable"; its label embeds that name so the crimson rendering
+> keeps working. `parseUsage` reads `limits` first, falling back to the flat
+> `five_hour`/`seven_day` fields only if `limits` is empty. Env overrides:
+> `DOMUX_USAGE_FIXTURE=<path>` (render a captured JSON, no network) and `DOMUX_CLAUDE_TOKEN=<tok>`.
+> A `domux usage --raw` diagnostic prints the raw, token-free response body for re-pinning if
+> the schema ever drifts. Hardening kept from review: `percent` is a pointer and a window
+> missing it is **skipped, not rendered as 0%**; unrecognized `kind`s are skipped, not mislabeled.
 
 ## Architecture
 

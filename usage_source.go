@@ -29,22 +29,39 @@ type UsageSnapshot struct {
 	FetchedAt time.Time
 }
 
-// rawUsageWindow / rawUsage encode the (best-guess, confirm-at-verify) shape of
-// GET /api/oauth/usage. If the real field names differ, fix them HERE — the
-// struct tags are the single source of coupling to the endpoint.
+// rawUsage encodes the shape of GET /api/oauth/usage, pinned against a live
+// response (2026-07-22). The self-describing `limits` array is the canonical
+// source — it carries all three windows including the model-scoped (Fable) one,
+// which the flat top-level fields do NOT (seven_day_opus is null in practice).
+// The top-level fields are kept only as a fallback if `limits` ever disappears.
+// If the real field names drift, fix them HERE — these tags are the single
+// point of coupling to the endpoint.
+type rawScope struct {
+	Model struct {
+		DisplayName string `json:"display_name"`
+	} `json:"model"`
+}
+
+type rawLimit struct {
+	Kind string `json:"kind"` // "session" | "weekly_all" | "weekly_scoped"
+	// Percent is a pointer so a limit present but missing its percent (a partial
+	// schema drift) is distinguishable from a genuine 0% — the former is skipped
+	// rather than rendered as a fabricated 0% bar (the "never fabricate" contract).
+	Percent  *float64  `json:"percent"` // 0-100 scale (confirmed live)
+	ResetsAt string    `json:"resets_at"`
+	Scope    *rawScope `json:"scope"` // non-nil for "weekly_scoped" (holds the model name)
+}
+
 type rawUsageWindow struct {
-	// Utilization is a pointer so a window object present but missing the
-	// utilization field (a partial schema drift) is distinguishable from a
-	// genuine 0% — the former is skipped rather than rendered as a fabricated
-	// 0% bar, preserving the "never fabricate" contract.
-	Utilization *float64 `json:"utilization"` // NOTE: assumed 0-100. If the API sends 0..1 fractions, multiply by 100 in parseUsage.
+	Utilization *float64 `json:"utilization"` // 0-100 scale (confirmed live)
 	ResetsAt    string   `json:"resets_at"`
 }
 
 type rawUsage struct {
-	FiveHour     *rawUsageWindow `json:"five_hour"`
-	SevenDay     *rawUsageWindow `json:"seven_day"`
-	SevenDayOpus *rawUsageWindow `json:"seven_day_opus"`
+	Limits []rawLimit `json:"limits"` // primary, self-describing source
+	// Legacy flat fields — fallback only, used when `limits` is absent/empty.
+	FiveHour *rawUsageWindow `json:"five_hour"`
+	SevenDay *rawUsageWindow `json:"seven_day"`
 }
 
 // parseUsage converts the raw endpoint body into a normalized snapshot.
@@ -55,23 +72,53 @@ func parseUsage(data []byte, now time.Time) (UsageSnapshot, error) {
 		return UsageSnapshot{}, fmt.Errorf("cannot parse usage response: %w", err)
 	}
 	snap := UsageSnapshot{FetchedAt: now}
-	add := func(label string, w *rawUsageWindow) {
-		if w == nil || w.Utilization == nil {
+	add := func(label string, percent *float64, resetsAt string) {
+		if label == "" || percent == nil {
 			return
 		}
-		win := UsageWindow{Label: label, Percent: clampPercent(*w.Utilization)}
-		if t, err := time.Parse(time.RFC3339, w.ResetsAt); err == nil {
+		win := UsageWindow{Label: label, Percent: clampPercent(*percent)}
+		if t, err := time.Parse(time.RFC3339, resetsAt); err == nil {
 			win.ResetsAt = t
 		}
 		snap.Windows = append(snap.Windows, win)
 	}
-	add("Current session", raw.FiveHour)
-	add("Current week (all models)", raw.SevenDay)
-	add("Current week (Fable)", raw.SevenDayOpus)
+	// Primary: the self-describing `limits` array, in its natural order.
+	for _, l := range raw.Limits {
+		add(limitLabel(l), l.Percent, l.ResetsAt)
+	}
+	// Fallback: the flat top-level fields, only if `limits` yielded nothing.
+	if len(snap.Windows) == 0 {
+		if raw.FiveHour != nil {
+			add("Current session", raw.FiveHour.Utilization, raw.FiveHour.ResetsAt)
+		}
+		if raw.SevenDay != nil {
+			add("Current week (all models)", raw.SevenDay.Utilization, raw.SevenDay.ResetsAt)
+		}
+	}
 	if len(snap.Windows) == 0 {
 		return UsageSnapshot{}, errors.New("usage response had no recognized windows")
 	}
 	return snap, nil
+}
+
+// limitLabel maps a limits[] entry to a display label, or "" to skip it. The
+// scoped window's label embeds the model display name (e.g. "Fable") so the
+// crimson-"Fable" rendering keeps working off the label text.
+func limitLabel(l rawLimit) string {
+	switch l.Kind {
+	case "session":
+		return "Current session"
+	case "weekly_all":
+		return "Current week (all models)"
+	case "weekly_scoped":
+		name := "scoped"
+		if l.Scope != nil && l.Scope.Model.DisplayName != "" {
+			name = l.Scope.Model.DisplayName
+		}
+		return "Current week (" + name + ")"
+	default:
+		return ""
+	}
 }
 
 func clampPercent(v float64) int {
@@ -89,8 +136,8 @@ func clampPercent(v float64) int {
 
 const (
 	usageEndpoint      = "https://api.anthropic.com/api/oauth/usage"
-	anthropicBetaOAuth = "oauth-2025-04-20"        // CONFIRM-AT-VERIFY
-	keychainService    = "Claude Code-credentials" // CONFIRM-AT-VERIFY (-s label for `security`)
+	anthropicBetaOAuth = "oauth-2025-04-20"        // pinned live 2026-07-22
+	keychainService    = "Claude Code-credentials" // pinned live 2026-07-22 (-s label for `security`)
 	usageFetchTimeout  = 8 * time.Second
 )
 
@@ -139,6 +186,35 @@ func (p httpUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
 		return UsageSnapshot{}, fmt.Errorf("usage endpoint returned status %d", resp.StatusCode)
 	}
 	return parseUsage(body, time.Now())
+}
+
+// fetchRawUsageBody performs the same authenticated GET as the provider but
+// returns the raw response body verbatim (no parsing). It exists only for
+// `domux usage --raw`, a one-time diagnostic to reveal the real JSON field
+// names so the CONFIRM-AT-VERIFY struct tags can be pinned. The body contains
+// no token — only usage numbers and reset timestamps — so printing it is safe.
+func fetchRawUsageBody(ctx context.Context) ([]byte, error) {
+	token, err := readClaudeToken()
+	if err != nil || token == "" {
+		return nil, errNoCredentials
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, usageEndpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("anthropic-beta", anthropicBetaOAuth)
+	req.Header.Set("Accept", "application/json")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return body, fmt.Errorf("usage endpoint returned status %d", resp.StatusCode)
+	}
+	return body, nil
 }
 
 // fixtureUsageProvider renders a captured JSON file with no network — set
@@ -200,7 +276,7 @@ func tokenFromCredentialsFile() (string, error) {
 }
 
 func tokenFromKeychain() (string, error) {
-	account := os.Getenv("USER") // CONFIRM-AT-VERIFY (-a account label for the Keychain item)
+	account := os.Getenv("USER") // pinned live 2026-07-22 (-a account label for the Keychain item)
 	out, err := exec.Command("security", "find-generic-password", "-s", keychainService, "-a", account, "-w").Output()
 	if err != nil {
 		return "", err

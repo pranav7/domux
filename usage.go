@@ -188,6 +188,19 @@ func runUsage() error {
 	return err
 }
 
+// runUsageRaw prints the raw /api/oauth/usage response body to stdout — a
+// one-time diagnostic for pinning the real JSON field names. The body carries
+// no token, so this is safe to display. Not wired to a popup or bind-key.
+func runUsageRaw() error {
+	ctx, cancel := context.WithTimeout(context.Background(), usageFetchTimeout)
+	defer cancel()
+	body, err := fetchRawUsageBody(ctx)
+	if len(body) > 0 {
+		fmt.Println(string(body))
+	}
+	return err
+}
+
 // renderUsageIndicator renders the compact top-right switcher indicator, e.g.
 // "ses 15% · wk 24% · fab 4%", each percentage in its pressure color. Returns
 // "" for an empty snapshot so the caller hides the indicator entirely — it

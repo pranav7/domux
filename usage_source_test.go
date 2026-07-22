@@ -9,14 +9,24 @@ import (
 	"time"
 )
 
+// liveLimitsBody mirrors the real GET /api/oauth/usage shape (pinned 2026-07-22):
+// three windows in the self-describing `limits` array, with the Fable window
+// carried as a model-scoped entry (kind "weekly_scoped").
+const liveLimitsBody = `{
+	"five_hour":      {"utilization": 33, "resets_at": "2026-07-22T14:19:00Z"},
+	"seven_day":      {"utilization": 50, "resets_at": "2026-07-27T19:59:00Z"},
+	"seven_day_opus": null,
+	"limits": [
+		{"kind": "session",       "percent": 33, "resets_at": "2026-07-22T14:19:00Z", "scope": null},
+		{"kind": "weekly_all",    "percent": 50, "resets_at": "2026-07-27T19:59:00Z", "scope": null},
+		{"kind": "weekly_scoped", "percent": 24, "resets_at": "2026-07-27T19:59:00Z",
+			"scope": {"model": {"display_name": "Fable"}}}
+	]
+}`
+
 func TestParseUsageMapsThreeWindows(t *testing.T) {
-	body := []byte(`{
-		"five_hour":       {"utilization": 15, "resets_at": "2026-07-21T19:29:00Z"},
-		"seven_day":       {"utilization": 24, "resets_at": "2026-07-27T19:59:00Z"},
-		"seven_day_opus":  {"utilization": 4,  "resets_at": "2026-07-27T19:59:00Z"}
-	}`)
-	now := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
-	snap, err := parseUsage(body, now)
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	snap, err := parseUsage([]byte(liveLimitsBody), now)
 	if err != nil {
 		t.Fatalf("parseUsage: %v", err)
 	}
@@ -27,10 +37,12 @@ func TestParseUsageMapsThreeWindows(t *testing.T) {
 		t.Fatalf("windows = %#v", snap.Windows)
 	}
 	w := snap.Windows[0]
-	if w.Label != "Current session" || w.Percent != 15 {
+	if w.Label != "Current session" || w.Percent != 33 {
 		t.Fatalf("window[0] = %#v", w)
 	}
-	if snap.Windows[2].Label != "Current week (Fable)" || snap.Windows[2].Percent != 4 {
+	// The Fable window comes from the model-scoped limit, NOT seven_day_opus
+	// (which is null live) — its label must embed "Fable" for crimson rendering.
+	if snap.Windows[2].Label != "Current week (Fable)" || snap.Windows[2].Percent != 24 {
 		t.Fatalf("window[2] = %#v", snap.Windows[2])
 	}
 	if snap.Windows[0].ResetsAt.IsZero() {
@@ -38,24 +50,44 @@ func TestParseUsageMapsThreeWindows(t *testing.T) {
 	}
 }
 
-func TestParseUsageSkipsMissingWindows(t *testing.T) {
-	body := []byte(`{"five_hour": {"utilization": 50, "resets_at": "2026-07-21T19:29:00Z"}}`)
+func TestParseUsageFallsBackToFlatFields(t *testing.T) {
+	// If the `limits` array is ever absent, the flat top-level fields still map.
+	body := []byte(`{
+		"five_hour": {"utilization": 15, "resets_at": "2026-07-21T19:29:00Z"},
+		"seven_day": {"utilization": 24, "resets_at": "2026-07-27T19:59:00Z"}
+	}`)
+	snap, err := parseUsage(body, time.Now())
+	if err != nil {
+		t.Fatalf("parseUsage: %v", err)
+	}
+	if len(snap.Windows) != 2 || snap.Windows[0].Label != "Current session" {
+		t.Fatalf("windows = %#v", snap.Windows)
+	}
+}
+
+func TestParseUsageSkipsLimitMissingPercent(t *testing.T) {
+	// A limit present but missing its percent is a partial schema drift — it
+	// must be skipped, not rendered as a fabricated 0%.
+	body := []byte(`{"limits": [
+		{"kind": "session",    "percent": 15, "resets_at": "2026-07-21T19:29:00Z"},
+		{"kind": "weekly_all", "resets_at": "2026-07-27T19:59:00Z"}
+	]}`)
 	snap, err := parseUsage(body, time.Now())
 	if err != nil {
 		t.Fatalf("parseUsage: %v", err)
 	}
 	if len(snap.Windows) != 1 || snap.Windows[0].Label != "Current session" {
-		t.Fatalf("windows = %#v", snap.Windows)
+		t.Fatalf("expected only the session window, got %#v", snap.Windows)
 	}
 }
 
-func TestParseUsageSkipsWindowMissingUtilization(t *testing.T) {
-	// A window object present but missing the utilization field is a partial
-	// schema drift — it must be skipped, not rendered as a fabricated 0%.
-	body := []byte(`{
-		"five_hour":  {"utilization": 15, "resets_at": "2026-07-21T19:29:00Z"},
-		"seven_day":  {"resets_at": "2026-07-27T19:59:00Z"}
-	}`)
+func TestParseUsageSkipsUnknownLimitKinds(t *testing.T) {
+	// Kinds we don't recognize (e.g. new scoped models) are skipped, not shown
+	// under a wrong label.
+	body := []byte(`{"limits": [
+		{"kind": "session",      "percent": 10, "resets_at": "2026-07-21T19:29:00Z"},
+		{"kind": "future_thing",  "percent": 99, "resets_at": "2026-07-27T19:59:00Z"}
+	]}`)
 	snap, err := parseUsage(body, time.Now())
 	if err != nil {
 		t.Fatalf("parseUsage: %v", err)
