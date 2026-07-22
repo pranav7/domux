@@ -18,6 +18,10 @@ const usageBarWidth = 20
 // pinkish `red` used for >=90% bar pressure.
 var fableCrimson = lipgloss.Color("#C2797A")
 
+// claudeCodeOrange is Claude Code's brand terracotta, used for the popup
+// wordmark so the modal reads as an official Claude Code surface.
+var claudeCodeOrange = lipgloss.Color("#D97757")
+
 // renderBar returns a plain (no ANSI) meter: `━` for filled cells, `╌` for
 // empty, matching the statusline meter style. Coloring is applied by the caller.
 func renderBar(percent, width int) string {
@@ -136,12 +140,20 @@ func usageErrorReason(err error) string {
 }
 
 var (
-	uTitle    = lipgloss.NewStyle().Foreground(text).Bold(true)
+	uBrand    = lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
+	uTitle    = lipgloss.NewStyle().Foreground(subtext0)
 	uLabel    = lipgloss.NewStyle().Foreground(subtext0)
+	uPercent  = lipgloss.NewStyle().Foreground(text).Bold(true)
 	uFable    = lipgloss.NewStyle().Foreground(fableCrimson).Bold(true)
 	uReset    = lipgloss.NewStyle().Foreground(overlay0)
 	uFooter   = lipgloss.NewStyle().Foreground(overlay0)
 	uErrStyle = lipgloss.NewStyle().Foreground(red)
+	// uFrame is a compact bordered modal with generous inner padding; it hugs
+	// its content rather than filling the whole tmux popup.
+	uFrame = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(claudeCodeOrange).
+		Padding(1, 3)
 )
 
 func (m usageModel) View() string {
@@ -149,7 +161,9 @@ func (m usageModel) View() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(uTitle.Render("Claude usage"))
+	// Wordmark header: "Claude Code" in the brand terracotta, then a muted
+	// "usage" subtitle, so the modal reads as an official Claude Code surface.
+	b.WriteString(uBrand.Render("Claude Code") + " " + uTitle.Render("usage"))
 	b.WriteString("\n\n")
 	switch m.state {
 	case usageLoading:
@@ -157,18 +171,25 @@ func (m usageModel) View() string {
 	case usageErr:
 		b.WriteString(uErrStyle.Render("Usage unavailable") + uLabel.Render(" — "+usageErrorReason(m.err)))
 	case usageLoaded:
-		for _, w := range m.snapshot.Windows {
+		for i, w := range m.snapshot.Windows {
 			b.WriteString(renderUsageLabel(w.Label) + "\n")
 			bar := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(renderBar(w.Percent, usageBarWidth))
-			line := fmt.Sprintf("%s  %d%% used", bar, w.Percent)
+			line := bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used")
 			if !w.ResetsAt.IsZero() {
 				line += uReset.Render("   Resets " + w.ResetsAt.Local().Format("Jan 2 3:04pm"))
 			}
-			b.WriteString(line + "\n\n")
+			b.WriteString(line)
+			if i < len(m.snapshot.Windows)-1 {
+				b.WriteString("\n\n")
+			} else {
+				b.WriteString("\n")
+			}
 		}
 	}
 	b.WriteString("\n" + uFooter.Render("r refresh · esc close"))
-	return b.String()
+	// Center the compact modal in the popup so the surrounding tmux popup
+	// padding is even, and the box hugs its content instead of filling it.
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uFrame.Render(b.String()))
 }
 
 // renderUsageLabel colors the word "Fable" crimson wherever it appears; the
