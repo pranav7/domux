@@ -158,15 +158,38 @@ var (
 		Padding(1, 3)
 )
 
+// claudeCodeLogo is the "CLAUDE CODE" wordmark in a 3-row half-block font
+// (same family as the picker's DOMUX logo), rendered in the brand terracotta.
+var claudeCodeLogo = []string{
+	"█▀▀ █   █▀█ █ █ █▀▄ █▀▀   █▀▀ █▀█ █▀▄ █▀▀",
+	"█   █   █▀█ █ █ █ █ █▀▀   █   █ █ █ █ █▀▀",
+	"█▄▄ █▄▄ █ █ █▄█ █▄▀ █▄▄   █▄▄ █▄█ █▄▀ █▄▄",
+}
+
+// renderClaudeCodeLogo returns the block-art wordmark lines colored in the
+// brand terracotta, with a muted "usage" caption trailing the final row.
+func renderClaudeCodeLogo() string {
+	logo := lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
+	var b strings.Builder
+	for i, line := range claudeCodeLogo {
+		b.WriteString(logo.Render(line))
+		if i == len(claudeCodeLogo)-1 {
+			b.WriteString("  " + uTitle.Render("usage"))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func (m usageModel) View() string {
 	if m.width == 0 {
 		return ""
 	}
 	var b strings.Builder
-	// Wordmark header: "Claude Code" in the brand terracotta, then a muted
-	// "usage" subtitle, so the modal reads as an official Claude Code surface.
-	b.WriteString(uBrand.Render("Claude Code") + " " + uTitle.Render("usage"))
-	b.WriteString("\n\n")
+	// Block-art "CLAUDE CODE" wordmark in the brand terracotta, so the modal
+	// reads as an official Claude Code surface.
+	b.WriteString(renderClaudeCodeLogo())
+	b.WriteString("\n")
 	switch m.state {
 	case usageLoading:
 		b.WriteString(uLabel.Render("Fetching usage…"))
