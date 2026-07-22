@@ -144,7 +144,7 @@ func TestRenderUsageIndicatorSegments(t *testing.T) {
 		{Label: "Current week (Fable)", Percent: 4},
 	}}
 	got := stripANSI(renderUsageIndicator(snap))
-	want := "ses 15% · wk 24% · fab 4%"
+	want := "session 15% · week 24% · fable 4%"
 	if got != want {
 		t.Fatalf("indicator = %q, want %q", got, want)
 	}
@@ -152,9 +152,9 @@ func TestRenderUsageIndicatorSegments(t *testing.T) {
 
 func TestUsageTagMapping(t *testing.T) {
 	cases := map[string]string{
-		"Current session":           "ses",
-		"Current week (all models)": "wk",
-		"Current week (Fable)":      "fab",
+		"Current session":           "session",
+		"Current week (all models)": "week",
+		"Current week (Fable)":      "fable",
 	}
 	for label, want := range cases {
 		if got := stripANSI(usageTag(label)); got != want {

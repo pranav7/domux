@@ -291,15 +291,15 @@ func renderUsageIndicator(snap UsageSnapshot) string {
 	return strings.Join(segs, uLabel.Render(" · "))
 }
 
-// usageTag maps a window label to its short colored tag ("ses"/"wk"/"fab"),
-// with the Fable tag in crimson to match the popup.
+// usageTag maps a window label to its colored tag ("session"/"week"/"fable"),
+// with the fable tag in crimson to match the popup.
 func usageTag(label string) string {
 	switch {
 	case strings.Contains(label, "Fable"):
-		return uFable.Render("fab")
+		return uFable.Render("fable")
 	case strings.Contains(label, "session"):
-		return uLabel.Render("ses")
+		return uLabel.Render("session")
 	default:
-		return uLabel.Render("wk")
+		return uLabel.Render("week")
 	}
 }

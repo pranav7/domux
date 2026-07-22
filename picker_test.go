@@ -1590,7 +1590,7 @@ func TestLogoHeaderShowsUsageIndicator(t *testing.T) {
 	}}
 	withUsage := pickerModel{width: 120, usage: &snap}
 	got := stripTestANSI(strings.Join(withUsage.logoHeaderLines(120), "\n"))
-	if !strings.Contains(got, "ses 15% · wk 24% · fab 4%") {
+	if !strings.Contains(got, "session 15% · week 24% · fable 4%") {
 		t.Fatalf("logo header missing usage indicator:\n%s", got)
 	}
 
