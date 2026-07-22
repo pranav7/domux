@@ -194,7 +194,10 @@ func renderBlockWord(word string) []string {
 // half-block font, with a muted "usage" caption trailing the final row.
 func renderClaudeCodeLogo() string {
 	logo := lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
-	rows := append(renderBlockWord("CLAUDE"), renderBlockWord("CODE")...)
+	// Blank spacer row between CLAUDE and CODE so the descenders of the top
+	// word don't touch the ascenders of the bottom one.
+	rows := append(renderBlockWord("CLAUDE"), "")
+	rows = append(rows, renderBlockWord("CODE")...)
 	var b strings.Builder
 	for i, line := range rows {
 		b.WriteString(logo.Render(line))
