@@ -132,6 +132,8 @@ func usageErrorReason(err error) string {
 		return "no credentials found — log in with Claude"
 	case errors.Is(err, errAuthRejected):
 		return "auth rejected — re-login in Claude"
+	case errors.Is(err, errRateLimited):
+		return "rate-limited — try again in a moment"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "network timeout"
 	default:

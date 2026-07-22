@@ -144,6 +144,7 @@ const (
 var (
 	errNoCredentials = errors.New("no Claude credentials found")
 	errAuthRejected  = errors.New("Claude rejected the credentials")
+	errRateLimited   = errors.New("usage endpoint rate-limited the request")
 )
 
 // UsageProvider fetches a normalized usage snapshot. The interface lets the TUI
@@ -182,6 +183,8 @@ func (p httpUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 		return UsageSnapshot{}, errAuthRejected
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return UsageSnapshot{}, errRateLimited
 	case resp.StatusCode != http.StatusOK:
 		return UsageSnapshot{}, fmt.Errorf("usage endpoint returned status %d", resp.StatusCode)
 	}
@@ -238,11 +241,95 @@ func newUsageProvider() UsageProvider {
 	// unwraps cleanly to context.DeadlineExceeded (a client Timeout would race
 	// it and produce an error that does not, muddying the "network timeout"
 	// reason the TUI shows).
-	return httpUsageProvider{
+	live := httpUsageProvider{
 		client:   &http.Client{},
 		tokenFn:  readClaudeToken,
 		endpoint: usageEndpoint,
 	}
+	// Wrap in a shared on-disk cache so the popup and the picker's poll share
+	// one fetch: the endpoint rate-limits aggressively (~1 call/min), and two
+	// independent processes hitting it would trip 429s. The cache serves a
+	// fresh-enough snapshot without a call and falls back to the last-good one
+	// on any error, making rate-limits invisible.
+	return cachedUsageProvider{inner: live, ttl: usageCacheTTL, path: usageCachePath}
+}
+
+const usageCacheTTL = 90 * time.Second
+
+// usageCachePath is the shared snapshot-cache location. It holds only a
+// normalized UsageSnapshot (percentages + reset times) — never the token.
+func usageCachePath() (string, error) {
+	return domuxDataDir("usage-cache.json")
+}
+
+// cachedUsageProvider wraps another provider with a TTL'd on-disk snapshot
+// cache. A fetch within the TTL returns the cached snapshot with no network
+// call; a stale cache triggers one call, and any fetch error falls back to the
+// last-good cached snapshot (even if expired) so a transient rate-limit or
+// network blip never surfaces as "unavailable" once we've seen real data.
+type cachedUsageProvider struct {
+	inner UsageProvider
+	ttl   time.Duration
+	path  func() (string, error)
+}
+
+func (p cachedUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
+	cached, cachedAt, haveCache := p.readCache()
+	if haveCache && time.Since(cachedAt) < p.ttl {
+		return cached, nil
+	}
+	snap, err := p.inner.Fetch(ctx)
+	if err != nil {
+		if haveCache {
+			return cached, nil // serve last-good rather than an error
+		}
+		return UsageSnapshot{}, err
+	}
+	p.writeCache(snap)
+	return snap, nil
+}
+
+// usageCacheFile is the on-disk shape: the normalized snapshot plus the wall
+// time it was cached (FetchedAt is preserved inside the snapshot too).
+type usageCacheFile struct {
+	CachedAt time.Time     `json:"cached_at"`
+	Snapshot UsageSnapshot `json:"snapshot"`
+}
+
+func (p cachedUsageProvider) readCache() (UsageSnapshot, time.Time, bool) {
+	path, err := p.path()
+	if err != nil {
+		return UsageSnapshot{}, time.Time{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return UsageSnapshot{}, time.Time{}, false
+	}
+	var cf usageCacheFile
+	if err := json.Unmarshal(data, &cf); err != nil || len(cf.Snapshot.Windows) == 0 {
+		return UsageSnapshot{}, time.Time{}, false
+	}
+	return cf.Snapshot, cf.CachedAt, true
+}
+
+func (p cachedUsageProvider) writeCache(snap UsageSnapshot) {
+	path, err := p.path()
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return
+	}
+	data, err := json.Marshal(usageCacheFile{CachedAt: time.Now(), Snapshot: snap})
+	if err != nil {
+		return
+	}
+	// Atomic write (write-tmp-then-rename), per the repo convention.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 // readClaudeToken resolves the OAuth access token from, in order: an explicit

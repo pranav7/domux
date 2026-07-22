@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,5 +197,101 @@ func TestFetchMapsNon200(t *testing.T) {
 	p := httpUsageProvider{client: client, tokenFn: func() (string, error) { return "tok", nil }, endpoint: usageEndpoint}
 	if _, err := p.Fetch(context.Background()); err == nil || err == errAuthRejected {
 		t.Fatalf("expected a generic non-200 error, got %v", err)
+	}
+}
+
+func TestFetchMapsRateLimit(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(429, `{"error":{"type":"rate_limit_error"}}`), nil
+	})}
+	p := httpUsageProvider{client: client, tokenFn: func() (string, error) { return "tok", nil }, endpoint: usageEndpoint}
+	if _, err := p.Fetch(context.Background()); err != errRateLimited {
+		t.Fatalf("err = %v, want errRateLimited", err)
+	}
+}
+
+// countingProvider records how many times Fetch is called and returns a fixed
+// result, so cache tests can assert the network was (or wasn't) hit.
+type countingProvider struct {
+	snap  UsageSnapshot
+	err   error
+	calls int
+}
+
+func (c *countingProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
+	c.calls++
+	return c.snap, c.err
+}
+
+func snapWith(pct int) UsageSnapshot {
+	return UsageSnapshot{Windows: []UsageWindow{{Label: "Current session", Percent: pct}}}
+}
+
+func tempCachePath(t *testing.T) func() (string, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "usage-cache.json")
+	return func() (string, error) { return path, nil }
+}
+
+func TestCachedProviderServesFreshCacheWithoutFetch(t *testing.T) {
+	inner := &countingProvider{snap: snapWith(10)}
+	pathFn := tempCachePath(t)
+	p := cachedUsageProvider{inner: inner, ttl: time.Minute, path: pathFn}
+	// First call populates the cache (one fetch).
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	// Second call within the TTL must be served from cache (no extra fetch).
+	snap, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("inner called %d times, want 1 (second read should hit cache)", inner.calls)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Percent != 10 {
+		t.Fatalf("cached snapshot = %#v", snap)
+	}
+}
+
+func TestCachedProviderFallsBackToCacheOnError(t *testing.T) {
+	pathFn := tempCachePath(t)
+	// Seed a good snapshot into the cache.
+	seed := cachedUsageProvider{inner: &countingProvider{snap: snapWith(42)}, ttl: time.Minute, path: pathFn}
+	if _, err := seed.Fetch(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// A provider whose cache is expired (ttl 0) and whose live fetch errors
+	// must still serve the last-good cached snapshot, not the error.
+	failing := cachedUsageProvider{inner: &countingProvider{err: errRateLimited}, ttl: 0, path: pathFn}
+	snap, err := failing.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("expected fallback to cache, got error %v", err)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Percent != 42 {
+		t.Fatalf("expected last-good snapshot (42%%), got %#v", snap)
+	}
+}
+
+func TestCachedProviderPropagatesErrorWhenNoCache(t *testing.T) {
+	pathFn := tempCachePath(t)
+	p := cachedUsageProvider{inner: &countingProvider{err: errNoCredentials}, ttl: time.Minute, path: pathFn}
+	if _, err := p.Fetch(context.Background()); err != errNoCredentials {
+		t.Fatalf("err = %v, want errNoCredentials (no cache to fall back to)", err)
+	}
+}
+
+func TestCachedProviderRefetchesWhenStale(t *testing.T) {
+	inner := &countingProvider{snap: snapWith(1)}
+	pathFn := tempCachePath(t)
+	p := cachedUsageProvider{inner: inner, ttl: 0, path: pathFn} // ttl 0 => always stale
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatalf("fetch 1: %v", err)
+	}
+	if _, err := p.Fetch(context.Background()); err != nil {
+		t.Fatalf("fetch 2: %v", err)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("inner called %d times, want 2 (stale cache should refetch)", inner.calls)
 	}
 }
