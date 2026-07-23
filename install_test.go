@@ -34,6 +34,7 @@ func TestGeneratedTmuxConfigSetsWindowDefaults(t *testing.T) {
 		"set-option -g base-index 1",
 		"set-option -g pane-base-index 1",
 		"set-option -g renumber-windows on",
+		"set-option -g status-interval 15",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Fatalf("generated tmux config missing %q:\n%s", want, cfg)

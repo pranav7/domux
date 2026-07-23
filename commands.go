@@ -517,34 +517,12 @@ func printTmuxStatus(args []string) error {
 	if ctx.State == nil && session != "" {
 		ctx.State = loadSessionStateWithLegacy(session)
 	}
-	aiStates := aggregateAIStatesFromSession(ctx.State)
-	status += tmuxAIBadge("claude", aiStates.Claude)
-	status += tmuxAIBadge("codex", aiStates.Codex)
-	status += tmuxAIBadge("opencode", aiStates.OpenCode)
+	status += tmuxUsageBadge(newUsageProvider())
 	if ctx.State != nil && ctx.State.Server {
 		status += "#[default]#[fg=#f9e2af,bold] ⚡"
 	}
 	fmt.Print(status)
 	return nil
-}
-
-func tmuxAIBadge(agent, state string) string {
-	switch {
-	case agent == "claude" && state == "WAITING":
-		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CLAUDE WAITING #[default]#[fg=#f38ba8]#[default]"
-	case agent == "codex" && state == "WAITING":
-		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] CODEX WAITING #[default]#[fg=#f38ba8]#[default]"
-	case agent == "opencode" && state == "WAITING":
-		return "#[default]#[fg=#f38ba8]#[bg=#f38ba8,fg=#1e1e2e,bold] OPENCODE WAITING #[default]#[fg=#f38ba8]#[default]"
-	case agent == "opencode" && state == "CODING":
-		return "#[default]#[fg=#C678B8,bold] Coding #[default]"
-	case agent == "claude" && state == "COMPACTING":
-		return "#[default]#[fg=#AFAFFF,bold] ✦ Compacting… ✦ #[default]"
-	case agent == "codex" && state == "COMPACTING":
-		return "#[default]#[fg=#AFAFFF,bold] ✦ Compacting… ✦ #[default]"
-	default:
-		return ""
-	}
 }
 
 func clearWorkspace() error {

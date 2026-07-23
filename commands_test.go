@@ -260,41 +260,6 @@ func TestAggregateAIStatesTreatsLegacyAIAsClaude(t *testing.T) {
 	}
 }
 
-func TestTmuxAIBadgesUseAgentWaitingLabels(t *testing.T) {
-	if got := tmuxAIBadge("claude", "WAITING"); !strings.Contains(got, "CLAUDE WAITING") {
-		t.Fatalf("Claude badge = %q", got)
-	}
-	if got := tmuxAIBadge("codex", "WAITING"); !strings.Contains(got, "CODEX WAITING") {
-		t.Fatalf("Codex badge = %q", got)
-	}
-	if got := tmuxAIBadge("opencode", "WAITING"); !strings.Contains(got, "OPENCODE WAITING") {
-		t.Fatalf("OpenCode badge = %q", got)
-	}
-}
-
-func TestTmuxAIBadgeRendersOpenCodeCodingPink(t *testing.T) {
-	got := tmuxAIBadge("opencode", "CODING")
-	if !strings.Contains(got, "Coding") {
-		t.Fatalf("OpenCode coding badge = %q", got)
-	}
-	if !strings.Contains(got, "#C678B8") {
-		t.Fatalf("OpenCode coding badge missing pink colour: %q", got)
-	}
-}
-
-func TestTmuxAIBadgeRendersCompacting(t *testing.T) {
-	got := tmuxAIBadge("claude", "COMPACTING")
-	if !strings.Contains(got, "Compacting") {
-		t.Fatalf("Claude compacting badge = %q", got)
-	}
-	if !strings.Contains(got, "✦") {
-		t.Fatalf("Claude compacting badge missing star glyph: %q", got)
-	}
-	if !strings.Contains(got, "#AFAFFF") {
-		t.Fatalf("Claude compacting badge missing compact purple: %q", got)
-	}
-}
-
 func TestCompactingOutranksClauding(t *testing.T) {
 	state := &SessionState{AI: map[string]string{
 		"claude:0_0": "CLAUDING",

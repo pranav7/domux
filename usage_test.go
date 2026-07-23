@@ -150,6 +150,40 @@ func TestRenderUsageIndicatorSegments(t *testing.T) {
 	}
 }
 
+func TestTmuxUsageBadgeShowsRAGSessionAndWeek(t *testing.T) {
+	snap := UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current week (all models)", Percent: 80},
+		{Label: "Current session", Percent: 33},
+		{Label: "Current week (Fable)", Percent: 95},
+	}}
+	got := tmuxUsageBadge(fakeProvider{snap: snap})
+	want := "#[default]#[fg=#D97757,bold]✷ #[fg=#a6e3a1,bold]s:33% #[fg=#f9e2af,bold]w:80%#[default]"
+	if got != want {
+		t.Fatalf("badge = %q, want %q", got, want)
+	}
+}
+
+func TestTmuxUsageBadgeHidesUnavailableUsage(t *testing.T) {
+	if got := tmuxUsageBadge(fakeProvider{err: errNoCredentials}); got != "" {
+		t.Fatalf("unavailable badge = %q", got)
+	}
+	if got := tmuxUsageBadge(fakeProvider{snap: UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current week (Fable)", Percent: 24},
+	}}}); got != "" {
+		t.Fatalf("badge without session/week windows = %q", got)
+	}
+}
+
+func TestTmuxUsageBadgeShowsAvailableWindow(t *testing.T) {
+	got := tmuxUsageBadge(fakeProvider{snap: UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current week (all models)", Percent: 95},
+	}}})
+	want := "#[default]#[fg=#D97757,bold]✷ #[fg=#f38ba8,bold]w:95%#[default]"
+	if got != want {
+		t.Fatalf("badge = %q, want %q", got, want)
+	}
+}
+
 func TestUsageTagMapping(t *testing.T) {
 	cases := map[string]string{
 		"Current session":           "session",

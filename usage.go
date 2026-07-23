@@ -291,6 +291,42 @@ func renderUsageIndicator(snap UsageSnapshot) string {
 	return strings.Join(segs, uLabel.Render(" · "))
 }
 
+// tmuxUsageBadge renders current session/week usage with independent pressure
+// colors. Errors stay silent; the provider normally serves its last-good cache
+// when a refresh fails.
+func tmuxUsageBadge(p UsageProvider) string {
+	if p == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), usageFetchTimeout)
+	defer cancel()
+	snap, err := p.Fetch(ctx)
+	if err != nil {
+		return ""
+	}
+	var sessionPercent, weekPercent int
+	var haveSession, haveWeek bool
+	for _, w := range snap.Windows {
+		switch {
+		case strings.EqualFold(strings.TrimSpace(w.Label), "Current session"):
+			sessionPercent, haveSession = w.Percent, true
+		case strings.EqualFold(strings.TrimSpace(w.Label), "Current week (all models)"):
+			weekPercent, haveWeek = w.Percent, true
+		}
+	}
+	if !haveSession && !haveWeek {
+		return ""
+	}
+	status := fmt.Sprintf("#[default]#[fg=%s,bold]✷", claudeCodeOrange)
+	if haveSession {
+		status += fmt.Sprintf(" #[fg=%s,bold]s:%d%%", barColor(sessionPercent), sessionPercent)
+	}
+	if haveWeek {
+		status += fmt.Sprintf(" #[fg=%s,bold]w:%d%%", barColor(weekPercent), weekPercent)
+	}
+	return status + "#[default]"
+}
+
 // usageTag maps a window label to its colored tag ("session"/"week"/"fable"),
 // with the fable tag in crimson to match the popup.
 func usageTag(label string) string {
