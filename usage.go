@@ -128,8 +128,8 @@ func (m usageModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // formatAge renders a duration as a short "X ago" string for the popup
-// footer's staleness indicator (shown when the cache is serving a snapshot
-// older than usageCacheTTL, e.g. because the endpoint is rate-limited).
+// footer's "updated ... ago" line, so freshness is visible at a glance
+// whether the snapshot is a live fetch or a rate-limit fallback.
 func formatAge(d time.Duration) string {
 	if d < time.Minute {
 		return "just now"
@@ -258,9 +258,7 @@ func (m usageModel) View() string {
 	}
 	footer := "r refresh · esc close"
 	if m.state == usageLoaded && !m.snapshot.FetchedAt.IsZero() {
-		if age := time.Since(m.snapshot.FetchedAt); age > usageCacheTTL {
-			footer = "updated " + formatAge(age) + " · " + footer
-		}
+		footer = "updated " + formatAge(time.Since(m.snapshot.FetchedAt)) + " · " + footer
 	}
 	b.WriteString("\n" + uFooter.Render(footer))
 	// Center the compact modal in the popup so the surrounding tmux popup

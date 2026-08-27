@@ -113,7 +113,7 @@ func TestFormatAge(t *testing.T) {
 	}
 }
 
-func TestUsageViewShowsStaleFooterWhenCacheOlderThanTTL(t *testing.T) {
+func TestUsageViewShowsUpdatedAgeWhenStale(t *testing.T) {
 	snap := UsageSnapshot{
 		Windows:   []UsageWindow{{Label: "Current session", Percent: 15}},
 		FetchedAt: time.Now().Add(-usageCacheTTL - time.Minute),
@@ -123,15 +123,29 @@ func TestUsageViewShowsStaleFooterWhenCacheOlderThanTTL(t *testing.T) {
 	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
 	out := stripANSI(next.(usageModel).View())
 	if !strings.Contains(out, "updated") || !strings.Contains(out, "ago ·") {
-		t.Fatalf("expected stale-footer indicator:\n%s", out)
+		t.Fatalf("expected an updated-age footer:\n%s", out)
 	}
 }
 
-func TestUsageViewOmitsStaleFooterWhenFresh(t *testing.T) {
-	m := loadedTestModel(t) // FetchedAt is zero -> must not render a staleness claim
+func TestUsageViewShowsUpdatedAgeWhenFresh(t *testing.T) {
+	snap := UsageSnapshot{
+		Windows:   []UsageWindow{{Label: "Current session", Percent: 15}},
+		FetchedAt: time.Now().Add(-5 * time.Second),
+	}
+	m := newUsageModel(fakeProvider{snap: snap})
+	m.width, m.height = 80, 24
+	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
+	out := stripANSI(next.(usageModel).View())
+	if !strings.Contains(out, "updated just now ·") {
+		t.Fatalf("expected the updated-age footer even for fresh data:\n%s", out)
+	}
+}
+
+func TestUsageViewOmitsUpdatedAgeWithoutFetchedAt(t *testing.T) {
+	m := loadedTestModel(t) // FetchedAt is zero -> nothing truthful to claim
 	out := stripANSI(m.View())
 	if strings.Contains(out, "updated") {
-		t.Fatalf("view should not claim staleness for a zero FetchedAt:\n%s", out)
+		t.Fatalf("view should not claim an age for a zero FetchedAt:\n%s", out)
 	}
 }
 
