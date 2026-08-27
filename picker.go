@@ -47,6 +47,7 @@ type sessionInfo struct {
 	Path        string
 	Root        string // git common root (group-level), stripped of scratch worktree dirs
 	Label       string
+	Pinned      bool
 	Recap       string // Claude session ai-title (one-line recap)
 	Tasks       []taskInfo
 }
@@ -218,6 +219,10 @@ var (
 	pWaitingDot = lipgloss.NewStyle().
 			Foreground(red).
 			Bold(true)
+
+	pPinned = lipgloss.NewStyle().
+		Foreground(mauve).
+		Bold(true)
 
 	pName = lipgloss.NewStyle().
 		Foreground(green).
@@ -451,7 +456,7 @@ func (m *pickerModel) rebuildVisible() {
 			if r.Kind == rowTask && !m.showDetails {
 				continue
 			}
-			if r.Kind == rowWindow && (r.Session == nil || !r.Session.hasLiveActivity()) {
+			if r.Kind == rowWindow && (r.Session == nil || (!r.Session.Pinned && !r.Session.hasLiveActivity())) {
 				continue
 			}
 			m.visible = append(m.visible, i)
@@ -949,6 +954,8 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "n":
 			m.startLabelEdit()
 			return m, nil
+		case "p":
+			return m, m.toggleSelectedPin()
 		case "g":
 			for i, vi := range m.visible {
 				if m.rowSelectable(vi) {
@@ -1267,6 +1274,36 @@ func (m *pickerModel) setSelectedServer() tea.Cmd {
 	}
 }
 
+func (m *pickerModel) toggleSelectedPin() tea.Cmd {
+	session := m.selectedSession()
+	if session == nil {
+		return nil
+	}
+	name := session.Name
+	pinned := !session.Pinned
+	verb := "pinning"
+	if !pinned {
+		verb = "unpinning"
+	}
+	m.status = fmt.Sprintf("%s %s", verb, name)
+	m.statusErr = false
+	return func() tea.Msg {
+		return pickerActionMsg{
+			Action:  "pin",
+			Session: name,
+			Value:   strconv.FormatBool(pinned),
+			Err:     setSessionPinned(name, pinned),
+		}
+	}
+}
+
+func setSessionPinned(session string, pinned bool) error {
+	state := loadSessionStateWithLegacy(session)
+	state.Name = session
+	state.Pinned = pinned
+	return saveSessionState(state)
+}
+
 func (m *pickerModel) provisionInFocusedGroup() tea.Cmd {
 	session := m.selectedSession()
 	if session == nil || session.Root == "" {
@@ -1356,6 +1393,8 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("set server %s failed: %v", msg.Session, msg.Err)
 		case "label":
 			m.status = fmt.Sprintf("label %s failed: %v", msg.Session, msg.Err)
+		case "pin":
+			m.status = fmt.Sprintf("pin %s failed: %v", msg.Session, msg.Err)
 		case "provision":
 			m.status = fmt.Sprintf("provision failed: %v", msg.Err)
 		case "close":
@@ -1382,6 +1421,19 @@ func (m *pickerModel) applyPickerAction(msg pickerActionMsg) {
 			m.status = fmt.Sprintf("cleared label for %s", msg.Session)
 		} else {
 			m.status = fmt.Sprintf("labeled %s", msg.Session)
+		}
+	case "pin":
+		pinned, _ := strconv.ParseBool(msg.Value)
+		for _, row := range m.rows {
+			if row.Session != nil && row.Session.Name == msg.Session {
+				row.Session.Pinned = pinned
+			}
+		}
+		m.refreshRows(rowsFromPickerRows(m.rows))
+		if pinned {
+			m.status = fmt.Sprintf("pinned %s", msg.Session)
+		} else {
+			m.status = fmt.Sprintf("unpinned %s", msg.Session)
 		}
 	case "clear":
 		for _, row := range m.rows {
@@ -1430,6 +1482,16 @@ func pickerActionTarget(msg pickerActionMsg) string {
 		return msg.Value
 	}
 	return msg.Session
+}
+
+func rowsFromPickerRows(rows []pickerRow) []pickerRow {
+	entries := make([]groupEntry, 0)
+	for _, row := range rows {
+		if row.Kind == rowSession && row.Session != nil {
+			entries = append(entries, groupEntry{group: row.Group, session: row.Session})
+		}
+	}
+	return rowsFromEntries(entries)
 }
 
 func (m *pickerModel) removeSessionRows(session string) {
@@ -1581,7 +1643,7 @@ func (m pickerModel) renderHelpOverlay() string {
 	b.WriteString("  " + join(bind("↑↓ / j k", "move"), bind("g / G", "top / bottom")) + "\n\n")
 	b.WriteString(catS.Render("SESSION") + "\n")
 	b.WriteString("  " + join(bind("⏎", "switch"), bind("+", "new"), bind("w", "new window"), bind("D", "close/delete")) + "\n")
-	b.WriteString("  " + join(bind("n", "name"), bind("c", "clear"), bind("r", "reset"), bind("s", "server")) + "\n\n")
+	b.WriteString("  " + join(bind("p", "pin/unpin"), bind("n", "name"), bind("c", "clear"), bind("r", "reset"), bind("s", "server")) + "\n\n")
 	b.WriteString(catS.Render("VIEW") + "\n")
 	b.WriteString("  " + join(bind("→", "preview"), bind("F", "big"), bind("P", "popup")) + "\n")
 	b.WriteString("  " + join(bind("tab", "show/hide details"), bind("/", "filter")) + "\n\n")
@@ -1631,7 +1693,8 @@ func (m pickerModel) View() string {
 	footer := "    " +
 		pFooterKey.Render("↑↓") + pFooter.Render(" navigate") + sep +
 		pFooterKey.Render("⏎") + pFooter.Render(" switch") + sep +
-		pFooterKey.Render("+") + pFooter.Render(" new") + sep
+		pFooterKey.Render("+") + pFooter.Render(" new") + sep +
+		pFooterKey.Render("p") + pFooter.Render(" pin") + sep
 	if m.previewOpen {
 		bigLabel := " big"
 		if m.previewBig {
@@ -2384,10 +2447,11 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 	active := s.Claude != "" || s.Codex != "" || s.OpenCode != ""
 	empty := s.isEmptySlot()
 
-	// A hollow ◌ marks a freshly-provisioned idle slot; everything else gets a
-	// plain space so the column still aligns.
+	// Pin and empty-slot markers share one left column.
 	mainGlyph := " "
-	if empty {
+	if s.Pinned {
+		mainGlyph = pPinned.Render("")
+	} else if empty {
 		mainGlyph = pMainMark.Render("◌")
 	}
 	// Prefix: left accent bar for waiting, cursor arrow for selected, then
@@ -2406,6 +2470,8 @@ func (m pickerModel) renderSession(row pickerRow, selected bool) string {
 
 	nameStyle := lipgloss.NewStyle().Foreground(teal)
 	switch {
+	case s.Pinned:
+		nameStyle = pPinned
 	case empty && !selected:
 		nameStyle = lipgloss.NewStyle().Foreground(overlay0)
 	case selected || active:
@@ -2740,6 +2806,7 @@ func gatherSessions() []pickerRow {
 		info.ClaudeLabel = aiStates.ClaudeLabel
 		info.CodexLabel = aiStates.CodexLabel
 		info.Server = state.Server
+		info.Pinned = state.Pinned
 
 		winOut, err := exec.Command("tmux", "list-windows", "-t", sess, "-F",
 			"#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}").Output()
@@ -2829,15 +2896,19 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 	sortEntries(entries)
 
 	var rows []pickerRow
-	currentGroup := ""
+	currentSection := ""
 	var prev *sessionInfo
 	for _, e := range entries {
-		if e.group != currentGroup {
-			if currentGroup != "" {
+		section := e.group
+		if e.session.Pinned {
+			section = "pinned"
+		}
+		if section != currentSection {
+			if currentSection != "" {
 				rows = append(rows, pickerRow{Kind: rowSpacer, Group: e.group})
 			}
-			rows = append(rows, pickerRow{Kind: rowHeader, Group: e.group})
-			currentGroup = e.group
+			rows = append(rows, pickerRow{Kind: rowHeader, Group: section})
+			currentSection = section
 			prev = nil
 		} else if prev != nil && !(prev.isEmptySlot() && e.session.isEmptySlot()) {
 			// Faint hairline between content-bearing blocks; consecutive idle
@@ -2845,8 +2916,8 @@ func rowsFromEntries(entries []groupEntry) []pickerRow {
 			rows = append(rows, pickerRow{Kind: rowRule, Group: e.group})
 		}
 		rows = append(rows, pickerRow{Kind: rowSession, Group: e.group, Session: e.session})
-		// Keep every window in the row model. Default visibility collapses dormant
-		// sessions; live activity and filtering expose these rows.
+		// Keep every window in the row model. Live, filtered, and pinned sessions
+		// expose them; other dormant sessions stay collapsed.
 		for i := range e.session.Windows {
 			rows = append(rows, pickerRow{
 				Kind:    rowWindow,
@@ -2915,8 +2986,10 @@ func aggregateClaudeState(homeDir, session string) string {
 func sortEntries(entries []groupEntry) {
 	for i := 1; i < len(entries); i++ {
 		for j := i; j > 0; j-- {
-			if entries[j].group < entries[j-1].group ||
-				(entries[j].group == entries[j-1].group && entries[j].session.Name < entries[j-1].session.Name) {
+			left, right := entries[j], entries[j-1]
+			if (left.session.Pinned && !right.session.Pinned) ||
+				(left.session.Pinned == right.session.Pinned && (left.group < right.group ||
+					(left.group == right.group && left.session.Name < right.session.Name))) {
 				entries[j], entries[j-1] = entries[j-1], entries[j]
 			} else {
 				break

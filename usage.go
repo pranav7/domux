@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -126,6 +127,24 @@ func (m usageModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// formatAge renders a duration as a short "X ago" string for the popup
+// footer's staleness indicator (shown when the cache is serving a snapshot
+// older than usageCacheTTL, e.g. because the endpoint is rate-limited).
+func formatAge(d time.Duration) string {
+	if d < time.Minute {
+		return "just now"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if m == 0 {
+		return fmt.Sprintf("%dh ago", h)
+	}
+	return fmt.Sprintf("%dh%dm ago", h, m)
+}
+
 func usageErrorReason(err error) string {
 	switch {
 	case errors.Is(err, errNoCredentials):
@@ -237,7 +256,13 @@ func (m usageModel) View() string {
 			}
 		}
 	}
-	b.WriteString("\n" + uFooter.Render("r refresh · esc close"))
+	footer := "r refresh · esc close"
+	if m.state == usageLoaded && !m.snapshot.FetchedAt.IsZero() {
+		if age := time.Since(m.snapshot.FetchedAt); age > usageCacheTTL {
+			footer = "updated " + formatAge(age) + " · " + footer
+		}
+	}
+	b.WriteString("\n" + uFooter.Render(footer))
 	// Center the compact modal in the popup so the surrounding tmux popup
 	// padding is even, and the box hugs its content instead of filling it.
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uFrame.Render(b.String()))

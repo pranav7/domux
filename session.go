@@ -21,6 +21,7 @@ type SessionState struct {
 	TodoPath        string            `json:"todo_path,omitempty"`
 	FocusedTodoID   string            `json:"focused_todo_id,omitempty"`
 	Label           string            `json:"label,omitempty"`
+	Pinned          bool              `json:"pinned,omitempty"`
 	Server          bool              `json:"server,omitempty"`
 	Workspace       string            `json:"workspace,omitempty"`
 	AI              map[string]string `json:"ai,omitempty"`
@@ -41,6 +42,12 @@ type WindowSnapshot struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Cwd   string `json:"cwd,omitempty"`
+	// Agent is the last agent ("claude"/"codex"/"opencode") known to run in
+	// this window, kept sticky by annotateWindowAgents so it survives past the
+	// point where the live state.AI signal itself goes stale and gets pruned.
+	// `domux resume` uses it to pin the right CLI per window instead of
+	// guessing from cwd alone.
+	Agent string `json:"agent,omitempty"`
 }
 
 type AIStates struct {
@@ -173,6 +180,7 @@ func saveSessionState(state *SessionState) error {
 	// nil and we keep the last-good layout already loaded on state — never
 	// overwrite a real snapshot with an empty one.
 	if wins := snapshotWindows(state.Name); wins != nil {
+		annotateWindowAgents(wins, state)
 		state.Windows = wins
 	}
 	now := time.Now().Format(timeFormat)
@@ -593,6 +601,51 @@ func aggregateAIStatesByWindow(state *SessionState) map[int]AIStates {
 		out[win] = s
 	}
 	return out
+}
+
+// primaryAgentForWindow returns the one agent with a non-empty aggregated
+// state for a window, or "" when none or more than one are active. Two
+// agents active in the same window is not a case domux's one-agent-per-window
+// convention expects; treating it as unknown falls back to the last
+// unambiguous value rather than guessing.
+func primaryAgentForWindow(s AIStates) string {
+	agent, count := "", 0
+	if s.Claude != "" {
+		agent, count = "claude", count+1
+	}
+	if s.Codex != "" {
+		agent, count = "codex", count+1
+	}
+	if s.OpenCode != "" {
+		agent, count = "opencode", count+1
+	}
+	if count == 1 {
+		return agent
+	}
+	return ""
+}
+
+// annotateWindowAgents fills each fresh window snapshot's Agent field from the
+// session's current per-window AI state, falling back to whatever agent was
+// already recorded at that window index in the previous snapshot. This makes
+// the record sticky: pruneStaleAIStates clears the live CLAUDING/CODEXING/
+// WAITING signal soon after an agent goes idle, but `domux resume` needs to
+// know which CLI last ran in a window long after that signal is gone.
+func annotateWindowAgents(windows []WindowSnapshot, state *SessionState) {
+	prev := make(map[int]string, len(state.Windows))
+	for _, w := range state.Windows {
+		if w.Agent != "" {
+			prev[w.Index] = w.Agent
+		}
+	}
+	byWindow := aggregateAIStatesByWindow(state)
+	for i := range windows {
+		if agent := primaryAgentForWindow(byWindow[windows[i].Index]); agent != "" {
+			windows[i].Agent = agent
+		} else {
+			windows[i].Agent = prev[windows[i].Index]
+		}
+	}
 }
 
 func workingAIAgents(state *SessionState) map[string]bool {

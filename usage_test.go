@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -94,6 +95,43 @@ func TestUsageViewShowsUnavailableOnError(t *testing.T) {
 	}
 	if strings.Contains(out, "% used") {
 		t.Fatalf("error view must not render fabricated bars:\n%s", out)
+	}
+}
+
+func TestFormatAge(t *testing.T) {
+	cases := map[time.Duration]string{
+		30 * time.Second:  "just now",
+		90 * time.Second:  "1m ago",
+		11 * time.Minute:  "11m ago",
+		2 * time.Hour:     "2h ago",
+		125 * time.Minute: "2h5m ago",
+	}
+	for d, want := range cases {
+		if got := formatAge(d); got != want {
+			t.Fatalf("formatAge(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestUsageViewShowsStaleFooterWhenCacheOlderThanTTL(t *testing.T) {
+	snap := UsageSnapshot{
+		Windows:   []UsageWindow{{Label: "Current session", Percent: 15}},
+		FetchedAt: time.Now().Add(-usageCacheTTL - time.Minute),
+	}
+	m := newUsageModel(fakeProvider{snap: snap})
+	m.width, m.height = 80, 24
+	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
+	out := stripANSI(next.(usageModel).View())
+	if !strings.Contains(out, "updated") || !strings.Contains(out, "ago ·") {
+		t.Fatalf("expected stale-footer indicator:\n%s", out)
+	}
+}
+
+func TestUsageViewOmitsStaleFooterWhenFresh(t *testing.T) {
+	m := loadedTestModel(t) // FetchedAt is zero -> must not render a staleness claim
+	out := stripANSI(m.View())
+	if strings.Contains(out, "updated") {
+		t.Fatalf("view should not claim staleness for a zero FetchedAt:\n%s", out)
 	}
 }
 

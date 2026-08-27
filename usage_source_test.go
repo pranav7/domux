@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -111,7 +112,9 @@ func TestParseUsageErrorsWhenNoWindows(t *testing.T) {
 }
 
 func TestClampPercent(t *testing.T) {
-	cases := map[float64]int{-5: 0, 0: 0, 14.6: 15, 100: 100, 150: 100}
+	// Floors at 0 but must NOT cap the upper bound — the API can report
+	// genuine overage (e.g. 102%) and that must render as-is, not as 100%.
+	cases := map[float64]int{-5: 0, 0: 0, 14.6: 15, 100: 100, 150: 150}
 	for in, want := range cases {
 		if got := clampPercent(in); got != want {
 			t.Fatalf("clampPercent(%v) = %d, want %d", in, got, want)
@@ -278,6 +281,69 @@ func TestCachedProviderPropagatesErrorWhenNoCache(t *testing.T) {
 	p := cachedUsageProvider{inner: &countingProvider{err: errNoCredentials}, ttl: time.Minute, path: pathFn}
 	if _, err := p.Fetch(context.Background()); err != errNoCredentials {
 		t.Fatalf("err = %v, want errNoCredentials (no cache to fall back to)", err)
+	}
+}
+
+func TestCachedProviderSkipsRefreshWhenLockHeld(t *testing.T) {
+	pathFn := tempCachePath(t)
+	seed := cachedUsageProvider{inner: &countingProvider{snap: snapWith(42)}, ttl: time.Minute, path: pathFn}
+	if _, err := seed.Fetch(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	path, _ := pathFn()
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	defer os.Remove(lockPath)
+
+	// A stale cache (ttl 0) would normally trigger a live fetch, but another
+	// process holds the fresh refresh lock, so this process must serve the
+	// last-good cached snapshot instead of piling a second request onto the
+	// rate limit.
+	inner := &countingProvider{snap: snapWith(99)}
+	p := cachedUsageProvider{inner: inner, ttl: 0, path: pathFn}
+	snap, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch with lock held: %v", err)
+	}
+	if inner.calls != 0 {
+		t.Fatalf("inner called %d times, want 0 (refresh lock held by another process)", inner.calls)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Percent != 42 {
+		t.Fatalf("expected last-good cached snapshot (42%%), got %#v", snap)
+	}
+}
+
+func TestCachedProviderReclaimsAbandonedLock(t *testing.T) {
+	pathFn := tempCachePath(t)
+	seed := cachedUsageProvider{inner: &countingProvider{snap: snapWith(1)}, ttl: time.Minute, path: pathFn}
+	if _, err := seed.Fetch(context.Background()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	path, _ := pathFn()
+	lockPath := path + ".lock"
+	if err := os.WriteFile(lockPath, nil, 0644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	old := time.Now().Add(-usageRefreshLockTTL - time.Second)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// A lock older than usageRefreshLockTTL belongs to a process that died
+	// mid-fetch; it must be reclaimed so refreshes don't wedge forever.
+	inner := &countingProvider{snap: snapWith(7)}
+	p := cachedUsageProvider{inner: inner, ttl: 0, path: pathFn}
+	snap, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("inner called %d times, want 1 (abandoned lock should be reclaimed)", inner.calls)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Percent != 7 {
+		t.Fatalf("expected fresh snapshot, got %#v", snap)
 	}
 }
 

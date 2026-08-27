@@ -165,7 +165,11 @@ func resumeWindows(session string, windows []WindowSnapshot) (nWindows, nAgents 
 		if i >= len(indices) {
 			break
 		}
-		as, ok := bestAgentSession(sessions, w.Cwd)
+		candidates := sessions
+		if w.Agent != "" {
+			candidates = filterAgentSessions(sessions, w.Agent)
+		}
+		as, ok := bestAgentSession(candidates, w.Cwd)
 		if !ok {
 			continue
 		}
@@ -179,6 +183,20 @@ func resumeWindows(session string, windows []WindowSnapshot) (nWindows, nAgents 
 		}
 	}
 	return nWindows, nAgents
+}
+
+// filterAgentSessions narrows sessions to a single agent. A window's saved
+// Agent (see annotateWindowAgents) pins which CLI last ran there, so a
+// same-cwd session belonging to a different agent — however recently
+// updated — is never mistaken for it.
+func filterAgentSessions(sessions []agentSession, agent string) []agentSession {
+	out := make([]agentSession, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Agent == agent {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // tmuxWindowIndices returns a session's window indices in tmux's own order

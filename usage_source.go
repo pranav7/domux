@@ -17,8 +17,11 @@ import (
 
 // UsageWindow is one subscription rate-limit window (session / weekly / weekly-Fable).
 type UsageWindow struct {
-	Label    string
-	Percent  int       // 0-100, clamped
+	Label string
+	// Percent is rounded from the API's raw value and floored at 0, but NOT
+	// capped at 100 — the API can genuinely report overage (e.g. 102%), and
+	// silently flooring that to 100 would misrepresent real usage.
+	Percent  int
 	ResetsAt time.Time // zero if the endpoint omitted / sent an unparseable time
 }
 
@@ -125,9 +128,6 @@ func clampPercent(v float64) int {
 	p := int(v + 0.5)
 	if p < 0 {
 		return 0
-	}
-	if p > 100 {
-		return 100
 	}
 	return p
 }
@@ -254,7 +254,11 @@ func newUsageProvider() UsageProvider {
 	return cachedUsageProvider{inner: live, ttl: usageCacheTTL, path: usageCachePath}
 }
 
-const usageCacheTTL = 90 * time.Second
+// usageCacheTTL is deliberately conservative: the endpoint's rate limit is
+// shared across every Claude Code / domux process on the account, so domux's
+// own polling (tmux status bar + picker, potentially from several attached
+// clients) needs a wide margin rather than chasing per-minute freshness.
+const usageCacheTTL = 5 * time.Minute
 
 // usageCachePath is the shared snapshot-cache location. It holds only a
 // normalized UsageSnapshot (percentages + reset times) — never the token.
@@ -267,16 +271,39 @@ func usageCachePath() (string, error) {
 // call; a stale cache triggers one call, and any fetch error falls back to the
 // last-good cached snapshot (even if expired) so a transient rate-limit or
 // network blip never surfaces as "unavailable" once we've seen real data.
+//
+// The cache is shared on disk across every domux process on the machine (the
+// tmux status bar polls it from every attached client, plus the picker), so a
+// stale-cache moment can be observed by several processes at once. Without
+// coordination each would fire its own live request at the same instant,
+// multiplying domux's share of the endpoint's aggressive rate limit. A
+// same-directory lock file lets only one process refresh at a time; the rest
+// serve the last-good cached snapshot instead of piling on.
 type cachedUsageProvider struct {
 	inner UsageProvider
 	ttl   time.Duration
 	path  func() (string, error)
 }
 
+// usageRefreshLockTTL bounds how long a refresh lock is honored. A live fetch
+// normally completes well within this; a lock older than this belongs to a
+// process that died mid-fetch and is safe to reclaim.
+const usageRefreshLockTTL = 20 * time.Second
+
 func (p cachedUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
 	cached, cachedAt, haveCache := p.readCache()
 	if haveCache && time.Since(cachedAt) < p.ttl {
 		return cached, nil
+	}
+	if haveCache {
+		release, claimed := p.acquireRefreshLock()
+		if !claimed {
+			// Another local process is already refreshing this same cache;
+			// serve the last-good snapshot rather than adding a second
+			// concurrent request against the rate limit.
+			return cached, nil
+		}
+		defer release()
 	}
 	snap, err := p.inner.Fetch(ctx)
 	if err != nil {
@@ -287,6 +314,28 @@ func (p cachedUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
 	}
 	p.writeCache(snap)
 	return snap, nil
+}
+
+// acquireRefreshLock claims the on-disk refresh lock for this cache. It
+// reclaims an abandoned lock (older than usageRefreshLockTTL) before trying,
+// so a process that died mid-fetch can't wedge refreshes forever. The
+// returned release func is a no-op if the lock path can't be resolved, in
+// which case claimed is true so callers proceed unlocked rather than block.
+func (p cachedUsageProvider) acquireRefreshLock() (release func(), claimed bool) {
+	path, err := p.path()
+	if err != nil {
+		return func() {}, true
+	}
+	lockPath := path + ".lock"
+	if info, err := os.Stat(lockPath); err == nil && time.Since(info.ModTime()) >= usageRefreshLockTTL {
+		_ = os.Remove(lockPath)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return func() {}, false
+	}
+	f.Close()
+	return func() { _ = os.Remove(lockPath) }, true
 }
 
 // usageCacheFile is the on-disk shape: the normalized snapshot plus the wall

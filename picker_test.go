@@ -62,6 +62,116 @@ func TestPickerNStartsLabelEdit(t *testing.T) {
 	}
 }
 
+func TestPickerPPinsWholeSessionAndWindows(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installFakeTmux(t, "#!/bin/sh\nexit 1\n", "")
+
+	planner := &sessionInfo{
+		Name:    "planner",
+		Windows: []windowInfo{{Index: 1, Name: "plan"}, {Index: 2, Name: "notes"}},
+	}
+	m := newPickerModel(rowsFromEntries([]groupEntry{
+		{group: "audrey", session: &sessionInfo{Name: "audrey"}},
+		{group: "planner", session: planner},
+	}))
+	m.startedAt = time.Time{}
+	for i, vi := range m.visible {
+		row := m.rows[vi]
+		if row.Kind == rowSession && row.Session == planner {
+			m.cursor = i
+			break
+		}
+	}
+
+	next, cmd := m.updateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	pm := next.(pickerModel)
+	if cmd == nil {
+		t.Fatal("p should dispatch pin")
+	}
+	msg, ok := cmd().(pickerActionMsg)
+	if !ok || msg.Action != "pin" || msg.Value != "true" {
+		t.Fatalf("pin msg = %#v", msg)
+	}
+	pm.applyPickerAction(msg)
+
+	if got := pm.rows[0]; got.Kind != rowHeader || got.Group != "pinned" {
+		t.Fatalf("first row = %#v, want pinned header", got)
+	}
+	if got := pm.rows[1]; got.Kind != rowSession || got.Session.Name != "planner" || got.Group != "planner" {
+		t.Fatalf("pinned session row = %#v", got)
+	}
+	var windows int
+	for _, vi := range pm.visible {
+		row := pm.rows[vi]
+		if row.Kind == rowWindow && row.Session != nil && row.Session.Name == "planner" {
+			windows++
+		}
+	}
+	if windows != 2 {
+		t.Fatalf("visible pinned windows = %d, want 2", windows)
+	}
+	state, err := loadSessionState("planner")
+	if err != nil || !state.Pinned {
+		t.Fatalf("saved pin = %#v, err=%v", state, err)
+	}
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(prev)
+	out := pm.renderSession(pm.rows[1], false)
+	plain := stripTestANSI(out)
+	if !strings.Contains(out, pPinned.Render("")) || !strings.Contains(out, pPinned.Render("planner")) {
+		t.Fatalf("pin and name should share style: %q", out)
+	}
+	if strings.Index(plain, "") > strings.Index(plain, "planner") {
+		t.Fatalf("pin should precede session name: %q", plain)
+	}
+	if strings.Contains(plain, "◌") {
+		t.Fatalf("pin should replace empty marker: %q", plain)
+	}
+}
+
+func TestPickerPinActionUnpinsFromWindow(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	installFakeTmux(t, "#!/bin/sh\nexit 1\n", "")
+
+	sess := &sessionInfo{
+		Name:    "planner",
+		Pinned:  true,
+		Windows: []windowInfo{{Index: 1, Name: "plan"}},
+	}
+	m := newPickerModel(rowsFromEntries([]groupEntry{{group: "planner", session: sess}}))
+	if got := m.rows[m.visible[m.cursor]]; got.Kind != rowWindow {
+		t.Fatalf("cursor = %#v, want pinned window", got)
+	}
+
+	m.startedAt = time.Time{}
+	next, cmd := m.updateInner(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	pm := next.(pickerModel)
+	if cmd == nil {
+		t.Fatal("p on window should dispatch session unpin")
+	}
+	msg, ok := cmd().(pickerActionMsg)
+	if !ok || msg.Action != "pin" || msg.Value != "false" {
+		t.Fatalf("unpin msg = %#v", msg)
+	}
+	pm.applyPickerAction(msg)
+	if sess.Pinned {
+		t.Fatal("session remained pinned")
+	}
+	if got := pm.rows[0]; got.Kind != rowHeader || got.Group != "planner" {
+		t.Fatalf("first row = %#v, want planner header", got)
+	}
+	for _, vi := range pm.visible {
+		if pm.rows[vi].Kind == rowWindow {
+			t.Fatalf("idle window stayed expanded after unpin: %#v", pm.rows[vi])
+		}
+	}
+	state, err := loadSessionState("planner")
+	if err != nil || state.Pinned {
+		t.Fatalf("saved unpin = %#v, err=%v", state, err)
+	}
+}
+
 func TestPickerHelpOverlayToggle(t *testing.T) {
 	m := newPickerModel([]pickerRow{
 		{Kind: rowHeader, Group: "g"},

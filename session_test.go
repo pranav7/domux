@@ -42,6 +42,60 @@ func TestAggregateAIStatesByWindowNilAndEmpty(t *testing.T) {
 	}
 }
 
+func TestAnnotateWindowAgentsUsesLiveSignal(t *testing.T) {
+	state := &SessionState{AI: map[string]string{"codex:1_0": "CODEXING"}}
+	windows := []WindowSnapshot{{Index: 1, Cwd: "/p"}}
+
+	annotateWindowAgents(windows, state)
+
+	if windows[0].Agent != "codex" {
+		t.Fatalf("Agent = %q, want codex", windows[0].Agent)
+	}
+}
+
+func TestAnnotateWindowAgentsStickyAfterAIStateGoesIdle(t *testing.T) {
+	// Window 1 was previously recorded as claude; state.AI has no current
+	// entry for it (the agent went idle and pruneStaleAIStates dropped the
+	// live signal already). The fresh snapshot must still remember claude.
+	state := &SessionState{
+		Windows: []WindowSnapshot{{Index: 1, Cwd: "/p", Agent: "claude"}},
+	}
+	windows := []WindowSnapshot{{Index: 1, Cwd: "/p"}}
+
+	annotateWindowAgents(windows, state)
+
+	if windows[0].Agent != "claude" {
+		t.Fatalf("Agent = %q, want claude carried forward from the prior snapshot", windows[0].Agent)
+	}
+}
+
+func TestAnnotateWindowAgentsSwitchesWhenAgentChanges(t *testing.T) {
+	// Window 1 was claude last time, but is now live-reporting codex — the
+	// pane got repurposed, so the fresh signal must win over the stale record.
+	state := &SessionState{
+		Windows: []WindowSnapshot{{Index: 1, Cwd: "/p", Agent: "claude"}},
+		AI:      map[string]string{"codex:1_0": "CODEXING"},
+	}
+	windows := []WindowSnapshot{{Index: 1, Cwd: "/p"}}
+
+	annotateWindowAgents(windows, state)
+
+	if windows[0].Agent != "codex" {
+		t.Fatalf("Agent = %q, want codex (fresh signal overrides stale claude record)", windows[0].Agent)
+	}
+}
+
+func TestAnnotateWindowAgentsUnknownWhenNeverSeen(t *testing.T) {
+	state := &SessionState{}
+	windows := []WindowSnapshot{{Index: 1, Cwd: "/p"}}
+
+	annotateWindowAgents(windows, state)
+
+	if windows[0].Agent != "" {
+		t.Fatalf("Agent = %q, want empty when no signal ever recorded", windows[0].Agent)
+	}
+}
+
 func TestSnapshotWindowsParsesTmuxOutput(t *testing.T) {
 	installFakeTmux(t, `#!/bin/sh
 printf '1\tmain\t/p/domux\n2\tmerge queue\t/p/audrey\n3\tscratch\t/p/x\n'

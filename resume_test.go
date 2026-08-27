@@ -305,6 +305,86 @@ exit 0
 	}
 }
 
+// TestExecuteResumeStepDoesNotCrossAgents reproduces the reported "resume just
+// opens codex for everything" bug: two windows share the same cwd, one last
+// known (via its saved Agent) to run claude and the other codex, and the
+// codex session for that cwd happens to be the more recently touched one.
+// Each window's saved Agent must pin its own resume target — a fresher
+// same-cwd session from the *other* agent must never leak across windows.
+func TestExecuteResumeStepDoesNotCrossAgents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeRec := `{"pid":2147483646,"sessionId":"claude-sid","cwd":"` + root + `","updatedAt":900}`
+	if err := os.WriteFile(filepath.Join(home, ".claude", "sessions", "2147483646.json"), []byte(claudeRec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	codexDir := filepath.Join(home, ".codex", "sessions", "2026", "01", "01")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexRec := `{"type":"session_meta","payload":{"id":"codex-sid","cwd":"` + root + `","thread_source":"cli"}}` + "\n"
+	// Written now, so its mtime (codex's UpdatedAt stand-in) is far newer than
+	// the claude session's updatedAt:900 (near-epoch) above.
+	if err := os.WriteFile(filepath.Join(codexDir, "rollout-x.jsonl"), []byte(codexRec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	installFakeTmux(t, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOMUX_TMUX_CALL"
+case "$1" in
+has-session) exit 1 ;;
+list-windows) printf '1\n2\n' ;;
+esac
+exit 0
+`, callFile)
+
+	seed := loadSessionStateWithLegacy("sess")
+	seed.Name = "sess"
+	seed.Root = root
+	seed.Windows = []WindowSnapshot{
+		{Index: 1, Name: "claude-win", Cwd: root, Agent: "claude"},
+		{Index: 2, Name: "codex-win", Cwd: root, Agent: "codex"},
+	}
+	if err := saveSessionState(seed); err != nil {
+		t.Fatal(err)
+	}
+
+	got := executeResumeStep(resumeTarget{Name: "sess", Root: root})
+	if got.Err != nil {
+		t.Fatalf("unexpected err: %v", got.Err)
+	}
+	if got.nAgents != 2 {
+		t.Fatalf("nAgents = %d, want 2 (both windows matched their own agent)", got.nAgents)
+	}
+
+	data, _ := os.ReadFile(callFile)
+	var win1Line, win2Line string
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(line, "send-keys") {
+			continue
+		}
+		switch {
+		case strings.Contains(line, "-t sess:1 "):
+			win1Line = line
+		case strings.Contains(line, "-t sess:2 "):
+			win2Line = line
+		}
+	}
+	if !strings.Contains(win1Line, "claude-sid") || strings.Contains(win1Line, "codex-sid") {
+		t.Fatalf("window 1 (saved Agent=claude) should resume claude-sid only; got %q", win1Line)
+	}
+	if !strings.Contains(win2Line, "codex-sid") || strings.Contains(win2Line, "claude-sid") {
+		t.Fatalf("window 2 (saved Agent=codex) should resume codex-sid only; got %q", win2Line)
+	}
+}
+
 func TestExecuteResumeStepNoWindowsWhenLayoutEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
