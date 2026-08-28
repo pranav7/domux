@@ -276,14 +276,23 @@ body{
   font:500 13px/1.55 "IBM Plex Mono", ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
   font-variant-numeric:tabular-nums;
 }
-.page{display:flex; flex-direction:column; gap:40px; max-width:78ch; padding:72px 32px 96px}
+.page{display:flex; flex-direction:column; gap:40px; max-width:1160px; padding:72px 32px 96px}
 .head{display:flex; flex-direction:column; gap:6px}
 h1{margin:0; font-size:15px; font-weight:600; letter-spacing:.01em}
 .meta{margin:0; font-size:11.5px; font-weight:500; color:var(--dim)}
 .bit{white-space:nowrap}
 .sep{color:var(--faint)}
-.groups{display:flex; flex-direction:column; gap:34px}
-.group{display:flex; flex-direction:column; gap:12px; border-top:1px solid var(--rule); padding-top:16px}
+.groups{
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr));
+  align-items:start; gap:24px;
+}
+.group{
+  display:flex; flex-direction:column; gap:12px;
+  border:1px solid var(--rule); border-radius:8px; padding:16px 18px;
+}
+@media (max-width: 900px){
+  .groups{grid-template-columns:1fr}
+}
 .group-head{display:flex; flex-direction:column; gap:4px}
 .group-title{display:flex; align-items:baseline; flex-wrap:wrap; gap:8px}
 .name{font-size:13px; font-weight:600}
