@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -82,63 +81,16 @@ func parseSessionListLines(out string) []liveSession {
 	return sessions
 }
 
-// parseAutoNamedSessions reads `tmux list-windows -a -F
-// '#{session_name}\t#{?automatic-rename,1,0}'` output into session name → every
-// window still auto-named. One manually named window turns the session false.
-func parseAutoNamedSessions(out string) map[string]bool {
-	autoNamed := map[string]bool{}
-	for _, line := range strings.Split(out, "\n") {
-		session, auto, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
-		if session == "" || !ok {
-			continue
-		}
-		isAuto := auto == "1"
-		if seen, ok := autoNamed[session]; ok {
-			isAuto = isAuto && seen
-		}
-		autoNamed[session] = isAuto
-	}
-	return autoNamed
-}
-
-// parsePaneCommandsBySession reads `tmux list-panes -a -F
-// '#{session_name}\t#{pane_current_command}'` output into session name → the
-// command running in each of its panes.
-func parsePaneCommandsBySession(out string) map[string][]string {
-	bySession := map[string][]string{}
-	for _, line := range strings.Split(out, "\n") {
-		session, cmd, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
-		if session == "" || !ok || cmd == "" {
-			continue
-		}
-		bySession[session] = append(bySession[session], cmd)
-	}
-	return bySession
-}
-
-// straySessionFilter answers isStray for every live session from two
-// whole-server tmux probes. Both are best-effort: an unreadable probe leaves its
-// map empty, which makes every session non-stray.
+// straySessionFilter answers isStray for every live session out of the
+// switcher's whole-server pane snapshot — the same one that builds the rows, so
+// deciding what to hide costs no extra tmux calls. An empty snapshot leaves
+// every session non-stray, which is the safe direction.
 type straySessionFilter struct {
-	autoNamed map[string]bool
-	paneCmds  map[string][]string
+	snapshot tmuxServerSnapshot
 }
 
-func newStraySessionFilter() straySessionFilter {
-	windows, err := exec.Command("tmux", "list-windows", "-a", "-F",
-		"#{session_name}\t#{?automatic-rename,1,0}").Output()
-	if err != nil {
-		debugLog("stray filter: list-windows -a failed: %v", err)
-	}
-	panes, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{session_name}\t#{pane_current_command}").Output()
-	if err != nil {
-		debugLog("stray filter: list-panes -a failed: %v", err)
-	}
-	return straySessionFilter{
-		autoNamed: parseAutoNamedSessions(string(windows)),
-		paneCmds:  parsePaneCommandsBySession(string(panes)),
-	}
+func newStraySessionFilter(snapshot tmuxServerSnapshot) straySessionFilter {
+	return straySessionFilter{snapshot: snapshot}
 }
 
 // isStray reports whether sess is an agent leftover the switcher should hide.
@@ -146,8 +98,8 @@ func (f straySessionFilter) isStray(sess liveSession) bool {
 	probe := straySessionProbe{
 		HasDomuxState: domuxTracksSession(sess.Name),
 		Attached:      sess.Attached,
-		AllAutoNamed:  f.autoNamed[sess.Name],
-		PaneCmds:      f.paneCmds[sess.Name],
+		AllAutoNamed:  f.snapshot.allAutoNamed(sess.Name),
+		PaneCmds:      f.snapshot.paneCommands(sess.Name),
 	}
 	if !probe.isStray() {
 		return false

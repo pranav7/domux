@@ -1238,65 +1238,6 @@ func TestResumeBannerRendersProgress(t *testing.T) {
 	}
 }
 
-func TestParseWindowLines(t *testing.T) {
-	out := "1\tprod uk\t0\t/Users/x/projects/audrey\n" +
-		"2\tmerge queue\t1\t/Users/x/projects/audrey\n"
-	got := parseWindowLines(out)
-	if len(got) != 2 {
-		t.Fatalf("got %d windows, want 2", len(got))
-	}
-	if got[0].Index != 1 || got[0].Name != "prod uk" || got[0].Active {
-		t.Errorf("window 0 = %+v, want {Index:1 Name:%q Active:false}", got[0], "prod uk")
-	}
-	if got[1].Index != 2 || got[1].Name != "merge queue" || !got[1].Active {
-		t.Errorf("window 1 = %+v, want {Index:2 Name:%q Active:true}", got[1], "merge queue")
-	}
-	if got[1].Path != "/Users/x/projects/audrey" {
-		t.Errorf("window 1 Path = %q", got[1].Path)
-	}
-}
-
-func TestParseWindowLinesEmpty(t *testing.T) {
-	if got := parseWindowLines(""); len(got) != 0 {
-		t.Errorf("empty output = %+v, want no windows", got)
-	}
-}
-
-func TestParseWindowLinesMalformed(t *testing.T) {
-	// A line with fewer than 4 tab-separated fields is skipped.
-	out := "1\tshort\n2\tname\t1\t/path\n"
-	got := parseWindowLines(out)
-	if len(got) != 1 || got[0].Index != 2 {
-		t.Errorf("short-line skip: got %+v, want only window 2", got)
-	}
-	// A line whose index is not a parseable integer is skipped.
-	out = "x\tname\t0\t/path\n3\tgood\t1\t/path2\n"
-	got = parseWindowLines(out)
-	if len(got) != 1 || got[0].Index != 3 {
-		t.Errorf("non-int index skip: got %+v, want only window 3", got)
-	}
-}
-
-func TestParsePaneTTYLines(t *testing.T) {
-	// `tmux list-panes -s -F "#{window_index}\t#{pane_tty}"` — a window may have
-	// several panes, so ttys bucket per window index.
-	out := "1\t/dev/ttys001\n1\t/dev/ttys003\n2\t/dev/ttys011\n"
-	got := parsePaneTTYLines(out)
-	if len(got[1]) != 2 || got[1][0] != "/dev/ttys001" || got[1][1] != "/dev/ttys003" {
-		t.Errorf("window 1 ttys = %+v, want both panes", got[1])
-	}
-	if len(got[2]) != 1 || got[2][0] != "/dev/ttys011" {
-		t.Errorf("window 2 ttys = %+v, want ttys011", got[2])
-	}
-	if got := parsePaneTTYLines(""); len(got) != 0 {
-		t.Errorf("empty output = %+v, want no entries", got)
-	}
-	// Malformed lines — non-int index, or no tab at all — are skipped.
-	if got := parsePaneTTYLines("x\t/dev/ttys001\nno-tab-here\n"); len(got) != 0 {
-		t.Errorf("malformed lines should be skipped, got %+v", got)
-	}
-}
-
 func TestRowsFromEntriesWindowRows(t *testing.T) {
 	// >1 window → one rowWindow per window, under the session, above tasks.
 	multi := &sessionInfo{

@@ -2731,58 +2731,20 @@ func newWindowInSession(session, name, cwd string) error {
 
 // Data gathering
 
-// parseWindowLines parses `tmux list-windows -F
-// "#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}"`
-// output into windowInfo values (AI/Recap fields left zero — filled by caller).
-func parseWindowLines(out string) []windowInfo {
-	var windows []windowInfo
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) < 4 {
-			continue
-		}
-		idx, err := strconv.Atoi(parts[0])
-		if err != nil {
-			continue
-		}
-		windows = append(windows, windowInfo{
-			Index:  idx,
-			Name:   parts[1],
-			Active: parts[2] == "1",
-			Path:   parts[3],
-		})
-	}
-	return windows
-}
-
-// parsePaneTTYLines parses `tmux list-panes -s -F "#{window_index}\t#{pane_tty}"`
-// output into a window-index → pane-ttys map. A window may hold several panes
-// (e.g. domux's Claude pane beside a working pane), so all of a window's pane
-// ttys bucket together; the recap lookup matches a claude session against any of
-// them. Lines missing a tty or with a non-integer index are skipped.
-func parsePaneTTYLines(out string) map[int][]string {
-	result := map[int][]string{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
-		idxStr, tty, ok := strings.Cut(line, "\t")
-		if !ok || tty == "" {
-			continue
-		}
-		idx, err := strconv.Atoi(idxStr)
-		if err != nil {
-			continue
-		}
-		result[idx] = append(result[idx], tty)
-	}
-	return result
-}
-
+// gatherSessions builds the switcher's whole row model. It runs on the blocking
+// path before the first paint and again on every refresh tick, so its budget is
+// counted in process spawns, not in work: tmux and git answer in microseconds
+// while each fork+exec costs milliseconds. It therefore spawns a fixed three
+// processes — `tmux list-sessions`, one whole-server pane probe
+// (readTmuxServerSnapshot), one `ps` (inside readClaudeSessions) — plus one git
+// call per distinct worktree, all issued concurrently. Everything else is a map
+// lookup or a small file read.
+//
+// Keep it that way. A per-session tmux or git call added to this loop costs
+// roughly a millisecond of startup for every session the user has open; ask the
+// snapshot for tmux facts and gitFactsForPaths for git facts instead.
 func gatherSessions() []pickerRow {
+	start := time.Now()
 	out, err := exec.Command("tmux", "list-sessions", "-F",
 		"#{session_name}\t#{session_attached}").Output()
 	if err != nil {
@@ -2794,53 +2756,60 @@ func gatherSessions() []pickerRow {
 		return nil
 	}
 
-	var entries []groupEntry
+	// One pane probe answers every session's cwd, windows, and pane ttys, and
+	// feeds the stray filter.
+	snapshot := readTmuxServerSnapshot()
 	homeDir, _ := os.UserHomeDir()
 	liveClaude := readClaudeSessions()
 	// Drop agent leftovers before any per-session work: a stray costs one map
 	// lookup instead of a git, PR, and todo lookup. See picker_stray.go.
-	strays := newStraySessionFilter()
+	strays := newStraySessionFilter(snapshot)
 
+	// First pass: resolve each kept session's state and path. Paths are collected
+	// so every git probe can be issued at once instead of one session at a time.
+	type keptSession struct {
+		info     *sessionInfo
+		state    *SessionState
+		panePath string
+	}
+	kept := make([]keptSession, 0, len(sessions))
+	paths := make([]string, 0, len(sessions))
 	for _, live := range sessions {
 		if strays.isStray(live) {
 			continue
 		}
-		sess := live.Name
+		state := loadSessionStateWithLegacy(live.Name)
+		panePath := snapshot.sessionPath(live.Name)
 
-		info := &sessionInfo{Name: sess}
-		state := loadSessionStateWithLegacy(sess)
-
-		pathOut, err := exec.Command("tmux", "display-message", "-t", sess, "-p", "#{pane_current_path}").Output()
-		panePath := ""
-		if err == nil {
-			panePath = strings.TrimSpace(string(pathOut))
-		}
+		info := &sessionInfo{Name: live.Name}
 		if state.Root != "" {
 			info.Path = state.Root
 		} else {
 			info.Path = panePath
 		}
 
-		if info.Path != "" {
-			branchOut, err := exec.Command("git", "-C", info.Path, "branch", "--show-current").Output()
-			if err == nil {
-				info.Branch = strings.TrimSpace(string(branchOut))
-			}
-		}
+		kept = append(kept, keptSession{info: info, state: state, panePath: panePath})
+		paths = append(paths, info.Path)
+	}
+	gitByPath := gitFactsForPaths(paths)
+
+	entries := make([]groupEntry, 0, len(kept))
+	for _, k := range kept {
+		info, state, panePath := k.info, k.state, k.panePath
+		sess := info.Name
+
+		git := gitByPath[info.Path]
+		info.Branch = git.Branch
 
 		// Group by git root
 		group := ""
-		if info.Path != "" {
-			rootOut, err := exec.Command("git", "-C", info.Path, "rev-parse", "--show-toplevel").Output()
-			if err == nil {
-				gitRoot := strings.TrimSpace(string(rootOut))
-				if root, ok := workspaceRootFromPath(gitRoot); ok {
-					info.Root = root
-				} else {
-					info.Root = gitRoot
-				}
-				group = filepath.Base(info.Root)
+		if git.Root != "" {
+			if root, ok := workspaceRootFromPath(git.Root); ok {
+				info.Root = root
+			} else {
+				info.Root = git.Root
 			}
+			group = filepath.Base(info.Root)
 		}
 		if group == "" {
 			if info.Path != "" {
@@ -2863,18 +2832,13 @@ func gatherSessions() []pickerRow {
 		info.Server = state.Server
 		info.Pinned = state.Pinned
 
-		winOut, err := exec.Command("tmux", "list-windows", "-t", sess, "-F",
-			"#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_path}").Output()
-		if err == nil {
-			windows := parseWindowLines(string(winOut))
+		if windows := snapshot.windows(sess); len(windows) > 0 {
 			winStates := aggregateAIStatesByWindow(state)
 			// Pane ttys per window pin each window's recap to the claude session
 			// actually running in it. Matching by cwd alone can't tell apart
 			// multiple claude sessions in the same repo (several windows), which
 			// made every window row show the same recap.
-			paneOut, _ := exec.Command("tmux", "list-panes", "-s", "-t", sess, "-F",
-				"#{window_index}\t#{pane_tty}").Output()
-			winTTYs := parsePaneTTYLines(string(paneOut))
+			winTTYs := snapshot.paneTTYs(sess)
 			for i := range windows {
 				w := &windows[i]
 				if s, ok := winStates[w.Index]; ok {
@@ -2944,6 +2908,7 @@ func gatherSessions() []pickerRow {
 		entries = append(entries, groupEntry{group: group, session: info})
 	}
 
+	debugLog("picker: gatherSessions built %d sessions in %s", len(entries), time.Since(start))
 	return rowsFromEntries(entries)
 }
 

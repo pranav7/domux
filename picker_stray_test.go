@@ -6,24 +6,6 @@ import (
 	"testing"
 )
 
-// Real `tmux list-windows -a -F '#{session_name}\t#{?automatic-rename,1,0}'`
-// output captured from a live server that had two agent leftovers
-// (fixture-stack, pr1-stack) alongside real work.
-const liveAutoNameOutput = "audrey\t0\n" +
-	"audrey\t0\n" +
-	"audrey-app\t0\n" +
-	"audreyai_azure_tf_internal\t1\n" +
-	"domux\t0\n" +
-	"dotfiles\t0\n" +
-	"fixture-stack\t1\n" +
-	"notes\t0\n" +
-	"notes\t0\n" +
-	"pr1-stack\t1\n" +
-	"workspace-1\t0\n" +
-	"workspace-1\t0\n" +
-	"workspace-2\t0\n" +
-	"workspace-4\t0\n"
-
 func TestIsStrayHidesUnmanagedIdleShellSession(t *testing.T) {
 	probe := straySessionProbe{AllAutoNamed: true, PaneCmds: []string{"zsh"}}
 
@@ -102,57 +84,26 @@ func TestIsIdleShellCommand(t *testing.T) {
 	}
 }
 
-func TestParseAutoNamedSessions(t *testing.T) {
-	got := parseAutoNamedSessions(liveAutoNameOutput)
+// The stray filter reads its two whole-server facts off the shared pane
+// snapshot; allAutoNamed and paneCommands are covered in tmux_snapshot_test.go.
 
-	want := map[string]bool{
-		"audrey":                     false,
-		"audrey-app":                 false,
-		"audreyai_azure_tf_internal": true,
-		"domux":                      false,
-		"dotfiles":                   false,
-		"fixture-stack":              true,
-		"notes":                      false,
-		"pr1-stack":                  true,
-		"workspace-1":                false,
-		"workspace-2":                false,
-		"workspace-4":                false,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("parsed %d sessions, want %d: %#v", len(got), len(want), got)
-	}
-	for session, wantAuto := range want {
-		if got[session] != wantAuto {
-			t.Errorf("%s auto-named = %v, want %v", session, got[session], wantAuto)
-		}
-	}
-}
+func TestStrayFilterFromSnapshot(t *testing.T) {
+	// fixture-stack is a leftover: no state file, detached, auto-named, idle zsh.
+	// notes is saved by its manually named window alone.
+	snap := newTmuxServerSnapshot(parseTmuxServerPanes(
+		"fixture-stack\t0\t1\tzsh\t1\t1\t1\tzsh\t/dev/ttys020\t/tmp\n" +
+			"notes\t0\t1\tnotes\t1\t0\t1\tzsh\t/dev/ttys021\t/tmp\n"))
+	f := newStraySessionFilter(snap)
 
-func TestParseAutoNamedSessionsNeedsEveryWindowAutoNamed(t *testing.T) {
-	got := parseAutoNamedSessions("mixed\t1\nmixed\t0\nmixed\t1\n")
-
-	if got["mixed"] {
-		t.Fatalf("session with one manually named window should not count as auto-named")
+	if !f.isStray(liveSession{Name: "fixture-stack"}) {
+		t.Error("fixture-stack should be stray")
 	}
-}
-
-func TestParseAutoNamedSessionsOnEmptyOutput(t *testing.T) {
-	if got := parseAutoNamedSessions("\n"); len(got) != 0 {
-		t.Fatalf("parseAutoNamedSessions on empty output = %#v, want empty", got)
+	if f.isStray(liveSession{Name: "notes"}) {
+		t.Error("notes has a manually named window and should be kept")
 	}
-}
-
-func TestParsePaneCommandsBySession(t *testing.T) {
-	got := parsePaneCommandsBySession("kept\tzsh\nkept\tnvim\nstray\tbash\nmalformed\n")
-
-	if want := []string{"zsh", "nvim"}; !equalStrings(got["kept"], want) {
-		t.Errorf("kept panes = %#v, want %#v", got["kept"], want)
-	}
-	if want := []string{"bash"}; !equalStrings(got["stray"], want) {
-		t.Errorf("stray panes = %#v, want %#v", got["stray"], want)
-	}
-	if _, ok := got["malformed"]; ok {
-		t.Errorf("line without a command should be skipped, got %#v", got)
+	// A session tmux told us nothing about must never vanish.
+	if f.isStray(liveSession{Name: "unknown"}) {
+		t.Error("session absent from the snapshot should be kept")
 	}
 }
 
@@ -187,14 +138,13 @@ func TestGatherSessionsOmitsStraySession(t *testing.T) {
 	}
 
 	callFile := filepath.Join(t.TempDir(), "tmux-call")
+	// Both sessions look identical to tmux — detached, auto-named, idle zsh — so
+	// only the state file written above separates kept from stray. The pane rows
+	// are in tmuxServerPaneFormat order.
 	installFakeTmux(t, `#!/bin/sh
 case "$1 $2" in
 "list-sessions -F") printf 'kept\t0\nstray\t0\n' ;;
-"list-windows -a") printf 'kept\t1\nstray\t1\n' ;;
-"list-panes -a") printf 'kept\tzsh\nstray\tzsh\n' ;;
-"display-message -t") echo "/nonexistent" ;;
-"list-windows -t") printf '1\tzsh\t1\t/nonexistent\n' ;;
-"list-panes -s") printf '1\t/dev/ttys001\n' ;;
+"list-panes -a") printf 'kept\t0\t1\tzsh\t1\t1\t1\tzsh\t/dev/ttys001\t/nonexistent\nstray\t0\t1\tzsh\t1\t1\t1\tzsh\t/dev/ttys002\t/nonexistent\n' ;;
 esac
 exit 0
 `, callFile)

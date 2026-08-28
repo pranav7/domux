@@ -100,26 +100,46 @@ func readClaudeSessions() []claudeSession {
 	return out
 }
 
-// ttysForPids returns each session's controlling tty keyed by pid via a single
-// batched `ps` call. Pids with no controlling tty ("??") are absent from the map.
+// ttysForPids returns each session's controlling tty keyed by pid. Pids with no
+// controlling tty ("??") are absent from the map.
+//
+// One `ps` per pid, run concurrently — deliberately not one batched `ps -p
+// a,b,c`. Given a single pid, macOS ps asks the kernel for just that process and
+// answers in ~2ms; given several it walks the entire process table instead, which
+// on a busy machine costs ~60ms and made this the slowest step in the switcher's
+// startup. Concurrent single-pid calls cost one ps either way, and there are only
+// ever a handful of live Claude sessions.
 func ttysForPids(sessions []claudeSession) map[int]string {
-	if len(sessions) == 0 {
-		return nil
-	}
-	pids := make([]string, 0, len(sessions))
+	pids := make([]int, 0, len(sessions))
 	for _, s := range sessions {
 		if s.Pid > 0 {
-			pids = append(pids, strconv.Itoa(s.Pid))
+			pids = append(pids, s.Pid)
 		}
 	}
 	if len(pids) == 0 {
 		return nil
 	}
-	out, err := exec.Command("ps", "-o", "pid=,tty=", "-p", strings.Join(pids, ",")).Output()
-	if err != nil {
-		return nil
+
+	ttys := make(map[int]string, len(pids))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, pid := range pids {
+		wg.Add(1)
+		go func(pid int) {
+			defer wg.Done()
+			out, err := exec.Command("ps", "-o", "pid=,tty=", "-p", strconv.Itoa(pid)).Output()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for p, tty := range parsePsTTYLines(string(out)) {
+				ttys[p] = tty
+			}
+		}(pid)
 	}
-	return parsePsTTYLines(string(out))
+	wg.Wait()
+	return ttys
 }
 
 // parsePsTTYLines parses `ps -o pid=,tty=` output ("  49115 ttys011") into a
