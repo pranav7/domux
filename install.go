@@ -15,10 +15,11 @@ import (
 
 func installCommand(args []string) error {
 	if len(args) == 0 {
-		fmt.Println("Usage: domux install tmux|claude|codex|opencode [--apply] | caffeinate [--full]")
+		fmt.Println("Usage: domux install tmux|claude|codex|opencode [--apply] | caffeinate [--full] | artboards [--apply|--uninstall]")
 		fmt.Println()
 		fmt.Println("tmux/claude/codex/opencode: preview-only by default. Pass --apply to write.")
 		fmt.Println("caffeinate: registers partial mode immediately. Pass --full for lid-close prevention (requires sudo).")
+		fmt.Println("artboards: preview-only by default. Pass --apply to write+load the LaunchAgent, --uninstall to remove it.")
 		return nil
 	}
 	switch args[0] {
@@ -32,6 +33,8 @@ func installCommand(args []string) error {
 		return installOpencode(args[1:])
 	case "caffeinate":
 		return installCaffeinate(args[1:])
+	case "artboards":
+		return installArtboards(args[1:])
 	default:
 		return fmt.Errorf("unknown install target %q", args[0])
 	}
@@ -84,7 +87,7 @@ set-option -g renumber-windows on
 bind-key s display-popup -E -w 95% -h 100% "$HOME/bin/domux sessions"
 bind-key t display-popup -E -w 60% -h 50% -d "#{pane_current_path}" "$HOME/bin/domux"
 bind-key u display-popup -E -w 50% -h 30% "$HOME/bin/domux commands"
-bind-key U display-popup -E -B -w 52 -h 28 "$HOME/bin/domux usage"
+bind-key U display-popup -E -B -w 52 -h 41 "$HOME/bin/domux usage"
 
 bind-key i run-shell '$HOME/bin/domux ai-state --session "#{session_name}" --pane "#{window_index}_#{pane_index}" toggle'
 bind-key v run-shell '$HOME/bin/domux server --session "#{session_name}" toggle'
@@ -562,6 +565,8 @@ func doctorCommand(args []string) error {
 	checks = append(checks, checkResult("OpenCode plugin", fileExists(opencodePlugin), opencodePlugin))
 	caffPath, err := caffeinateConfigPath()
 	checks = append(checks, checkResult("caffeinate", err == nil && fileExists(caffPath), caffPath))
+	artboardsPlist, err := artboardsPlistPath()
+	checks = append(checks, checkResult("artboards", err == nil && fileExists(artboardsPlist), artboardsPlist))
 
 	for _, check := range checks {
 		mark := "ok"

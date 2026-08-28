@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,15 +16,24 @@ import (
 	"time"
 )
 
-// UsageWindow is one subscription rate-limit window (session / weekly / weekly-Fable).
+// UsageWindow is one agent subscription rate-limit window.
 type UsageWindow struct {
-	Label string
+	Source UsageSource
+	Label  string
 	// Percent is rounded from the API's raw value and floored at 0, but NOT
 	// capped at 100 — the API can genuinely report overage (e.g. 102%), and
 	// silently flooring that to 100 would misrepresent real usage.
 	Percent  int
 	ResetsAt time.Time // zero if the endpoint omitted / sent an unparseable time
 }
+
+// UsageSource identifies the agent that owns a subscription window.
+type UsageSource string
+
+const (
+	usageClaude UsageSource = "claude"
+	usageCodex  UsageSource = "codex"
+)
 
 // UsageSnapshot is the normalized view the TUI renders. It is deliberately
 // decoupled from the raw endpoint JSON so schema drift stays in this file.
@@ -79,7 +89,7 @@ func parseUsage(data []byte, now time.Time) (UsageSnapshot, error) {
 		if label == "" || percent == nil {
 			return
 		}
-		win := UsageWindow{Label: label, Percent: clampPercent(*percent)}
+		win := UsageWindow{Source: usageClaude, Label: label, Percent: clampPercent(*percent)}
 		if t, err := time.Parse(time.RFC3339, resetsAt); err == nil {
 			win.ResetsAt = t
 		}
@@ -132,7 +142,7 @@ func clampPercent(v float64) int {
 	return p
 }
 
-// --- provider: token read + HTTP fetch ---
+// --- providers ---
 
 const (
 	usageEndpoint      = "https://api.anthropic.com/api/oauth/usage"
@@ -145,6 +155,7 @@ var (
 	errNoCredentials = errors.New("no Claude credentials found")
 	errAuthRejected  = errors.New("Claude rejected the credentials")
 	errRateLimited   = errors.New("usage endpoint rate-limited the request")
+	errNoCodex       = errors.New("Codex CLI not found")
 )
 
 // UsageProvider fetches a normalized usage snapshot. The interface lets the TUI
@@ -236,6 +247,13 @@ func newUsageProvider() UsageProvider {
 	if path := strings.TrimSpace(os.Getenv("DOMUX_USAGE_FIXTURE")); path != "" {
 		return fixtureUsageProvider{path: path}
 	}
+	return combinedUsageProvider{
+		claude: newClaudeUsageProvider(),
+		codex:  newCodexUsageProvider(),
+	}
+}
+
+func newClaudeUsageProvider() UsageProvider {
 	// No http.Client.Timeout: the caller (usageFetchCmd) supplies a ctx
 	// deadline that propagates via http.NewRequestWithContext, so a timeout
 	// unwraps cleanly to context.DeadlineExceeded (a client Timeout would race
@@ -254,6 +272,54 @@ func newUsageProvider() UsageProvider {
 	return cachedUsageProvider{inner: live, ttl: usageCacheTTL, path: usageCachePath}
 }
 
+func newCodexUsageProvider() UsageProvider {
+	live := codexUsageProvider{command: "codex"}
+	return cachedUsageProvider{inner: live, ttl: usageCacheTTL, path: codexUsageCachePath}
+}
+
+// combinedUsageProvider fetches Claude and Codex concurrently. One unavailable
+// source must not hide the other source's last-good snapshot.
+type combinedUsageProvider struct {
+	claude UsageProvider
+	codex  UsageProvider
+}
+
+func (p combinedUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
+	type result struct {
+		snap UsageSnapshot
+		err  error
+	}
+	results := make(chan result, 2)
+	for _, provider := range []UsageProvider{p.claude, p.codex} {
+		go func(provider UsageProvider) {
+			if provider == nil {
+				results <- result{err: errors.New("usage provider unavailable")}
+				return
+			}
+			snap, err := provider.Fetch(ctx)
+			results <- result{snap: snap, err: err}
+		}(provider)
+	}
+
+	var combined UsageSnapshot
+	var errs []error
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			errs = append(errs, result.err)
+			continue
+		}
+		combined.Windows = append(combined.Windows, result.snap.Windows...)
+		if result.snap.FetchedAt.After(combined.FetchedAt) {
+			combined.FetchedAt = result.snap.FetchedAt
+		}
+	}
+	if len(combined.Windows) == 0 {
+		return UsageSnapshot{}, errors.Join(errs...)
+	}
+	return combined, nil
+}
+
 // usageCacheTTL is deliberately conservative: the endpoint's rate limit is
 // shared across every Claude Code / domux process on the account, so domux's
 // own polling (tmux status bar + picker, potentially from several attached
@@ -264,6 +330,135 @@ const usageCacheTTL = 5 * time.Minute
 // normalized UsageSnapshot (percentages + reset times) — never the token.
 func usageCachePath() (string, error) {
 	return domuxDataDir("usage-cache.json")
+}
+
+func codexUsageCachePath() (string, error) {
+	return domuxDataDir("codex-usage-cache.json")
+}
+
+// codexUsageProvider asks the local Codex CLI app-server for the signed-in
+// account's rate-limit snapshot. This keeps OAuth credentials inside Codex;
+// domux neither reads nor transmits them.
+type codexUsageProvider struct {
+	command string
+}
+
+type codexRPCMessage struct {
+	ID     json.RawMessage `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type codexRateLimitWindow struct {
+	UsedPercent int    `json:"usedPercent"`
+	ResetsAt    *int64 `json:"resetsAt"`
+}
+
+type codexRateLimitResponse struct {
+	RateLimits struct {
+		Primary   *codexRateLimitWindow `json:"primary"`
+		Secondary *codexRateLimitWindow `json:"secondary"`
+	} `json:"rateLimits"`
+}
+
+func (p codexUsageProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
+	command := p.command
+	if command == "" {
+		command = "codex"
+	}
+	if _, err := exec.LookPath(command); err != nil {
+		return UsageSnapshot{}, errNoCodex
+	}
+
+	cmd := exec.CommandContext(ctx, command, "app-server", "--stdio")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return UsageSnapshot{}, err
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = cmd.Wait()
+	}()
+
+	encoder := json.NewEncoder(stdin)
+	decoder := json.NewDecoder(bufio.NewReader(stdout))
+	if err := encoder.Encode(map[string]any{
+		"id":     1,
+		"method": "initialize",
+		"params": map[string]any{
+			"clientInfo": map[string]string{"name": "domux", "version": version},
+		},
+	}); err != nil {
+		return UsageSnapshot{}, err
+	}
+	if _, err := readCodexRPCResponse(decoder, 1); err != nil {
+		return UsageSnapshot{}, err
+	}
+	if err := encoder.Encode(map[string]any{
+		"id":     2,
+		"method": "account/rateLimits/read",
+		"params": nil,
+	}); err != nil {
+		return UsageSnapshot{}, err
+	}
+	body, err := readCodexRPCResponse(decoder, 2)
+	if err != nil {
+		return UsageSnapshot{}, err
+	}
+	return parseCodexRateLimits(body, time.Now())
+}
+
+func readCodexRPCResponse(decoder *json.Decoder, wantID int) ([]byte, error) {
+	for {
+		var message codexRPCMessage
+		if err := decoder.Decode(&message); err != nil {
+			return nil, err
+		}
+		var id int
+		if len(message.ID) == 0 || json.Unmarshal(message.ID, &id) != nil || id != wantID {
+			continue // notification or response to an earlier request
+		}
+		if message.Error != nil {
+			return nil, errors.New(message.Error.Message)
+		}
+		if len(message.Result) == 0 {
+			return nil, errors.New("Codex app-server returned no result")
+		}
+		return message.Result, nil
+	}
+}
+
+func parseCodexRateLimits(data []byte, now time.Time) (UsageSnapshot, error) {
+	var raw codexRateLimitResponse
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return UsageSnapshot{}, fmt.Errorf("cannot parse Codex rate limits: %w", err)
+	}
+	snap := UsageSnapshot{FetchedAt: now}
+	add := func(label string, raw *codexRateLimitWindow) {
+		if raw == nil {
+			return
+		}
+		win := UsageWindow{Source: usageCodex, Label: label, Percent: clampPercent(float64(raw.UsedPercent))}
+		if raw.ResetsAt != nil && *raw.ResetsAt > 0 {
+			win.ResetsAt = time.Unix(*raw.ResetsAt, 0)
+		}
+		snap.Windows = append(snap.Windows, win)
+	}
+	add("Current session", raw.RateLimits.Primary)
+	add("Current week", raw.RateLimits.Secondary)
+	if len(snap.Windows) == 0 {
+		return UsageSnapshot{}, errors.New("Codex rate limits had no recognized windows")
+	}
+	return snap, nil
 }
 
 // cachedUsageProvider wraps another provider with a TTL'd on-disk snapshot

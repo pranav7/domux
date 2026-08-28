@@ -106,6 +106,8 @@ func runCommand(name string, args []string) error {
 		return runUtilities()
 	case "caffeinate":
 		return caffeinateCommand(args)
+	case "artboards":
+		return artboardsCommand(args)
 	case "doctor":
 		return doctorCommand(args)
 	case "migrate":

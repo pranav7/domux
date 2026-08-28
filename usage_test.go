@@ -75,7 +75,7 @@ func loadedTestModel(t *testing.T) usageModel {
 func TestUsageViewRendersBars(t *testing.T) {
 	m := loadedTestModel(t)
 	out := stripANSI(m.View())
-	for _, want := range []string{"Current session", "15% used", "Current week (Fable)", "4% used"} {
+	for _, want := range []string{"█▀▀", "CLAUDE USAGE", "CODEX USAGE", "Current session", "15% used", "Current week (Fable)", "4% used", "Unavailable"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("view missing %q:\n%s", want, out)
 		}
@@ -85,12 +85,22 @@ func TestUsageViewRendersBars(t *testing.T) {
 	}
 }
 
+func TestRenderUsageSectionPadsWindows(t *testing.T) {
+	out := stripANSI(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, []UsageWindow{
+		{Label: "Current session", Percent: 15},
+		{Label: "Current week (all models)", Percent: 24},
+	}, "Unavailable"))
+	if !strings.Contains(out, "15% used\n\nCurrent week") {
+		t.Fatalf("limits should have a blank line between them:\n%s", out)
+	}
+}
+
 func TestUsageViewShowsUnavailableOnError(t *testing.T) {
 	m := newUsageModel(fakeProvider{err: errNoCredentials})
 	m.width, m.height = 80, 24
 	next, _ := m.Update(usageFetchedMsg{err: errNoCredentials})
 	out := stripANSI(next.(usageModel).View())
-	if !strings.Contains(out, "Usage unavailable") {
+	if !strings.Contains(out, "CLAUDE USAGE") || !strings.Contains(out, "CODEX USAGE") || !strings.Contains(out, "Unavailable") {
 		t.Fatalf("expected unavailable state:\n%s", out)
 	}
 	if strings.Contains(out, "% used") {
@@ -149,6 +159,35 @@ func TestUsageViewOmitsUpdatedAgeWithoutFetchedAt(t *testing.T) {
 	}
 }
 
+func TestUsageViewRulesOffFooter(t *testing.T) {
+	m := loadedTestModel(t)
+	lines := strings.Split(stripANSI(m.View()), "\n")
+	// Inner content of each row, with the frame's side borders peeled off.
+	inner := make([]string, len(lines))
+	for i, line := range lines {
+		inner[i] = strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "│"))
+	}
+	ruleAt := -1
+	for i, s := range inner {
+		if s != "" && strings.Trim(s, "─") == "" && !strings.ContainsAny(lines[i], "╭╰") {
+			ruleAt = i
+			break
+		}
+	}
+	if ruleAt < 0 {
+		t.Fatalf("expected a horizontal rule above the footer:\n%s", stripANSI(m.View()))
+	}
+	if inner[ruleAt-1] != "" || inner[ruleAt+1] != "" {
+		t.Fatalf("rule should be blank-line padded on both sides:\n%s", stripANSI(m.View()))
+	}
+	if !strings.Contains(inner[ruleAt+2], "esc close") {
+		t.Fatalf("footer should follow the padded rule:\n%s", stripANSI(m.View()))
+	}
+	if got, want := len([]rune(inner[ruleAt])), len([]rune(inner[ruleAt+2])); got < want {
+		t.Fatalf("rule (%d) should span at least the footer width (%d)", got, want)
+	}
+}
+
 func TestUsageErrorReason(t *testing.T) {
 	if !strings.Contains(usageErrorReason(errNoCredentials), "credentials") {
 		t.Fatalf("bad reason for no creds")
@@ -194,22 +233,26 @@ func TestRenderUsageIndicatorSegments(t *testing.T) {
 		{Label: "Current session", Percent: 15},
 		{Label: "Current week (all models)", Percent: 24},
 		{Label: "Current week (Fable)", Percent: 4},
+		{Source: usageCodex, Label: "Current session", Percent: 60},
+		{Source: usageCodex, Label: "Current week", Percent: 11},
 	}}
 	got := stripANSI(renderUsageIndicator(snap))
-	want := "session 15% · week 24% · fable 4%"
+	want := "✷ session 15% · week 24% · fable 4% | ✷ session 60% · week 11%"
 	if got != want {
 		t.Fatalf("indicator = %q, want %q", got, want)
 	}
 }
 
-func TestTmuxUsageBadgeShowsRAGSessionAndWeek(t *testing.T) {
+func TestTmuxUsageBadgeShowsClaudeAndCodex(t *testing.T) {
 	snap := UsageSnapshot{Windows: []UsageWindow{
 		{Label: "Current week (all models)", Percent: 80},
 		{Label: "Current session", Percent: 33},
 		{Label: "Current week (Fable)", Percent: 95},
+		{Source: usageCodex, Label: "Current session", Percent: 60},
+		{Source: usageCodex, Label: "Current week", Percent: 11},
 	}}
 	got := tmuxUsageBadge(fakeProvider{snap: snap})
-	want := "#[default]#[fg=#D97757,bold]✷ #[fg=#a6e3a1,bold]s:33% #[fg=#f9e2af,bold]w:80%#[default]"
+	want := "#[default]#[fg=#D97757,bold]✷ #[fg=#a6e3a1,bold]s:33% #[fg=#f9e2af,bold]w:80%#[default] | #[fg=#89b4fa,bold]✷ #[fg=#a6e3a1,bold]s:60% #[fg=#a6e3a1,bold]w:11%#[default]"
 	if got != want {
 		t.Fatalf("badge = %q, want %q", got, want)
 	}
@@ -246,5 +289,20 @@ func TestUsageTagMapping(t *testing.T) {
 		if got := stripANSI(usageTag(label)); got != want {
 			t.Fatalf("usageTag(%q) = %q, want %q", label, got, want)
 		}
+	}
+}
+
+func TestUsageViewRendersCodexSection(t *testing.T) {
+	snap := UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current session", Percent: 15},
+		{Source: usageCodex, Label: "Current session", Percent: 60},
+		{Source: usageCodex, Label: "Current week", Percent: 11},
+	}}
+	m := newUsageModel(fakeProvider{snap: snap})
+	m.width, m.height = 80, 24
+	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
+	out := stripANSI(next.(usageModel).View())
+	if !strings.Contains(out, "CODEX USAGE") || !strings.Contains(out, "60% used") || !strings.Contains(out, "11% used") {
+		t.Fatalf("Codex section missing expected usage:\n%s", out)
 	}
 }

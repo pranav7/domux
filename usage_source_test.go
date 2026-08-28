@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -108,6 +109,34 @@ func TestParseUsageErrorsOnGarbage(t *testing.T) {
 func TestParseUsageErrorsWhenNoWindows(t *testing.T) {
 	if _, err := parseUsage([]byte(`{}`), time.Now()); err == nil {
 		t.Fatalf("expected error when no recognized windows")
+	}
+}
+
+func TestParseCodexRateLimitsMapsPrimaryAndSecondary(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	snap, err := parseCodexRateLimits([]byte(`{
+		"rateLimits": {
+			"primary": {"usedPercent": 60, "windowDurationMins": 300, "resetsAt": 1787840424},
+			"secondary": {"usedPercent": 11, "windowDurationMins": 10080, "resetsAt": 1788272168}
+		}
+	}`), now)
+	if err != nil {
+		t.Fatalf("parseCodexRateLimits: %v", err)
+	}
+	if !snap.FetchedAt.Equal(now) || len(snap.Windows) != 2 {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+	if got := snap.Windows[0]; got.Source != usageCodex || got.Label != "Current session" || got.Percent != 60 || got.ResetsAt.IsZero() {
+		t.Fatalf("primary = %#v", got)
+	}
+	if got := snap.Windows[1]; got.Source != usageCodex || got.Label != "Current week" || got.Percent != 11 || got.ResetsAt.IsZero() {
+		t.Fatalf("secondary = %#v", got)
+	}
+}
+
+func TestParseCodexRateLimitsRejectsMissingWindows(t *testing.T) {
+	if _, err := parseCodexRateLimits([]byte(`{"rateLimits": {}}`), time.Now()); err == nil {
+		t.Fatalf("expected missing Codex windows to fail")
 	}
 }
 
@@ -228,6 +257,31 @@ func (c *countingProvider) Fetch(ctx context.Context) (UsageSnapshot, error) {
 
 func snapWith(pct int) UsageSnapshot {
 	return UsageSnapshot{Windows: []UsageWindow{{Label: "Current session", Percent: pct}}}
+}
+
+func TestCombinedUsageProviderKeepsAvailableSource(t *testing.T) {
+	claude := &countingProvider{snap: UsageSnapshot{Windows: []UsageWindow{{Label: "Current session", Percent: 15}}}}
+	codex := &countingProvider{err: errNoCodex}
+	snap, err := (combinedUsageProvider{claude: claude, codex: codex}).Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(snap.Windows) != 1 || snap.Windows[0].Source != "" {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+	if claude.calls != 1 || codex.calls != 1 {
+		t.Fatalf("calls = Claude:%d Codex:%d", claude.calls, codex.calls)
+	}
+}
+
+func TestCombinedUsageProviderFailsWhenNeitherSourceWorks(t *testing.T) {
+	_, err := (combinedUsageProvider{
+		claude: &countingProvider{err: errNoCredentials},
+		codex:  &countingProvider{err: errNoCodex},
+	}).Fetch(context.Background())
+	if !errors.Is(err, errNoCredentials) || !errors.Is(err, errNoCodex) {
+		t.Fatalf("err = %v, want both provider errors", err)
+	}
 }
 
 func tempCachePath(t *testing.T) func() (string, error) {

@@ -1697,10 +1697,12 @@ func TestLogoHeaderShowsUsageIndicator(t *testing.T) {
 		{Label: "Current session", Percent: 15},
 		{Label: "Current week (all models)", Percent: 24},
 		{Label: "Current week (Fable)", Percent: 4},
+		{Source: usageCodex, Label: "Current session", Percent: 60},
+		{Source: usageCodex, Label: "Current week", Percent: 11},
 	}}
 	withUsage := pickerModel{width: 120, usage: &snap}
 	got := stripTestANSI(strings.Join(withUsage.logoHeaderLines(120), "\n"))
-	if !strings.Contains(got, "session 15% · week 24% · fable 4%") {
+	if !strings.Contains(got, "✷ session 15% · week 24% · fable 4% | ✷ session 60% · week 11%") {
 		t.Fatalf("logo header missing usage indicator:\n%s", got)
 	}
 
@@ -1708,5 +1710,30 @@ func TestLogoHeaderShowsUsageIndicator(t *testing.T) {
 	got = stripTestANSI(strings.Join(withoutUsage.logoHeaderLines(120), "\n"))
 	if strings.Contains(got, "%") {
 		t.Fatalf("logo header should have no indicator when usage is nil:\n%s", got)
+	}
+}
+
+func TestFooterShowsArtboardsDownBottomRight(t *testing.T) {
+	m := newPickerModel([]pickerRow{
+		{Kind: rowHeader, Group: "g"},
+		{Kind: rowSession, Group: "g", Session: &sessionInfo{Name: "s"}},
+	})
+	m.width = 120
+	m.height = 20
+	m.artboardsDown = true
+
+	view := m.View()
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
+	footerLine := stripTestANSI(lines[len(lines)-1])
+	if !strings.Contains(footerLine, "artboards down") {
+		t.Fatalf("expected the artboards-down warning on the footer line:\n%s", footerLine)
+	}
+	if !strings.HasSuffix(strings.TrimRight(footerLine, " "), "artboards down") {
+		t.Fatalf("expected the warning right-aligned at the end of the footer line:\n%q", footerLine)
+	}
+
+	m.artboardsDown = false
+	if strings.Contains(stripTestANSI(m.View()), "artboards down") {
+		t.Fatalf("expected no artboards warning while healthy")
 	}
 }

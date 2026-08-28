@@ -120,6 +120,7 @@ type pickerModel struct {
 	resume         *resumeJob
 	usageProvider  UsageProvider  // fetches the top-right usage indicator (nil-safe)
 	usage          *UsageSnapshot // last successful usage snapshot; nil until first success
+	artboardsDown  bool           // true once the artboards health probe has failed twice in a row
 	// selected is the session the user chose with enter. It is read by
 	// runPickerProgram after the tea program exits — the attach happens once
 	// bubbletea has released the terminal, never inline (see runPickerProgram).
@@ -154,6 +155,12 @@ type pickerUsageRefreshMsg struct {
 
 type pickerUsageTickMsg struct{}
 
+// pickerArtboardsHealthMsg carries the debounced up/down verdict from a
+// probeArtboardsHealth call.
+type pickerArtboardsHealthMsg struct{ Down bool }
+
+type pickerArtboardsHealthTickMsg struct{}
+
 type pickerStatusExpireMsg struct{ at time.Time }
 
 type pickerPreviewMsg struct {
@@ -176,6 +183,7 @@ const tuiStartupInputGrace = 150 * time.Millisecond
 const pickerRefreshInterval = 2 * time.Second
 const pickerPRRefreshInterval = 60 * time.Second
 const pickerUsageRefreshInterval = 60 * time.Second
+const pickerArtboardsHealthInterval = 30 * time.Second
 const pickerSpinnerInterval = 80 * time.Millisecond
 const pickerPreviewInterval = 500 * time.Millisecond
 const pickerStatusTTL = 5 * time.Second
@@ -317,6 +325,13 @@ var (
 			Background(red).
 			Bold(true).
 			Padding(0, 1)
+
+	// pArtboardsWarn is a standing indicator, not a transient banner like
+	// pStatus/pStatusErr — no background/padding, just peach text on the logo
+	// line, shown only while nothing else occupies that slot.
+	pArtboardsWarn = lipgloss.NewStyle().
+			Foreground(peach).
+			Bold(true)
 
 	pPreviewTitle = lipgloss.NewStyle().
 			Foreground(blue).
@@ -555,7 +570,7 @@ func isMainWorktreePath(path string) bool {
 }
 
 func (m pickerModel) Init() tea.Cmd {
-	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd(), pickerPRRefreshCmd(), pickerUsageRefreshCmd(m.usageProvider)}
+	cmds := []tea.Cmd{pickerRefreshCmd(), pickerSpinnerCmd(), pickerPRRefreshCmd(), pickerUsageRefreshCmd(m.usageProvider), pickerArtboardsHealthCmd()}
 	if m.status != "" && !m.statusSetAt.IsZero() {
 		cmds = append(cmds, statusExpireCmd(m.statusSetAt))
 	}
@@ -631,6 +646,13 @@ func (m pickerModel) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pickerUsageTickMsg:
 		return m, pickerUsageRefreshCmd(m.usageProvider)
+
+	case pickerArtboardsHealthMsg:
+		m.artboardsDown = msg.Down
+		return m, pickerArtboardsHealthTickCmd()
+
+	case pickerArtboardsHealthTickMsg:
+		return m, pickerArtboardsHealthCmd()
 
 	case pickerSpinnerMsg:
 		// Wrap at LCM-ish large number so both the icon (mod 10) and the
@@ -1035,6 +1057,25 @@ func pickerUsageRefreshCmd(p UsageProvider) tea.Cmd {
 func pickerUsageTickCmd() tea.Cmd {
 	return tea.Tick(pickerUsageRefreshInterval, func(time.Time) tea.Msg {
 		return pickerUsageTickMsg{}
+	})
+}
+
+// pickerArtboardsHealthCmd probes the artboards server off the render
+// thread, mirroring pickerUsageRefreshCmd. There's exactly one real
+// implementation (unlike UsageProvider, which has fixture/fake variants), so
+// tests swap artboardsHealthURL instead of injecting an interface.
+func pickerArtboardsHealthCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), artboardsHealthCheckTimeout)
+		defer cancel()
+		down, _ := probeArtboardsHealth(ctx)
+		return pickerArtboardsHealthMsg{Down: down}
+	}
+}
+
+func pickerArtboardsHealthTickCmd() tea.Cmd {
+	return tea.Tick(pickerArtboardsHealthInterval, func(time.Time) tea.Msg {
+		return pickerArtboardsHealthTickMsg{}
 	})
 }
 
@@ -1708,7 +1749,16 @@ func (m pickerModel) View() string {
 		m.renderEscHelp()
 	// fit to width minus a right margin matching the 4-col left indent so the
 	// footer never bleeds past the right border (also absorbs wide-glyph miscounts)
-	b.WriteString(fitANSI(footer, max(1, m.width-4)))
+	avail := max(1, m.width-4)
+	if m.artboardsDown {
+		warn := pArtboardsWarn.Render("artboards down")
+		pad := avail - lipgloss.Width(footer) - lipgloss.Width(warn)
+		if pad < 1 {
+			pad = 1
+		}
+		footer += strings.Repeat(" ", pad) + warn
+	}
+	b.WriteString(fitANSI(footer, avail))
 
 	return b.String()
 }
@@ -2733,12 +2783,13 @@ func parsePaneTTYLines(out string) map[int][]string {
 }
 
 func gatherSessions() []pickerRow {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := exec.Command("tmux", "list-sessions", "-F",
+		"#{session_name}\t#{session_attached}").Output()
 	if err != nil {
 		return nil
 	}
 
-	sessions := strings.Split(strings.TrimSpace(string(out)), "\n")
+	sessions := parseSessionListLines(string(out))
 	if len(sessions) == 0 {
 		return nil
 	}
@@ -2746,11 +2797,15 @@ func gatherSessions() []pickerRow {
 	var entries []groupEntry
 	homeDir, _ := os.UserHomeDir()
 	liveClaude := readClaudeSessions()
+	// Drop agent leftovers before any per-session work: a stray costs one map
+	// lookup instead of a git, PR, and todo lookup. See picker_stray.go.
+	strays := newStraySessionFilter()
 
-	for _, sess := range sessions {
-		if sess == "" {
+	for _, live := range sessions {
+		if strays.isStray(live) {
 			continue
 		}
+		sess := live.Name
 
 		info := &sessionInfo{Name: sess}
 		state := loadSessionStateWithLegacy(sess)

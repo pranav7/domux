@@ -19,8 +19,7 @@ const usageBarWidth = 20
 // pinkish `red` used for >=90% bar pressure.
 var fableCrimson = lipgloss.Color("#C2797A")
 
-// claudeCodeOrange is Claude Code's brand terracotta, used for the popup
-// wordmark so the modal reads as an official Claude Code surface.
+// claudeCodeOrange is Claude Code's brand terracotta.
 var claudeCodeOrange = lipgloss.Color("#D97757")
 
 // renderBar returns a plain (no ANSI) meter: `━` for filled cells, `╌` for
@@ -161,14 +160,13 @@ func usageErrorReason(err error) string {
 }
 
 var (
-	uBrand    = lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
-	uTitle    = lipgloss.NewStyle().Foreground(subtext0)
-	uLabel    = lipgloss.NewStyle().Foreground(subtext0)
-	uPercent  = lipgloss.NewStyle().Foreground(text).Bold(true)
-	uFable    = lipgloss.NewStyle().Foreground(fableCrimson).Bold(true)
-	uReset    = lipgloss.NewStyle().Foreground(overlay0)
-	uFooter   = lipgloss.NewStyle().Foreground(overlay0)
-	uErrStyle = lipgloss.NewStyle().Foreground(red)
+	uTitle   = lipgloss.NewStyle().Foreground(subtext0)
+	uLabel   = lipgloss.NewStyle().Foreground(subtext0)
+	uPercent = lipgloss.NewStyle().Foreground(text).Bold(true)
+	uFable   = lipgloss.NewStyle().Foreground(fableCrimson).Bold(true)
+	uReset   = lipgloss.NewStyle().Foreground(overlay0)
+	uFooter  = lipgloss.NewStyle().Foreground(overlay0)
+	uRule    = lipgloss.NewStyle().Foreground(surface1)
 	// uFrame is a compact bordered modal with generous inner padding; it hugs
 	// its content rather than filling the whole tmux popup.
 	uFrame = lipgloss.NewStyle().
@@ -177,10 +175,7 @@ var (
 		Padding(1, 3)
 )
 
-// blockGlyphs is a thin 3-row half-block font (same family as the picker's
-// DOMUX logo) for the CLAUDE CODE wordmark. Half-block strokes (▀ ▄) keep the
-// letters legible and separated at small size, unlike solid ██ bricks which
-// merge into an unreadable mass in a terminal.
+// blockGlyphs is the compact mural used for the Claude Code usage modal.
 var blockGlyphs = map[rune][]string{
 	'C': {"█▀▀", "█  ", "█▄▄"},
 	'L': {"█  ", "█  ", "█▄▄"},
@@ -189,12 +184,11 @@ var blockGlyphs = map[rune][]string{
 	'D': {"█▀▄", "█ █", "█▄▀"},
 	'E': {"█▀▀", "█▀ ", "█▄▄"},
 	'O': {"█▀█", "█ █", "█▄█"},
+	'X': {"█ █", " █ ", "█ █"},
 }
 
 const blockGlyphRows = 3
 
-// renderBlockWord assembles a word into blockGlyphRows text rows, one glyph
-// beside the next with a single-column gap.
 func renderBlockWord(word string) []string {
 	rows := make([]string, blockGlyphRows)
 	for _, ch := range word {
@@ -209,14 +203,24 @@ func renderBlockWord(word string) []string {
 	return rows
 }
 
-// renderClaudeCodeLogo stacks CLAUDE over CODE in the brand terracotta
-// half-block font, with a muted "usage" caption trailing the final row.
 func renderClaudeCodeLogo() string {
 	logo := lipgloss.NewStyle().Foreground(claudeCodeOrange).Bold(true)
-	// Blank spacer row between CLAUDE and CODE so the descenders of the top
-	// word don't touch the ascenders of the bottom one.
 	rows := append(renderBlockWord("CLAUDE"), "")
 	rows = append(rows, renderBlockWord("CODE")...)
+	var b strings.Builder
+	for i, line := range rows {
+		b.WriteString(logo.Render(line))
+		if i == len(rows)-1 {
+			b.WriteString("  " + uTitle.Render("usage"))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func renderCodexLogo() string {
+	logo := lipgloss.NewStyle().Foreground(blue).Bold(true)
+	rows := renderBlockWord("CODEX")
 	var b strings.Builder
 	for i, line := range rows {
 		b.WriteString(logo.Render(line))
@@ -233,37 +237,78 @@ func (m usageModel) View() string {
 		return ""
 	}
 	var b strings.Builder
-	// Block-art "CLAUDE CODE" wordmark in the brand terracotta, so the modal
-	// reads as an official Claude Code surface.
 	b.WriteString(renderClaudeCodeLogo())
 	b.WriteString("\n")
 	switch m.state {
 	case usageLoading:
-		b.WriteString(uLabel.Render("Fetching usage…"))
+		b.WriteString(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, nil, "Fetching usage…"))
+		b.WriteString("\n\n")
+		b.WriteString(renderCodexLogo())
+		b.WriteString("\n")
+		b.WriteString(renderUsageSection("CODEX USAGE", blue, nil, "Fetching usage…"))
 	case usageErr:
-		b.WriteString(uErrStyle.Render("Usage unavailable") + uLabel.Render(" — "+usageErrorReason(m.err)))
+		reason := "Unavailable — " + usageErrorReason(m.err)
+		b.WriteString(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, nil, reason))
+		b.WriteString("\n\n")
+		b.WriteString(renderCodexLogo())
+		b.WriteString("\n")
+		b.WriteString(renderUsageSection("CODEX USAGE", blue, nil, reason))
 	case usageLoaded:
-		for i, w := range m.snapshot.Windows {
-			b.WriteString(renderUsageLabel(w.Label) + "\n")
-			bar := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(renderBar(w.Percent, usageBarWidth))
-			b.WriteString(bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used") + "\n")
-			// Reset time on its own line below the bar, indented under it.
-			if !w.ResetsAt.IsZero() {
-				b.WriteString(uReset.Render("Resets "+w.ResetsAt.Local().Format("Mon Jan 2 3:04pm")) + "\n")
-			}
-			if i < len(m.snapshot.Windows)-1 {
-				b.WriteString("\n")
-			}
-		}
+		b.WriteString(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, usageWindows(m.snapshot, usageClaude), "Unavailable"))
+		b.WriteString("\n\n")
+		b.WriteString(renderCodexLogo())
+		b.WriteString("\n")
+		b.WriteString(renderUsageSection("CODEX USAGE", blue, usageWindows(m.snapshot, usageCodex), "Unavailable"))
 	}
 	footer := "r refresh · esc close"
 	if m.state == usageLoaded && !m.snapshot.FetchedAt.IsZero() {
 		footer = "updated " + formatAge(time.Since(m.snapshot.FetchedAt)) + " · " + footer
 	}
-	b.WriteString("\n" + uFooter.Render(footer))
+	// Separate the footer from the usage sections with a rule spanning the
+	// content width, blank-line padded on both sides so it reads as a divider
+	// rather than crowding the last "Resets …" line.
+	body := b.String()
+	ruleWidth := lipgloss.Width(body)
+	if w := lipgloss.Width(footer); w > ruleWidth {
+		ruleWidth = w
+	}
+	rule := uRule.Render(strings.Repeat("─", ruleWidth))
+	content := body + "\n\n" + rule + "\n\n" + uFooter.Render(footer)
 	// Center the compact modal in the popup so the surrounding tmux popup
 	// padding is even, and the box hugs its content instead of filling it.
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uFrame.Render(b.String()))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uFrame.Render(content))
+}
+
+func renderUsageSection(title string, color lipgloss.Color, windows []UsageWindow, empty string) string {
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Foreground(color).Bold(true).Render(title))
+	if len(windows) == 0 {
+		return b.String() + "\n" + uReset.Render(empty)
+	}
+	for i, w := range windows {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n" + renderUsageLabel(w.Label) + "\n")
+		bar := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(renderBar(w.Percent, usageBarWidth))
+		b.WriteString(bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used"))
+		if !w.ResetsAt.IsZero() {
+			b.WriteString("\n" + uReset.Render("Resets "+w.ResetsAt.Local().Format("Mon Jan 2 3:04pm")))
+		}
+	}
+	return b.String()
+}
+
+// usageWindows returns the windows for one source. Source-less snapshots are
+// legacy Claude snapshots, retained for fixtures and old cache files.
+func usageWindows(snap UsageSnapshot, source UsageSource) []UsageWindow {
+	var windows []UsageWindow
+	for _, w := range snap.Windows {
+		if w.Source == source || (source == usageClaude && w.Source == "") {
+			windows = append(windows, w)
+		}
+	}
+	return windows
 }
 
 // renderUsageLabel colors the word "Fable" crimson wherever it appears; the
@@ -298,20 +343,33 @@ func runUsageRaw() error {
 	return err
 }
 
-// renderUsageIndicator renders the compact top-right switcher indicator, e.g.
-// "ses 15% · wk 24% · fab 4%", each percentage in its pressure color. Returns
-// "" for an empty snapshot so the caller hides the indicator entirely — it
-// never fabricates numbers.
+// renderUsageIndicator renders both agents' compact switcher indicators.
 func renderUsageIndicator(snap UsageSnapshot) string {
-	if len(snap.Windows) == 0 {
+	var indicators []string
+	for _, agent := range []struct {
+		source UsageSource
+		color  lipgloss.Color
+	}{
+		{usageClaude, claudeCodeOrange},
+		{usageCodex, blue},
+	} {
+		if indicator := renderUsageIndicatorFor(agent.color, usageWindows(snap, agent.source)); indicator != "" {
+			indicators = append(indicators, indicator)
+		}
+	}
+	return strings.Join(indicators, uLabel.Render(" | "))
+}
+
+func renderUsageIndicatorFor(color lipgloss.Color, windows []UsageWindow) string {
+	if len(windows) == 0 {
 		return ""
 	}
-	segs := make([]string, 0, len(snap.Windows))
-	for _, w := range snap.Windows {
+	segs := []string{lipgloss.NewStyle().Foreground(color).Bold(true).Render("✷")}
+	for _, w := range windows {
 		pct := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(fmt.Sprintf("%d%%", w.Percent))
 		segs = append(segs, usageTag(w.Label)+" "+pct)
 	}
-	return strings.Join(segs, uLabel.Render(" · "))
+	return segs[0] + " " + strings.Join(segs[1:], uLabel.Render(" · "))
 }
 
 // tmuxUsageBadge renders current session/week usage with independent pressure
@@ -327,27 +385,47 @@ func tmuxUsageBadge(p UsageProvider) string {
 	if err != nil {
 		return ""
 	}
+	var badges []string
+	for _, agent := range []struct {
+		source UsageSource
+		color  lipgloss.Color
+	}{
+		{usageClaude, claudeCodeOrange},
+		{usageCodex, blue},
+	} {
+		if badge := tmuxUsageBadgeFor(agent.color, usageWindows(snap, agent.source)); badge != "" {
+			badges = append(badges, badge)
+		}
+	}
+	if len(badges) == 0 {
+		return ""
+	}
+	return "#[default]" + strings.Join(badges, "#[default] | ") + "#[default]"
+}
+
+func tmuxUsageBadgeFor(color lipgloss.Color, windows []UsageWindow) string {
 	var sessionPercent, weekPercent int
 	var haveSession, haveWeek bool
-	for _, w := range snap.Windows {
+	for _, w := range windows {
 		switch {
 		case strings.EqualFold(strings.TrimSpace(w.Label), "Current session"):
 			sessionPercent, haveSession = w.Percent, true
-		case strings.EqualFold(strings.TrimSpace(w.Label), "Current week (all models)"):
+		case strings.EqualFold(strings.TrimSpace(w.Label), "Current week (all models)"),
+			strings.EqualFold(strings.TrimSpace(w.Label), "Current week"):
 			weekPercent, haveWeek = w.Percent, true
 		}
 	}
 	if !haveSession && !haveWeek {
 		return ""
 	}
-	status := fmt.Sprintf("#[default]#[fg=%s,bold]✷", claudeCodeOrange)
+	status := fmt.Sprintf("#[fg=%s,bold]✷", color)
 	if haveSession {
 		status += fmt.Sprintf(" #[fg=%s,bold]s:%d%%", barColor(sessionPercent), sessionPercent)
 	}
 	if haveWeek {
 		status += fmt.Sprintf(" #[fg=%s,bold]w:%d%%", barColor(weekPercent), weekPercent)
 	}
-	return status + "#[default]"
+	return status
 }
 
 // usageTag maps a window label to its colored tag ("session"/"week"/"fable"),
