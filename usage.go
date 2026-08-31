@@ -241,24 +241,24 @@ func (m usageModel) View() string {
 	b.WriteString("\n")
 	switch m.state {
 	case usageLoading:
-		b.WriteString(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, nil, "Fetching usage…"))
+		b.WriteString(renderUsageSection(nil, "Fetching usage…"))
 		b.WriteString("\n\n")
 		b.WriteString(renderCodexLogo())
 		b.WriteString("\n")
-		b.WriteString(renderUsageSection("CODEX USAGE", blue, nil, "Fetching usage…"))
+		b.WriteString(renderUsageSection(nil, "Fetching usage…"))
 	case usageErr:
 		reason := "Unavailable — " + usageErrorReason(m.err)
-		b.WriteString(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, nil, reason))
+		b.WriteString(renderUsageSection(nil, reason))
 		b.WriteString("\n\n")
 		b.WriteString(renderCodexLogo())
 		b.WriteString("\n")
-		b.WriteString(renderUsageSection("CODEX USAGE", blue, nil, reason))
+		b.WriteString(renderUsageSection(nil, reason))
 	case usageLoaded:
-		b.WriteString(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, usageWindows(m.snapshot, usageClaude), "Unavailable"))
+		b.WriteString(renderUsageSection(usageWindows(m.snapshot, usageClaude), "Unavailable"))
 		b.WriteString("\n\n")
 		b.WriteString(renderCodexLogo())
 		b.WriteString("\n")
-		b.WriteString(renderUsageSection("CODEX USAGE", blue, usageWindows(m.snapshot, usageCodex), "Unavailable"))
+		b.WriteString(renderUsageSection(usageWindows(m.snapshot, usageCodex), "Unavailable"))
 	}
 	footer := "r refresh · esc close"
 	if m.state == usageLoaded && !m.snapshot.FetchedAt.IsZero() {
@@ -274,22 +274,27 @@ func (m usageModel) View() string {
 	}
 	rule := uRule.Render(strings.Repeat("─", ruleWidth))
 	content := body + "\n\n" + rule + "\n\n" + uFooter.Render(footer)
+	// lipgloss.Place doesn't clip oversized content — it just overflows the
+	// requested size, which for a fixed-size tmux popup means the frame's
+	// top rows scroll out of the popup and the pane behind it shows through.
+	// Clamp defensively so the modal can never exceed the popup it's drawn
+	// into, even if a future window/label makes the content taller/wider.
+	frame := lipgloss.NewStyle().MaxWidth(m.width).MaxHeight(m.height).Render(uFrame.Render(content))
 	// Center the compact modal in the popup so the surrounding tmux popup
 	// padding is even, and the box hugs its content instead of filling it.
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, uFrame.Render(content))
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, frame)
 }
 
-func renderUsageSection(title string, color lipgloss.Color, windows []UsageWindow, empty string) string {
-	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Foreground(color).Bold(true).Render(title))
+func renderUsageSection(windows []UsageWindow, empty string) string {
 	if len(windows) == 0 {
-		return b.String() + "\n" + uReset.Render(empty)
+		return uReset.Render(empty)
 	}
+	var b strings.Builder
 	for i, w := range windows {
 		if i > 0 {
-			b.WriteString("\n")
+			b.WriteString("\n\n")
 		}
-		b.WriteString("\n" + renderUsageLabel(w.Label) + "\n")
+		b.WriteString(renderUsageLabel(w.Label) + "\n")
 		bar := lipgloss.NewStyle().Foreground(barColor(w.Percent)).Render(renderBar(w.Percent, usageBarWidth))
 		b.WriteString(bar + "  " + uPercent.Render(fmt.Sprintf("%d%%", w.Percent)) + uLabel.Render(" used"))
 		if !w.ResetsAt.IsZero() {

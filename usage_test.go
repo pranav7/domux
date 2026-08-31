@@ -67,7 +67,7 @@ func loadedTestModel(t *testing.T) usageModel {
 		{Label: "Current week (Fable)", Percent: 4},
 	}}
 	m := newUsageModel(fakeProvider{snap: snap})
-	m.width, m.height = 80, 24
+	m.width, m.height = 80, 60
 	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
 	return next.(usageModel)
 }
@@ -75,7 +75,7 @@ func loadedTestModel(t *testing.T) usageModel {
 func TestUsageViewRendersBars(t *testing.T) {
 	m := loadedTestModel(t)
 	out := stripANSI(m.View())
-	for _, want := range []string{"█▀▀", "CLAUDE USAGE", "CODEX USAGE", "Current session", "15% used", "Current week (Fable)", "4% used", "Unavailable"} {
+	for _, want := range []string{"█▀▀", "Current session", "15% used", "Current week (Fable)", "4% used", "Unavailable"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("view missing %q:\n%s", want, out)
 		}
@@ -86,7 +86,7 @@ func TestUsageViewRendersBars(t *testing.T) {
 }
 
 func TestRenderUsageSectionPadsWindows(t *testing.T) {
-	out := stripANSI(renderUsageSection("CLAUDE USAGE", claudeCodeOrange, []UsageWindow{
+	out := stripANSI(renderUsageSection([]UsageWindow{
 		{Label: "Current session", Percent: 15},
 		{Label: "Current week (all models)", Percent: 24},
 	}, "Unavailable"))
@@ -97,14 +97,40 @@ func TestRenderUsageSectionPadsWindows(t *testing.T) {
 
 func TestUsageViewShowsUnavailableOnError(t *testing.T) {
 	m := newUsageModel(fakeProvider{err: errNoCredentials})
-	m.width, m.height = 80, 24
+	m.width, m.height = 80, 60
 	next, _ := m.Update(usageFetchedMsg{err: errNoCredentials})
 	out := stripANSI(next.(usageModel).View())
-	if !strings.Contains(out, "CLAUDE USAGE") || !strings.Contains(out, "CODEX USAGE") || !strings.Contains(out, "Unavailable") {
-		t.Fatalf("expected unavailable state:\n%s", out)
+	if strings.Count(out, "Unavailable") != 2 {
+		t.Fatalf("expected unavailable state for both agents:\n%s", out)
 	}
 	if strings.Contains(out, "% used") {
 		t.Fatalf("error view must not render fabricated bars:\n%s", out)
+	}
+}
+
+// TestUsageViewNeverExceedsPopupSize guards against the modal overflowing a
+// fixed-size tmux popup: lipgloss.Place doesn't clip oversized content, so
+// content taller/wider than the popup scrolls the frame's top rows out of
+// view and lets the pane behind the popup show through.
+func TestUsageViewNeverExceedsPopupSize(t *testing.T) {
+	snap := UsageSnapshot{Windows: []UsageWindow{
+		{Label: "Current session", Percent: 15},
+		{Label: "Current week (all models)", Percent: 24},
+		{Label: "Current week (Fable)", Percent: 4},
+		{Source: usageCodex, Label: "Current session", Percent: 60},
+		{Source: usageCodex, Label: "Current week", Percent: 11},
+	}}
+	m := newUsageModel(fakeProvider{snap: snap})
+	m.width, m.height = 52, 41 // matches the fixed "domux usage" popup binding
+	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
+	lines := strings.Split(stripANSI(next.(usageModel).View()), "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view rendered %d rows, want <= %d", len(lines), m.height)
+	}
+	for i, line := range lines {
+		if w := utf8.RuneCountInString(line); w > m.width {
+			t.Fatalf("row %d rendered %d cols, want <= %d:\n%q", i, w, m.width, line)
+		}
 	}
 }
 
@@ -129,7 +155,7 @@ func TestUsageViewShowsUpdatedAgeWhenStale(t *testing.T) {
 		FetchedAt: time.Now().Add(-usageCacheTTL - time.Minute),
 	}
 	m := newUsageModel(fakeProvider{snap: snap})
-	m.width, m.height = 80, 24
+	m.width, m.height = 80, 60
 	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
 	out := stripANSI(next.(usageModel).View())
 	if !strings.Contains(out, "updated") || !strings.Contains(out, "ago ·") {
@@ -143,7 +169,7 @@ func TestUsageViewShowsUpdatedAgeWhenFresh(t *testing.T) {
 		FetchedAt: time.Now().Add(-5 * time.Second),
 	}
 	m := newUsageModel(fakeProvider{snap: snap})
-	m.width, m.height = 80, 24
+	m.width, m.height = 80, 60
 	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
 	out := stripANSI(next.(usageModel).View())
 	if !strings.Contains(out, "updated just now ·") {
@@ -299,10 +325,10 @@ func TestUsageViewRendersCodexSection(t *testing.T) {
 		{Source: usageCodex, Label: "Current week", Percent: 11},
 	}}
 	m := newUsageModel(fakeProvider{snap: snap})
-	m.width, m.height = 80, 24
+	m.width, m.height = 80, 60
 	next, _ := m.Update(usageFetchedMsg{snapshot: snap})
 	out := stripANSI(next.(usageModel).View())
-	if !strings.Contains(out, "CODEX USAGE") || !strings.Contains(out, "60% used") || !strings.Contains(out, "11% used") {
+	if !strings.Contains(out, "60% used") || !strings.Contains(out, "11% used") {
 		t.Fatalf("Codex section missing expected usage:\n%s", out)
 	}
 }
