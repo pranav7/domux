@@ -392,6 +392,9 @@ impl Emulator for GhosttyEmulator {
                     ch.to_lowercase().next().unwrap_or(ch) as u32,
                 );
             }
+            // Most encodings are a handful of bytes. On GHOSTTY_OUT_OF_SPACE the encoder
+            // reports the size it needs in `written`, so retry once at that size rather than
+            // dropping the key.
             let mut buf = [0u8; 128];
             let mut written: usize = 0;
             let rc = ffi::ghostty_key_encoder_encode(
@@ -401,8 +404,22 @@ impl Emulator for GhosttyEmulator {
                 buf.len(),
                 &mut written,
             );
-            if rc == ffi::GhosttyResult_GHOSTTY_SUCCESS {
-                out.extend_from_slice(&buf[..written]);
+            match rc {
+                ffi::GhosttyResult_GHOSTTY_SUCCESS => out.extend_from_slice(&buf[..written]),
+                ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE => {
+                    let mut big = vec![0u8; written];
+                    let rc = ffi::ghostty_key_encoder_encode(
+                        self.key_encoder,
+                        event,
+                        big.as_mut_ptr() as *mut std::os::raw::c_char,
+                        big.len(),
+                        &mut written,
+                    );
+                    if rc == ffi::GhosttyResult_GHOSTTY_SUCCESS {
+                        out.extend_from_slice(&big[..written]);
+                    }
+                }
+                _ => {}
             }
             ffi::ghostty_key_event_free(event);
         }
