@@ -1,6 +1,7 @@
 //! Terminal emulation for domux panes: the `Emulator` trait and its implementations.
 
 pub mod emulator;
+pub mod golden;
 pub mod key;
 pub mod types;
 
