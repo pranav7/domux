@@ -1,0 +1,41 @@
+{
+  "emulator": "alacritty",
+  "panes": 8,
+  "command": [
+    "yes"
+  ],
+  "term": "xterm-256color",
+  "outer_cols": 200,
+  "outer_rows": 50,
+  "duration_ms": 35179,
+  "frames": 10497,
+  "bytes_fed": 698673290,
+  "frame_us": {
+    "p50": 245,
+    "p95": 259,
+    "p99": 268,
+    "max": 597
+  },
+  "feed_us": {
+    "p50": 40,
+    "p95": 46,
+    "p99": 49,
+    "max": 340
+  },
+  "draw_us": {
+    "p50": 154,
+    "p95": 165,
+    "p99": 173,
+    "max": 415
+  },
+  "flush_us": {
+    "p50": 90,
+    "p95": 97,
+    "p99": 102,
+    "max": 249
+  },
+  "cpu_ms_total": 32656,
+  "cpu_ms_after_settle": 27269,
+  "settle_s": 5,
+  "max_rss_kb": 233120
+}

@@ -36,9 +36,11 @@ fn make(kind: EmulatorKind) -> Box<dyn Emulator> {
 }
 
 /// 10 MB of `yes` output must feed in under this many milliseconds, and a 200x50 snapshot
-/// must take under this many microseconds. Set from the numbers Task 13 records.
-const FEED_BUDGET_MS: u128 = 500;
-const SNAPSHOT_BUDGET_US: u128 = 2000;
+/// must take under this many microseconds. Set to the measured worst case times 1.5 on an
+/// Apple M3 Pro (feed 135 ms, snapshot 285 us; see docs/decisions/0001-terminal-emulator.md).
+/// These are regression fences, not targets.
+const FEED_BUDGET_MS: u128 = 250;
+const SNAPSHOT_BUDGET_US: u128 = 500;
 
 fn check(kind: EmulatorKind) {
     let bytes: Vec<u8> = b"y\r\n"

@@ -8,6 +8,7 @@ Rust workspace. Crates live under `crates/`. `domux-term` holds the emulator tra
 - `cargo test --workspace --all-features` runs unit, golden, and behavior tests.
 - `UPDATE_GOLDEN=1 cargo test -p domux-term --test golden` rewrites golden files. Review the diff against the fixture's intent before committing.
 - `cargo clippy --workspace --all-features -- -D warnings` and `cargo fmt --all --check` must pass before a commit.
+- The pane emulator is ghostty; see docs/decisions/0001-terminal-emulator.md before touching crates/domux-term.
 
 ## Rules
 

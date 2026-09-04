@@ -1,0 +1,19 @@
+feed/yes/ghostty/80x24  time:   [97.237 ms 97.436 ms 97.777 ms]
+                        thrpt:  [102.27 MiB/s 102.63 MiB/s 102.84 MiB/s]
+feed/sgr/ghostty/80x24  time:   [51.203 ms 51.429 ms 51.656 ms]
+                        thrpt:  [193.59 MiB/s 194.44 MiB/s 195.30 MiB/s]
+feed/nvim-fixture/ghostty/80x24
+                        time:   [93.634 µs 94.807 µs 97.433 µs]
+                        thrpt:  [228.14 MiB/s 234.46 MiB/s 237.39 MiB/s]
+feed/yes/alacritty/80x24
+                        time:   [60.983 ms 61.188 ms 61.658 ms]
+                        thrpt:  [162.19 MiB/s 163.43 MiB/s 163.98 MiB/s]
+feed/sgr/alacritty/80x24
+                        time:   [60.552 ms 60.698 ms 60.877 ms]
+                        thrpt:  [164.27 MiB/s 164.75 MiB/s 165.15 MiB/s]
+feed/nvim-fixture/alacritty/80x24
+                        time:   [115.85 µs 116.58 µs 117.33 µs]
+                        thrpt:  [189.44 MiB/s 190.67 MiB/s 191.87 MiB/s]
+snapshot/ghostty/200x50 time:   [186.73 µs 187.16 µs 187.65 µs]
+snapshot/alacritty/200x50
+                        time:   [59.887 µs 59.966 µs 60.042 µs]
