@@ -23,9 +23,9 @@ The M0 spike criteria (architecture spec, Technology section): a pane must rende
 | termwiz | 0.23.3 |
 | ratatui / crossterm / portable-pty | 0.30.2 / 0.29.0 / 0.9.0 |
 | Rust | 1.98.1 |
-| domux commit | b81e2e3 |
+| domux commit measurements were taken at | b81e2e3 |
 
-`v1.3.1` was vendored first and rejected: at that tag `include/ghostty/vt/` has no `terminal.h`, `render.h`, or `grid_ref.h`, so the terminal and render-state C API this plan needs does not exist there. The tip of `main` has them and requires Zig 0.16.0. The reference terminal on screen is therefore Ghostty 1.3.1 while the linked library is a later commit; that gap is the reason the fidelity rows below are marked "not measured" rather than compared loosely.
+`v1.3.1` was vendored first and rejected: at that tag `include/ghostty/vt/` has no `terminal.h`, `render.h`, or `grid_ref.h`, so the terminal and render-state C API this plan needs does not exist there. The tip of `main` has them and requires Zig 0.16.0. The reference terminal on screen is therefore Ghostty 1.3.1 while the linked library is a later commit. Record that gap when the interactive fidelity rows below are finally compared: a difference seen on screen could come from the version gap rather than from the emulator.
 
 ## Fidelity (spike criterion 1: no visible difference from Ghostty)
 
