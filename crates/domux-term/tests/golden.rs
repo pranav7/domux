@@ -7,13 +7,19 @@
 //! - finding: sgr-attributes. alacritty_terminal drops SGR 21 (double underline), SGR 53
 //!   (overline), and SGR 5 (blink); libghostty-vt keeps all three. Its cell flags have no
 //!   blink or overline bit at all.
-//! - finding: cursor-and-erase. A horizontal tab leaves a literal TAB character in an
-//!   alacritty_terminal cell; libghostty-vt advances the cursor and leaves spaces, which is
-//!   what a grid should hold.
-//! - finding: wide-and-emoji. Regional indicator flags (for example the two codepoints of
-//!   the Japan flag) are two wide cells in libghostty-vt and two narrow cells in
-//!   alacritty_terminal, so a row of flags ends two columns apart. Every other grapheme
+//! - finding: cursor-and-erase, torture-cat. A horizontal tab leaves a literal TAB character
+//!   in an alacritty_terminal cell; libghostty-vt advances the cursor and leaves spaces,
+//!   which is what a grid should hold.
+//! - finding: wide-and-emoji, torture-cat. Regional indicator flags (for example the two
+//!   codepoints of the Japan flag) are two wide cells in libghostty-vt and two narrow cells
+//!   in alacritty_terminal, so a row of flags ends two columns apart. Every other grapheme
 //!   tested (ZWJ sequences, skin tones, variation selectors, CJK) agrees.
+//! - finding: nvim-habamax, htop. alacritty_terminal applies background colour erase: after
+//!   an erase with a non-default background set, the erased cells keep that background.
+//!   libghostty-vt reports them as the default background. Confirmed directly by feeding
+//!   `ESC [ 48;2;28;28;28 m ESC [ K` and reading a trailing cell: alacritty_terminal returns
+//!   the rgb, libghostty-vt returns default. Explicitly painted cells agree, so this shows
+//!   up as trailing style runs on every erased line in a full-screen program.
 
 use domux_term::golden::list_fixtures;
 
@@ -70,7 +76,7 @@ fn every_fixture_matches_its_golden_with_ghostty() {
 
 #[cfg(feature = "alacritty")]
 #[test]
-#[ignore = "3 fixtures differ: SGR 21/53/5 dropped, tab left in the cell, flag width. See the findings at the top of this file and docs/decisions/0001-terminal-emulator.md"]
+#[ignore = "6 fixtures differ: SGR 21/53/5 dropped, tab left in the cell, flag width, background colour erase. See the findings at the top of this file and docs/decisions/0001-terminal-emulator.md"]
 fn every_fixture_matches_its_golden_with_alacritty() {
     run_all(EmulatorKind::Alacritty);
 }
