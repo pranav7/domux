@@ -5,6 +5,9 @@ pub mod golden;
 pub mod key;
 pub mod types;
 
+#[cfg(feature = "ghostty")]
+pub mod ghostty;
+
 pub use emulator::{Emulator, EmulatorConfig, EmulatorKind};
 pub use key::{Key, KeyAction, KeyEvent, Mods};
 pub use types::{Attrs, Cell, Color, Cursor, CursorShape, Grid, Rgb, Size};
