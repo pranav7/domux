@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/domux-term"]
+members = ["crates/domux-term", "crates/m0-spike"]
 
 [workspace.package]
 version = "2.0.0-alpha.0"
