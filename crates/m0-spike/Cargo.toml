@@ -16,8 +16,17 @@ workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream", "bracketed-paste"] }
 domux-term = { path = "../domux-term", features = ["ghostty", "alacritty"] }
+futures = "0.3.34"
+libc = "0.2.189"
 portable-pty = "0.9.0"
 ratatui = { version = "0.30.2", features = ["underline-color"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "signal", "time"] }
+
+[dev-dependencies]
+portable-pty = "0.9.0"
+serde_json = "1.0.151"
