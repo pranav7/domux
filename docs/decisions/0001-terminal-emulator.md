@@ -107,6 +107,17 @@ Two build facts worth keeping. Zig fetches Ghostty's package dependencies in par
 
 domux panes use libghostty-vt. Criterion 1 decided it: alacritty_terminal has five distinct emulator-attributable differences from Ghostty, and two of them are visible in the author's daily programs. The background colour erase difference changes the trailing background of every erased line in neovim and htop, and the kitty shift+enter difference breaks Shift+Enter in Claude Code, which is the tool this multiplexer exists to drive. libghostty-vt has none of these because it is the engine Ghostty itself renders with, and it needs no separate key encoder.
 
+One honesty note about criterion 1. The criterion is "no visible difference from Ghostty",
+and libghostty-vt is the engine Ghostty renders with, so it satisfies that criterion close to
+by construction. The comparison is therefore not neutral between the two candidates: it
+measures how far alacritty_terminal sits from Ghostty, not how far each sits from some
+independent standard. Two of the five differences are worth knowing anyway because they are
+about the inner program's behaviour rather than taste: shift+enter under the kitty protocol
+either reaches the program or does not, and the background colour erase difference decides
+whether an erased line shows the program's background or the pane's. The remaining risk this
+leaves is the version gap in the environment table, which only a person comparing on screen
+can close.
+
 Performance did not decide it: both clear the 16 ms frame mark by roughly 45x and both idle at effectively zero CPU. alacritty_terminal is faster at raw `yes` throughput and at snapshotting; libghostty-vt is faster on styled and real-program input, uses about an eighth of the memory at eight panes with scrollback, and fed 2.6x more bytes in the same 30 seconds.
 
 The Zig build cost is real but bounded: 42 s cold with a warm Zig cache, 0.20 s warm, and it does not re-run when Rust sources change. It built on macOS arm64, macOS x86_64 (cross), Linux x86_64, and Linux aarch64 on the first CI run.
