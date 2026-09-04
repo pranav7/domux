@@ -5,6 +5,8 @@ pub mod golden;
 pub mod key;
 pub mod types;
 
+#[cfg(feature = "alacritty")]
+pub mod alacritty;
 #[cfg(feature = "ghostty")]
 pub mod ghostty;
 
@@ -21,6 +23,8 @@ pub fn new_emulator(
     match kind {
         #[cfg(feature = "ghostty")]
         EmulatorKind::Ghostty => Ok(Box::new(ghostty::GhosttyEmulator::new(config)?)),
+        #[cfg(feature = "alacritty")]
+        EmulatorKind::Alacritty => Ok(Box::new(alacritty::AlacrittyEmulator::new(config))),
         #[allow(unreachable_patterns)]
         other => {
             let _ = config;

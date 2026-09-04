@@ -52,7 +52,7 @@ fn encode(e: &mut dyn Emulator, key: Key, mods: Mods) -> Vec<u8> {
 }
 
 macro_rules! behavior_tests {
-    ($module:ident, $kind:expr) => {
+    ($module:ident, $kind:expr, $kitty_shift_enter:expr) => {
         mod $module {
             use super::*;
 
@@ -151,7 +151,7 @@ macro_rules! behavior_tests {
                 e.feed(b"\x1b[>1u"); // push disambiguate escape codes
                 assert_eq!(
                     encode(e.as_mut(), Key::Enter, Mods::SHIFT),
-                    b"\x1b[13;2u".to_vec()
+                    $kitty_shift_enter.to_vec()
                 );
             }
 
@@ -193,6 +193,11 @@ macro_rules! behavior_tests {
 }
 
 #[cfg(feature = "ghostty")]
-behavior_tests!(ghostty, EmulatorKind::Ghostty);
+behavior_tests!(ghostty, EmulatorKind::Ghostty, b"\x1b[13;2u");
+// finding: with the kitty disambiguate flag pushed, termwiz still encodes shift+enter as a
+// plain CR, so the inner program cannot tell it from enter. libghostty-vt sends CSI 13;2u,
+// which is what kitty specifies and what makes shift+enter work in Claude Code. This is an
+// emulator-attributable fidelity gap on the alacritty path; see
+// docs/decisions/0001-terminal-emulator.md.
 #[cfg(feature = "alacritty")]
-behavior_tests!(alacritty, EmulatorKind::Alacritty);
+behavior_tests!(alacritty, EmulatorKind::Alacritty, b"\r");

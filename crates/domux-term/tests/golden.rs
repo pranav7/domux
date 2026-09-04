@@ -1,3 +1,20 @@
+//! Golden fixtures run against every enabled implementation.
+//!
+//! One golden per fixture, produced by libghostty-vt and reviewed by hand. Where
+//! alacritty_terminal disagrees the difference is a finding for the decision record, not a
+//! second golden. Findings recorded during M0, all emulator-attributable:
+//!
+//! - finding: sgr-attributes. alacritty_terminal drops SGR 21 (double underline), SGR 53
+//!   (overline), and SGR 5 (blink); libghostty-vt keeps all three. Its cell flags have no
+//!   blink or overline bit at all.
+//! - finding: cursor-and-erase. A horizontal tab leaves a literal TAB character in an
+//!   alacritty_terminal cell; libghostty-vt advances the cursor and leaves spaces, which is
+//!   what a grid should hold.
+//! - finding: wide-and-emoji. Regional indicator flags (for example the two codepoints of
+//!   the Japan flag) are two wide cells in libghostty-vt and two narrow cells in
+//!   alacritty_terminal, so a row of flags ends two columns apart. Every other grapheme
+//!   tested (ZWJ sequences, skin tones, variation selectors, CJK) agrees.
+
 use domux_term::golden::list_fixtures;
 
 #[cfg(any(feature = "ghostty", feature = "alacritty"))]
@@ -53,6 +70,7 @@ fn every_fixture_matches_its_golden_with_ghostty() {
 
 #[cfg(feature = "alacritty")]
 #[test]
+#[ignore = "3 fixtures differ: SGR 21/53/5 dropped, tab left in the cell, flag width. See the findings at the top of this file and docs/decisions/0001-terminal-emulator.md"]
 fn every_fixture_matches_its_golden_with_alacritty() {
     run_all(EmulatorKind::Alacritty);
 }

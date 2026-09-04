@@ -15,11 +15,13 @@ workspace = true
 [features]
 default = ["ghostty"]
 ghostty = []
-alacritty = []
+alacritty = ["dep:alacritty_terminal", "dep:termwiz"]
 
 [dependencies]
+alacritty_terminal = { version = "0.26.0", optional = true }
 bitflags = "2.13.1"
 compact_str = "0.10.0"
+termwiz = { version = "0.23.3", optional = true, default-features = false }
 
 [build-dependencies]
 sha2 = "0.10"
