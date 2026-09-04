@@ -180,6 +180,27 @@ macro_rules! behavior_tests {
             }
 
             #[test]
+            fn a_long_grapheme_cluster_is_read_whole() {
+                // A base character with far more combining marks than a small fixed buffer
+                // would hold. The emulator must return every codepoint in one cell.
+                let mut e = make($kind, 20, 4);
+                let mut input = String::from("a");
+                for _ in 0..40 {
+                    input.push('\u{0301}'); // combining acute accent
+                }
+                e.feed(input.as_bytes());
+                let mut g = Grid::new(e.size());
+                e.snapshot_grid(&mut g);
+                let text = g.cell(0, 0).text.as_str();
+                assert!(text.starts_with('a'), "{text:?}");
+                assert!(
+                    text.chars().filter(|c| *c == '\u{0301}').count() >= 16,
+                    "expected the whole cluster, got {} marks",
+                    text.chars().filter(|c| *c == '\u{0301}').count()
+                );
+            }
+
+            #[test]
             fn cursor_shape_follows_decscusr() {
                 let mut e = make($kind, 20, 4);
                 e.feed(b"\x1b[5 q"); // blinking bar

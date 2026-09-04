@@ -461,9 +461,17 @@ unsafe fn fill_cell(cells: ffi::GhosttyRenderStateRowCells, out: &mut Cell) {
             )
         };
         if len > 0 {
-            // Graphemes are short; the buffer covers a base codepoint plus modifiers.
-            let mut cps = [0u32; 16];
-            let take = (len as usize).min(cps.len());
+            // GRAPHEMES_BUF writes exactly `len` codepoints, so the buffer must hold all of
+            // them. A fixed-size array would be overrun by a cluster with many combining
+            // marks, so anything longer than the common case goes on the heap.
+            let mut stack = [0u32; 16];
+            let mut heap: Vec<u32>;
+            let cps: &mut [u32] = if len as usize <= stack.len() {
+                &mut stack[..len as usize]
+            } else {
+                heap = vec![0u32; len as usize];
+                heap.as_mut_slice()
+            };
             if unsafe {
                 ffi::ghostty_render_state_row_cells_get(
                     cells,
@@ -472,7 +480,7 @@ unsafe fn fill_cell(cells: ffi::GhosttyRenderStateRowCells, out: &mut Cell) {
                 )
             } == ffi::GhosttyResult_GHOSTTY_SUCCESS
             {
-                for &cp in &cps[..take] {
+                for &cp in cps.iter() {
                     if let Some(ch) = char::from_u32(cp) {
                         out.text.push(ch);
                     }
