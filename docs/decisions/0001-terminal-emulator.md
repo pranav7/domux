@@ -91,7 +91,7 @@ Both emulators clear the 16 ms frame mark by a factor of about 45. The loop has 
 | Item | ghostty | alacritty |
 |---|---|---|
 | Cold build wall time (`cargo clean -p domux-term`, warm Zig cache) | 42 s | 1.2 s |
-| Cold build including Zig download and Ghostty package fetch | about 95 s (50 MB Zig tarball plus Ghostty's Zig dependencies) | n/a |
+| Cold build from an empty Zig cache (downloads the 50 MB Zig tarball, fetches Ghostty's Zig packages, builds) | 54.6 s | n/a |
 | Warm rebuild after editing `src/lib.rs` | 0.20 s | 0.42 s |
 | Static library size | 10.5 MB (`libghostty-vt.a`) | n/a (rlib) |
 | `m0-spike` release binary, both features | 3.9 MB | 3.9 MB |
