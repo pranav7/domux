@@ -10,9 +10,15 @@ fn root() -> &'static Path {
         .unwrap()
 }
 
+/// The Ghostty tree the build script resolved, so this checks the source that was built
+/// rather than a second copy that could drift from it.
+fn ghostty_src() -> &'static Path {
+    Path::new(env!("DOMUX_GHOSTTY_SRC"))
+}
+
 #[test]
-fn zig_pin_matches_vendored_ghostty_minimum_zig_version() {
-    let zon = fs::read_to_string(root().join("vendor/ghostty/build.zig.zon")).unwrap();
+fn zig_pin_matches_ghostty_minimum_zig_version() {
+    let zon = fs::read_to_string(ghostty_src().join("build.zig.zon")).unwrap();
     let line = zon
         .lines()
         .find(|l| l.contains("minimum_zig_version"))

@@ -1,0 +1,7 @@
+# Ghostty source built into libghostty-vt. `commit` is the only integrity check needed: git
+# object names are content addressed, so a clone that checks out this commit has exactly
+# these bytes. See docs/decisions/0002-ghostty-source-acquisition.md.
+#
+# To bump: crates/domux-term/scripts/bump-ghostty.sh <commit>
+repo = "https://github.com/ghostty-org/ghostty.git"
+commit = "492300cad104195411d12217dd22f1cd05f31376"

@@ -1,5 +1,5 @@
-# Zig used to build vendor/ghostty. The version must equal minimum_zig_version in
-# vendor/ghostty/build.zig.zon (tests/zig_pin.rs checks). URLs and hashes come from
+# Zig used to build Ghostty. The version must equal minimum_zig_version in the pinned
+# Ghostty's build.zig.zon (tests/zig_pin.rs checks). URLs and hashes come from
 # https://ziglang.org/download/index.json for that version.
 version = "0.16.0"
 
