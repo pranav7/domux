@@ -195,13 +195,7 @@ impl Emulator for AlacrittyEmulator {
 
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
         let bracketed = self.term.mode().contains(TermMode::BRACKETED_PASTE);
-        if bracketed {
-            out.extend_from_slice(b"\x1b[200~");
-        }
-        out.extend_from_slice(text.as_bytes());
-        if bracketed {
-            out.extend_from_slice(b"\x1b[201~");
-        }
+        crate::emulator::wrap_paste(text, bracketed, out);
     }
 }
 

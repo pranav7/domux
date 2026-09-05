@@ -66,3 +66,15 @@ pub trait Emulator: Send {
     /// program enabled bracketed paste (mode 2004).
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>);
 }
+
+/// Appends `text` with the bracketed paste markers when `bracketed` is set. Every
+/// implementation reads mode 2004 its own way and then wraps the text the same way.
+pub fn wrap_paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
+    if bracketed {
+        out.extend_from_slice(b"\x1b[200~");
+    }
+    out.extend_from_slice(text.as_bytes());
+    if bracketed {
+        out.extend_from_slice(b"\x1b[201~");
+    }
+}

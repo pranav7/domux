@@ -71,13 +71,7 @@ impl Default for Cell {
 }
 
 impl Cell {
-    fn has_default_style(&self) -> bool {
-        self.fg == Color::Default
-            && self.bg == Color::Default
-            && self.underline_color.is_none()
-            && self.attrs.is_empty()
-    }
-
+    /// The cell's style as golden text, empty when every part of it is the default.
     fn style_text(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         let attr_names = [
@@ -185,18 +179,16 @@ impl Grid {
         &self.cells[start..start + self.size.cols as usize]
     }
 
-    /// Resizes in place, keeping the top-left content. Emulators call this before filling.
+    /// Resizes to `size`, blanking every cell when the size changes and leaving them alone
+    /// when it does not. Emulators call this before filling the grid.
     pub fn resize(&mut self, size: Size) {
         if size == self.size {
             return;
         }
-        let mut next = Grid::new(size);
-        for r in 0..self.size.rows.min(size.rows) {
-            for c in 0..self.size.cols.min(size.cols) {
-                *next.cell_mut(r, c) = self.cell(r, c).clone();
-            }
-        }
-        *self = next;
+        self.size = size;
+        self.cells.clear();
+        self.cells
+            .resize(size.cols as usize * size.rows as usize, Cell::default());
     }
 
     /// Resets every cell to the default so an emulator can fill the grid from scratch.
@@ -234,22 +226,18 @@ impl Grid {
         }
         out.push_str("styles\n");
         for r in 0..self.size.rows {
-            let row = self.row(r);
+            let styles: Vec<String> = self.row(r).iter().map(Cell::style_text).collect();
             let mut c = 0usize;
-            while c < row.len() {
-                if row[c].has_default_style() {
+            while c < styles.len() {
+                if styles[c].is_empty() {
                     c += 1;
                     continue;
                 }
-                let style = row[c].style_text();
                 let start = c;
-                while c + 1 < row.len()
-                    && !row[c + 1].has_default_style()
-                    && row[c + 1].style_text() == style
-                {
+                while c + 1 < styles.len() && styles[c + 1] == styles[c] {
                     c += 1;
                 }
-                let _ = writeln!(out, "r{r} c{start}-{c} {style}");
+                let _ = writeln!(out, "r{r} c{start}-{c} {}", styles[c]);
                 c += 1;
             }
         }
@@ -309,12 +297,11 @@ mod tests {
     }
 
     #[test]
-    fn resize_keeps_top_left_text_and_fills_with_blank_cells() {
+    fn resize_changes_the_size_and_blanks_every_cell() {
         let mut g = grid_with("abcd");
         g.resize(Size { cols: 3, rows: 3 });
         assert_eq!(g.size(), Size { cols: 3, rows: 3 });
-        assert_eq!(g.cell(0, 0).text, "a");
-        assert_eq!(g.cell(0, 2).text, "c");
+        assert_eq!(g.cell(0, 0).text, " ");
         assert_eq!(g.cell(2, 2).text, " ");
     }
 }

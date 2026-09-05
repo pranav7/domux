@@ -29,12 +29,46 @@ struct Callbacks {
     bell: bool,
 }
 
+/// A libghostty handle paired with its destructor, so dropping it frees it. A failure part
+/// way through `GhosttyEmulator::new` then releases the handles already built, and adding a
+/// handle costs one line instead of another rung on a cleanup ladder.
+struct Handle<T: Copy> {
+    raw: T,
+    free: unsafe extern "C" fn(T),
+}
+
+impl<T: Copy> Drop for Handle<T> {
+    fn drop(&mut self) {
+        unsafe { (self.free)(self.raw) };
+    }
+}
+
+/// Builds one of the handles whose constructor takes an allocator and an out pointer. `name`
+/// is the C function, named back in the error when it fails.
+fn new_handle<T: Copy>(
+    name: &str,
+    new: unsafe extern "C" fn(*const ffi::GhosttyAllocator, *mut T) -> ffi::GhosttyResult,
+    free: unsafe extern "C" fn(T),
+) -> Result<Handle<T>, String> {
+    let mut raw = std::mem::MaybeUninit::<T>::uninit();
+    if unsafe { new(ptr::null(), raw.as_mut_ptr()) } != ffi::GhosttyResult_GHOSTTY_SUCCESS {
+        return Err(format!("{name} failed"));
+    }
+    Ok(Handle {
+        raw: unsafe { raw.assume_init() },
+        free,
+    })
+}
+
+/// Fields drop in declaration order, so listing the handles in reverse order of creation
+/// frees them in the order libghostty expects, and `callbacks` outlives the terminal that
+/// holds its address.
 pub struct GhosttyEmulator {
-    terminal: ffi::GhosttyTerminal,
-    render_state: ffi::GhosttyRenderState,
-    row_iterator: ffi::GhosttyRenderStateRowIterator,
-    row_cells: ffi::GhosttyRenderStateRowCells,
-    key_encoder: ffi::GhosttyKeyEncoder,
+    key_encoder: Handle<ffi::GhosttyKeyEncoder>,
+    row_cells: Handle<ffi::GhosttyRenderStateRowCells>,
+    row_iterator: Handle<ffi::GhosttyRenderStateRowIterator>,
+    render_state: Handle<ffi::GhosttyRenderState>,
+    terminal: Handle<ffi::GhosttyTerminal>,
     callbacks: Box<Callbacks>,
     size: Size,
 }
@@ -103,105 +137,89 @@ impl GhosttyEmulator {
             bell: false,
         });
         let userdata = &mut *callbacks as *mut Callbacks as *mut c_void;
-        unsafe {
-            let mut terminal: ffi::GhosttyTerminal = ptr::null_mut();
-            if ffi::ghostty_terminal_new(
+
+        let mut raw_terminal: ffi::GhosttyTerminal = ptr::null_mut();
+        if unsafe {
+            ffi::ghostty_terminal_new(
                 ptr::null(),
-                &mut terminal,
+                &mut raw_terminal,
                 config.size.cols,
                 config.size.rows,
-            ) != ffi::GhosttyResult_GHOSTTY_SUCCESS
-            {
-                return Err("ghostty_terminal_new failed".into());
-            }
+            )
+        } != ffi::GhosttyResult_GHOSTTY_SUCCESS
+        {
+            return Err("ghostty_terminal_new failed".into());
+        }
+        let terminal = Handle {
+            raw: raw_terminal,
+            free: ffi::ghostty_terminal_free,
+        };
 
-            // Userdata first: the callbacks below all receive it.
-            ffi::ghostty_terminal_set(
-                terminal,
+        let scrollback = config.scrollback_lines;
+        let fg = rgb(config.default_fg);
+        let bg = rgb(config.default_bg);
+        // Userdata first: every callback below receives it. The default colors are what OSC
+        // 10 and OSC 11 queries answer with.
+        let options: [(ffi::GhosttyTerminalOption, *const c_void); 7] = [
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_USERDATA,
                 userdata,
-            );
-            ffi::ghostty_terminal_set(
-                terminal,
+            ),
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_WRITE_PTY,
                 write_pty as *const c_void,
-            );
-            ffi::ghostty_terminal_set(
-                terminal,
+            ),
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_BELL,
                 bell as *const c_void,
-            );
-            ffi::ghostty_terminal_set(
-                terminal,
+            ),
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
                 device_attributes as *const c_void,
-            );
-
-            let scrollback = config.scrollback_lines;
-            ffi::ghostty_terminal_set(
-                terminal,
+            ),
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
                 &scrollback as *const usize as *const c_void,
-            );
-
-            // Default colors so OSC 10 and OSC 11 queries answer with the client's palette.
-            let fg = rgb(config.default_fg);
-            let bg = rgb(config.default_bg);
-            ffi::ghostty_terminal_set(
-                terminal,
+            ),
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
                 &fg as *const _ as *const c_void,
-            );
-            ffi::ghostty_terminal_set(
-                terminal,
+            ),
+            (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND,
                 &bg as *const _ as *const c_void,
-            );
-
-            let mut render_state: ffi::GhosttyRenderState = ptr::null_mut();
-            if ffi::ghostty_render_state_new(ptr::null(), &mut render_state)
-                != ffi::GhosttyResult_GHOSTTY_SUCCESS
-            {
-                ffi::ghostty_terminal_free(terminal);
-                return Err("ghostty_render_state_new failed".into());
-            }
-            let mut row_iterator: ffi::GhosttyRenderStateRowIterator = ptr::null_mut();
-            if ffi::ghostty_render_state_row_iterator_new(ptr::null(), &mut row_iterator)
-                != ffi::GhosttyResult_GHOSTTY_SUCCESS
-            {
-                ffi::ghostty_render_state_free(render_state);
-                ffi::ghostty_terminal_free(terminal);
-                return Err("ghostty_render_state_row_iterator_new failed".into());
-            }
-            let mut row_cells: ffi::GhosttyRenderStateRowCells = ptr::null_mut();
-            if ffi::ghostty_render_state_row_cells_new(ptr::null(), &mut row_cells)
-                != ffi::GhosttyResult_GHOSTTY_SUCCESS
-            {
-                ffi::ghostty_render_state_row_iterator_free(row_iterator);
-                ffi::ghostty_render_state_free(render_state);
-                ffi::ghostty_terminal_free(terminal);
-                return Err("ghostty_render_state_row_cells_new failed".into());
-            }
-            let mut key_encoder: ffi::GhosttyKeyEncoder = ptr::null_mut();
-            if ffi::ghostty_key_encoder_new(ptr::null(), &mut key_encoder)
-                != ffi::GhosttyResult_GHOSTTY_SUCCESS
-            {
-                ffi::ghostty_render_state_row_cells_free(row_cells);
-                ffi::ghostty_render_state_row_iterator_free(row_iterator);
-                ffi::ghostty_render_state_free(render_state);
-                ffi::ghostty_terminal_free(terminal);
-                return Err("ghostty_key_encoder_new failed".into());
-            }
-            Ok(GhosttyEmulator {
-                terminal,
-                render_state,
-                row_iterator,
-                row_cells,
-                key_encoder,
-                callbacks,
-                size: config.size,
-            })
+            ),
+        ];
+        for (option, value) in options {
+            unsafe { ffi::ghostty_terminal_set(terminal.raw, option, value) };
         }
+
+        // Each `?` below drops the handles already built.
+        Ok(GhosttyEmulator {
+            render_state: new_handle(
+                "ghostty_render_state_new",
+                ffi::ghostty_render_state_new,
+                ffi::ghostty_render_state_free,
+            )?,
+            row_iterator: new_handle(
+                "ghostty_render_state_row_iterator_new",
+                ffi::ghostty_render_state_row_iterator_new,
+                ffi::ghostty_render_state_row_iterator_free,
+            )?,
+            row_cells: new_handle(
+                "ghostty_render_state_row_cells_new",
+                ffi::ghostty_render_state_row_cells_new,
+                ffi::ghostty_render_state_row_cells_free,
+            )?,
+            key_encoder: new_handle(
+                "ghostty_key_encoder_new",
+                ffi::ghostty_key_encoder_new,
+                ffi::ghostty_key_encoder_free,
+            )?,
+            terminal,
+            callbacks,
+            size: config.size,
+        })
     }
 
     /// Reads a DEC private or ANSI mode from the terminal.
@@ -212,7 +230,7 @@ impl GhosttyEmulator {
         };
         let rc = unsafe {
             ffi::ghostty_terminal_get(
-                self.terminal,
+                self.terminal.raw,
                 ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MODE,
                 &mut config as *mut _ as *mut c_void,
             )
@@ -223,20 +241,7 @@ impl GhosttyEmulator {
     /// Refreshes the render state from the terminal. `cursor` and `snapshot_grid` both read
     /// it, and `cursor` takes `&self`, so the update happens through a raw handle copy.
     fn update_render_state(&self) {
-        unsafe { ffi::ghostty_render_state_update(self.render_state, self.terminal) };
-    }
-}
-
-impl Drop for GhosttyEmulator {
-    fn drop(&mut self) {
-        unsafe {
-            ffi::ghostty_key_encoder_free(self.key_encoder);
-            ffi::ghostty_render_state_row_cells_free(self.row_cells);
-            ffi::ghostty_render_state_row_iterator_free(self.row_iterator);
-            ffi::ghostty_render_state_free(self.render_state);
-            ffi::ghostty_terminal_free(self.terminal);
-        }
-        // `callbacks` drops after the terminal, so no callback can fire on freed memory.
+        unsafe { ffi::ghostty_render_state_update(self.render_state.raw, self.terminal.raw) };
     }
 }
 
@@ -245,7 +250,7 @@ impl Emulator for GhosttyEmulator {
         if bytes.is_empty() {
             return;
         }
-        unsafe { ffi::ghostty_terminal_vt_write(self.terminal, bytes.as_ptr(), bytes.len()) };
+        unsafe { ffi::ghostty_terminal_vt_write(self.terminal.raw, bytes.as_ptr(), bytes.len()) };
     }
 
     fn take_responses(&mut self, out: &mut Vec<u8>) {
@@ -253,7 +258,7 @@ impl Emulator for GhosttyEmulator {
     }
 
     fn resize(&mut self, size: Size) {
-        unsafe { ffi::ghostty_terminal_resize(self.terminal, size.cols, size.rows, 0, 0) };
+        unsafe { ffi::ghostty_terminal_resize(self.terminal.raw, size.cols, size.rows, 0, 0) };
         self.size = size;
     }
 
@@ -271,35 +276,35 @@ impl Emulator for GhosttyEmulator {
                 ..std::mem::zeroed()
             };
             ffi::ghostty_render_state_get(
-                self.render_state,
+                self.render_state.raw,
                 ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_COLORS,
                 &mut colors as *mut _ as *mut c_void,
             );
 
             // Bind the reusable iterator to this render state, then walk every row.
             if ffi::ghostty_render_state_get(
-                self.render_state,
+                self.render_state.raw,
                 ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
-                &mut self.row_iterator as *mut _ as *mut c_void,
+                &mut self.row_iterator.raw as *mut _ as *mut c_void,
             ) != ffi::GhosttyResult_GHOSTTY_SUCCESS
             {
                 return;
             }
             let mut r: u16 = 0;
             while r < self.size.rows
-                && ffi::ghostty_render_state_row_iterator_next(self.row_iterator)
+                && ffi::ghostty_render_state_row_iterator_next(self.row_iterator.raw)
             {
                 if ffi::ghostty_render_state_row_get(
-                    self.row_iterator,
+                    self.row_iterator.raw,
                     ffi::GhosttyRenderStateRowData_GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
-                    &mut self.row_cells as *mut _ as *mut c_void,
+                    &mut self.row_cells.raw as *mut _ as *mut c_void,
                 ) == ffi::GhosttyResult_GHOSTTY_SUCCESS
                 {
                     let mut c: u16 = 0;
                     while c < self.size.cols
-                        && ffi::ghostty_render_state_row_cells_next(self.row_cells)
+                        && ffi::ghostty_render_state_row_cells_next(self.row_cells.raw)
                     {
-                        fill_cell(self.row_cells, out.cell_mut(r, c));
+                        fill_cell(self.row_cells.raw, out.cell_mut(r, c));
                         c += 1;
                     }
                 }
@@ -316,7 +321,7 @@ impl Emulator for GhosttyEmulator {
                 ..std::mem::zeroed()
             };
             if ffi::ghostty_render_state_get(
-                self.render_state,
+                self.render_state.raw,
                 ffi::GhosttyRenderStateData_GHOSTTY_RENDER_STATE_DATA_CURSOR,
                 &mut c as *mut _ as *mut c_void,
             ) != ffi::GhosttyResult_GHOSTTY_SUCCESS
@@ -332,17 +337,14 @@ impl Emulator for GhosttyEmulator {
                 }
                 _ => CursorShape::Block,
             };
+            let (row, col) = if c.viewport_has_value {
+                (c.viewport_y, c.viewport_x)
+            } else {
+                (0, 0)
+            };
             Cursor {
-                row: if c.viewport_has_value {
-                    c.viewport_y
-                } else {
-                    0
-                },
-                col: if c.viewport_has_value {
-                    c.viewport_x
-                } else {
-                    0
-                },
+                row,
+                col,
                 visible: c.visible,
                 shape,
                 blink: c.blinking,
@@ -352,13 +354,13 @@ impl Emulator for GhosttyEmulator {
 
     fn encode_key(&mut self, key: &KeyEvent, out: &mut Vec<u8>) {
         unsafe {
-            ffi::ghostty_key_encoder_setopt_from_terminal(self.key_encoder, self.terminal);
+            ffi::ghostty_key_encoder_setopt_from_terminal(self.key_encoder.raw, self.terminal.raw);
             // `setopt_from_terminal` leaves this false because the terminal cannot know it.
             // domux receives key events the client already decoded, so ALT means alt and
             // must produce the escape prefix on every platform.
             let option_as_alt = ffi::GhosttyOptionAsAlt_GHOSTTY_OPTION_AS_ALT_TRUE;
             ffi::ghostty_key_encoder_setopt(
-                self.key_encoder,
+                self.key_encoder.raw,
                 ffi::GhosttyKeyEncoderOption_GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT,
                 &option_as_alt as *const _ as *const c_void,
             );
@@ -398,7 +400,7 @@ impl Emulator for GhosttyEmulator {
             let mut buf = [0u8; 128];
             let mut written: usize = 0;
             let rc = ffi::ghostty_key_encoder_encode(
-                self.key_encoder,
+                self.key_encoder.raw,
                 event,
                 buf.as_mut_ptr() as *mut std::os::raw::c_char,
                 buf.len(),
@@ -409,7 +411,7 @@ impl Emulator for GhosttyEmulator {
                 ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE => {
                     let mut big = vec![0u8; written];
                     let rc = ffi::ghostty_key_encoder_encode(
-                        self.key_encoder,
+                        self.key_encoder.raw,
                         event,
                         big.as_mut_ptr() as *mut std::os::raw::c_char,
                         big.len(),
@@ -426,14 +428,7 @@ impl Emulator for GhosttyEmulator {
     }
 
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
-        let bracketed = self.mode_enabled(MODE_BRACKETED_PASTE);
-        if bracketed {
-            out.extend_from_slice(b"\x1b[200~");
-        }
-        out.extend_from_slice(text.as_bytes());
-        if bracketed {
-            out.extend_from_slice(b"\x1b[201~");
-        }
+        crate::emulator::wrap_paste(text, self.mode_enabled(MODE_BRACKETED_PASTE), out);
     }
 }
 
@@ -481,13 +476,14 @@ unsafe fn fill_cell(cells: ffi::GhosttyRenderStateRowCells, out: &mut Cell) {
             // GRAPHEMES_BUF writes exactly `len` codepoints, so the buffer must hold all of
             // them. A fixed-size array would be overrun by a cluster with many combining
             // marks, so anything longer than the common case goes on the heap.
+            let len = len as usize;
             let mut stack = [0u32; 16];
-            let mut heap: Vec<u32>;
-            let cps: &mut [u32] = if len as usize <= stack.len() {
-                &mut stack[..len as usize]
+            let mut spill = Vec::new();
+            let cps: &mut [u32] = if len <= stack.len() {
+                &mut stack[..len]
             } else {
-                heap = vec![0u32; len as usize];
-                heap.as_mut_slice()
+                spill.resize(len, 0u32);
+                &mut spill
             };
             if unsafe {
                 ffi::ghostty_render_state_row_cells_get(
