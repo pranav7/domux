@@ -1,0 +1,75 @@
+size 80x24
+cursor row=6 col=0 visible=true shape=block blink=false
+|bold dim italic underline inverse strike                                        |
+|curly double overline blink hidden                                              |
+|00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15                                 |
+|                                                                                |
+|truecolor fg truecolor bg colored underline                                     |
+|red bold underlinestill bold underline                                          |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+styles
+r0 c0-3 bold
+r0 c5-7 dim
+r0 c9-14 italic
+r0 c16-24 underline
+r0 c26-32 inverse
+r0 c34-39 strikethrough
+r1 c0-4 curly_underline
+r1 c6-11 double_underline
+r1 c13-20 overline
+r1 c22-26 blink
+r1 c28-33 invisible
+r2 c0-1 fg=idx0
+r2 c3-4 fg=idx1
+r2 c6-7 fg=idx2
+r2 c9-10 fg=idx3
+r2 c12-13 fg=idx4
+r2 c15-16 fg=idx5
+r2 c18-19 fg=idx6
+r2 c21-22 fg=idx7
+r2 c24-25 fg=idx8
+r2 c27-28 fg=idx9
+r2 c30-31 fg=idx10
+r2 c33-34 fg=idx11
+r2 c36-37 fg=idx12
+r2 c39-40 fg=idx13
+r2 c42-43 fg=idx14
+r2 c45-46 fg=idx15
+r3 c0-1 bg=idx16
+r3 c2-3 bg=idx17
+r3 c4-5 bg=idx18
+r3 c6-7 bg=idx19
+r3 c8-9 bg=idx20
+r3 c10-11 bg=idx21
+r3 c12-13 bg=idx22
+r3 c14-15 bg=idx23
+r3 c16-17 bg=idx24
+r3 c18-19 bg=idx25
+r3 c20-21 bg=idx26
+r3 c22-23 bg=idx27
+r3 c24-25 bg=idx28
+r3 c26-27 bg=idx29
+r3 c28-29 bg=idx30
+r3 c30-31 bg=idx31
+r4 c0-11 fg=#ff8000
+r4 c13-24 bg=#1e1e2e
+r4 c26-42 underline ul=#ff0000
+r5 c0-17 bold,underline fg=idx1
+r5 c18-37 bold,underline

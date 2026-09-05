@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/domux-term", "crates/m0-spike"]
+
+[workspace.package]
+version = "2.0.0-alpha.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/pranav7/domux"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+debug = 1          # symbols for profiling the spike

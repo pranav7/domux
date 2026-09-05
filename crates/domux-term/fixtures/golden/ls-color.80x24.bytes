@@ -1,0 +1,10 @@
+total 64
+drwxr-xr-x@ 9 pranav  staff   288 Sep  4 23:09 [1m[36m.[39;49m[0m
+drwxr-xr-x@ 9 pranav  staff   288 Sep  4 23:21 [1m[36m..[39;49m[0m
+drwxr-xr-x@ 4 pranav  staff   128 Sep  4 23:09 [1m[36malacritty[39;49m[0m
+-rw-r--r--@ 1 pranav  staff  2710 Sep  4 22:45 emulator.rs
+drwxr-xr-x@ 4 pranav  staff   128 Sep  4 22:57 [1m[36mghostty[39;49m[0m
+-rw-r--r--@ 1 pranav  staff  4179 Sep  4 22:46 golden.rs
+-rw-r--r--@ 1 pranav  staff  1179 Sep  4 22:45 key.rs
+-rw-r--r--@ 1 pranav  staff  1150 Sep  4 23:09 lib.rs
+-rw-r--r--@ 1 pranav  wheel  9527 Sep  4 22:45 types.rs

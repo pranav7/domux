@@ -1,5 +1,4 @@
-domux
-dist/
+/target
 .DS_Store
 .worktrees/
 .implement/

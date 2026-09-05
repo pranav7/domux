@@ -1,0 +1,33 @@
+size 100x30
+cursor row=15 col=0 visible=true shape=block blink=false
+|CJK: 漢字仮名交じり文 中文测试 한국어 텍스트                                                        |
+|Fullwidth: ＡＢＣ１２３ ！？                                                                        |
+|Emoji: 😀 🎉 🚀 ❤️ ☃ ☃️ ✔ ✔️ ⚠️                                                                         |
+|ZWJ: 👩‍💻 👨‍👩‍👧‍👦 🏳️‍🌈 🧑🏽‍🚀                                                                       |
+|Flags: 🇯🇵 🇮🇳 🇺🇸 🇪🇺                                                                          |
+|Skin tones: 👍 👍🏻 👍🏽 👍🏿                                                                       |
+|Combining: é (e + acute) ñ (n + tilde) ạ̈ (two marks)                                                |
+|Box: ┌─┬─┐ ╔═╦═╗ ┏━┳━┓ │ │ │ ║ ║ ║ ┃ ┃ ┃ └─┴─┘ ╚═╩═╝ ┗━┻━┛                                          |
+|Blocks: ░▒▓█ ▀▄▌▐ ▁▂▃▄▅▆▇█                                                                          |
+|Zero width: a​b (ZWSP) c‌d (ZWNJ)                                                                     |
+|Wide at edge: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|
+|漢字                                                                                                |
+|Long: ──────────────────────────────────────────────────────────────────────────────────────────────|
+|───────────────────                                                                                 |
+|Tabs:   one     two     three   four                                                                |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+|                                                                                                    |
+styles

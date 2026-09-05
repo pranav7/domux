@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [v2]
+  pull_request:
+    branches: [v2]
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/target/zig-global-cache
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest        # Apple silicon
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest       # x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm    # aarch64
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1          # keep equal to rust-toolchain.toml
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache Zig and the pinned Ghostty source
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/domux/zig
+            ~/.cache/domux/ghostty
+            target/zig-global-cache
+          key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/zig-pin.toml', 'vendor/ghostty-pin.toml') }}
+      - run: cargo fmt --all --check
+      - run: cargo build --workspace --all-features --locked
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  cross-macos-x86_64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache Zig and the pinned Ghostty source
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/domux/zig
+            ~/.cache/domux/ghostty
+            target/zig-global-cache
+          key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/zig-pin.toml', 'vendor/ghostty-pin.toml') }}
+      - run: cargo build --workspace --all-features --locked --target x86_64-apple-darwin

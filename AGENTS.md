@@ -1,51 +1,22 @@
-# Repository Guidelines
+# Repository guidelines for domux V2
 
-## Project Structure & Module Organization
+Rust workspace. Crates live under `crates/`. `domux-term` holds the emulator trait and its implementations; `m0-spike` is the M0 pane spike and will be lifted or deleted in M1.
 
-`domux` is a small Go CLI/TUI in one root package. Core entrypoints and command
-handlers live in `main.go`, `commands.go`, and `state_commands.go`. Session,
-store, resolver, install, picker, and TUI behavior are split into matching
-`*.go` files at the repo root. Tests live beside code as `*_test.go`. Runtime
-state is external: TODO files under `~/.local/share/domux/`, generated
-integrations under `~/.config/domux/`. The built `domux` binary and `dist/` are
-ignored.
+## Build and test
 
-## Build, Test, and Development Commands
+- `cargo build --workspace --all-features` builds both emulator implementations. The `ghostty` feature fetches two pinned inputs on first build and caches both under `~/.cache/domux`: the Ghostty source, cloned at the commit in `vendor/ghostty-pin.toml`, and the Zig that builds it, from `vendor/zig-pin.toml`. Set `DOMUX_GHOSTTY_SOURCE_DIR=/path/to/ghostty` to build a local checkout, and `DOMUX_ZIG=/path/to/zig` to use a local Zig of the same version. No Ghostty source lives in this repository; see docs/decisions/0002-ghostty-source-acquisition.md.
+- `crates/domux-term/scripts/bump-ghostty.sh <commit>` bumps the Ghostty pin, regenerates the bindings, and runs the suite. Nothing else should edit `vendor/ghostty-pin.toml`.
+- `cargo test --workspace --all-features` runs unit, golden, and behavior tests.
+- `UPDATE_GOLDEN=1 cargo test -p domux-term --test golden` rewrites golden files. Review the diff against the fixture's intent before committing.
+- `crates/domux-term/scripts/ghostty-src.sh` prints the Ghostty tree the build resolved. `build.rs` exports the same path as `DOMUX_GHOSTTY_SRC`, and the header and Zig-pin tests read it, so the bindings are always checked against the headers that were compiled.
+- `cargo clippy --workspace --all-features -- -D warnings` and `cargo fmt --all --check` must pass before a commit.
+- The pane emulator is ghostty; see docs/decisions/0001-terminal-emulator.md before touching crates/domux-term.
 
-- `go test ./...` runs all unit tests.
-- `go build ./...` checks every package builds.
-- `go run .` starts the TODO TUI for the current domux context.
-- `go run . sessions` opens the session picker.
-- `go run . install tmux` previews generated tmux integration.
-- `go run . install tmux --apply` writes integration files; review preview first.
-- `gofmt -w *.go` formats root Go files before commit.
+## Rules
 
-## Coding Style & Naming Conventions
-
-Use standard Go style: tabs from `gofmt`, short package-local names, simple data
-structures, and explicit error returns. Keep this repo self-contained and avoid
-unneeded abstraction. Test names use `TestBehaviorCondition`, matching existing
-examples like `TestPickerEscapeQuitsAfterStartup`.
-
-## Testing Guidelines
-
-Use Go's built-in `testing` package. Add focused tests beside the file under
-change, especially for session state, install output, picker behavior, and store
-parsing. Prefer table tests only when cases share the same setup. Run
-`go test ./...` before handing off.
-
-## Commit & Pull Request Guidelines
-
-Recent commits use concise imperative subjects, for example `Clear stale PR state
-with session state`. Keep subjects short, no trailing period. Do not commit
-directly to restricted branches (`main`, `master`, `workspace-*`) unless
-explicitly told.
-
-PRs should include a short problem/solution summary, tests run, and screenshots
-or terminal output for visible TUI or integration changes. Link issues when
-relevant.
-
-## Agent-Specific Notes
-
-Be concise. Do not revert user edits. Follow Rob Pike's rules: measure before
-optimizing, keep algorithms simple, and let data shape the code.
+- Branch `v2` only. Never commit to `main`, `master`, or `workspace-*`.
+- Nothing here writes under `~/.local/share/domux`, `~/.config/domux`, `~/.claude`, or `~/.codex`. V1 owns those until the M3 cut-over.
+- No tmux. No mouse. No Windows.
+- Atomic writes: write `path.tmp`, then rename.
+- Test names are `behavior_condition` in snake_case.
+- Prose and comments: no em dashes, sentence case, plain words, active voice, one term per concept.

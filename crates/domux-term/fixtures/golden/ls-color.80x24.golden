@@ -1,0 +1,31 @@
+size 80x24
+cursor row=10 col=0 visible=true shape=block blink=false
+|total 64                                                                        |
+|drwxr-xr-x@ 9 pranav  staff   288 Sep  4 23:09 .                                |
+|drwxr-xr-x@ 9 pranav  staff   288 Sep  4 23:21 ..                               |
+|drwxr-xr-x@ 4 pranav  staff   128 Sep  4 23:09 alacritty                        |
+|-rw-r--r--@ 1 pranav  staff  2710 Sep  4 22:45 emulator.rs                      |
+|drwxr-xr-x@ 4 pranav  staff   128 Sep  4 22:57 ghostty                          |
+|-rw-r--r--@ 1 pranav  staff  4179 Sep  4 22:46 golden.rs                        |
+|-rw-r--r--@ 1 pranav  staff  1179 Sep  4 22:45 key.rs                           |
+|-rw-r--r--@ 1 pranav  staff  1150 Sep  4 23:09 lib.rs                           |
+|-rw-r--r--@ 1 pranav  wheel  9527 Sep  4 22:45 types.rs                         |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+|                                                                                |
+styles
+r1 c47-47 bold fg=idx6
+r2 c47-48 bold fg=idx6
+r3 c47-55 bold fg=idx6
+r5 c47-53 bold fg=idx6

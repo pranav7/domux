@@ -1,0 +1,270 @@
+size 120x40
+cursor row=39 col=81 visible=false shape=block blink=false
+|                                                                                                                        |
+|    0[|||||||||||       41.2%]   3[|||||||           24.7%]   6[                    0.0%]  9[                    0.0%]  |
+|    1[||||||||||        40.7%]   4[|||||             16.6%]   7[|                   0.7%] 10[|                   0.7%]  |
+|    2[||||||||||        36.2%]   5[||                 8.1%]   8[                    0.0%] 11[                    0.0%]  |
+|  Mem[|||||||||||||||||||||||||||||||||||||||||10.2G/18.0G] Tasks: 812, 2591 thr, 0 kthr; 1 running                     |
+|  Swp[                                               0K/0K] Load average: 4.15 4.30 4.12                                |
+|                                                            Uptime: 09:14:25                                            |
+|                                                                                                                        |
+|  [Main]                                                                                                                |
+|   PID USER       PRI  NI  VIRT   RES S  CPU%▽MEM%   TIME+  Command                                                     |
+|  1202 pranav      17   0  415G  462M S 100.5  2.5 11:47.35 /System/Library/PrivateFrameworks/MediaAnalysis.framework/Ve|
+| 43655 pranav      17   0  415G 83216 S  15.0  0.4  0:19.86 /System/Library/Frameworks/VideoToolbox.framework/Versions/A|
+| 26293 pranav      26   0  420G  470M S   4.8  2.6  3:05.45 claude --resume 66aad3ac-2074-4a41-a8bf-e5580ddf50da --dange|
+|  1334 pranav      17   0  416G  100M S   2.1  0.5  1:32.51 /Applications/Ghostty.app/Contents/MacOS/ghostty            |
+|  3063 pranav      17   0  463G 63536 S   1.0  0.3  0:47.26 /Applications/Spotify.app/Contents/Frameworks/Spotify Helper|
+|  8666 pranav      17   0  415G 58176 S   1.0  0.3  0:33.78 nvim --embed                                                |
+|  3556 pranav      17   0  419G 87520 S   0.9  0.5  0:33.82 /System/Library/Frameworks/Virtualization.framework/Versions|
+| 13531 pranav      24   0  420G  254M S   0.4  1.4  0:41.78 claude                                                      |
+| 58422 pranav      24   0  415G  9888 R   0.4  0.1  0:00.03 htop                                                        |
+|  1345 pranav      17   0  419G 68592 S   0.4  0.4  0:23.75 /Applications/superwhisper.app/Contents/MacOS/superwhisper  |
+| 56432 pranav      17   0  415G 24960 S   0.3  0.1  0:00.52 /System/Library/Frameworks/CoreServices.framework/Versions/A|
+|  3053 pranav      17   0  415G 52448 S   0.2  0.3  0:39.27 /System/Library/Frameworks/AppKit.framework/Versions/C/XPCSe|
+| 44334 pranav      17   0  464G  423M S   0.2  2.3  0:11.80 /Applications/Dia.app/Contents/MacOS/Dia                    |
+|  3114 pranav      17   0 1803G  184M S   0.2  1.0  0:24.98 /Applications/Spotify.app/Contents/Frameworks/Spotify Helper|
+|  1335 pranav      17   0 1860G  180M S   0.2  1.0  0:31.62 /Applications/Claude.app/Contents/MacOS/Claude              |
+|  3044 pranav      17   0  415G  115M S   0.2  0.6  2:05.81 /Applications/NordVPN.app/Contents/MacOS/NordVPN            |
+|  5692 pranav      24   0  415G  4800 S   0.2  0.0  0:09.29 tmux new-session -d -s notes -c /Users/pranav/projects/notes|
+|  1351 pranav      17   0  415G 53008 S   0.2  0.3  0:39.05 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finde|
+|  3047 pranav      17   0  468G  207M S   0.1  1.1  0:38.48 /Applications/Spotify.app/Contents/MacOS/Spotify --autostart|
+|   600 pranav      17   0  415G 89600 S   0.1  0.5  0:29.85 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/|
+| 58380 pranav      25   0  415G  4256 S   0.1  0.0  0:00.11 target/debug/examples/record --size 120x40 --seconds 3 --emu|
+|  8371 pranav      17   0 1858G 65760 S   0.1  0.3  0:05.39 Granola Helper (MacOSMicAppsWithDevices)                    |
+|  1066 pranav      24   0  415G 20832 S   0.1  0.1  0:07.76 /usr/libexec/nsurlsessiond                                  |
+| 58296 pranav      17   0 1860G  113M S   0.1  0.6  0:00.08 /Applications/Dia.app/Contents/Frameworks/ArcCore.framework/|
+|  1188 pranav      17   0  415G 85312 S   0.1  0.5  0:28.06 /System/Library/CoreServices/ControlCenter.app/Contents/MacO|
+|  7673 pranav      17   0 1859G  164M S   0.1  0.9  0:05.19 /Applications/Granola.app/Contents/MacOS/Granola            |
+|  1195 pranav      17   0  415G 22160 S   0.1  0.1  0:18.65 /System/Library/PrivateFrameworks/FileProvider.framework/Sup|
+|  1857 pranav      17   0  415G  109M S   0.1  0.6  0:19.08 /System/Library/CoreServices/Spotlight.app/Contents/MacOS/Sp|
+|  1111 pranav      17   0  415G 17808 S   0.0  0.1  0:02.04 /System/Library/PrivateFrameworks/GeoServices.framework/Vers|
+|F1Help  F2Setup F3SearchF4FilterF5Tree  F6SortByF7Nice -F8Nice +F9Kill  F10Quit                                         |
+styles
+r1 c2-4 fg=idx6
+r1 c5-5 bold
+r1 c6-8 fg=idx2
+r1 c9-16 fg=idx1
+r1 c17-28 bold fg=idx8
+r1 c29-29 bold
+r1 c31-33 fg=idx6
+r1 c34-34 bold
+r1 c35-37 fg=idx2
+r1 c38-41 fg=idx1
+r1 c42-57 bold fg=idx8
+r1 c58-58 bold
+r1 c60-62 fg=idx6
+r1 c63-63 bold
+r1 c84-87 bold fg=idx8
+r1 c88-88 bold
+r1 c89-91 fg=idx6
+r1 c92-92 bold
+r1 c113-116 bold fg=idx8
+r1 c117-117 bold
+r2 c2-4 fg=idx6
+r2 c5-5 bold
+r2 c6-9 fg=idx2
+r2 c10-15 fg=idx1
+r2 c16-28 bold fg=idx8
+r2 c29-29 bold
+r2 c31-33 fg=idx6
+r2 c34-34 bold
+r2 c35-36 fg=idx2
+r2 c37-39 fg=idx1
+r2 c40-57 bold fg=idx8
+r2 c58-58 bold
+r2 c60-62 fg=idx6
+r2 c63-63 bold
+r2 c64-64 fg=idx2
+r2 c84-87 bold fg=idx8
+r2 c88-88 bold
+r2 c89-91 fg=idx6
+r2 c92-92 bold
+r2 c93-93 fg=idx2
+r2 c113-116 bold fg=idx8
+r2 c117-117 bold
+r3 c2-4 fg=idx6
+r3 c5-5 bold
+r3 c6-9 fg=idx2
+r3 c10-15 fg=idx1
+r3 c16-28 bold fg=idx8
+r3 c29-29 bold
+r3 c31-33 fg=idx6
+r3 c34-34 bold
+r3 c35-35 fg=idx2
+r3 c36-36 fg=idx1
+r3 c54-57 bold fg=idx8
+r3 c58-58 bold
+r3 c60-62 fg=idx6
+r3 c63-63 bold
+r3 c84-87 bold fg=idx8
+r3 c88-88 bold
+r3 c89-91 fg=idx6
+r3 c92-92 bold
+r3 c113-116 bold fg=idx8
+r3 c117-117 bold
+r4 c2-4 fg=idx6
+r4 c5-5 bold
+r4 c6-11 fg=idx2
+r4 c12-12 fg=idx5
+r4 c13-27 bold fg=idx8
+r4 c28-28 bold fg=idx4
+r4 c29-38 fg=idx3
+r4 c39-56 fg=idx6
+r4 c57-57 bold fg=idx8
+r4 c58-58 bold
+r4 c60-66 fg=idx6
+r4 c67-69 bold fg=idx6
+r4 c70-71 fg=idx6
+r4 c72-75 bold fg=idx2
+r4 c76-79 fg=idx6
+r4 c80-87 bold fg=idx8
+r4 c88-89 fg=idx6
+r4 c90-90 bold fg=idx2
+r4 c91-98 fg=idx6
+r5 c2-4 fg=idx6
+r5 c5-5 bold
+r5 c53-57 bold fg=idx8
+r5 c58-58 bold
+r5 c60-73 fg=idx6
+r5 c74-78 bold
+r5 c79-83 bold fg=idx6
+r5 c84-88 fg=idx6
+r6 c60-67 fg=idx6
+r6 c68-75 bold fg=idx6
+r8 c2-2 fg=idx2 bg=idx2
+r8 c3-6 fg=idx0 bg=idx2
+r8 c7-7 fg=idx2 bg=idx2
+r9 c0-39 fg=idx0 bg=idx2
+r9 c40-45 fg=idx0 bg=idx6
+r9 c46-66 fg=idx0 bg=idx2
+r10 c0-119 fg=idx0 bg=idx6
+r11 c22-25 bold fg=idx8
+r11 c26-31 fg=idx2
+r11 c32-33 fg=idx6
+r11 c38-39 bold fg=idx8
+r12 c22-25 bold fg=idx8
+r12 c26-31 fg=idx2
+r12 c32-37 fg=idx6
+r12 c38-39 bold fg=idx8
+r13 c22-25 bold fg=idx8
+r13 c26-31 fg=idx2
+r13 c32-37 fg=idx6
+r13 c38-39 bold fg=idx8
+r14 c22-25 bold fg=idx8
+r14 c26-31 fg=idx2
+r14 c32-33 fg=idx6
+r14 c38-39 bold fg=idx8
+r15 c22-25 bold fg=idx8
+r15 c26-31 fg=idx2
+r15 c32-33 fg=idx6
+r15 c38-39 bold fg=idx8
+r16 c22-25 bold fg=idx8
+r16 c26-31 fg=idx2
+r16 c32-33 fg=idx6
+r16 c38-39 bold fg=idx8
+r17 c22-25 bold fg=idx8
+r17 c26-31 fg=idx2
+r17 c32-37 fg=idx6
+r17 c38-39 bold fg=idx8
+r18 c22-25 bold fg=idx8
+r18 c26-31 fg=idx2
+r18 c32-33 fg=idx6
+r18 c38-39 fg=idx2
+r19 c22-25 bold fg=idx8
+r19 c26-31 fg=idx2
+r19 c32-33 fg=idx6
+r19 c38-39 bold fg=idx8
+r20 c22-25 bold fg=idx8
+r20 c26-31 fg=idx2
+r20 c32-33 fg=idx6
+r20 c38-39 bold fg=idx8
+r21 c22-25 bold fg=idx8
+r21 c26-31 fg=idx2
+r21 c32-33 fg=idx6
+r21 c38-39 bold fg=idx8
+r22 c22-25 bold fg=idx8
+r22 c26-31 fg=idx2
+r22 c32-37 fg=idx6
+r22 c38-39 bold fg=idx8
+r23 c22-25 bold fg=idx8
+r23 c26-26 bold fg=idx1
+r23 c27-31 fg=idx2
+r23 c32-37 fg=idx6
+r23 c38-39 bold fg=idx8
+r24 c22-25 bold fg=idx8
+r24 c26-26 bold fg=idx1
+r24 c27-31 fg=idx2
+r24 c32-37 fg=idx6
+r24 c38-39 bold fg=idx8
+r25 c22-25 bold fg=idx8
+r25 c26-31 fg=idx2
+r25 c32-37 fg=idx6
+r25 c38-39 bold fg=idx8
+r26 c22-25 bold fg=idx8
+r26 c26-31 fg=idx2
+r26 c32-33 fg=idx6
+r26 c38-39 bold fg=idx8
+r26 c46-50 bold fg=idx8
+r27 c22-25 bold fg=idx8
+r27 c26-31 fg=idx2
+r27 c32-33 fg=idx6
+r27 c38-39 bold fg=idx8
+r28 c22-25 bold fg=idx8
+r28 c26-31 fg=idx2
+r28 c32-37 fg=idx6
+r28 c38-39 bold fg=idx8
+r29 c22-25 bold fg=idx8
+r29 c26-31 fg=idx2
+r29 c32-33 fg=idx6
+r29 c38-39 bold fg=idx8
+r30 c22-25 bold fg=idx8
+r30 c26-31 fg=idx2
+r30 c32-33 fg=idx6
+r30 c38-39 bold fg=idx8
+r30 c46-50 bold fg=idx8
+r31 c22-25 bold fg=idx8
+r31 c26-26 bold fg=idx1
+r31 c27-31 fg=idx2
+r31 c32-33 fg=idx6
+r31 c38-39 bold fg=idx8
+r32 c22-25 bold fg=idx8
+r32 c26-31 fg=idx2
+r32 c32-33 fg=idx6
+r32 c38-39 bold fg=idx8
+r33 c22-25 bold fg=idx8
+r33 c26-26 bold fg=idx1
+r33 c27-31 fg=idx2
+r33 c32-37 fg=idx6
+r33 c38-39 bold fg=idx8
+r34 c22-25 bold fg=idx8
+r34 c26-31 fg=idx2
+r34 c32-33 fg=idx6
+r34 c38-39 bold fg=idx8
+r35 c22-25 bold fg=idx8
+r35 c26-26 bold fg=idx1
+r35 c27-31 fg=idx2
+r35 c32-37 fg=idx6
+r35 c38-39 bold fg=idx8
+r36 c22-25 bold fg=idx8
+r36 c26-31 fg=idx2
+r36 c32-33 fg=idx6
+r36 c38-39 bold fg=idx8
+r37 c22-25 bold fg=idx8
+r37 c26-31 fg=idx2
+r37 c32-37 fg=idx6
+r37 c38-39 bold fg=idx8
+r38 c22-25 bold fg=idx8
+r38 c26-31 fg=idx2
+r38 c32-33 fg=idx6
+r38 c38-45 bold fg=idx8
+r39 c2-7 fg=idx0 bg=idx6
+r39 c10-15 fg=idx0 bg=idx6
+r39 c18-23 fg=idx0 bg=idx6
+r39 c26-31 fg=idx0 bg=idx6
+r39 c34-39 fg=idx0 bg=idx6
+r39 c42-47 fg=idx0 bg=idx6
+r39 c50-55 fg=idx0 bg=idx6
+r39 c58-63 fg=idx0 bg=idx6
+r39 c66-71 fg=idx0 bg=idx6
+r39 c75-80 fg=idx0 bg=idx6
