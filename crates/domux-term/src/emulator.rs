@@ -6,7 +6,7 @@ use crate::types::{Cursor, Grid, Rgb, Size};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmulatorConfig {
     pub size: Size,
-    /// Lines of scrollback to keep. Both libraries accept a line count.
+    /// Lines of scrollback to keep.
     pub scrollback_lines: usize,
     /// Colors the emulator reports when a program queries OSC 10 and OSC 11. The renderer
     /// draws `Color::Default` with the outer terminal's defaults, so M1's client should pass
@@ -15,27 +15,8 @@ pub struct EmulatorConfig {
     pub default_bg: Rgb,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EmulatorKind {
-    Ghostty,
-    Alacritty,
-}
-
-impl std::str::FromStr for EmulatorKind {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "ghostty" => Ok(EmulatorKind::Ghostty),
-            "alacritty" => Ok(EmulatorKind::Alacritty),
-            other => Err(format!(
-                "unknown emulator {other:?}; expected ghostty or alacritty"
-            )),
-        }
-    }
-}
-
-/// One pane's terminal state. Implementations are owned by the core task and are `Send` so
-/// the task can move between runtime threads; they are not `Sync` and need no locking.
+/// One pane's terminal state. The implementation is owned by the core task and is `Send` so
+/// the task can move between runtime threads; it is not `Sync` and needs no locking.
 ///
 /// The spec names five operations: feed, resize, snapshot, cursor, encode key. Two more
 /// follow from them: `take_responses` returns bytes the emulator must send back to the inner
@@ -67,8 +48,8 @@ pub trait Emulator: Send {
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>);
 }
 
-/// Appends `text` with the bracketed paste markers when `bracketed` is set. Every
-/// implementation reads mode 2004 its own way and then wraps the text the same way.
+/// Appends `text` with the bracketed paste markers when `bracketed` is set. Reading mode
+/// 2004 is the emulator's job; wrapping the text is the same either way.
 pub fn wrap_paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
     if bracketed {
         out.extend_from_slice(b"\x1b[200~");

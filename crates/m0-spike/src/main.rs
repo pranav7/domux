@@ -11,7 +11,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::{cursor::SetCursorStyle, execute};
-use domux_term::{new_emulator, CursorShape, EmulatorConfig, EmulatorKind, Grid, Rgb, Size};
+use domux_term::{CursorShape, Emulator, EmulatorConfig, GhosttyEmulator, Grid, Rgb, Size};
 use futures::StreamExt;
 use m0_spike::input::{to_key_event, Action, Chord};
 use m0_spike::pty::{spawn, Pane, PaneMsg};
@@ -27,8 +27,6 @@ use tokio::signal::unix::{signal, SignalKind};
 #[derive(Parser, Debug)]
 #[command(name = "m0-spike", about = "domux M0 pane spike")]
 struct Args {
-    #[arg(long, default_value = "ghostty")]
-    emulator: EmulatorKind,
     #[arg(long, default_value_t = 1)]
     panes: usize,
     #[arg(long, default_value = "xterm-256color")]
@@ -147,15 +145,12 @@ async fn run(args: &Args) -> Result<()> {
     let mut panes: Vec<Pane> = Vec::with_capacity(args.panes);
     for (id, area) in areas.iter().enumerate() {
         let size = grid_size(*area, border);
-        let emulator = new_emulator(
-            args.emulator,
-            EmulatorConfig {
-                size,
-                scrollback_lines: args.scrollback,
-                default_fg: args.fg,
-                default_bg: args.bg,
-            },
-        )
+        let emulator = GhosttyEmulator::new(EmulatorConfig {
+            size,
+            scrollback_lines: args.scrollback,
+            default_fg: args.fg,
+            default_bg: args.bg,
+        })
         .map_err(anyhow::Error::msg)?;
         panes.push(spawn(
             id,
@@ -267,7 +262,7 @@ async fn run(args: &Args) -> Result<()> {
     }
     let outer = terminal.size()?;
     let report = stats.finish(
-        &format!("{:?}", args.emulator).to_lowercase(),
+        "ghostty",
         args.panes,
         &args.command,
         &args.term,

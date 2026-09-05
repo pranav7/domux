@@ -18,7 +18,7 @@ workspace = true
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream", "bracketed-paste"] }
-domux-term = { path = "../domux-term", features = ["ghostty", "alacritty"] }
+domux-term = { path = "../domux-term" }
 futures = "0.3.34"
 libc = "0.2.189"
 portable-pty = "0.9.0"

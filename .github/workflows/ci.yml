@@ -39,9 +39,9 @@ jobs:
             target/zig-global-cache
           key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/zig-pin.toml', 'vendor/ghostty-pin.toml') }}
       - run: cargo fmt --all --check
-      - run: cargo build --workspace --all-features --locked
-      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
-      - run: cargo test --workspace --all-features --locked
+      - run: cargo build --workspace --locked
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
 
   cross-macos-x86_64:
     runs-on: macos-latest
@@ -60,4 +60,4 @@ jobs:
             ~/.cache/domux/ghostty
             target/zig-global-cache
           key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/zig-pin.toml', 'vendor/ghostty-pin.toml') }}
-      - run: cargo build --workspace --all-features --locked --target x86_64-apple-darwin
+      - run: cargo build --workspace --locked --target x86_64-apple-darwin

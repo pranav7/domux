@@ -1,4 +1,4 @@
-//! Builds libghostty-vt with a pinned Zig when the `ghostty` feature is on.
+//! Builds libghostty-vt with a pinned Zig.
 //!
 //! Neither input lives in this repository. Both are pinned, cached under
 //! `$XDG_CACHE_HOME/domux` (default `~/.cache/domux`), and installed with an atomic rename:
@@ -32,9 +32,6 @@ const ZIG_VT_OPTION: &str = "-Demit-lib-vt=true";
 const ZIG_NO_XCFRAMEWORK: &str = "-Demit-xcframework=false";
 
 fn main() {
-    if env::var_os("CARGO_FEATURE_GHOSTTY").is_none() {
-        return;
-    }
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
         .join("../..")
         .canonicalize()

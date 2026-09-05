@@ -124,11 +124,27 @@ The Zig build cost is real but bounded: 42 s cold with a warm Zig cache, 0.20 s 
 
 ## Consequences for M1
 
-- Default feature: `ghostty`. Fallback feature: `alacritty`, built and tested in CI, not shipped in release binaries.
+- libghostty-vt is the only implementation. The `alacritty` fallback was removed after M0 (see "The fallback, and why it went" below).
 - Renderer gaps (R rows above) are M1 client work, not emulator work: ratatui collapses every underline variant to a plain underline, so undercurl in neovim renders as a straight underline.
 - The vendored Ghostty is a `main` commit, not a release tag. Re-pin to a release tag once one ships the `vt/terminal.h` and `vt/render.h` API, and record the change here.
 - The interactive fidelity rows above are still open. They need a person at two Ghostty tabs following the plan's measurement protocol. M1 should close them before the M3 cut-over, since Claude Code behaviour under a real pane is the acceptance bar.
 - Budget constants in `tests/budget.rs` set from the measured worst case times 1.5: `FEED_BUDGET_MS = 250` (measured 135), `SNAPSHOT_BUDGET_US = 500` (measured 285).
+
+## The fallback, and why it went
+
+**Date:** 2026-09-05. M0 kept `alacritty_terminal` behind a feature as a measured fallback, built and tested in CI. It was removed before M1 started building on the seam. Three reasons, in order of weight:
+
+1. **It was not an escape hatch for fidelity.** It fails 6 of the 10 goldens, so its golden test shipped `#[ignore]`d. If an interactive comparison had found a Ghostty problem, the fix would have been re-pinning Ghostty or fixing the wrapper, never switching to the engine with five known differences. Gating the removal on the interactive rows was therefore gating it on something that could not change the answer.
+2. **It was not an escape hatch for build availability either.** It was never shipped in release binaries, so a user on a platform where the Zig build fails had nothing to fall back to. Making it a real build fallback would have meant shipping and selecting it at runtime: more machinery, not less.
+3. **Its one live use was a differential oracle that could not produce actionable findings.** The 12 behaviour tests ran against both implementations, parameterised on the single known key-encoding difference. But this record already notes that criterion 1 favours libghostty-vt by construction, so a disagreement between them means "alacritty differs", which is a catalogued finding rather than a signal. An oracle whose disagreements you will not act on is not an oracle.
+
+The timing mattered more than the removal. `EmulatorKind`, `new_emulator`, and the `#[cfg]` pairs spread across 14 files were about to become load-bearing for M1's server. Removing them after M1 would have meant touching the server too.
+
+What went: `crates/domux-term/src/alacritty/` (340 lines), the `alacritty_terminal` and `termwiz` dependencies, the `ghostty` and `alacritty` features (`domux-term` now has none), `EmulatorKind`, `new_emulator` and its "not enabled in this build" error path, the `behavior_tests!` macro, and the `--emulator` flag on `m0-spike` and on `examples/record.rs`.
+
+What stayed: the `Emulator` trait, which is still the seam and still what `golden.rs` and the behaviour tests are written against; `check_chunking`, which tests a real invariant (chunking must not change the grid) and never needed two implementations; and every measurement above, which is what makes this decision reviewable after the code is gone.
+
+One shape change worth noting for M1: `Pane` now owns a `GhosttyEmulator` directly instead of a `Box<dyn Emulator>`. With one implementation the box was indirection in the feed path and bought nothing.
 
 ## Raw data
 

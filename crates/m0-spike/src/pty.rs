@@ -1,7 +1,7 @@
 //! One pane's PTY: spawn the child, read its output on a thread, write input, resize, exit.
 
 use anyhow::{Context, Result};
-use domux_term::{Emulator, Size};
+use domux_term::{Emulator, GhosttyEmulator, Size};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::thread;
@@ -14,7 +14,7 @@ pub enum PaneMsg {
 
 pub struct Pane {
     pub id: usize,
-    pub emulator: Box<dyn Emulator>,
+    pub emulator: GhosttyEmulator,
     pub dirty: bool,
     pub exited: bool,
     master: Box<dyn MasterPty + Send>,
@@ -32,7 +32,7 @@ pub fn spawn(
     command: &[String],
     size: Size,
     term: &str,
-    emulator: Box<dyn Emulator>,
+    emulator: GhosttyEmulator,
     tx: Sender<PaneMsg>,
 ) -> Result<Pane> {
     let pty = native_pty_system();

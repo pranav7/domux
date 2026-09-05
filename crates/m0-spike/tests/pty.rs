@@ -1,21 +1,18 @@
-use domux_term::{new_emulator, EmulatorConfig, EmulatorKind, Grid, Rgb, Size};
+use domux_term::{Emulator, EmulatorConfig, GhosttyEmulator, Grid, Rgb, Size};
 use m0_spike::pty::{spawn, PaneMsg};
 use std::time::Duration;
 
-fn emulator(size: Size) -> Box<dyn domux_term::Emulator> {
-    new_emulator(
-        EmulatorKind::Alacritty,
-        EmulatorConfig {
-            size,
-            scrollback_lines: 100,
-            default_fg: Rgb {
-                r: 255,
-                g: 255,
-                b: 255,
-            },
-            default_bg: Rgb { r: 0, g: 0, b: 0 },
+fn emulator(size: Size) -> GhosttyEmulator {
+    GhosttyEmulator::new(EmulatorConfig {
+        size,
+        scrollback_lines: 100,
+        default_fg: Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
         },
-    )
+        default_bg: Rgb { r: 0, g: 0, b: 0 },
+    })
     .unwrap()
 }
 

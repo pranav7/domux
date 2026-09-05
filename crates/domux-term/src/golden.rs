@@ -1,4 +1,4 @@
-//! Golden fixtures: recorded bytes in, expected grid text out, for every implementation.
+//! Golden fixtures: recorded bytes in, expected grid text out.
 
 use crate::emulator::Emulator;
 use crate::types::{Grid, Size};
@@ -98,17 +98,17 @@ pub fn check(fixture: &Fixture, emulator: &mut dyn Emulator) -> Result<(), Strin
 }
 
 /// Every chunking must give the same grid. Call after `check` with a fresh emulator per size.
-pub fn check_chunking(
+pub fn check_chunking<E: Emulator>(
     fixture: &Fixture,
-    make: &mut dyn FnMut() -> Box<dyn Emulator>,
+    make: &mut dyn FnMut() -> E,
 ) -> Result<(), String> {
     let bytes = fs::read(&fixture.bytes_path).map_err(|e| format!("read fixture: {e}"))?;
     let mut reference = None;
     for chunk in [bytes.len().max(1), 1, 7] {
         let mut emulator = make();
         let mut responses = Vec::new();
-        feed_chunked(emulator.as_mut(), &bytes, chunk, &mut responses);
-        let text = render(emulator.as_mut());
+        feed_chunked(&mut emulator, &bytes, chunk, &mut responses);
+        let text = render(&mut emulator);
         match &reference {
             None => reference = Some(text),
             Some(r) if *r != text => {
