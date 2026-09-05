@@ -5,7 +5,7 @@
 //!   --out crates/domux-term/fixtures/golden/htop.120x40.bytes -- htop
 
 use clap::Parser;
-use domux_term::{new_emulator, EmulatorConfig, EmulatorKind, Rgb, Size};
+use domux_term::{Emulator, EmulatorConfig, GhosttyEmulator, Rgb, Size};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -17,8 +17,6 @@ struct Args {
     size: String,
     #[arg(long, default_value_t = 3)]
     seconds: u64,
-    #[arg(long, default_value = "alacritty")]
-    emulator: EmulatorKind,
     #[arg(long, default_value = "xterm-256color")]
     term: String,
     #[arg(long)]
@@ -37,24 +35,21 @@ fn main() {
         cols: cols.parse().unwrap(),
         rows: rows.parse().unwrap(),
     };
-    let mut emulator = new_emulator(
-        args.emulator,
-        EmulatorConfig {
-            size,
-            scrollback_lines: 1000,
-            default_fg: Rgb {
-                r: 0xcd,
-                g: 0xd6,
-                b: 0xf4,
-            },
-            default_bg: Rgb {
-                r: 0x1e,
-                g: 0x1e,
-                b: 0x2e,
-            },
+    let mut emulator = GhosttyEmulator::new(EmulatorConfig {
+        size,
+        scrollback_lines: 1000,
+        default_fg: Rgb {
+            r: 0xcd,
+            g: 0xd6,
+            b: 0xf4,
         },
-    )
-    .expect("emulator enabled");
+        default_bg: Rgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0x2e,
+        },
+    })
+    .expect("ghostty emulator");
 
     let pty = native_pty_system();
     let pair = pty

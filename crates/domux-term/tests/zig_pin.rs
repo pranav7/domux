@@ -1,4 +1,3 @@
-#![cfg(feature = "ghostty")]
 use std::fs;
 use std::path::Path;
 

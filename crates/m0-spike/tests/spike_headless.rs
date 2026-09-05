@@ -15,15 +15,7 @@ fn spike_runs_panes_writes_stats_and_exits_on_time() {
         })
         .unwrap();
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_m0-spike"));
-    cmd.args([
-        "--emulator",
-        "alacritty",
-        "--panes",
-        "2",
-        "--exit-after",
-        "2",
-        "--stats-out",
-    ]);
+    cmd.args(["--panes", "2", "--exit-after", "2", "--stats-out"]);
     cmd.arg(&stats);
     cmd.args(["--", "sh", "-c", "printf 'pane says hi'; sleep 5"]);
     cmd.env("TERM", "xterm-256color");
