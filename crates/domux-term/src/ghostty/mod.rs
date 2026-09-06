@@ -8,10 +8,11 @@
 
 pub mod ffi;
 
-use crate::emulator::{Emulator, EmulatorConfig};
+use crate::emulator::{focus_report, osc7_path, Emulator, EmulatorConfig, Mode, ScrollbackPos};
 use crate::key::{Key, KeyAction, KeyEvent, Mods};
 use crate::types::{Attrs, Cell, Color, Cursor, CursorShape, Grid, Rgb, Size};
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::ptr;
 
 /// Packs a mode number the way `ghostty_mode_new` does. That function is a static inline in
@@ -21,6 +22,8 @@ const fn mode(value: u16, ansi: bool) -> ffi::GhosttyMode {
     (value & 0x7FFF) | ((ansi as u16) << 15)
 }
 
+const MODE_APP_CURSOR: ffi::GhosttyMode = mode(1, false);
+const MODE_FOCUS_EVENT: ffi::GhosttyMode = mode(1004, false);
 const MODE_BRACKETED_PASTE: ffi::GhosttyMode = mode(2004, false);
 
 /// State the C callbacks write into. Lives in a Box so its address is stable.
@@ -243,30 +246,69 @@ impl GhosttyEmulator {
     fn update_render_state(&self) {
         unsafe { ffi::ghostty_render_state_update(self.render_state.raw, self.terminal.raw) };
     }
-}
 
-impl Emulator for GhosttyEmulator {
-    fn feed(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
+    /// Copies a borrowed string property. libghostty owns the bytes and only promises them
+    /// until the next mutating terminal call, so they are copied here and now. A zero-length
+    /// value means the program never set the property, which is `None` rather than `""`, and
+    /// bytes that are not UTF-8 are not a fact domux can report, so they are absent too.
+    fn terminal_string(&self, data: ffi::GhosttyTerminalData) -> Option<String> {
+        let mut s = ffi::GhosttyString {
+            ptr: ptr::null(),
+            len: 0,
+        };
+        let rc = unsafe {
+            ffi::ghostty_terminal_get(self.terminal.raw, data, &mut s as *mut _ as *mut c_void)
+        };
+        if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS || s.ptr.is_null() || s.len == 0 {
+            return None;
         }
-        unsafe { ffi::ghostty_terminal_vt_write(self.terminal.raw, bytes.as_ptr(), bytes.len()) };
+        let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+        std::str::from_utf8(bytes).ok().map(str::to_string)
     }
 
-    fn take_responses(&mut self, out: &mut Vec<u8>) {
-        out.append(&mut self.callbacks.responses);
+    /// Moves the viewport so `row` (counted from the top of the scrollback) is its first
+    /// row. libghostty clamps a row past the top of the active area.
+    fn scroll_viewport_to_row(&self, row: usize) {
+        // The union is 16 bytes wide and `row` fills 8 of them, so it is zeroed first rather
+        // than passing the padding to C uninitialized.
+        let mut value: ffi::GhosttyTerminalScrollViewportValue = unsafe { std::mem::zeroed() };
+        value.row = row;
+        let behavior = ffi::GhosttyTerminalScrollViewport {
+            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_ROW,
+            value,
+        };
+        unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
     }
 
-    fn resize(&mut self, size: Size) {
-        unsafe { ffi::ghostty_terminal_resize(self.terminal.raw, size.cols, size.rows, 0, 0) };
-        self.size = size;
+    /// Returns the viewport to the live screen. Every method that scrolls it calls this
+    /// before returning, so `snapshot_grid` and `cursor` always see the live screen.
+    fn scroll_viewport_to_bottom(&self) {
+        let behavior = ffi::GhosttyTerminalScrollViewport {
+            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
+            value: unsafe { std::mem::zeroed() },
+        };
+        unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
     }
 
-    fn size(&self) -> Size {
-        self.size
+    /// True while the alternate screen is the active one. Read from the active screen rather
+    /// than from mode 1049 so that a program which switched with 47 or 1047 reports the same.
+    fn alt_screen_active(&self) -> bool {
+        let mut screen: ffi::GhosttyTerminalScreen =
+            ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+        let rc = unsafe {
+            ffi::ghostty_terminal_get(
+                self.terminal.raw,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                &mut screen as *mut _ as *mut c_void,
+            )
+        };
+        rc == ffi::GhosttyResult_GHOSTTY_SUCCESS
+            && screen == ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE
     }
 
-    fn snapshot_grid(&mut self, out: &mut Grid) {
+    /// Fills `out` with whatever the viewport currently shows. `snapshot_grid` and
+    /// `snapshot_grid_at` differ only in where they leave the viewport before calling this.
+    fn fill_grid_from_render_state(&mut self, out: &mut Grid) {
         out.resize(self.size);
         out.clear();
         self.update_render_state();
@@ -311,6 +353,32 @@ impl Emulator for GhosttyEmulator {
                 r += 1;
             }
         }
+    }
+}
+
+impl Emulator for GhosttyEmulator {
+    fn feed(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        unsafe { ffi::ghostty_terminal_vt_write(self.terminal.raw, bytes.as_ptr(), bytes.len()) };
+    }
+
+    fn take_responses(&mut self, out: &mut Vec<u8>) {
+        out.append(&mut self.callbacks.responses);
+    }
+
+    fn resize(&mut self, size: Size) {
+        unsafe { ffi::ghostty_terminal_resize(self.terminal.raw, size.cols, size.rows, 0, 0) };
+        self.size = size;
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn snapshot_grid(&mut self, out: &mut Grid) {
+        self.fill_grid_from_render_state(out);
     }
 
     fn cursor(&self) -> Cursor {
@@ -430,6 +498,145 @@ impl Emulator for GhosttyEmulator {
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
         crate::emulator::wrap_paste(text, self.mode_enabled(MODE_BRACKETED_PASTE), out);
     }
+
+    fn scrollback_len(&self) -> usize {
+        let mut rows: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_terminal_get(
+                self.terminal.raw,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS,
+                &mut rows as *mut _ as *mut c_void,
+            )
+        };
+        // The call only fails on a null handle. Reporting no history is the conservative
+        // answer: a caller reads fewer rows rather than rows that are not there.
+        if rc == ffi::GhosttyResult_GHOSTTY_SUCCESS {
+            rows
+        } else {
+            0
+        }
+    }
+
+    fn snapshot_grid_at(&mut self, offset_from_bottom: usize, out: &mut Grid) {
+        if offset_from_bottom == 0 {
+            self.snapshot_grid(out);
+            return;
+        }
+        // `saturating_sub` is the clamp the trait promises: an offset past the oldest line
+        // lands on row 0, the top of the scrollback.
+        self.scroll_viewport_to_row(self.scrollback_len().saturating_sub(offset_from_bottom));
+        self.fill_grid_from_render_state(out);
+        self.scroll_viewport_to_bottom();
+    }
+
+    /// The pinned libghostty has no call that returns the text of a range, so this walks the
+    /// rows through the viewport: it scrolls to a window, reads the rows of the range that
+    /// the window shows, and repeats. A future pin that adds a range formatter (`formatter.h`
+    /// writes a whole screen, not a range) could replace the loop.
+    fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String {
+        let rows = self.size.rows as usize;
+        let cols = self.size.cols;
+        if rows == 0 || cols == 0 || start.row > end.row {
+            return String::new();
+        }
+        // Rows `0..scrollback_len` are history and the `rows` after them are the screen, so
+        // this is the last row that exists. Positions past it clamp onto it.
+        let max_top = self.scrollback_len();
+        let last_row = max_top + rows - 1;
+        let first = start.row.min(last_row);
+        let last = end.row.min(last_row);
+        let start_col = start.col.min(cols - 1);
+        let end_col = end.col.min(cols - 1);
+
+        let mut out = String::new();
+        let mut grid = Grid::new(self.size);
+        let mut row = first;
+        while row <= last {
+            let top = row.min(max_top);
+            self.scroll_viewport_to_row(top);
+            self.fill_grid_from_render_state(&mut grid);
+            let window_last = (top + rows - 1).min(last);
+            for r in row..=window_last {
+                if r > first {
+                    out.push('\n');
+                }
+                let from = if r == first { start_col } else { 0 };
+                let to = if r == last { end_col } else { cols - 1 };
+                out.push_str(&row_slice_text(&grid, (r - top) as u16, from, to));
+            }
+            row = window_last + 1;
+        }
+        self.scroll_viewport_to_bottom();
+        out
+    }
+
+    fn title(&self) -> Option<String> {
+        self.terminal_string(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_TITLE)
+    }
+
+    fn cwd(&self) -> Option<PathBuf> {
+        // libghostty stores the bytes the shell emitted without parsing them (see the
+        // pwd_changed callback in vt/terminal.h), so OSC 7's file URL is decoded here. OSC 9
+        // and OSC 1337 report a bare path, which is not a file URL and so reads as absent
+        // rather than as a guess.
+        osc7_path(&self.terminal_string(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_PWD)?)
+    }
+
+    fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.callbacks.bell)
+    }
+
+    fn mode_active(&self, mode: Mode) -> bool {
+        match mode {
+            Mode::AltScreen => self.alt_screen_active(),
+            Mode::BracketedPaste => self.mode_enabled(MODE_BRACKETED_PASTE),
+            Mode::FocusEvents => self.mode_enabled(MODE_FOCUS_EVENT),
+            Mode::AppCursor => self.mode_enabled(MODE_APP_CURSOR),
+        }
+    }
+
+    fn encode_focus(&self, focused: bool, out: &mut Vec<u8>) {
+        if !self.mode_enabled(MODE_FOCUS_EVENT) {
+            return;
+        }
+        let event = if focused {
+            ffi::GhosttyFocusEvent_GHOSTTY_FOCUS_GAINED
+        } else {
+            ffi::GhosttyFocusEvent_GHOSTTY_FOCUS_LOST
+        };
+        let mut buf = [0u8; 16];
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_focus_encode(
+                event,
+                buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                buf.len(),
+                &mut written,
+            )
+        };
+        // CSI I and CSI O are three bytes, so 16 is never too small. The fallback is there
+        // for a pin that somehow refuses the call: the report is a fixed pair either way.
+        if rc == ffi::GhosttyResult_GHOSTTY_SUCCESS {
+            out.extend_from_slice(&buf[..written]);
+        } else {
+            out.extend_from_slice(focus_report(focused));
+        }
+    }
+}
+
+/// The text of `row` from `from` to `to` inclusive, with the zero-width spacer of a wide
+/// grapheme skipped so the grapheme appears once, and trailing blanks removed.
+fn row_slice_text(grid: &Grid, row: u16, from: u16, to: u16) -> String {
+    if from > to {
+        return String::new();
+    }
+    grid.row(row)[from as usize..=to as usize]
+        .iter()
+        .filter(|c| c.width > 0)
+        .map(|c| c.text.as_str())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// Copies the cell the row cells iterator is positioned on into a domux `Cell`.

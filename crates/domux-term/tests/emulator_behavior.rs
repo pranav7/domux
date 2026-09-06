@@ -1,7 +1,8 @@
 //! Behaviour the pane depends on, checked against libghostty-vt.
 
 use domux_term::{
-    CursorShape, Emulator, EmulatorConfig, GhosttyEmulator, Grid, Key, KeyEvent, Mods, Rgb, Size,
+    CursorShape, Emulator, EmulatorConfig, GhosttyEmulator, Grid, Key, KeyEvent, Mode, Mods, Rgb,
+    ScrollbackPos, Size,
 };
 
 fn make(cols: u16, rows: u16) -> GhosttyEmulator {
@@ -22,9 +23,7 @@ fn make(cols: u16, rows: u16) -> GhosttyEmulator {
     .expect("ghostty emulator")
 }
 
-fn text_of_row(e: &mut dyn Emulator, row: u16) -> String {
-    let mut g = Grid::new(e.size());
-    e.snapshot_grid(&mut g);
+fn row_text(g: &Grid, row: u16) -> String {
     g.row(row)
         .iter()
         .filter(|c| c.width > 0)
@@ -32,6 +31,12 @@ fn text_of_row(e: &mut dyn Emulator, row: u16) -> String {
         .collect::<String>()
         .trim_end()
         .to_string()
+}
+
+fn text_of_row(e: &mut dyn Emulator, row: u16) -> String {
+    let mut g = Grid::new(e.size());
+    e.snapshot_grid(&mut g);
+    row_text(&g, row)
 }
 
 fn responses(e: &mut dyn Emulator) -> Vec<u8> {
@@ -179,4 +184,153 @@ fn cursor_shape_follows_decscusr() {
     assert!(e.cursor().blink);
     e.feed(b"\x1b[?25l");
     assert!(!e.cursor().visible);
+}
+
+#[test]
+fn scrollback_grows_as_lines_scroll_off_and_snapshot_at_offset_shows_them() {
+    let mut e = make(10, 3);
+    for i in 0..6 {
+        e.feed(format!("line{i}\r\n").as_bytes());
+    }
+    // Six lines were written into three rows plus one trailing newline: the
+    // visible rows are line4, line5, blank; line0 to line3 are in the scrollback.
+    assert_eq!(e.scrollback_len(), 4);
+    let mut g = Grid::new(e.size());
+    e.snapshot_grid_at(0, &mut g);
+    assert_eq!(row_text(&g, 0), "line4");
+    e.snapshot_grid_at(2, &mut g);
+    assert_eq!(row_text(&g, 0), "line2");
+    assert_eq!(row_text(&g, 1), "line3");
+    assert_eq!(row_text(&g, 2), "line4");
+    e.snapshot_grid_at(4, &mut g);
+    assert_eq!(row_text(&g, 0), "line0");
+    // An offset past the top clamps to the top.
+    e.snapshot_grid_at(99, &mut g);
+    assert_eq!(row_text(&g, 0), "line0");
+}
+
+#[test]
+fn text_in_range_joins_rows_with_newlines_and_trims_trailing_blanks() {
+    let mut e = make(10, 3);
+    for i in 0..6 {
+        e.feed(format!("line{i}\r\n").as_bytes());
+    }
+    let text = e.text_in_range(
+        ScrollbackPos { row: 1, col: 2 },
+        ScrollbackPos { row: 3, col: 1 },
+    );
+    assert_eq!(text, "ne1\nline2\nli");
+    // Row `scrollback_len()` is the first visible row, so row 4 is the live screen's top row.
+    let whole_row = e.text_in_range(
+        ScrollbackPos { row: 4, col: 0 },
+        ScrollbackPos { row: 4, col: 9 },
+    );
+    assert_eq!(whole_row, "line4");
+}
+
+#[test]
+fn title_follows_osc_0_and_2() {
+    let mut e = make(20, 4);
+    assert_eq!(e.title(), None);
+    e.feed(b"\x1b]2;nvim main.rs\x07");
+    assert_eq!(e.title(), Some("nvim main.rs".to_string()));
+    e.feed(b"\x1b]0;zsh\x1b\\");
+    assert_eq!(e.title(), Some("zsh".to_string()));
+}
+
+#[test]
+fn cwd_follows_osc_7() {
+    let mut e = make(20, 4);
+    assert_eq!(e.cwd(), None);
+    e.feed(b"\x1b]7;file://localhost/Users/pranav/projects\x1b\\");
+    assert_eq!(
+        e.cwd(),
+        Some(std::path::PathBuf::from("/Users/pranav/projects"))
+    );
+    e.feed(b"\x1b]7;file:///tmp/a%20b\x07");
+    assert_eq!(e.cwd(), Some(std::path::PathBuf::from("/tmp/a b")));
+}
+
+#[test]
+fn bell_is_reported_once() {
+    let mut e = make(20, 4);
+    assert!(!e.take_bell());
+    e.feed(b"ding\x07");
+    assert!(e.take_bell());
+    assert!(!e.take_bell());
+}
+
+#[test]
+fn modes_report_alt_screen_bracketed_paste_focus_and_app_cursor() {
+    let mut e = make(20, 4);
+    assert!(!e.mode_active(Mode::AltScreen));
+    e.feed(b"\x1b[?1049h");
+    assert!(e.mode_active(Mode::AltScreen));
+    e.feed(b"\x1b[?1049l");
+    assert!(!e.mode_active(Mode::AltScreen));
+    e.feed(b"\x1b[?2004h");
+    assert!(e.mode_active(Mode::BracketedPaste));
+    e.feed(b"\x1b[?1004h");
+    assert!(e.mode_active(Mode::FocusEvents));
+    e.feed(b"\x1b[?1h");
+    assert!(e.mode_active(Mode::AppCursor));
+}
+
+#[test]
+fn focus_is_encoded_only_when_the_program_asked_for_it() {
+    let mut e = make(20, 4);
+    let mut out = Vec::new();
+    e.encode_focus(true, &mut out);
+    assert!(out.is_empty());
+    e.feed(b"\x1b[?1004h");
+    e.encode_focus(true, &mut out);
+    assert_eq!(out, b"\x1b[I".to_vec());
+    out.clear();
+    e.encode_focus(false, &mut out);
+    assert_eq!(out, b"\x1b[O".to_vec());
+}
+
+#[test]
+fn alt_screen_is_reported_for_the_legacy_47_switch_too() {
+    // Mode 1049's bit is not set when a program switches with 47, so the alternate screen is
+    // read from the active screen rather than from a mode bit.
+    let mut e = make(20, 4);
+    e.feed(b"\x1b[?47h");
+    assert!(e.mode_active(Mode::AltScreen));
+    e.feed(b"\x1b[?47l");
+    assert!(!e.mode_active(Mode::AltScreen));
+}
+
+#[test]
+fn text_in_range_spans_more_rows_than_the_screen_and_clamps_past_the_end() {
+    let mut e = make(10, 3);
+    for i in 0..6 {
+        e.feed(format!("line{i}\r\n").as_bytes());
+    }
+    // Seven rows exist: line0 to line5 in rows 0 to 5, then the blank row the cursor sits on.
+    // Reading them all takes three viewport windows, and a position past the end clamps onto
+    // the last row.
+    let all = e.text_in_range(
+        ScrollbackPos { row: 0, col: 0 },
+        ScrollbackPos { row: 99, col: 99 },
+    );
+    assert_eq!(all, "line0\nline1\nline2\nline3\nline4\nline5\n");
+}
+
+#[test]
+fn reading_the_scrollback_leaves_the_live_screen_where_it_was() {
+    let mut e = make(10, 3);
+    for i in 0..6 {
+        e.feed(format!("line{i}\r\n").as_bytes());
+    }
+    let mut g = Grid::new(e.size());
+    e.snapshot_grid_at(4, &mut g);
+    e.text_in_range(
+        ScrollbackPos { row: 0, col: 0 },
+        ScrollbackPos { row: 2, col: 9 },
+    );
+    e.snapshot_grid(&mut g);
+    assert_eq!(row_text(&g, 0), "line4");
+    assert_eq!(row_text(&g, 1), "line5");
+    assert_eq!(e.cursor().row, 2);
 }
