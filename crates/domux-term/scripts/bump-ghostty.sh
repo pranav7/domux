@@ -18,9 +18,9 @@ mv "$PIN.tmp" "$PIN"
 echo "pin: $OLD -> $COMMIT"
 
 # Builds the new commit, which clones it and fails if the commit does not exist.
-cargo build -p domux-term --features ghostty
+cargo build -p domux-term --locked
 crates/domux-term/scripts/regen-ghostty-bindings.sh
-cargo test --workspace --all-features
+cargo test --workspace --locked
 
 REPO=$(sed -n 's/^repo = "\(.*\)"$/\1/p' "$PIN" | sed 's/\.git$//')
 echo

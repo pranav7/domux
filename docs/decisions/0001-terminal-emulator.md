@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-04
 **Status:** Accepted
-**Decision:** domux panes use ghostty (libghostty-vt). alacritty_terminal stays behind the `alacritty` cargo feature as the measured fallback and is built and tested in CI.
+**Decision:** domux panes use ghostty (libghostty-vt). The measured fallback was removed by pull request 12 on 2026-09-05; see the section below.
 
 ## Context
 
@@ -17,7 +17,7 @@ The M0 spike criteria (architecture spec, Technology section): a pane must rende
 | Reference terminal | Ghostty 1.3.1 |
 | Window size | 200x50 cells for the performance runs (headless PTY), 100x30 and 120x40 for fixtures |
 | TERM inside panes | xterm-256color |
-| Vendored Ghostty | 492300cad104195411d12217dd22f1cd05f31376, vendored 2026-09-04 (tip of `main`) |
+| Ghostty (cloned at the pin) | 492300cad104195411d12217dd22f1cd05f31376, pinned 2026-09-04 (tip of `main`) |
 | Zig | 0.16.0 |
 | alacritty_terminal | 0.26.0 |
 | termwiz | 0.23.3 |
