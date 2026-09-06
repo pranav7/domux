@@ -1,0 +1,25 @@
+[package]
+name = "domux-client"
+description = "The thin domux client: raw mode, capability negotiation, input, frames, clipboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+domux-core = { path = "../domux-core" }
+domux-term = { path = "../domux-term" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1.3"
+tokio = { version = "1", features = ["rt", "macros", "sync", "net", "io-util", "time", "signal"] }
+ratatui = { version = "0.30", features = ["crossterm", "underline-color"] }
+crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
+futures = "0.3"
+base64 = "0.22"
+libc = "0.2"
