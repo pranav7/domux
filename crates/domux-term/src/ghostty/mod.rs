@@ -306,6 +306,28 @@ impl GhosttyEmulator {
             && screen == ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE
     }
 
+    /// Resolves a scrollback position to a grid reference. `ScrollbackPos::row` counts from
+    /// the top of the scrollback, which is exactly what `GHOSTTY_POINT_TAG_SCREEN` means
+    /// ("Full screen including scrollback", `vt/point.h:53`), so the row needs no arithmetic.
+    /// `None` when libghostty rejects the point, which callers must prevent by clamping.
+    fn grid_ref_at(&self, pos: ScrollbackPos) -> Option<ffi::GhosttyGridRef> {
+        let mut value: ffi::GhosttyPointValue = unsafe { std::mem::zeroed() };
+        value.coordinate = ffi::GhosttyPointCoordinate {
+            x: pos.col,
+            y: u32::try_from(pos.row).ok()?,
+        };
+        let point = ffi::GhosttyPoint {
+            tag: ffi::GhosttyPointTag_GHOSTTY_POINT_TAG_SCREEN,
+            value,
+        };
+        let mut out = ffi::GhosttyGridRef {
+            size: std::mem::size_of::<ffi::GhosttyGridRef>(),
+            ..unsafe { std::mem::zeroed() }
+        };
+        let rc = unsafe { ffi::ghostty_terminal_grid_ref(self.terminal.raw, point, &mut out) };
+        (rc == ffi::GhosttyResult_GHOSTTY_SUCCESS).then_some(out)
+    }
+
     /// Fills `out` with whatever the viewport currently shows. `snapshot_grid` and
     /// `snapshot_grid_at` differ only in where they leave the viewport before calling this.
     fn fill_grid_from_render_state(&mut self, out: &mut Grid) {
@@ -529,45 +551,93 @@ impl Emulator for GhosttyEmulator {
         self.scroll_viewport_to_bottom();
     }
 
-    /// The pinned libghostty has no call that returns the text of a range, so this walks the
-    /// rows through the viewport: it scrolls to a window, reads the rows of the range that
-    /// the window shows, and repeats. A future pin that adds a range formatter (`formatter.h`
-    /// writes a whole screen, not a range) could replace the loop.
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String {
+        // A reversed range selects nothing, and saying so needs no call into libghostty.
+        if start > end {
+            return String::new();
+        }
         let rows = self.size.rows as usize;
         let cols = self.size.cols;
-        if rows == 0 || cols == 0 || start.row > end.row {
+        if rows == 0 || cols == 0 {
             return String::new();
         }
         // Rows `0..scrollback_len` are history and the `rows` after them are the screen, so
-        // this is the last row that exists. Positions past it clamp onto it.
-        let max_top = self.scrollback_len();
-        let last_row = max_top + rows - 1;
-        let first = start.row.min(last_row);
-        let last = end.row.min(last_row);
-        let start_col = start.col.min(cols - 1);
-        let end_col = end.col.min(cols - 1);
-
-        let mut out = String::new();
-        let mut grid = Grid::new(self.size);
-        let mut row = first;
-        while row <= last {
-            let top = row.min(max_top);
-            self.scroll_viewport_to_row(top);
-            self.fill_grid_from_render_state(&mut grid);
-            let window_last = (top + rows - 1).min(last);
-            for r in row..=window_last {
-                if r > first {
-                    out.push('\n');
-                }
-                let from = if r == first { start_col } else { 0 };
-                let to = if r == last { end_col } else { cols - 1 };
-                out.push_str(&row_slice_text(&grid, (r - top) as u16, from, to));
-            }
-            row = window_last + 1;
+        // this is the last row that exists. `ghostty_terminal_grid_ref` rejects a point past
+        // it, so the clamp the trait promises has to happen before the lookup.
+        let last_row = self.scrollback_len() + rows - 1;
+        let start = ScrollbackPos {
+            row: start.row.min(last_row),
+            col: start.col.min(cols - 1),
+        };
+        let end = ScrollbackPos {
+            row: end.row.min(last_row),
+            col: end.col.min(cols - 1),
+        };
+        // Clamping two different rows onto the last one can leave the columns reversed.
+        if start > end {
+            return String::new();
         }
-        self.scroll_viewport_to_bottom();
-        out
+        let (Some(start_ref), Some(end_ref)) = (self.grid_ref_at(start), self.grid_ref_at(end))
+        else {
+            return String::new();
+        };
+
+        // Both endpoints are inclusive and `rectangle: false` means a linear selection, which
+        // is the reading-order range this method promises.
+        let selection = ffi::GhosttySelection {
+            size: std::mem::size_of::<ffi::GhosttySelection>(),
+            start: start_ref,
+            end: end_ref,
+            rectangle: false,
+        };
+        // `unwrap: false` keeps one output line per grid row, which is what the trait
+        // documents. Ghostty's own clipboard uses `unwrap: true` to rejoin a soft-wrapped
+        // line; whether copy mode should follow it is a decision for the copy mode task, not
+        // a default to slip in here.
+        let options = ffi::GhosttyTerminalSelectionFormatOptions {
+            size: std::mem::size_of::<ffi::GhosttyTerminalSelectionFormatOptions>(),
+            emit: ffi::GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN,
+            unwrap: false,
+            trim: true,
+            selection: &selection,
+        };
+        // The grid refs are untracked snapshots, valid only until the next mutating terminal
+        // call. Nothing below mutates, so they stay valid for both calls: a null buffer asks
+        // for the size, then one more call fills it.
+        let mut needed: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_terminal_selection_format_buf(
+                self.terminal.raw,
+                options,
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        if !matches!(
+            rc,
+            ffi::GhosttyResult_GHOSTTY_SUCCESS | ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE
+        ) || needed == 0
+        {
+            return String::new();
+        }
+        let mut buf = vec![0u8; needed];
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_terminal_selection_format_buf(
+                self.terminal.raw,
+                options,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut written,
+            )
+        };
+        if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS {
+            return String::new();
+        }
+        buf.truncate(written);
+        // Bytes that are not UTF-8 are not a fact domux can report, so they read as absent.
+        String::from_utf8(buf).unwrap_or_default()
     }
 
     fn title(&self) -> Option<String> {
@@ -622,21 +692,6 @@ impl Emulator for GhosttyEmulator {
             out.extend_from_slice(focus_report(focused));
         }
     }
-}
-
-/// The text of `row` from `from` to `to` inclusive, with the zero-width spacer of a wide
-/// grapheme skipped so the grapheme appears once, and trailing blanks removed.
-fn row_slice_text(grid: &Grid, row: u16, from: u16, to: u16) -> String {
-    if from > to {
-        return String::new();
-    }
-    grid.row(row)[from as usize..=to as usize]
-        .iter()
-        .filter(|c| c.width > 0)
-        .map(|c| c.text.as_str())
-        .collect::<String>()
-        .trim_end()
-        .to_string()
 }
 
 /// Copies the cell the row cells iterator is positioned on into a domux `Cell`.

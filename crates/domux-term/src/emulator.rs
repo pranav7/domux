@@ -79,7 +79,10 @@ pub trait Emulator: Send {
     fn snapshot_grid_at(&mut self, offset_from_bottom: usize, out: &mut Grid);
 
     /// The text between two positions, inclusive, rows joined with `\n`, each row's trailing
-    /// blanks removed. Wide graphemes appear once. Positions past the end clamp.
+    /// blanks removed. A wide grapheme appears once, from either of the two cells it covers.
+    /// Blank rows at the end of the range add nothing, so reading past the end of the text
+    /// does not produce trailing blank lines, while a blank row between two rows of text
+    /// still ends its line. Positions past the end clamp, and a reversed range is empty.
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String;
 
     /// The title the program set with OSC 0 or OSC 2, if any.

@@ -308,13 +308,128 @@ fn text_in_range_spans_more_rows_than_the_screen_and_clamps_past_the_end() {
         e.feed(format!("line{i}\r\n").as_bytes());
     }
     // Seven rows exist: line0 to line5 in rows 0 to 5, then the blank row the cursor sits on.
-    // Reading them all takes three viewport windows, and a position past the end clamps onto
-    // the last row.
+    // A position past the end clamps onto the last row, and the blank row it lands on adds
+    // nothing: selecting past the end of the text does not copy a phantom blank line.
     let all = e.text_in_range(
         ScrollbackPos { row: 0, col: 0 },
         ScrollbackPos { row: 99, col: 99 },
     );
-    assert_eq!(all, "line0\nline1\nline2\nline3\nline4\nline5\n");
+    assert_eq!(all, "line0\nline1\nline2\nline3\nline4\nline5");
+    // The same range stopping on the last row of text reads the same.
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 5, col: 9 }
+        ),
+        all
+    );
+}
+
+#[test]
+fn text_in_range_keeps_a_blank_row_inside_the_range_and_drops_trailing_ones() {
+    let mut e = make(10, 4);
+    e.feed(b"line0\r\n\r\nline2\r\n");
+    // A blank row between two rows of text still ends its line.
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 3, col: 9 }
+        ),
+        "line0\n\nline2"
+    );
+}
+
+#[test]
+fn text_in_range_reads_a_whole_wide_grapheme_from_either_of_its_cells() {
+    let mut e = make(10, 3);
+    e.feed("a\u{6f22}b".as_bytes());
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 0, col: 9 }
+        ),
+        "a\u{6f22}b"
+    );
+    // Column 1 holds the grapheme and column 2 its zero-width spacer. Either cell reads as
+    // the whole grapheme, never as half of one and never as empty.
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 1 },
+            ScrollbackPos { row: 0, col: 1 }
+        ),
+        "\u{6f22}"
+    );
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 2 },
+            ScrollbackPos { row: 0, col: 2 }
+        ),
+        "\u{6f22}"
+    );
+}
+
+#[test]
+fn text_in_range_reads_a_reversed_range_as_empty() {
+    let mut e = make(10, 3);
+    for i in 0..6 {
+        e.feed(format!("line{i}\r\n").as_bytes());
+    }
+    // Reversed by row, and reversed by column within one row.
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 3, col: 0 },
+            ScrollbackPos { row: 1, col: 0 }
+        ),
+        ""
+    );
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 1, col: 4 },
+            ScrollbackPos { row: 1, col: 1 }
+        ),
+        ""
+    );
+    // Two rows past the end clamp onto the same row, which leaves the columns reversed.
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 100, col: 9 },
+            ScrollbackPos { row: 200, col: 0 }
+        ),
+        ""
+    );
+}
+
+#[test]
+fn text_in_range_reads_the_screen_when_there_is_no_scrollback() {
+    // A fresh terminal and the alternate screen both have no history, so every row of the
+    // range is a screen row.
+    let mut e = make(10, 3);
+    e.feed(b"hi");
+    assert_eq!(e.scrollback_len(), 0);
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 2, col: 9 }
+        ),
+        "hi"
+    );
+
+    let mut alt = make(10, 3);
+    for i in 0..6 {
+        alt.feed(format!("line{i}\r\n").as_bytes());
+    }
+    alt.feed(b"\x1b[?1049h");
+    alt.feed(b"alt");
+    assert!(alt.mode_active(Mode::AltScreen));
+    assert_eq!(alt.scrollback_len(), 0);
+    // The cursor kept its row, so the alternate screen holds two blank rows then the text.
+    assert_eq!(
+        alt.text_in_range(
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 2, col: 9 }
+        ),
+        "\n\nalt"
+    );
 }
 
 #[test]
