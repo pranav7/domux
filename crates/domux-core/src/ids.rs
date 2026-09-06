@@ -42,7 +42,7 @@ macro_rules! id_type {
                         Ok($name(s.to_string()))
                     }
                     _ => Err(IdError {
-                        expected: $prefix,
+                        expected: concat!($prefix, "_"),
                         got: s.to_string(),
                     }),
                 }
@@ -87,7 +87,7 @@ impl FromStr for MessageId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("expected an id starting with {expected}_, got {got:?}")]
+#[error("expected an id starting with {expected}, got {got:?}")]
 pub struct IdError {
     pub expected: &'static str,
     pub got: String,
@@ -105,7 +105,11 @@ pub struct IdGen {
 
 impl IdGen {
     pub fn from_seed(seed: u64) -> IdGen {
-        IdGen { state: seed | 1 }
+        // Guard the all-zero xorshift state without collapsing adjacent seeds: `seed | 1`
+        // would make `from_seed(42)` and `from_seed(43)` produce identical streams.
+        IdGen {
+            state: if seed == 0 { 1 } else { seed },
+        }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -132,6 +136,15 @@ mod tests {
         assert_eq!(id.to_string(), "p_8f2a");
         assert_eq!(serde_json::to_string(&id).unwrap(), "\"p_8f2a\"");
         let back: PaneId = serde_json::from_str("\"p_8f2a\"").unwrap();
+        assert_eq!(back, id);
+    }
+
+    #[test]
+    fn message_id_round_trips_through_json_as_a_bare_string() {
+        let id = MessageId("m7".to_string());
+        assert_eq!(id.to_string(), "m7");
+        assert_eq!(serde_json::to_string(&id).unwrap(), "\"m7\"");
+        let back: MessageId = serde_json::from_str("\"m7\"").unwrap();
         assert_eq!(back, id);
     }
 

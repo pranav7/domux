@@ -160,8 +160,15 @@ impl Config {
         let mut warnings = Vec::new();
         for (name, value) in &doc {
             if !KNOWN_TABLES.contains(&name.as_str()) {
-                let line = line_of_key(text, name).unwrap_or(1);
-                warnings.push(ConfigWarning(format!("unknown table [{name}] (line {line}) is ignored until the milestone that reads it")));
+                let message = match line_of_key(text, name) {
+                    Some(line) => format!(
+                        "unknown table [{name}] (line {line}) is ignored until the milestone that reads it"
+                    ),
+                    None => format!(
+                        "unknown table [{name}] is ignored until the milestone that reads it"
+                    ),
+                };
+                warnings.push(ConfigWarning(message));
                 continue;
             }
             if let Some(table) = value.as_table() {
@@ -221,10 +228,11 @@ fn warn_unknown_keys(
     for (key, v) in value {
         let path = format!("{table}.{key}");
         if !known.contains(&key.as_str()) {
-            let line = line_of_key(text, key).unwrap_or(1);
-            warnings.push(ConfigWarning(format!(
-                "unknown key {path} (line {line}) is ignored"
-            )));
+            let message = match line_of_key(text, key) {
+                Some(line) => format!("unknown key {path} (line {line}) is ignored"),
+                None => format!("unknown key {path} is ignored"),
+            };
+            warnings.push(ConfigWarning(message));
         } else if let Some(sub) = v.as_table() {
             if KNOWN_KEYS.iter().any(|(t, _)| *t == path) {
                 warn_unknown_keys(text, &path, sub, warnings);
@@ -245,10 +253,20 @@ fn to_config_error(text: &str, e: toml::de::Error) -> ConfigError {
     }
 }
 
-/// 1-based line and column of a byte offset.
+/// 1-based line and column of a byte offset. Clamped so a span at or past end of input names
+/// the file's actual last line rather than one past it, and safe against an offset that lands
+/// inside a multi-byte character rather than on a char boundary.
 fn position(text: &str, offset: usize) -> (usize, usize) {
-    let before = &text[..offset.min(text.len())];
+    let mut end = offset.min(text.len());
+    let before = loop {
+        match text.get(..end) {
+            Some(s) => break s,
+            None => end -= 1,
+        }
+    };
     let line = before.matches('\n').count() + 1;
+    let max_line = text.lines().count().max(1);
+    let line = line.min(max_line);
     let column = before
         .rsplit('\n')
         .next()
@@ -258,16 +276,27 @@ fn position(text: &str, offset: usize) -> (usize, usize) {
     (line, column)
 }
 
-/// The first line whose trimmed text starts with `[key]`, `[key.`, or `key =`.
+/// The first line whose trimmed text starts with `[key]`, `[key.`, or `key` followed by
+/// (optional whitespace and) `=`. Returns `None` rather than a guess when no line matches -
+/// the caller must render that as an absent position, never as a default line number.
 fn line_of_key(text: &str, key: &str) -> Option<usize> {
     text.lines()
         .position(|l| {
             let l = l.trim_start();
-            l.starts_with(&format!("[{key}]"))
-                || l.starts_with(&format!("[{key}."))
-                || l.starts_with(&format!("{key} "))
-                || l.starts_with(&format!("{key}="))
-                || l.starts_with(&format!("\"{key}\""))
+            if l.starts_with(&format!("[{key}]")) || l.starts_with(&format!("[{key}.")) {
+                return true;
+            }
+            if let Some(rest) = l.strip_prefix(key) {
+                if rest.trim_start().starts_with('=') {
+                    return true;
+                }
+            }
+            if let Some(rest) = l.strip_prefix(&format!("\"{key}\"")) {
+                if rest.trim_start().starts_with('=') {
+                    return true;
+                }
+            }
+            false
         })
         .map(|i| i + 1)
 }
@@ -376,6 +405,93 @@ mod tests {
         assert_eq!(err.line, 4);
         assert!(err.message.contains("expected"), "{}", err.message);
         assert!(err.to_string().starts_with("domux.toml line 4: "), "{err}");
+    }
+
+    #[test]
+    fn overriding_an_existing_default_binding_replaces_it() {
+        let parsed = Config::parse("[keys.bindings]\n\"z\" = \"tab.create\"\n").unwrap();
+        assert_eq!(
+            parsed.config.keys.bindings.get("z").map(String::as_str),
+            Some("tab.create"),
+            "a mentioned key must win over the default it replaces"
+        );
+        assert_eq!(
+            parsed.config.keys.bindings.get("|").map(String::as_str),
+            Some("pane.split right"),
+            "an untouched default must survive alongside the override"
+        );
+    }
+
+    #[test]
+    fn partial_passthrough_table_keeps_the_other_fields_default() {
+        let parsed = Config::parse("[keys.passthrough]\ncommands = [\"nvim\"]\n").unwrap();
+        assert_eq!(parsed.config.keys.passthrough.commands, vec!["nvim"]);
+        assert_eq!(
+            parsed.config.keys.passthrough.keys,
+            vec!["C-h", "C-j", "C-k", "C-l", "C-\\"],
+            "a field the file never mentions must keep PassthroughConfig::default()"
+        );
+    }
+
+    #[test]
+    fn unknown_key_line_is_found_despite_a_tab_before_the_equals() {
+        let parsed = Config::parse("[terminal]\ncolour\t= \"x\"\n").unwrap();
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|w| w.0 == "unknown key terminal.colour (line 2) is ignored"),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn unknown_key_warning_omits_the_line_when_the_heuristic_cannot_find_it() {
+        // A dotted key at the top level puts `colour` on a line that does not start with
+        // `colour`, so the line-finding heuristic misses. The warning must say so plainly
+        // rather than naming a line the parser never produced.
+        let parsed = Config::parse("terminal.colour = \"x\"\n").unwrap();
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|w| w.0 == "unknown key terminal.colour is ignored"),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn parse_error_line_never_exceeds_the_files_line_count() {
+        for text in [
+            "[keys]\nleader = \"C-a\n",
+            "[keys]\nx = [1, 2\n",
+            "[keys\n",
+            "[keys]\nx =\n",
+        ] {
+            let err = Config::parse(text).unwrap_err();
+            let max_line = text.lines().count().max(1);
+            assert!(
+                err.line <= max_line,
+                "{text:?} reported line {} past the file's {max_line} lines",
+                err.line
+            );
+        }
+    }
+
+    #[test]
+    fn position_clamps_the_line_to_the_files_last_line() {
+        let text = "a\nb\nc\nd\n";
+        assert_eq!(position(text, text.len()), (4, 1));
+    }
+
+    #[test]
+    fn position_does_not_panic_on_a_non_char_boundary_offset() {
+        let text = "\u{e9}"; // two UTF-8 bytes; offset 1 lands inside the character
+        let (line, column) = position(text, 1);
+        assert_eq!(line, 1);
+        assert!(column >= 1);
     }
 
     #[test]
