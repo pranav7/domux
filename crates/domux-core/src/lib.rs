@@ -3,6 +3,7 @@
 pub mod api;
 pub mod config;
 pub mod ids;
+pub mod keymap;
 pub mod model;
 pub mod names;
 pub mod paths;
