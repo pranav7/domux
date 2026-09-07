@@ -1,5 +1,5 @@
 use domux_core::model::Rect as LRect;
-use domux_server::render::boxed::{put_within, Boxed};
+use domux_server::render::boxed::{put, put_within, Boxed};
 use domux_server::render::pane_box::{cursor_position, render_grid, Selection};
 use domux_server::render::{theme, to_rect};
 use domux_term::{Attrs, Color, Cursor, Grid, Rgb, Size};
@@ -225,4 +225,46 @@ fn put_within_clips_at_the_boundary_it_is_given() {
         " ",
         "the second wide grapheme does not fit and is dropped"
     );
+}
+
+#[test]
+fn put_does_not_panic_on_a_zero_width_buffer() {
+    // `put` computed its edge as `x + width - 1`, which underflows when width is 0. A client
+    // reports its own cols and nothing clamps them, so a zero-width buffer is reachable.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 0, 1));
+    let end = put(&mut buf, 0, 0, "abc", Style::default());
+    assert_eq!(end, 0, "nothing is drawn and nothing panics");
+}
+
+#[test]
+fn put_itself_refuses_control_and_zero_width_graphemes() {
+    // Sanitizing only inside Boxed protected the pane box alone. Task 15 calls `put`
+    // directly for the tab name, the prompt input and a path-derived location, and each
+    // reproduces the original two escapes. The primitive has to be safe by itself.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+    put(&mut buf, 0, 0, "a\nb", Style::default());
+    for x in 0..10u16 {
+        assert!(
+            !buf[(x, 0)].symbol().chars().any(char::is_control),
+            "cell x{x} holds a control character"
+        );
+    }
+
+    let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+    let end = put(&mut buf, 0, 0, &"\u{200b}".repeat(20), Style::default());
+    assert_eq!(end, 0, "zero-width graphemes consume no cells");
+}
+
+#[test]
+fn a_title_that_sanitizes_to_nothing_leaves_the_border_unbroken() {
+    // A title of only zero-width graphemes becomes empty, and the " {title} " pads then
+    // blanked two rule cells, printing `┌  ────────┐`.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
+    Boxed {
+        title: "\u{200b}\u{200b}",
+        flag: None,
+        focused: false,
+    }
+    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    assert_eq!(row(&buf, 0), "┌──────────┐");
 }

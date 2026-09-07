@@ -62,11 +62,11 @@ impl Boxed<'_> {
         }
         // Title: " title " starting one cell in. Flag: " flag " ending one cell before the corner.
         //
-        // Both strings are program-controlled - a pane's title is whatever it emitted with
-        // OSC 0 or OSC 2 - so sanitize before measuring. Without it a control character
-        // measures one cell, passes every bound and is then flushed into the terminal, and a
-        // zero-width grapheme measures none, satisfies any budget and still takes a cell when
-        // drawn. After sanitizing, a measured cell is a drawn cell.
+        // The title is program-controlled - a pane's title is whatever it emitted with OSC 0
+        // or OSC 2 - so sanitize before measuring, or the budget is computed from cells that
+        // will not be drawn. `put` sanitizes too, but only this side knows the budget, and a
+        // budget measured on undrawable text truncates in the wrong place. The flag is
+        // domux's own word, sanitized only so both sides measure by one rule.
         let title = sanitize_for_display(self.title);
         let flag = self.flag.map(sanitize_for_display);
         let mut budget = area.width.saturating_sub(4) as usize; // corners plus the two title pads
@@ -79,7 +79,9 @@ impl Boxed<'_> {
             let start = right as usize - 1 - (flag_cells - 1);
             put_within(buf, start as u16, area.y, right, &text, flag_style);
         }
-        if budget > 0 && area.width >= 4 {
+        // An empty title draws nothing at all: the two pads of " {title} " would blank two
+        // cells of rule and leave a gap in the border.
+        if budget > 0 && area.width >= 4 && !title.is_empty() {
             let text = truncate_with_ellipsis(&title, budget);
             put_within(
                 buf,
@@ -102,7 +104,10 @@ impl Boxed<'_> {
 /// Writes `text` from `x`, one grapheme per cell, wide graphemes taking two, clipping at the
 /// buffer's right edge.
 pub fn put(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style) -> u16 {
-    put_within(buf, x, y, buf.area.x + buf.area.width - 1, text, style)
+    // Saturating, not `- 1`: a client reports its own size and nothing clamps it, so a
+    // zero-width buffer reaches here and the subtraction would panic.
+    let last_x = (buf.area.x + buf.area.width).saturating_sub(1);
+    put_within(buf, x, y, last_x, text, style)
 }
 
 /// `put`, but clipping at `last_x` inclusive as well as at the buffer. A box passes its own
@@ -113,6 +118,14 @@ pub fn put_within(buf: &mut Buffer, x: u16, y: u16, last_x: u16, text: &str, sty
     let mut cx = x;
     let max_x = (buf.area.x + buf.area.width).min(last_x.saturating_add(1));
     for g in text.graphemes(true) {
+        // Every caller draws program-controlled text somewhere - a pane title, a pasted tab
+        // name, a prompt, a path - so the primitive refuses what a terminal cannot draw
+        // rather than trusting each caller to sanitize first. A control character would be
+        // flushed to the terminal verbatim and move the cursor; a zero-width grapheme would
+        // take a cell here while measuring none, and walk text out of its box.
+        if g.chars().any(char::is_control) || display_width(g) == 0 {
+            continue;
+        }
         let w = display_width(g).max(1) as u16;
         if cx + w > max_x {
             break;
