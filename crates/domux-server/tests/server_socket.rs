@@ -484,8 +484,16 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         );
         tokio::task::yield_now().await;
     }
-    // Past the immediate window, so the next batch clears the counter.
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    // Past the immediate window, and past a tick as well. The counter is cleared by
+    // `reset_respawn_guards_for_surviving_panes`, which runs from `Core::after_batch`, so
+    // waiting for the pane to get old is not enough on its own: a batch has to run between
+    // the pane passing `IMMEDIATE_EXIT` and the exit below arriving. The periodic tick is
+    // one second, so sleeping a full tick past the two second window guarantees a batch
+    // instead of relying on incidental traffic to land in the gap. Waiting only 2100ms left
+    // a 100ms gap and failed on a loaded runner, which read as "the replacements stopped at
+    // 5 of 7". The deadline below cannot recover from it: once the exit is handled with the
+    // guard still set, the allowance is spent and no amount of waiting spawns the rest.
+    tokio::time::sleep(Duration::from_millis(3200)).await;
     spawner.exit_through.store(usize::MAX, Ordering::SeqCst);
     let surviving_pane = spawner.inner.requests().last().unwrap().pane.clone();
     server
