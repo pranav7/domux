@@ -7,6 +7,56 @@ use domux_core::config::Config;
 use domux_server::testing::{row, Harness};
 use std::time::Duration;
 
+/// Every cell of `frame` whose background is the accent, as `(row, column)`.
+///
+/// Reads the frame's own style dump, whose lines are `r{row} c{from}-{to} [attrs] fg=# bg=#`, so
+/// what it counts is what a terminal would paint. Accent as a *foreground* - a focused box's
+/// border and title - is a different treatment and is deliberately not counted.
+fn accent_filled_cells(frame: &str) -> Vec<(u16, u16)> {
+    let mut out = Vec::new();
+    for line in frame.lines().filter(|l| l.ends_with("bg=#cba6f7")) {
+        let mut parts = line.split(' ');
+        let Some(Ok(row)) = parts
+            .next()
+            .and_then(|r| r.strip_prefix('r'))
+            .map(str::parse)
+        else {
+            continue;
+        };
+        let Some((from, to)) = parts
+            .next()
+            .and_then(|c| c.strip_prefix('c'))
+            .and_then(|c| c.split_once('-'))
+        else {
+            continue;
+        };
+        let (Ok(from), Ok(to)) = (from.parse::<u16>(), to.parse::<u16>()) else {
+            continue;
+        };
+        out.extend((from..=to).map(|x| (row, x)));
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Principle 2 as a rule that can be checked rather than argued (ruled 2026-09-07): the accent
+/// fill means "your input goes here", so at most one run of cells may carry it, and it is the
+/// run that owns the keys. Panics unless the accent-filled cells are exactly one contiguous run
+/// on one row, and returns it as `(row, first, last)`.
+fn one_accent_run(frame: &str) -> (u16, u16, u16) {
+    let cells = accent_filled_cells(frame);
+    assert!(!cells.is_empty(), "nothing is accent-filled:\n{frame}");
+    let (row, first) = cells[0];
+    let (last_row, last) = cells[cells.len() - 1];
+    assert_eq!(row, last_row, "the accent fill spans two rows:\n{frame}");
+    assert_eq!(
+        cells.len(),
+        (last - first + 1) as usize,
+        "the accent fill is more than one run - two marks meaning two different things:\n{frame}"
+    );
+    (row, first, last)
+}
+
 #[tokio::test]
 async fn leader_comma_opens_the_prompt_in_the_tab_cell_and_the_clock_gives_way() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
@@ -282,9 +332,13 @@ async fn the_prompt_draws_in_the_cell_of_the_tab_it_names_not_the_current_one() 
         f.contains("r0 c13-26 dim fg=#1e1e2e bg=#cba6f7"),
         "the prompt fills tab 1's cell, not tab 2's:\n{f}"
     );
+    // The accent fill is the prompt's cell and nothing else: c13 to c28 is the label, the caret
+    // and the trailing pad. Tab 2 is where the two marks used to collide.
+    assert_eq!(one_accent_run(&f), (0, 13, 28), "{f}");
     assert!(
-        f.contains("r0 c30-32 bold fg=#1e1e2e bg=#cba6f7"),
-        "tab 2 is still the current cell:\n{f}"
+        f.contains("r0 c30-32 bold fg=#cdd6f4 bg=#181825"),
+        "tab 2 is still the current tab, bright and bold against the dim others, but it does not \
+         wear the mark that means the keys go to it:\n{f}"
     );
     h.type_text(h.client.clone(), "one").await;
     h.key(h.client.clone(), "Enter").await;
@@ -298,6 +352,117 @@ async fn the_prompt_draws_in_the_cell_of_the_tab_it_names_not_the_current_one() 
     assert!(
         f.contains(" 1 one │ 2 │"),
         "the name landed on the tab the prompt named:\n{f}"
+    );
+}
+
+/// The tab row's window is seeded on the cell the keys go to, not on the current tab.
+///
+/// Found by rendering the row rather than by reasoning about it: with a wide prompt on tab 1 and
+/// the view on tab 3, the window seeded at tab 3 and elided tab 1 away, so the row showed
+/// `…│ 2 │ 3 │ + │` beside `⏎ save · esc cancel` - the keys to save a name, and no name on screen
+/// to save. A prompt that cannot be seen is worse than a prompt that cannot be opened.
+///
+/// It also pins the order the cells go in when they cannot all fit: the prompt first, then the
+/// current tab, then the `+`. A control to create a tab is worth less than either.
+#[tokio::test]
+async fn the_prompt_cell_is_never_elided_off_the_row() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    for _ in 0..2 {
+        h.api("tab.create", serde_json::json!({})).await.unwrap();
+    }
+    h.api(
+        "tab.rename",
+        serde_json::json!({"tab": "1", "name": "auth"}),
+    )
+    .await
+    .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" 1 auth "),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.api("tab.rename", serde_json::json!({"tab": "1"}))
+        .await
+        .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Name tab 1 ›"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  Name tab 1 › auth  │ 2 │ 3 │   ⏎ save · esc cancel · empty clears |",
+        "{f}"
+    );
+    // The prompt's whole cell, c13 to c32, and nothing else.
+    assert_eq!(one_accent_run(&f), (0, 13, 32), "{f}");
+    assert!(
+        f.contains("r0 c38-40 bold fg=#cdd6f4 bg=#181825"),
+        "tab 3 is still on the row as the current tab, and the `+` gave up its cells for it:\n{f}"
+    );
+}
+
+/// The other arm of the one-accent-fill rule. An overlay that is not a prompt has no cell in the
+/// tab row, so nothing there is filled at all: the overlay marks itself the way any focused box
+/// does, with an accent border and a bold accent title. The current tab still has to be
+/// identifiable, which is the whole reason the fill is not simply dropped.
+#[tokio::test]
+async fn an_open_overlay_takes_the_accent_fill_off_the_tab_row() {
+    let mut h = Harness::start(Config::default(), 80, 30).await;
+    h.api("tab.create", serde_json::json!({})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(" 1 │ 2 │"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        one_accent_run(&f),
+        (0, 17, 19),
+        "with the keys on a pane the current tab is the accent-filled run:\n{f}"
+    );
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        accent_filled_cells(&f).is_empty(),
+        "the keys go to the overlay, so no cell claims them with a fill:\n{f}"
+    );
+    assert!(
+        f.contains("r0 c17-19 bold fg=#cdd6f4 bg=#181825"),
+        "tab 2 is still bright and bold:\n{f}"
+    );
+    assert!(
+        f.contains("r0 c13-15 fg=#7f849c bg=#181825"),
+        "and tab 1 is still dim, so which tab is current is still legible:\n{f}"
+    );
+    // The overlay says the keys are its own the way every focused box does.
+    assert!(
+        f.contains("fg=#cba6f7"),
+        "the overlay's border and title carry the accent as a foreground:\n{f}"
+    );
+    h.key(h.client.clone(), "Esc").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        one_accent_run(&f),
+        (0, 17, 19),
+        "closing it gives the fill back to the current tab:\n{f}"
     );
 }
 

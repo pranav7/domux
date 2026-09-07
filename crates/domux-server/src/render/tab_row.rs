@@ -48,16 +48,37 @@ impl TabCell {
 pub struct TabRow {
     cells: Vec<TabCell>,
     current: usize,
+    /// The one cell that must be visible whatever else goes: the cell the keys go to. That is the
+    /// prompt's tab while a prompt is open on this row - a name being typed cannot be elided off
+    /// the screen - and the current tab otherwise.
+    anchor: usize,
 }
 
 impl TabRow {
-    pub fn new(tabs: &[Tab], current: usize, prompt: Option<&PromptKind>) -> TabRow {
+    /// `pane_focus` is whether the keys go to a pane rather than to a prompt or an overlay. It
+    /// decides whether the current tab's cell carries the accent fill - see `cell_for`.
+    pub fn new(
+        tabs: &[Tab],
+        current: usize,
+        prompt: Option<&PromptKind>,
+        pane_focus: bool,
+    ) -> TabRow {
         let cells = tabs
             .iter()
             .enumerate()
-            .map(|(i, tab)| cell_for(tab, i, current, prompt))
+            .map(|(i, tab)| cell_for(tab, i, current, prompt, pane_focus))
             .collect();
-        TabRow { cells, current }
+        let anchor = match prompt {
+            Some(PromptKind::TabName { tab: named, .. }) => {
+                tabs.iter().position(|t| &t.id == named).unwrap_or(current)
+            }
+            None => current,
+        };
+        TabRow {
+            cells,
+            current,
+            anchor,
+        }
     }
 
     /// The cells the whole row wants: every tab and its separator, then `│ + │`.
@@ -65,15 +86,15 @@ impl TabRow {
         self.cells.iter().map(TabCell::slot).sum::<usize>() + PLUS
     }
 
-    /// The cells the row keeps before the right end takes any: the current tab's own cell, its
-    /// separator, and an elision mark at each end. Never more than the whole row wants.
+    /// The cells the row keeps before the right end takes any: the anchor cell, its separator, and
+    /// an elision mark at each end. Never more than the whole row wants.
     pub fn floor(&self) -> usize {
-        let current = self
+        let anchor = self
             .cells
-            .get(self.current)
+            .get(self.anchor)
             .map(|c| c.slot() + 2 * ELISION)
             .unwrap_or(PLUS);
-        self.natural().min(current)
+        self.natural().min(anchor)
     }
 
     /// Draws the row from `x` on row `y` into `budget` cells, and returns the x after the last
@@ -97,16 +118,27 @@ impl TabRow {
             return put_within(buf, cx, y, last_x, "│", sep);
         }
         let current = self.current.min(n - 1);
-        // The window of tabs the row shows. It starts at the current tab, which must be
-        // visible, and grows one tab at a time to each side while the row still fits.
-        let mut lo = current;
-        let mut hi = current + 1;
-        let mut tabs = self.cells[current].slot();
+        let anchor = self.anchor.min(n - 1);
         let framed = |lo: usize, hi: usize, tabs: usize| {
             tabs + if lo > 0 { ELISION } else { 0 } + if hi < n { ELISION } else { 0 }
         };
+        // The window of tabs the row shows. It spans the anchor and the current tab, and grows one
+        // tab at a time to each side while the row still fits.
+        //
+        // Those two are the same cell unless a prompt names another tab, and then they are two
+        // different facts - where the keys go, and which tab you are viewing - each worth a cell
+        // before the `+` is. When even they do not both fit, the keys win and the elision mark
+        // says the other is there.
+        let mut lo = anchor.min(current);
+        let mut hi = anchor.max(current) + 1;
+        let mut tabs = self.cells[lo..hi].iter().map(TabCell::slot).sum::<usize>();
+        if framed(lo, hi, tabs) > budget {
+            lo = anchor;
+            hi = anchor + 1;
+            tabs = self.cells[anchor].slot();
+        }
         // The `+` is reserved before the window grows, so it does not appear and disappear as
-        // the current tab changes width. It goes only when the current tab needs its cells.
+        // the current tab changes width. It goes only when a tab needs its cells.
         let plus = framed(lo, hi, tabs) + PLUS <= budget;
         let cap = budget - if plus { PLUS } else { 0 };
         loop {
@@ -126,11 +158,11 @@ impl TabRow {
             }
         }
         if framed(lo, hi, tabs) > budget {
-            // Not even the current tab's own cell fits. It is drawn cut at one cell short of
-            // the budget and that cell is the `…`, so a cut cell says it was cut (principle 6)
+            // Not even the anchor's own cell fits. It is drawn cut at one cell short of the
+            // budget and that cell is the `…`, so a cut cell says it was cut (principle 6)
             // instead of ending wherever the clip fell.
             let mut cx = x;
-            for (text, style) in &self.cells[current].runs {
+            for (text, style) in &self.cells[anchor].runs {
                 cx = put_within(buf, cx, y, last_x.saturating_sub(1), text, *style);
             }
             return put_within(buf, cx, y, last_x, "…", sep);
@@ -158,7 +190,29 @@ impl TabRow {
     }
 }
 
-fn cell_for(tab: &Tab, i: usize, current: usize, prompt: Option<&PromptKind>) -> TabCell {
+/// One tab's cell.
+///
+/// The accent fill has one meaning in this grammar: your input goes here. "This is the tab you
+/// are viewing" is a different fact, and both deserve to be visible, but they must not use the
+/// same mark - two identical signals meaning two different things is worse than one signal
+/// (principle 2, ruled 2026-09-07). So at most one run of cells on the screen is accent-filled,
+/// and it is the one that owns the keys:
+///
+/// - keys go to a pane: the current tab is accent-filled. The focused pane box marks itself with
+///   an accent *border*, which is a different treatment, as it is for every other box.
+/// - keys go to a prompt: the prompt's own cell is accent-filled and the current tab is not.
+/// - keys go to another overlay: nothing in the tab row is filled. The overlay marks itself the
+///   way a focused box does.
+///
+/// Without the fill the current tab is still the bright bold cell against the dim others - the
+/// location's own treatment, not a new mark.
+fn cell_for(
+    tab: &Tab,
+    i: usize,
+    current: usize,
+    prompt: Option<&PromptKind>,
+    pane_focus: bool,
+) -> TabCell {
     // The prompt belongs to the cell of the tab it names, which is not always the current one:
     // `tab.rename` with no name can name another tab and still open the prompt in this view.
     if let Some(PromptKind::TabName { tab: named, input }) = prompt {
@@ -170,13 +224,16 @@ fn cell_for(tab: &Tab, i: usize, current: usize, prompt: Option<&PromptKind>) ->
         Some(name) => format!(" {} {} ", i + 1, name),
         None => format!(" {} ", i + 1),
     };
-    let style = if i == current {
-        Style::default()
+    let style = match (i == current, pane_focus) {
+        (true, true) => Style::default()
             .fg(theme::BASE)
             .bg(theme::ACCENT)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme::OVERLAY1).bg(theme::MANTLE)
+            .add_modifier(Modifier::BOLD),
+        (true, false) => Style::default()
+            .fg(theme::TEXT)
+            .bg(theme::MANTLE)
+            .add_modifier(Modifier::BOLD),
+        (false, _) => Style::default().fg(theme::OVERLAY1).bg(theme::MANTLE),
     };
     TabCell::new(vec![(label, style)])
 }

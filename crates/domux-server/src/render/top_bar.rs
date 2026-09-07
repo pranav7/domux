@@ -5,7 +5,7 @@
 use crate::render::boxed::{put, put_within};
 use crate::render::tab_row::TabRow;
 use crate::render::{theme, RenderInput};
-use domux_core::model::Overlay;
+use domux_core::model::{Focus, Overlay};
 use domux_core::text::{display_width, truncate_to_width};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
@@ -66,7 +66,10 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // last column: an empty cell there keeps the bar reading as a bar rather than as text
     // pressed against the edge, and one more cell keeps an elided right end off the tab row.
     let room = right_edge.saturating_sub(x) as usize;
-    let tabs = TabRow::new(&ws.tabs, current, prompt);
+    // Whether the keys go to a pane rather than to a prompt or an overlay. It decides which run
+    // of cells is accent-filled: see `tab_row::cell_for`.
+    let pane_focus = matches!(input.view.focus, Focus::Pane(_));
+    let tabs = TabRow::new(&ws.tabs, current, prompt, pane_focus);
     let pieces = right_pieces(input);
     let wanted = pieces.iter().map(|p| display_width(&p.text)).sum::<usize>() + 1;
     let right = wanted.min(room.saturating_sub(tabs.floor() + 1));
