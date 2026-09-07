@@ -755,11 +755,20 @@ async fn server_restart_replaces_a_running_server_and_starts_a_stopped_one() {
 
 /// The ruling on the nested attach: bare `domux2` inside a pane refuses rather than drawing a
 /// second whole screen inside one pane of the screen it is drawing. Both halves are pinned,
-/// because the subcommands are the reason `DOMUX_SOCKET` is exported in the first place.
+/// because the subcommands are the reason those variables are exported in the first place.
+///
+/// A pane is `DOMUX_PANE`, not `DOMUX_SOCKET`. The server exports both, but `DOMUX_SOCKET` is
+/// also the documented way to point the CLI at a scratch server beside the real one, so a
+/// guard that read it refused every attach for anyone who exports it - and said they were in a
+/// pane when they were not. See the case below.
 #[tokio::test]
 async fn bare_domux2_inside_a_pane_refuses_while_its_subcommands_still_work() {
     let h = Harness::start(Config::default(), 40, 10).await;
-    let refused = domux2(&h).output().await.unwrap();
+    let refused = domux2(&h)
+        .env("DOMUX_PANE", "p_0001")
+        .output()
+        .await
+        .unwrap();
     let said = String::from_utf8_lossy(&refused.stderr).trim().to_string();
     assert_eq!(refused.status.code(), Some(1), "{said}");
     assert!(
@@ -1109,5 +1118,23 @@ async fn events_without_a_server_says_the_server_is_not_running() {
     assert_eq!(
         String::from_utf8_lossy(&out.stderr).trim(),
         "The server is not running. Start it with domux2 server start."
+    );
+}
+
+/// `DOMUX_SOCKET` on its own is not a pane. It is the documented way to point the CLI at a
+/// scratch server beside the real one, so a guard that read it told anyone who exports it that
+/// they were inside a pane - which was not true - and left them no way to attach at all.
+///
+/// The attach here cannot succeed: there is no terminal on this process's stdout, so it ends
+/// with the terminal's own error. What is pinned is that it got that far, rather than being
+/// refused for a state the shell is not in.
+#[tokio::test]
+async fn the_socket_override_alone_is_not_a_pane() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let out = domux2(&h).output().await.unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !said.contains("already running in this terminal"),
+        "refused an attach outside a pane: {said}"
     );
 }
