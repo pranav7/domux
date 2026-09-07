@@ -17,6 +17,8 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 - `crates/domux-term/scripts/bump-ghostty.sh <commit>` is the only thing that edits `vendor/ghostty-pin.toml`. It regenerates the bindings and runs the suite.
 - `cargo test --workspace` runs everything. Interface tests live in `crates/domux-server/tests/` and assert on frames: a failing test prints the screen as `|...|` rows with a styles list.
 - `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` must pass before a commit. CI runs `cargo fmt --all --check`, `cargo build --workspace --locked`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace --locked`, in that order.
+- `UPDATE_GOLDEN=1 cargo test -p domux-term --test golden` rewrites the golden files. Read the diff against the fixture's intent before committing it: a golden that changed because the emulator changed is the point, and one that changed because a test was loosened is a defect being recorded as correct.
+- `crates/domux-term/scripts/ghostty-src.sh` prints the Ghostty tree the build resolved. `build.rs` exports the same path as `DOMUX_GHOSTTY_SRC`, and `tests/header_fingerprint.rs` and `tests/zig_pin.rs` read it, so the bindings are always checked against the headers that were actually compiled.
 - `cargo run -p domux -- api schema` prints the control API schema.
 - Run `domux2` only in its own Ghostty tab, never inside tmux. `~/bin/domux` is V1 and is never touched; `~/bin/domux2` points at `target/release/domux2`.
 
