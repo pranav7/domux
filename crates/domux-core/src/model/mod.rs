@@ -172,6 +172,10 @@ pub struct ClientView {
     pub sidebar_open: bool,
     pub overlay: Option<Overlay>,
     pub chord: Option<Chord>,
+    /// The filter text of a list overlay: the switcher in M2, the agents overlay in M3.
+    /// `Overlay::Prompt` carries its own `TextInput`, so nothing in M1 reads this. It
+    /// survives `select_tab` clearing `overlay`; whether a filter should persist between
+    /// openings belongs to whoever builds those overlays.
     pub filter: String,
     /// The model's activity counter at this client's last input.
     #[serde(default)]
@@ -602,7 +606,11 @@ impl Model {
             copy_mode: false,
         };
         let t = self.tab_mut(&loc.tab).expect("tab exists");
-        t.layout.split_leaf(pane, dir, new);
+        // `pane_location` already found `pane` in this tab's layout, so the split cannot
+        // miss. If it ever did, the events below would announce a pane the layout does not
+        // hold and `focused` would name it: silent corruption, caught here instead.
+        let split = t.layout.split_leaf(pane, dir, new);
+        debug_assert!(split, "split_leaf missed {pane}, which pane_location found");
         let cleared_zoom = t.zoomed.take().is_some();
         t.last_focused = Some(t.focused.clone());
         t.focused = new_id.clone();
@@ -631,7 +639,11 @@ impl Model {
     }
 
     /// Closes a pane. When it was the tab's last pane the tab closes too, and the returned
-    /// `Option<TabId>` names it. Focus moves to the sibling that took the space.
+    /// `Option<TabId>` names it.
+    ///
+    /// Focus moves only when the closed pane held it, and then in two steps: to
+    /// `last_focused` when that pane is still in the layout, else to whichever pane now
+    /// holds the closed one's position in reading order.
     ///
     /// The three parts of the tuple are the caller's whole job after a close: the panes to
     /// kill, the tab that went with them, and the events to publish. Naming it would hide
@@ -657,7 +669,15 @@ impl Model {
         let t = self.tab_mut(&loc.tab).expect("tab exists");
         let before = t.layout.pane_ids();
         let index = before.iter().position(|p| p == pane).unwrap_or(0);
-        t.layout.remove_leaf(pane);
+        // Unreachable: `pane_location` found the pane and `is_last` ruled out the
+        // single-leaf case, the only two ways `remove_leaf` returns `None`. If it ever did,
+        // `pane.closed` would name a pane still in the layout and focus would be set right
+        // back to it.
+        let removed = t.layout.remove_leaf(pane);
+        debug_assert!(
+            removed.is_some(),
+            "remove_leaf missed {pane}, which pane_location found"
+        );
         let after = t.layout.pane_ids();
         let mut events = vec![Event::PaneClosed {
             tab: loc.tab.clone(),
@@ -785,7 +805,13 @@ impl Model {
         }
     }
 
-    /// A tab by 1-based number or id within a workspace.
+    /// A tab in `ws` by 1-based number, by id, or by name.
+    ///
+    /// A target that parses as a number is a position and nothing else, so a tab named `2`
+    /// cannot be reached by that name; the number branch answers first. Ids and names share
+    /// the second branch, ids first. The two misses word differently on purpose: an
+    /// out-of-range number says how many tabs the workspace has, while an id or name that
+    /// matches nothing quotes the target back.
     pub fn resolve_tab(&self, ws: &WorkspaceId, target: &str) -> Result<TabId, ApiError> {
         let w = self
             .workspace(ws)
@@ -848,6 +874,24 @@ mod tests {
             .create_tab(&ws, PathBuf::from("/Users/pranav/projects/domux"))
             .unwrap();
         (m, ws, tab, pane)
+    }
+
+    /// One tab with panes `a`, `b`, `c` in reading order. `focused` is `c` and
+    /// `last_focused` is `b`, which two panes cannot produce: the focus rules only differ
+    /// once a third pane exists.
+    fn three_panes() -> (Model, WorkspaceId, TabId, PaneId, PaneId, PaneId) {
+        let (mut m, ws, tab, a) = model_with_one_tab();
+        let (b, _) = m
+            .split_pane(&a, Direction::Right, PathBuf::from("/x"))
+            .unwrap();
+        let (c, _) = m
+            .split_pane(&b, Direction::Right, PathBuf::from("/x"))
+            .unwrap();
+        assert_eq!(
+            m.tab(&tab).unwrap().layout.pane_ids(),
+            vec![a.clone(), b.clone(), c.clone()]
+        );
+        (m, ws, tab, a, b, c)
     }
 
     fn client(id: &str, ws: &WorkspaceId, tab: &TabId, pane: &PaneId) -> ClientView {
@@ -1162,6 +1206,217 @@ mod tests {
         assert!(
             !redrawn.contains(&cid.0),
             "a detached client's id {cid} came back as {redrawn:?}"
+        );
+    }
+
+    #[test]
+    fn close_pane_prefers_last_focused_over_the_positional_neighbour() {
+        let (mut m, _, tab, a, b, c) = three_panes();
+        // Focusing `a` records `c` as the pane focused before it.
+        m.focus_pane(&a).unwrap();
+        assert_eq!(m.tab(&tab).unwrap().focused, a);
+        assert_eq!(m.tab(&tab).unwrap().last_focused, Some(c.clone()));
+
+        // `a` sits at index 0, so the positional fallback would answer `b`. The two rules
+        // disagree here, which is the only way to tell them apart.
+        let (closed, closed_tab, events) = m.close_pane(&a).unwrap();
+        assert_eq!(closed, vec![a.clone()]);
+        assert_eq!(closed_tab, None);
+        assert_eq!(
+            m.tab(&tab).unwrap().focused,
+            c,
+            "last_focused wins while that pane survives"
+        );
+        assert_eq!(
+            events,
+            vec![
+                Event::PaneClosed {
+                    tab: tab.clone(),
+                    pane: a
+                },
+                Event::PaneFocused {
+                    tab: tab.clone(),
+                    pane: c.clone()
+                },
+            ],
+            "the whole event vector, not just its first element"
+        );
+
+        // The close cleared last_focused, so the fallback answers this time: `c` is at
+        // index 1 of [b, c] and only `b` remains.
+        m.close_pane(&c).unwrap();
+        assert_eq!(m.tab(&tab).unwrap().focused, b);
+    }
+
+    #[test]
+    fn close_pane_clears_a_last_focused_that_names_the_closed_pane() {
+        let (mut m, _, tab, _a, b, c) = three_panes();
+        assert_eq!(m.tab(&tab).unwrap().last_focused, Some(b.clone()));
+
+        // `b` is not the focused pane, so the refocus branch never runs and this clear is
+        // the only thing that can stop last_focused naming a pane that is gone.
+        m.close_pane(&b).unwrap();
+        assert_eq!(m.tab(&tab).unwrap().focused, c, "focus did not move");
+        assert_eq!(m.tab(&tab).unwrap().last_focused, None);
+    }
+
+    #[test]
+    fn close_tab_moves_last_tab_off_the_tab_it_removes() {
+        let (mut m, ws, t1, _) = model_with_one_tab();
+        let (t2, _, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let (t3, _, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        assert_eq!(m.workspace(&ws).unwrap().last_tab, Some(t3.clone()));
+
+        m.close_tab(&t1).unwrap();
+        assert_eq!(
+            m.workspace(&ws).unwrap().last_tab,
+            Some(t3.clone()),
+            "closing another tab leaves last_tab alone"
+        );
+
+        m.close_tab(&t3).unwrap();
+        assert_eq!(
+            m.workspace(&ws).unwrap().last_tab,
+            Some(t2),
+            "or last_tab names a tab that no longer exists"
+        );
+    }
+
+    #[test]
+    fn split_pane_moves_only_the_pane_focused_clients_on_that_tab() {
+        let (mut m, ws, tab, a) = model_with_one_tab();
+        let (t2, p2, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.attach_client(client("c_0001", &ws, &tab, &a));
+        m.attach_client(ClientView {
+            focus: Focus::Region(RegionKind::Overlay),
+            ..client("c_0002", &ws, &tab, &a)
+        });
+        m.attach_client(client("c_0003", &ws, &t2, &p2));
+
+        let (new, _) = m
+            .split_pane(&a, Direction::Right, PathBuf::from("/x"))
+            .unwrap();
+        assert_eq!(
+            m.client(&ClientId("c_0001".into())).unwrap().focus,
+            Focus::Pane(new)
+        );
+        assert_eq!(
+            m.client(&ClientId("c_0002".into())).unwrap().focus,
+            Focus::Region(RegionKind::Overlay),
+            "a client focused on a region keeps its focus"
+        );
+        assert_eq!(
+            m.client(&ClientId("c_0003".into())).unwrap().focus,
+            Focus::Pane(p2),
+            "a client on another tab does not follow"
+        );
+    }
+
+    #[test]
+    fn close_pane_moves_only_the_clients_that_were_on_the_closed_pane() {
+        let (mut m, ws, tab, a, b, c) = three_panes();
+        let (t2, p2, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.attach_client(client("c_0001", &ws, &tab, &c));
+        m.attach_client(client("c_0002", &ws, &tab, &a));
+        m.attach_client(client("c_0003", &ws, &t2, &p2));
+
+        m.close_pane(&c).unwrap();
+        assert_eq!(m.tab(&tab).unwrap().focused, b);
+        assert_eq!(
+            m.client(&ClientId("c_0001".into())).unwrap().focus,
+            Focus::Pane(b),
+            "the client on the closed pane has to be moved off it"
+        );
+        assert_eq!(
+            m.client(&ClientId("c_0002".into())).unwrap().focus,
+            Focus::Pane(a),
+            "a client on another pane of the same tab stays put"
+        );
+        assert_eq!(
+            m.client(&ClientId("c_0003".into())).unwrap().focus,
+            Focus::Pane(p2),
+            "a client on another tab stays put"
+        );
+    }
+
+    #[test]
+    fn focus_pane_moves_the_pane_focused_clients_on_that_tab() {
+        let (mut m, ws, tab, a, b, _c) = three_panes();
+        let (t2, p2, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.attach_client(client("c_0001", &ws, &tab, &a));
+        m.attach_client(ClientView {
+            focus: Focus::Region(RegionKind::Overlay),
+            ..client("c_0002", &ws, &tab, &a)
+        });
+        m.attach_client(client("c_0003", &ws, &t2, &p2));
+
+        m.focus_pane(&b).unwrap();
+        assert_eq!(
+            m.client(&ClientId("c_0001".into())).unwrap().focus,
+            Focus::Pane(b)
+        );
+        assert_eq!(
+            m.client(&ClientId("c_0002".into())).unwrap().focus,
+            Focus::Region(RegionKind::Overlay),
+            "a client focused on a region keeps its focus"
+        );
+        assert_eq!(
+            m.client(&ClientId("c_0003".into())).unwrap().focus,
+            Focus::Pane(p2),
+            "a client on another tab does not follow"
+        );
+    }
+
+    #[test]
+    fn select_tab_dismisses_the_clients_overlay() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        let (t2, _, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.attach_client(ClientView {
+            overlay: Some(Overlay::Help),
+            ..client("c_0001", &ws, &tab, &pane)
+        });
+
+        m.select_tab(&ClientId("c_0001".into()), &t2).unwrap();
+        assert_eq!(
+            m.client(&ClientId("c_0001".into())).unwrap().overlay,
+            None,
+            "an overlay drawn over the old tab must not survive the move"
+        );
+    }
+
+    #[test]
+    fn add_folder_project_seeds_last_workspace_once() {
+        let mut m = Model::new(7);
+        assert_eq!(m.last_workspace, None);
+        let (_, ws1, _) = m.add_folder_project(PathBuf::from("/a")).unwrap();
+        assert_eq!(m.last_workspace, Some(ws1.clone()));
+        m.add_folder_project(PathBuf::from("/b")).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(ws1),
+            "a later project does not steal it"
+        );
+    }
+
+    #[test]
+    fn detach_client_reports_nothing_when_that_client_was_not_attached() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        m.attach_client(client("c_0001", &ws, &tab, &pane));
+        assert_eq!(
+            m.detach_client(&ClientId("c_0009".into())),
+            Vec::<Event>::new(),
+            "no client of that id was ever attached"
+        );
+        assert_eq!(
+            m.detach_client(&ClientId("c_0001".into())),
+            vec![Event::ClientDetached {
+                client: ClientId("c_0001".into())
+            }]
+        );
+        assert_eq!(
+            m.detach_client(&ClientId("c_0001".into())),
+            Vec::<Event>::new(),
+            "and a second detach reports nothing"
         );
     }
 
