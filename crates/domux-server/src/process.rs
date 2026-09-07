@@ -1,9 +1,17 @@
 //! Who is in the foreground of a pane, and where. `tcgetpgrp` on the PTY master gives the
 //! foreground process group; its leader's name and working directory come from the OS.
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!(
+    "the process inspector has no `process_name` or `process_cwd` for this platform: domux2 \
+     supports macOS and Linux, so add an arm for this target or build on one of those"
+);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundProcess {
@@ -38,6 +46,16 @@ impl ProcessInspector for RealInspector {
     }
 }
 
+/// The base name of an executable path held as raw bytes. The bytes may carry more than the
+/// path, since a Linux `/proc/<pid>/cmdline` holds the whole argument vector separated by NUL,
+/// so only the first entry is read. Absent when there is no base name, and absent when the
+/// bytes are not UTF-8: a lossy conversion would invent a name no process has.
+fn base_name(path: &[u8]) -> Option<String> {
+    let first = path.split(|&b| b == 0).next().unwrap_or_default();
+    let name = Path::new(OsStr::from_bytes(first)).file_name()?;
+    Some(name.to_str()?.to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn process_name(pid: u32) -> Option<String> {
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
@@ -52,13 +70,7 @@ fn process_name(pid: u32) -> Option<String> {
     if n <= 0 {
         return None;
     }
-    let path = String::from_utf8_lossy(&buf[..n as usize]).into_owned();
-    Some(
-        std::path::Path::new(&path)
-            .file_name()?
-            .to_string_lossy()
-            .into_owned(),
-    )
+    base_name(&buf[..n as usize])
 }
 
 #[cfg(target_os = "macos")]
@@ -75,7 +87,9 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
             size,
         )
     };
-    if n <= 0 {
+    // proc_pidinfo returns the number of bytes it wrote. Anything short of the whole struct is
+    // a partial fill, which is not the fact we asked for.
+    if n != size {
         return None;
     }
     // libc declares `vip_path` in 32-byte chunks, so flatten before reading to the first NUL.
@@ -87,16 +101,22 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
         .take_while(|&&c| c != 0)
         .map(|&c| c as u8)
         .collect();
-    let s = String::from_utf8(bytes).ok()?;
-    if s.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(s))
+    if bytes.is_empty() {
+        return None;
     }
+    Some(PathBuf::from(OsStr::from_bytes(&bytes)))
 }
 
 #[cfg(target_os = "linux")]
 fn process_name(pid: u32) -> Option<String> {
+    // The kernel truncates `comm` to 15 bytes and a process can rewrite it through `prctl`, so
+    // it is a self-declared short name where macOS observes the executable. Read the command
+    // line instead and take the base name of its first entry.
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    if cmdline.first().is_some_and(|&b| b != 0) {
+        return base_name(&cmdline);
+    }
+    // An empty command line means a kernel thread, where `comm` is the only name there is.
     let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
     let name = comm.trim();
     if name.is_empty() {
@@ -108,7 +128,14 @@ fn process_name(pid: u32) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    // The kernel renders a removed directory as `/path (deleted)`, which is a plausible looking
+    // path that never existed as written. The fact did not arrive, so report absence rather
+    // than a path no one can enter.
+    if cwd.as_os_str().as_bytes().ends_with(b" (deleted)") {
+        return None;
+    }
+    Some(cwd)
 }
 
 /// The test double: answers whatever the test set, for every pane.
@@ -135,8 +162,18 @@ impl ProcessInspector for FakeInspector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+    use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
     use std::time::{Duration, Instant};
+
+    /// Kills and reaps the child however the test ends, panic included.
+    struct ChildGuard(Box<dyn Child + Send + Sync>);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 
     #[test]
     fn real_inspector_names_the_foreground_process_and_its_cwd() {
@@ -154,7 +191,7 @@ mod tests {
         let mut cmd = CommandBuilder::new("sh");
         cmd.args(["-c", "exec sleep 30"]);
         cmd.cwd(&canonical);
-        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        let _child = ChildGuard(pair.slave.spawn_command(cmd).unwrap());
         drop(pair.slave);
         let fd = pair.master.as_raw_fd().expect("master fd");
         let inspector = RealInspector;
@@ -170,18 +207,68 @@ mod tests {
             inspector.cwd_of(fg.pid).map(|p| p.canonicalize().unwrap()),
             Some(canonical)
         );
-        child.kill().unwrap();
-        let _ = child.wait();
     }
 
     #[test]
     fn cwd_of_self_is_the_current_dir() {
         let me = std::process::id();
         let cwd = RealInspector.cwd_of(me).expect("own cwd");
+        // The OS reports where a process is, so the answer is an absolute path. Canonicalizing
+        // alone would accept a relative stub such as `.`.
+        assert!(cwd.is_absolute(), "cwd must be absolute, got {cwd:?}");
         assert_eq!(
             cwd.canonicalize().unwrap(),
             std::env::current_dir().unwrap().canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn foreground_is_absent_for_a_bad_fd() {
+        assert_eq!(RealInspector.foreground(-1), None);
+    }
+
+    #[test]
+    fn foreground_is_absent_for_an_fd_that_is_not_a_terminal() {
+        use std::os::unix::io::AsRawFd;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(RealInspector.foreground(file.as_file().as_raw_fd()), None);
+    }
+
+    #[test]
+    fn cwd_is_absent_for_a_dead_pid() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert_eq!(RealInspector.cwd_of(pid), None);
+    }
+
+    #[test]
+    fn cwd_is_absent_for_pid_zero() {
+        assert_eq!(RealInspector.cwd_of(0), None);
+    }
+
+    #[test]
+    fn base_name_is_the_last_component_of_the_path() {
+        assert_eq!(base_name(b"/usr/bin/sleep").as_deref(), Some("sleep"));
+    }
+
+    #[test]
+    fn base_name_reads_only_the_first_entry_of_an_argument_vector() {
+        assert_eq!(
+            base_name(b"/usr/bin/docker-credential-osxkeychain\0get\0").as_deref(),
+            Some("docker-credential-osxkeychain")
+        );
+    }
+
+    #[test]
+    fn base_name_is_absent_for_bytes_that_are_not_utf8() {
+        assert_eq!(base_name(b"/usr/bin/sl\xffeep"), None);
+    }
+
+    #[test]
+    fn base_name_is_absent_for_a_path_with_no_last_component() {
+        assert_eq!(base_name(b""), None);
+        assert_eq!(base_name(b"/"), None);
     }
 
     #[test]
