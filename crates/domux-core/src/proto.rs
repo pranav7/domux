@@ -325,6 +325,20 @@ mod tests {
     }
 
     #[test]
+    fn encode_refuses_a_body_over_the_frame_limit_rather_than_truncating_it() {
+        // The two tests around this one pin `length_prefix`, but `encode` is the public
+        // surface and the `?` that connects the two is the whole point of the check: an
+        // `encode` that swallowed the error would write a length that is not the body's
+        // length again, and every later frame on that stream would start in the wrong place.
+        // One 64 MiB body is the cheapest way to hold `encode` itself to it.
+        let over_the_limit = ClientMsg::Paste("x".repeat(MAX_FRAME as usize));
+        assert!(matches!(
+            encode(&over_the_limit),
+            Err(ProtoError::FrameTooLarge(n)) if n > MAX_FRAME
+        ));
+    }
+
+    #[test]
     fn a_body_wider_than_the_length_field_is_refused_not_truncated() {
         // 4 GiB + 1 truncates to a length of 1, which would put a number on the wire that is
         // not the body's length and desynchronise every later frame.
