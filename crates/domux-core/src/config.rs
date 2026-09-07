@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub struct Config {
     pub keys: KeysConfig,
     pub terminal: TerminalConfig,
+    pub worktrees: WorktreesConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +41,14 @@ pub struct TerminalConfig {
     pub shell: Option<String>,
     pub scrollback: usize,
     pub remain_on_exit: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreesConfig {
+    /// The ref a new slot branches from and a cleared slot resets to. `None` means detect
+    /// it per project from `origin/HEAD`, falling back to `main` (architecture spec 2).
+    pub base: Option<String>,
 }
 
 impl TerminalConfig {
@@ -164,7 +173,7 @@ pub struct Parsed {
     pub warnings: Vec<ConfigWarning>,
 }
 
-pub const KNOWN_TABLES: &[&str] = &["keys", "terminal"];
+pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees"];
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "keys",
@@ -172,6 +181,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("keys.passthrough", &["commands", "keys"]),
     ("terminal", &["shell", "scrollback", "remain_on_exit"]),
+    ("worktrees", &["base"]),
 ];
 
 impl Config {
@@ -217,6 +227,7 @@ impl Config {
         let config = Config {
             keys,
             terminal: user.terminal,
+            worktrees: user.worktrees,
         };
         Ok(Parsed { config, warnings })
     }
@@ -588,15 +599,46 @@ mod tests {
     #[test]
     fn unknown_tables_and_keys_are_kept_as_warnings_not_errors() {
         let parsed =
-            Config::parse("[worktrees]\nbase = \"origin/main\"\n[terminal]\ncolour = \"x\"\n")
-                .unwrap();
+            Config::parse("[bogus]\nbase = \"origin/main\"\n[terminal]\ncolour = \"x\"\n").unwrap();
         assert_eq!(parsed.warnings.len(), 2);
-        assert!(parsed.warnings.iter().any(|w| w.0 == "unknown table [worktrees] (line 1) is ignored until the milestone that reads it"), "{:?}", parsed.warnings);
+        assert!(
+            parsed.warnings.iter().any(|w| w.0
+                == "unknown table [bogus] (line 1) is ignored until the milestone that reads it"),
+            "{:?}",
+            parsed.warnings
+        );
         assert!(
             parsed
                 .warnings
                 .iter()
                 .any(|w| w.0 == "unknown key terminal.colour (line 4) is ignored"),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn worktrees_base_parses_and_defaults_to_absent() {
+        let parsed = Config::parse("").unwrap();
+        assert_eq!(
+            parsed.config.worktrees.base, None,
+            "no base means detect it from origin/HEAD"
+        );
+        let parsed = Config::parse("[worktrees]\nbase = \"origin/develop\"\n").unwrap();
+        assert_eq!(
+            parsed.config.worktrees.base.as_deref(),
+            Some("origin/develop")
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn an_unknown_key_under_worktrees_warns_with_its_line_and_keeps_the_rest() {
+        let parsed = Config::parse("[worktrees]\nbase = \"origin/main\"\ndepth = 1\n").unwrap();
+        assert_eq!(parsed.config.worktrees.base.as_deref(), Some("origin/main"));
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(
+            parsed.warnings[0].0.contains("depth"),
             "{:?}",
             parsed.warnings
         );

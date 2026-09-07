@@ -114,12 +114,12 @@ async fn a_bad_file_at_startup_uses_defaults_and_shows_the_notice() {
 #[tokio::test]
 async fn unknown_tables_are_warnings_in_the_reload_result_not_errors() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
-    std::fs::write(h.config_path(), "[worktrees]\nbase = \"origin/main\"\n").unwrap();
+    std::fs::write(h.config_path(), "[bogus]\nbase = \"origin/main\"\n").unwrap();
     let r = h.api("config.reload", json!({})).await.unwrap();
     assert!(r["error"].is_null());
     assert_eq!(
         r["warnings"][0],
-        "unknown table [worktrees] (line 1) is ignored until the milestone that reads it"
+        "unknown table [bogus] (line 1) is ignored until the milestone that reads it"
     );
 }
 
