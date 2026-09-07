@@ -10,9 +10,13 @@ use std::ffi::OsString;
 /// the outer client (principle 1) and puts a second accent border on the screen (principle
 /// 2). Nobody types it there wanting that; they type it out of habit.
 ///
-/// `attach` typed in full still attaches, and every other subcommand is unaffected:
-/// `DOMUX_SOCKET` is exported into every pane so that a shell there can reach its own server,
-/// which is the whole reason the variable exists.
+/// `attach` typed in full still attaches, and that is deliberate. Bare `domux2` is the habit;
+/// naming the verb is a choice. It is also the only way to reach a *different* server from
+/// inside a pane: `DOMUX_SOCKET` set by hand points at that server, but `DOMUX_PANE` is still
+/// the outer pane's, so a guard on both forms would refuse a thing worth doing.
+///
+/// Every other subcommand is unaffected. `DOMUX_SOCKET` is exported into every pane so a shell
+/// there can reach its own server, which is the whole reason the variable exists.
 pub async fn run_bare() -> anyhow::Result<()> {
     let socket = socket();
     if inside_a_pane(std::env::var_os("DOMUX_PANE")) && control::is_live(&socket).await {
