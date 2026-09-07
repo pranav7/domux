@@ -48,7 +48,10 @@ async fn main() {
         Some(Command::Events(c)) => cli::events::run(c).await,
     };
     if let Err(e) = result {
-        eprintln!("{e}");
+        // The whole chain, so the context and the reason under it both reach the reader:
+        // "create /tmp/x/sub: Permission denied (os error 13)" rather than the half of it
+        // that says what was attempted and not why it failed.
+        eprintln!("{e:#}");
         std::process::exit(1);
     }
 }

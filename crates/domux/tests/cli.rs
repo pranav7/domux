@@ -420,3 +420,31 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
         "{text}"
     );
 }
+
+/// A start that fails must say why. The child's stderr is the log, so the reason survives
+/// even when the server failed before its own logging was up.
+#[tokio::test]
+async fn server_start_says_why_the_server_could_not_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    // A file where a directory would have to be: the server cannot make the socket's parent,
+    // and the failure is inside `server run` rather than in this process.
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", blocker.join("sub").join("domux2.sock"))
+        .env("DOMUX_STATE_DIR", &state)
+        .env("DOMUX_CONFIG_FILE", dir.path().join("domux.toml"))
+        .env_remove("TMUX")
+        .args(["server", "start"])
+        .output()
+        .await
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(said.starts_with("The server exited ("), "{said}");
+    assert!(said.contains("It said: "), "{said}");
+    assert!(said.contains("Not a directory"), "{said}");
+    let log = std::fs::read_to_string(state.join("server.log")).expect("the log was written");
+    assert!(log.contains("Not a directory"), "{log}");
+}

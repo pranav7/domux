@@ -1,6 +1,7 @@
 //! `server start|stop|restart|status|log`, and the hidden `run` that is the server.
 
 use super::{call, call_as, socket};
+use anyhow::Context;
 use clap::{Args, Subcommand};
 use domux_client::control;
 use domux_core::api::ServerInfo;
@@ -9,8 +10,10 @@ use domux_core::paths;
 use domux_server::pane::RealSpawner;
 use domux_server::process::RealInspector;
 use domux_server::{load_config, CoreDeps, Server, ServerOptions, SystemClock};
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -67,12 +70,18 @@ pub async fn start() -> anyhow::Result<()> {
         eprintln!("The server is already running.");
         return Ok(());
     }
+    // The child's stderr is the log, so a start that failed says why whatever failed: an
+    // error before the server's own logging is up, a panic, or anything the runtime prints.
+    // Nothing here depends on the server reaching its logging code.
+    let log = paths::log_file();
+    let sink = open_log(&log)?;
+    let written_before = sink.metadata().map(|m| m.len()).unwrap_or(0);
     let exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["server", "run"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::from(sink));
     // Safe: `setsid` has no preconditions in a freshly forked child, and both calls in the
     // closure are async-signal-safe. A child that could not leave this terminal's session
     // would die with the terminal, so the failure ends the start rather than hiding.
@@ -91,17 +100,17 @@ pub async fn start() -> anyhow::Result<()> {
         // rather than after the whole wait.
         if let Some(status) = child.try_wait()? {
             anyhow::bail!(
-                "The server exited ({status}) before it opened {}. Read {} for the reason.",
+                "The server exited ({status}) before it opened {}. {}",
                 socket.display(),
-                paths::log_file().display()
+                reason(&log, written_before)
             );
         }
         if Instant::now() > deadline {
             anyhow::bail!(
-                "The server did not open {} within {} seconds. Read {} for the reason.",
+                "The server did not open {} within {} seconds. {}",
                 socket.display(),
                 SETTLE.as_secs(),
-                paths::log_file().display()
+                reason(&log, written_before)
             );
         }
         tokio::time::sleep(POLL).await;
@@ -111,6 +120,46 @@ pub async fn start() -> anyhow::Result<()> {
         child.id()
     );
     Ok(())
+}
+
+/// The log, opened for appending, so the child's stderr and the server's own tracing land in
+/// one file in the order they happened. The directory is made here rather than left to the
+/// child, since a directory that cannot be made is the failure this call is about to report.
+fn open_log(log: &Path) -> anyhow::Result<File> {
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .with_context(|| format!("open {}", log.display()))
+}
+
+/// What this start wrote to the log, as the sentence that follows the failure. Only what was
+/// appended after `offset` is read, so an older run's last line is never reported as this
+/// one's reason. A log with nothing in it is said to be empty and the reader is sent
+/// somewhere that will answer, because "read this file" is no next action when the file
+/// holds nothing (principle 9).
+fn reason(log: &Path, offset: u64) -> String {
+    match last_line_after(log, offset) {
+        Some(line) => format!("It said: {line}. There may be more in {}.", log.display()),
+        None => format!(
+            "It wrote nothing to {}. Run {BIN_NAME} server run to see the failure on this terminal.",
+            log.display()
+        ),
+    }
+}
+
+fn last_line_after(log: &Path, offset: u64) -> Option<String> {
+    let mut file = File::open(log).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    text.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
 }
 
 pub async fn stop() -> anyhow::Result<()> {
@@ -168,8 +217,17 @@ fn id_seed() -> anyhow::Result<u64> {
 /// `server.stop`, then persists and exits.
 async fn run_server() -> anyhow::Result<()> {
     let state_dir = paths::state_dir();
-    std::fs::create_dir_all(&state_dir)?;
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("create {}", state_dir.display()))?;
     domux_server::log::init(&paths::log_file())?;
+    // The log exists from here on, so a failure is written there as well as returned. That
+    // covers `server run` typed by hand, where stderr is a terminal and not the log.
+    serve(state_dir)
+        .await
+        .inspect_err(|e| tracing::error!("the server stopped: {e:#}"))
+}
+
+async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
     let opts = ServerOptions {
         socket_path: socket(),
         state_dir,
@@ -203,4 +261,43 @@ async fn run_server() -> anyhow::Result<()> {
     // last state.json write.
     handle.stop().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reason_is_what_this_start_appended_not_an_older_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("server.log");
+        std::fs::write(&log, "an older run said this\n").unwrap();
+        let offset = std::fs::metadata(&log).unwrap().len();
+        assert!(
+            reason(&log, offset).contains("It wrote nothing to"),
+            "{}",
+            reason(&log, offset)
+        );
+        assert!(!reason(&log, offset).contains("an older run"));
+        std::fs::write(
+            &log,
+            "an older run said this\ncreate /x: Permission denied\n\n",
+        )
+        .unwrap();
+        let said = reason(&log, offset);
+        assert!(
+            said.starts_with("It said: create /x: Permission denied."),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn the_reason_names_the_log_when_there_is_no_log_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("gone.log");
+        let said = reason(&log, 0);
+        assert!(said.contains("It wrote nothing to"), "{said}");
+        assert!(said.contains("gone.log"), "{said}");
+        assert!(said.contains("domux2 server run"), "{said}");
+    }
 }
