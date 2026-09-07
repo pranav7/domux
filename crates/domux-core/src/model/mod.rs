@@ -1016,6 +1016,11 @@ impl Model {
     /// is the short name `origin/HEAD` points at, falling back to `main`; the server reads
     /// it with `git::default_branch` before calling this.
     ///
+    /// It does not check whether a project is registered at `root` already, and registering
+    /// one twice gives two projects. `project.add` is what makes that idempotent, by asking
+    /// `project_at` first: it is the caller that has resolved the canonical path, and one
+    /// rule belongs in one place.
+    ///
     /// Fallible for the reason `add_folder_project` is: `next_id` is.
     pub fn add_git_project(
         &mut self,
@@ -2034,8 +2039,12 @@ mod tests {
         assert_eq!(p.workspaces[0].path, PathBuf::from("/repo/audrey-app"));
     }
 
+    /// Registering the same root twice is not refused here. `project.add` answers that, by
+    /// asking `project_at` before it calls this; the model would otherwise hold the same
+    /// rule twice, and the canonical path a root resolves to is only known once the git job
+    /// has run. So the absence of a refusal below is the design, not an oversight.
     #[test]
-    fn add_git_project_reports_project_added_and_refuses_a_second_registration() {
+    fn add_git_project_reports_project_added_and_registers_the_root() {
         let mut m = Model::new(7);
         let (pid, _, events) = m
             .add_git_project(PathBuf::from("/repo/audrey-app"), "main".into())
@@ -2304,6 +2313,39 @@ mod tests {
         assert_eq!(
             m.last_workspace, None,
             "the pointer into a removed project is cleared"
+        );
+    }
+
+    #[test]
+    fn removing_a_project_leaves_a_last_workspace_in_another_project_alone() {
+        // `remove_project` moves `last_workspace` only when it pointed into the project
+        // being removed. An unconditional reset passes every other test in this module and
+        // still moves the user: working in another project's `workspace-1`, they remove a
+        // project they are not in, and their next attach lands in that other project's
+        // `main` instead of the slot they left, with nothing said about it.
+        let (mut m, a, _) = git_model();
+        let (b, b_main, _) = m
+            .add_git_project(PathBuf::from("/repo/other"), "main".into())
+            .unwrap();
+        let (b_w1, _) = m.add_slot(&b, 1, PathBuf::from("/other/w1")).unwrap();
+
+        m.last_workspace = Some(b_w1.clone());
+        m.remove_project(&a).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(b_w1),
+            "a pointer into a project that survives is not moved"
+        );
+
+        let (c, c_main, _) = m
+            .add_git_project(PathBuf::from("/repo/third"), "main".into())
+            .unwrap();
+        m.last_workspace = Some(c_main);
+        m.remove_project(&c).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(b_main),
+            "and a pointer into the removed project moves to a workspace that is still there"
         );
     }
 
