@@ -48,19 +48,22 @@ pub struct Model {
     retired: VecDeque<String>,
 }
 
-/// Two models are equal when everything observable from outside this module is equal: the
-/// projects, the attached clients and `last_workspace`. `idgen`, `activity_seq` and
-/// `retired` are private with no public accessor, so an inequality one of them caused could
-/// not even be explained from outside this module, and a model read back from a state file
-/// always carries a fresh generator, a zero counter and an empty retired set.
+/// Two models are equal when their content is equal: the projects, the attached clients and
+/// `last_workspace`. `idgen`, `activity_seq` and `retired` are machinery rather than
+/// content - the generator that mints ids, the counter that orders client activity, and the
+/// record of ids not to hand out again. Two models holding the same objects are the same
+/// model even though they will go on to mint different ids, so the machinery stays out of
+/// the comparison.
 ///
-/// The rule is observability, not persistence. `clients` is `#[serde(skip)]` like the three
-/// excluded fields, and it is kept anyway because it is public: equality that ignored a
-/// public field would report two visibly different models as the same. So a model saved and
-/// read back is genuinely not equal to the one that was saved while a client is attached,
-/// and task 10 must compare what the state file holds - the projects and `last_workspace`,
-/// or a model whose `clients` is empty - rather than expect a bare `assert_eq!` round trip
-/// to hold.
+/// The line is content against machinery. It is not observability: all three excluded
+/// fields are observable through public items, since `next_id` reads `idgen` and `retired`,
+/// `reseed` moves the first and `touch_client` moves `activity_seq`. And it is not
+/// persistence: `clients` is `#[serde(skip)]` like the three excluded fields and is kept
+/// anyway, because equality that ignored it would report two visibly different models as
+/// the same. So a model saved and read back is genuinely not equal to the one that was
+/// saved while a client is attached, and task 10 must compare what the state file holds -
+/// the projects and `last_workspace`, or a model whose `clients` is empty - rather than
+/// expect a bare `assert_eq!` round trip to hold.
 impl PartialEq for Model {
     fn eq(&self, other: &Model) -> bool {
         // Destructured on purpose: a field added in a later milestone stops this compiling
@@ -103,8 +106,10 @@ const RETIRED_CAPACITY: usize = 1024;
 /// Draws are independent, so with a fraction `p` of a prefix's space occupied the chance of
 /// this many collisions in a row is `p` to the 64th: about 1e-83 for a model holding a few
 /// thousand objects, and still 5e-20 for a half-full space. Reaching the bound therefore
-/// means the space really is full rather than the draws being unlucky, which is what lets
-/// the loop be bounded at all instead of spinning.
+/// means the space is close to full rather than the draws being unlucky, which is what lets
+/// the loop be bounded at all instead of spinning. It is not proof that every id is taken -
+/// at 65000 in use the run still ends here 59% of the time - so the error `next_id` returns
+/// reports the failed draws and does not count the ids in use.
 const ID_DRAW_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -236,10 +241,12 @@ impl Model {
     /// A fresh id with `prefix`, unique across every object in the model and against the
     /// recently removed ids in `retired`.
     ///
-    /// Fails with an internal error when `ID_DRAW_LIMIT` draws all collide, which means the
-    /// prefix's 65536-value space is full. There is nothing honest to return in that case:
-    /// handing back a colliding id is the exact defect `retired` exists to prevent, and
-    /// looping until one comes free would hang the core task instead.
+    /// Fails with an internal error when `ID_DRAW_LIMIT` draws all collide. There is
+    /// nothing honest to return in that case: handing back a colliding id is the exact
+    /// defect `retired` exists to prevent, and looping until one comes free would hang the
+    /// core task instead. All the failure establishes is that every draw collided, which is
+    /// what the message says: how much of the prefix's 65536-value space is taken is not
+    /// something the draws measure.
     pub fn next_id(&mut self, prefix: &str) -> Result<String, ApiError> {
         for _ in 0..ID_DRAW_LIMIT {
             let id = format!("{prefix}_{}", self.idgen.hex4());
@@ -247,18 +254,24 @@ impl Model {
                 return Ok(id);
             }
         }
-        // The message names the object the caller asked for and an action that frees one of
-        // that kind. The prefix letter and the draw count are internals a reader cannot act
-        // on, and the draw count would go stale the moment `ID_DRAW_LIMIT` moved.
+        // The message names the object the caller asked for, states what actually happened,
+        // and gives an action that exists today. What happened is that every draw collided;
+        // that the whole space is taken is an inference the draws do not support, since at
+        // 65000 of 65536 ids in use a run of collisions this long still arrives more often
+        // than not with hundreds of ids free. The prefix letter and the draw count stay out:
+        // a reader cannot act on either, and the count would go stale the moment
+        // `ID_DRAW_LIMIT` moved. Nothing removes a project or a workspace before M2, so
+        // those two name the action that does free ids today, which is a restart: `retired`
+        // is in-session only and starts empty.
         let message = match prefix {
-            "pr" => "no free project id is left: all 65536 project ids are in use or recently closed, so remove a project",
-            "w" => "no free workspace id is left: all 65536 workspace ids are in use or recently closed, so remove a workspace",
-            "t" => "no free tab id is left: all 65536 tab ids are in use or recently closed, so close a tab",
-            "p" => "no free pane id is left: all 65536 pane ids are in use or recently closed, so close a pane",
-            "c" => "no free client id is left: all 65536 client ids are in use or recently closed, so detach a client",
+            "pr" => "no free project id: every draw hit an id already in use or recently closed, so restart the server to clear the recently closed ids",
+            "w" => "no free workspace id: every draw hit an id already in use or recently closed, so restart the server to clear the recently closed ids",
+            "t" => "no free tab id: every draw hit an id already in use or recently closed, so close a tab",
+            "p" => "no free pane id: every draw hit an id already in use or recently closed, so close a pane",
+            "c" => "no free client id: every draw hit an id already in use or recently closed, so detach a client",
             // Nothing in this crate passes another prefix. An unknown one still gets a true
             // message rather than a guessed object name.
-            _ => "no free id is left for that kind of object: all 65536 of its ids are in use or recently closed, so close or detach one",
+            _ => "no free id for that kind of object: every draw hit an id already in use or recently closed, so restart the server to clear the recently closed ids",
         };
         Err(ApiError::internal(message.to_string()))
     }
@@ -1534,8 +1547,8 @@ mod tests {
         assert_eq!(err.code, crate::api::ErrorCode::Internal);
         assert_eq!(
             err.message,
-            "no free client id is left: all 65536 client ids are in use or recently closed, so detach a client",
-            "the message names the object and an action that frees one, not the prefix letter or the draw count"
+            "no free client id: every draw hit an id already in use or recently closed, so detach a client",
+            "the message names the object, states only that the draws collided, and gives an action that frees one"
         );
         // Another prefix is a separate space and is unaffected.
         assert!(m.next_id("p").unwrap().starts_with("p_"));
