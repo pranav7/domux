@@ -29,6 +29,7 @@ pub fn step(ctx: &mut Ctx, _p: ClientParams, dir: Direction) -> Result<Value, Ap
     if let Some(next) = neighbour_by_geometry(&rects, &tab.focused, dir) {
         let events = ctx.model.focus_pane(&next)?;
         ctx.events.extend(events);
+        ctx.view_dirty = true;
     }
     result(ctx)
 }
@@ -43,6 +44,7 @@ pub fn last(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     if let Some(prev) = tab.last_focused.filter(|p| tab.layout.contains(p)) {
         let events = ctx.model.focus_pane(&prev)?;
         ctx.events.extend(events);
+        ctx.view_dirty = true;
     }
     result(ctx)
 }
@@ -70,6 +72,7 @@ pub fn region(ctx: &mut Ctx, p: FocusRegionParams) -> Result<Value, ApiError> {
             )))
         }
     }
+    ctx.view_dirty = true;
     result(ctx)
 }
 
@@ -86,5 +89,6 @@ pub fn pane(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     if let Some(p) = focused {
         view.focus = Focus::Pane(p);
     }
+    ctx.view_dirty = true;
     result(ctx)
 }

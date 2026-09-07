@@ -41,6 +41,10 @@ pub struct Ctx<'a> {
     pub client: Option<ClientId>,
     pub events: Vec<Event>,
     pub stop_requested: bool,
+    /// Set by a handler when it changes something a frame shows. A read-only method leaves
+    /// it clear, so answering `server.info` or `pane.list` does not compose a frame for
+    /// every attached client.
+    pub view_dirty: bool,
     /// What the core must do once the handler returns. A handler is pure over the Model and
     /// the runtime maps; spawning a process, killing one and closing a connection are the
     /// core's, so they are recorded here rather than done in place.

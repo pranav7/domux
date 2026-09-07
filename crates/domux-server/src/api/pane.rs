@@ -31,6 +31,7 @@ pub fn split(ctx: &mut Ctx, p: PaneSplitParams) -> Result<Value, ApiError> {
     let (new, events) = ctx.model.split_pane(&pane, p.dir, cwd)?;
     ctx.events.extend(events);
     ctx.pending_spawns.push(new.clone());
+    ctx.view_dirty = true;
     // The new pane has no runtime yet - the core spawns it after this returns - so its
     // size reads 0x0 here. `focused` is the one field the split itself settles.
     let mut info = ctx
@@ -45,6 +46,7 @@ pub fn close(ctx: &mut Ctx, p: PaneTargetParams) -> Result<Value, ApiError> {
     let (panes, _, events) = ctx.model.close_pane(&pane)?;
     ctx.events.extend(events);
     ctx.pending_kills.extend(panes);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 
@@ -61,6 +63,7 @@ pub fn focus(ctx: &mut Ctx, p: PaneTargetParams) -> Result<Value, ApiError> {
     }
     let events = ctx.model.focus_pane(&pane)?;
     ctx.events.extend(events);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 
@@ -81,6 +84,7 @@ pub fn zoom(ctx: &mut Ctx, p: PaneTargetParams) -> Result<Value, ApiError> {
     }
     let events = ctx.model.toggle_zoom(&loc.tab)?;
     ctx.events.extend(events);
+    ctx.view_dirty = true;
     ok(ZoomResult {
         zoomed: ctx.model.tab(&loc.tab).and_then(|t| t.zoomed.clone()),
     })
@@ -101,6 +105,7 @@ pub fn copy_mode(ctx: &mut Ctx, p: PaneTargetParams) -> Result<Value, ApiError> 
     let on = rt.copy.is_some();
     rt.dirty = true;
     ctx.model.set_pane_copy_mode(&pane, on);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 
@@ -114,6 +119,7 @@ pub fn resize(ctx: &mut Ctx, p: PaneResizeParams) -> Result<Value, ApiError> {
     // The bool `resize_pane` returns says an ancestor split owned the axis, not that the
     // geometry moved, so it is deliberately not reported. `Ack.ok` means the call ran.
     ctx.model.resize_pane(&pane, p.dir, p.cells, area)?;
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 

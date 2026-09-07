@@ -145,18 +145,24 @@ async fn control(
 struct ClientCleanup {
     writer: JoinHandle<()>,
     core_tx: mpsc::Sender<CoreMsg>,
-    client: ClientId,
+    /// Taken by `drop`, so the message goes exactly once.
+    client: Option<ClientId>,
 }
 
 impl Drop for ClientCleanup {
     fn drop(&mut self) {
-        // `try_send`, because `Drop` cannot await. The core drains a 1024-deep channel
-        // continuously, so the only way this queue is full is that the core has stopped,
-        // which is the one case where the message has nothing left to do.
-        let _ = self.core_tx.try_send(CoreMsg::ClientGone {
-            client: self.client.clone(),
-        });
         self.writer.abort();
+        let Some(client) = self.client.take() else {
+            return;
+        };
+        // `Drop` cannot await, and `try_send` would throw the message away whenever the
+        // core is momentarily behind, which is exactly when a client is leaking. The task
+        // holds a sender and waits for room instead; when the core has stopped the channel
+        // closes, the send fails and the task ends, so nothing is held open either way.
+        let core_tx = self.core_tx.clone();
+        tokio::spawn(async move {
+            let _ = core_tx.send(CoreMsg::ClientGone { client }).await;
+        });
     }
 }
 
@@ -222,7 +228,7 @@ async fn attach(
     let _cleanup = ClientCleanup {
         writer,
         core_tx: core_tx.clone(),
-        client: client.clone(),
+        client: Some(client.clone()),
     };
     loop {
         while let Some(msg) = dec.next::<ClientMsg>()? {
@@ -240,4 +246,37 @@ async fn attach(
         dec.push(&buf[..n]);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cleanup_waits_for_room_to_send_client_gone() {
+        let (core_tx, mut core_rx) = mpsc::channel(1);
+        core_tx.send(CoreMsg::Tick).await.unwrap();
+        let writer = tokio::spawn(std::future::pending::<()>());
+        drop(ClientCleanup {
+            writer,
+            core_tx,
+            client: Some(ClientId("c_0d77".into())),
+        });
+        assert!(matches!(core_rx.recv().await, Some(CoreMsg::Tick)));
+        let message = tokio::time::timeout(std::time::Duration::from_secs(1), core_rx.recv())
+            .await
+            .expect("cleanup sends when room becomes available")
+            .expect("cleanup keeps a sender until it sends");
+        assert!(matches!(
+            message,
+            CoreMsg::ClientGone { client } if client == ClientId("c_0d77".into())
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), core_rx.recv())
+                .await
+                .expect("cleanup releases its sender after sending")
+                .is_none(),
+            "cleanup sends only once"
+        );
+    }
 }

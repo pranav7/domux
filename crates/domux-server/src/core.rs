@@ -6,14 +6,15 @@ use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::render::{self, RenderInput};
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, Event, Method, Request, Response};
-use domux_core::ids::{ClientId, PaneId, TabId};
+use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::model::{ClientView, Focus, Model, PaneFacts};
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
 use domux_term::{Emulator, Rgb, Size};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 pub enum CoreMsg {
@@ -65,6 +66,15 @@ pub const DEFAULT_BG: Rgb = Rgb {
     b: 0x2e,
 };
 const DRAIN_LIMIT: usize = 64;
+// A child that exits within two seconds of its start did not run: two seconds is more than
+// an ordinary shell needs to reach its prompt, and far less than the shortest session a
+// person would open, so it separates a bad `terminal.shell` or a broken rc file from a shell
+// somebody used and left. Three replacements ride out a transient failure - a lock held for
+// a moment, a mount that was not ready - while capping one broken workspace at four process
+// starts in total, after which the fourth pane is kept on screen with its exit status and
+// the workspace stops replacing it.
+const IMMEDIATE_EXIT: Duration = Duration::from_secs(2);
+const MAX_IMMEDIATE_RESPAWNS: u8 = 3;
 
 pub struct Core {
     pub model: Model,
@@ -89,6 +99,13 @@ pub struct Core {
     view_dirty: bool,
     last_minute: Option<String>,
     stopping: bool,
+    /// When each live pane's process started, for the immediate-exit guard below.
+    pane_started_at: HashMap<PaneId, Instant>,
+    /// Consecutive immediate exits of a workspace's last pane. Cleared as soon as any pane
+    /// in that workspace survives `IMMEDIATE_EXIT`.
+    immediate_exits: HashMap<WorkspaceId, u8>,
+    /// Workspaces whose exited pane is kept rather than replaced.
+    respawn_blocked: HashSet<WorkspaceId>,
 }
 
 impl Core {
@@ -136,6 +153,9 @@ impl Core {
             view_dirty: true,
             last_minute: None,
             stopping: false,
+            pane_started_at: HashMap::new(),
+            immediate_exits: HashMap::new(),
+            respawn_blocked: HashSet::new(),
         };
         core.ensure_every_workspace_has_a_tab();
         for pane in core.model.all_pane_ids() {
@@ -232,6 +252,7 @@ impl Core {
                 let pid = pty.pid();
                 self.panes
                     .insert(pane.clone(), PaneRuntime::new(pane.clone(), emulator, pty));
+                self.pane_started_at.insert(pane.clone(), Instant::now());
                 self.model.set_pane_facts(
                     pane,
                     PaneFacts {
@@ -365,7 +386,7 @@ impl Core {
                 rows: hello.rows,
             },
             caps: hello.caps.clone(),
-            workspace,
+            workspace: workspace.clone(),
             tab,
             focus: Focus::Pane(focused),
             sidebar_open: false,
@@ -383,6 +404,11 @@ impl Core {
             id.clone(),
             ClientConn::new(id.clone(), tx, hello.caps, hello.cols, hello.rows),
         );
+        // A client attaching after the guard tripped sees the same hint as one that watched
+        // it trip, rather than a workspace with a dead pane and no reason given.
+        if self.respawn_blocked.contains(&workspace) {
+            self.set_shell_failure_hint(&workspace);
+        }
         self.view_dirty = true;
         Ok(id)
     }
@@ -499,6 +525,7 @@ impl Core {
             client,
             events: Vec::new(),
             stop_requested: false,
+            view_dirty: false,
             pending_spawns: Vec::new(),
             pending_kills: Vec::new(),
             detach_clients: Vec::new(),
@@ -509,10 +536,13 @@ impl Core {
         let kills = std::mem::take(&mut ctx.pending_kills);
         let detaches = std::mem::take(&mut ctx.detach_clients);
         let stop = ctx.stop_requested;
+        // Read out of `ctx` before it is dropped: the borrow of `self` ends with it.
+        let view_dirty = ctx.view_dirty;
         drop(ctx);
         if stop {
             self.stopping = true;
         }
+        self.view_dirty |= view_dirty;
         self.pending_events.extend(events);
         self.apply_side_effects(spawns, kills, detaches);
         result
@@ -531,10 +561,12 @@ impl Core {
         kills: Vec<PaneId>,
         detaches: Vec<ClientId>,
     ) {
+        let acted = !spawns.is_empty() || !kills.is_empty() || !detaches.is_empty();
         for pane in kills {
             if let Some(mut rt) = self.panes.remove(&pane) {
                 rt.pty.kill();
             }
+            self.pane_started_at.remove(&pane);
         }
         for pane in spawns {
             let size = self.provisional_size(&pane);
@@ -545,17 +577,23 @@ impl Core {
         }
         let before = self.model.all_pane_ids();
         self.ensure_every_workspace_has_a_tab();
-        for new in self
+        let created: Vec<PaneId> = self
             .model
             .all_pane_ids()
             .into_iter()
             .filter(|p| !before.contains(p))
-        {
+            .collect();
+        let replaced = !created.is_empty();
+        for new in created {
             let size = self.provisional_size(&new);
             self.spawn_pane(&new, size);
         }
         self.sync_pane_sizes();
-        self.view_dirty = true;
+        // Only when something happened. A read-only method reaches here with three empty
+        // lists and nothing to replace, and must leave a clean view clean.
+        if acted || replaced {
+            self.view_dirty = true;
+        }
     }
 
     /// The size the smallest client on the pane's tab will give it, so its PTY starts at the
@@ -636,6 +674,7 @@ impl Core {
     }
 
     fn after_batch(&mut self) {
+        self.reset_respawn_guards_for_surviving_panes();
         self.close_exited_panes();
         self.publish_events();
         self.sync_pane_sizes();
@@ -667,8 +706,120 @@ impl Core {
             .map(|(id, _)| id.clone())
             .collect();
         for pane in exited {
+            let Some(workspace) = self
+                .model
+                .pane_location(&pane)
+                .map(|location| location.workspace)
+            else {
+                continue;
+            };
+            // Already tripped: the pane stays as it is, so the same exit is not counted
+            // again on every later batch.
+            if self.respawn_blocked.contains(&workspace) {
+                continue;
+            }
+            // Only the workspace's last pane counts. Closing any other one leaves the
+            // workspace with a tab, so nothing replaces it and there is no loop to bound.
+            if self.is_last_pane_in_workspace(&pane, &workspace)
+                && self
+                    .pane_started_at
+                    .get(&pane)
+                    .is_some_and(|started| started.elapsed() < IMMEDIATE_EXIT)
+            {
+                let exits = self.immediate_exits.get(&workspace).copied().unwrap_or(0);
+                if exits >= MAX_IMMEDIATE_RESPAWNS {
+                    self.respawn_blocked.insert(workspace.clone());
+                    self.set_shell_failure_hint(&workspace);
+                    continue;
+                }
+                // `saturating_add` rather than `+`: the branch above caps `exits` at
+                // `MAX_IMMEDIATE_RESPAWNS`, so this cannot reach 255, and total arithmetic
+                // keeps that a fact about the counter rather than about the guard above it.
+                self.immediate_exits
+                    .insert(workspace.clone(), exits.saturating_add(1));
+            }
             self.close_pane(&pane);
         }
+    }
+
+    /// Whether `pane` is the only pane the workspace has, which is what makes closing it
+    /// close the workspace's last tab and so bring a replacement.
+    fn is_last_pane_in_workspace(&self, pane: &PaneId, workspace: &WorkspaceId) -> bool {
+        self.model.workspace(workspace).is_some_and(|ws| {
+            ws.tabs
+                .iter()
+                .flat_map(|tab| tab.layout.pane_ids())
+                .eq(std::iter::once(pane.clone()))
+        })
+    }
+
+    /// A workspace with a pane that has been alive longer than `IMMEDIATE_EXIT` is working,
+    /// so it gets its full allowance back: someone who fixes their rc file and starts a
+    /// shell that lives is not held to the old count until the server restarts.
+    fn reset_respawn_guards_for_surviving_panes(&mut self) {
+        let survived: HashSet<WorkspaceId> = self
+            .panes
+            .iter()
+            .filter(|(pane, runtime)| {
+                runtime.exited.is_none()
+                    && self
+                        .pane_started_at
+                        .get(*pane)
+                        .is_some_and(|started| started.elapsed() >= IMMEDIATE_EXIT)
+            })
+            .filter_map(|(pane, _)| {
+                self.model
+                    .pane_location(pane)
+                    .map(|location| location.workspace)
+            })
+            .collect();
+        for workspace in survived {
+            self.immediate_exits.remove(&workspace);
+            if self.respawn_blocked.remove(&workspace) {
+                self.clear_shell_failure_hint(&workspace);
+            }
+        }
+    }
+
+    fn set_shell_failure_hint(&mut self, workspace: &WorkspaceId) {
+        let hint = self.shell_failure_hint();
+        for view in self
+            .model
+            .clients
+            .iter()
+            .filter(|view| &view.workspace == workspace)
+        {
+            if let Some(conn) = self.clients.get_mut(&view.id) {
+                conn.hint = Some(hint.clone());
+            }
+        }
+        self.view_dirty = true;
+    }
+
+    /// Clears only the hint this guard set, so a clipboard failure or another notice put
+    /// there since is left alone.
+    fn clear_shell_failure_hint(&mut self, workspace: &WorkspaceId) {
+        let hint = self.shell_failure_hint();
+        for view in self
+            .model
+            .clients
+            .iter()
+            .filter(|view| &view.workspace == workspace)
+        {
+            if let Some(conn) = self.clients.get_mut(&view.id) {
+                if conn.hint.as_deref() == Some(hint.as_str()) {
+                    conn.hint = None;
+                }
+            }
+        }
+        self.view_dirty = true;
+    }
+
+    /// Names the shell that failed and the key that sets it, so the notice says what to fix
+    /// rather than that something is wrong.
+    fn shell_failure_hint(&self) -> String {
+        let shell = self.config.config.terminal.shell_or_default();
+        format!("shell {shell} exited immediately; set terminal.shell in domux.toml")
     }
 
     /// Kills the PTY and removes the pane from the Model. A workspace never ends up without a
@@ -793,9 +944,7 @@ impl Core {
                 hint: conn.hint.as_deref(),
             };
             let (buffer, cursor) = render::compose(&input);
-            if let Some(diff) = conn.take_frame(buffer, cursor) {
-                let _ = conn.tx.try_send(ServerMsg::Frame(diff));
-            }
+            conn.queue_frame(buffer, cursor);
         }
         self.view_dirty = false;
     }
@@ -833,5 +982,75 @@ fn param_client(method: &Method) -> Option<ClientId> {
         PaneSendKey(p) => p.client.clone(),
         PaneRead(p) => p.client.clone(),
         ServerInfo(_) | ServerStop(_) | EventsSubscribe(_) | ConfigReload(_) | TabList(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pane::FakeSpawner;
+    use crate::process::FakeInspector;
+    use crate::{load_config, FixedClock};
+    use domux_core::api::NoParams;
+
+    fn core(dir: &Path) -> Core {
+        let project = dir.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let (core_tx, _core_rx) = mpsc::channel(8);
+        let (persist_tx, _persist_rx) = mpsc::channel(8);
+        let opts = ServerOptions {
+            socket_path: dir.join("s.sock"),
+            state_dir: dir.join("state"),
+            config: load_config(&dir.join("none.toml")),
+            project_root: project,
+            deps: CoreDeps {
+                spawner: Arc::new(FakeSpawner::default()),
+                inspector: Arc::new(FakeInspector::default()),
+                clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+                id_seed: 7,
+            },
+        };
+        Core::new(
+            opts,
+            core_tx,
+            persist_tx,
+            &dir.join("missing.json"),
+            Arc::new(Mutex::new(Model::new(7))),
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+        .unwrap()
+    }
+
+    /// A read-only method must not compose a frame for every attached client. `dispatch`
+    /// still runs `apply_side_effects`, which is why that call marks the view only when it
+    /// actually killed, spawned, detached or replaced something.
+    #[test]
+    fn server_info_does_not_mark_the_view_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        core.view_dirty = false;
+        core.dispatch(Method::ServerInfo(NoParams::default()), None)
+            .unwrap();
+        assert!(!core.view_dirty);
+    }
+
+    /// The other side of the same flag, and the flag itself rather than the side-effect
+    /// path: `pane.zoom` records no spawn, kill or detach, so `apply_side_effects` has
+    /// nothing to act on and the frame is composed only because the handler asked for it.
+    #[test]
+    fn a_pane_zoom_marks_the_view_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let pane = core.model.all_pane_ids().first().cloned().unwrap();
+        core.view_dirty = false;
+        core.dispatch(
+            Method::PaneZoom(domux_core::api::PaneTargetParams {
+                pane: Some(pane.to_string()),
+                client: None,
+            }),
+            None,
+        )
+        .unwrap();
+        assert!(core.view_dirty);
     }
 }

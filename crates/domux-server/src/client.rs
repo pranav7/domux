@@ -1,4 +1,4 @@
-//! One attached client: its capabilities, its ratatui buffer, and the diff to the last frame.
+//! One attached client: its capabilities and the diff to the last queued frame.
 
 use domux_core::ids::ClientId;
 use domux_core::proto::{Capabilities, CellUpdate, CursorState, FrameDiff, ServerMsg, WireColor};
@@ -11,7 +11,6 @@ pub struct ClientConn {
     pub id: ClientId,
     pub tx: mpsc::Sender<ServerMsg>,
     pub caps: Capabilities,
-    pub buffer: Buffer,
     pub previous: Buffer,
     /// The next frame carries every cell: first frame, after a resize, after a reattach.
     pub needs_full: bool,
@@ -33,7 +32,6 @@ impl ClientConn {
             id,
             tx,
             caps,
-            buffer: Buffer::empty(area),
             previous: Buffer::empty(area),
             needs_full: true,
             last_cursor: None,
@@ -43,9 +41,20 @@ impl ClientConn {
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let area = Rect::new(0, 0, cols, rows);
-        self.buffer = Buffer::empty(area);
         self.previous = Buffer::empty(area);
         self.needs_full = true;
+    }
+
+    /// Queues one composed frame. The only caller of `take_frame` in the server, so the
+    /// state that call advances to and the message that carries it cannot disagree: a full
+    /// channel means the client never received that state, and the flag set here makes the
+    /// next frame replace the whole screen rather than diff against a frame it never saw.
+    pub fn queue_frame(&mut self, composed: Buffer, cursor: Option<CursorState>) {
+        if let Some(diff) = self.take_frame(composed, cursor) {
+            if self.tx.try_send(ServerMsg::Frame(diff)).is_err() {
+                self.needs_full = true;
+            }
+        }
     }
 
     /// Replaces the buffer with a composed frame and returns what changed, or `None` when
@@ -220,6 +229,27 @@ mod tests {
         assert!(after.full);
         assert_eq!((after.cols, after.rows), (4, 3));
         assert_eq!(after.cells.len(), 12);
+    }
+
+    /// `take_frame` advances `previous` whether or not the frame reaches the client, so a
+    /// send that fails would otherwise leave the two sides diffing against different
+    /// screens for good. `queue_frame` owns both halves, so a drop is repaired.
+    #[tokio::test]
+    async fn a_dropped_frame_makes_the_next_queued_frame_full() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut c = ClientConn::new(ClientId("c_0d77".into()), tx, Capabilities::default(), 3, 2);
+        c.tx.try_send(ServerMsg::Bell).unwrap();
+        c.queue_frame(buffer_with(0, 0, "a"), None);
+        assert!(matches!(rx.recv().await, Some(ServerMsg::Bell)));
+        c.queue_frame(buffer_with(0, 0, "a"), None);
+        let queued = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("the next frame is queued before the deadline")
+            .expect("the frame channel stays open");
+        match queued {
+            ServerMsg::Frame(frame) => assert!(frame.full),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// ratatui's named colours have no place on the wire, so each maps to the ANSI index it

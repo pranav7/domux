@@ -77,6 +77,7 @@ pub fn create(ctx: &mut Ctx, p: TabCreateParams) -> Result<Value, ApiError> {
     let (tab, pane, events) = ctx.model.create_tab(&ws, cwd)?;
     ctx.events.extend(events);
     ctx.pending_spawns.push(pane);
+    ctx.view_dirty = true;
     if let Ok(client) = ctx.view() {
         if ctx.model.client(&client).is_some_and(|c| c.workspace == ws) {
             let events = ctx.model.select_tab(&client, &tab)?;
@@ -109,6 +110,7 @@ pub fn rename(ctx: &mut Ctx, p: TabRenameParams) -> Result<Value, ApiError> {
             view.focus = Focus::Region(RegionKind::Overlay);
         }
     }
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 
@@ -116,6 +118,7 @@ pub fn clear_name(ctx: &mut Ctx, p: TabTargetParams) -> Result<Value, ApiError> 
     let tab = ctx.resolve_tab_param(p.tab.as_deref())?;
     let events = ctx.model.rename_tab(&tab, None)?;
     ctx.events.extend(events);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 
@@ -124,6 +127,7 @@ pub fn close(ctx: &mut Ctx, p: TabTargetParams) -> Result<Value, ApiError> {
     let (panes, events) = ctx.model.close_tab(&tab)?;
     ctx.events.extend(events);
     ctx.pending_kills.extend(panes);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
 
@@ -132,5 +136,6 @@ pub fn select(ctx: &mut Ctx, p: TabSelectParams) -> Result<Value, ApiError> {
     let tab = ctx.resolve_tab_param(Some(&p.tab))?;
     let events = ctx.model.select_tab(&client, &tab)?;
     ctx.events.extend(events);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

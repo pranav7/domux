@@ -269,7 +269,12 @@ async fn run(args: &Args) -> Result<()> {
         (outer.width, outer.height),
     );
     if let Some(path) = &args.stats_out {
-        let tmp = path.with_extension("json.tmp");
+        // Appended to the whole name, not `with_extension`, which would turn a
+        // `--stats-out run.2026.json` into `run.2.json.tmp` and rename that over the
+        // caller's path. The same reasoning as `persist::write_atomic` and `log::Rotating`.
+        let mut tmp = path.as_os_str().to_os_string();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
         std::fs::write(&tmp, serde_json::to_string_pretty(&report)?)?;
         std::fs::rename(&tmp, path)?;
     }

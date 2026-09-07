@@ -1,6 +1,7 @@
 //! The server log (roadmap decision 1): tracing to `server.log`, rotated by size at 10 MB
 //! with one previous file kept as `server.log.1`.
 
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -29,7 +30,7 @@ impl Rotating {
 impl Write for Rotating {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.written + buf.len() as u64 > MAX_BYTES {
-            let previous = self.path.with_extension("log.1");
+            let previous = with_suffix(&self.path, ".1");
             let _ = std::fs::rename(&self.path, previous);
             self.file = OpenOptions::new()
                 .create(true)
@@ -47,6 +48,15 @@ impl Write for Rotating {
     }
 }
 
+/// The whole file name plus `suffix`. `Path::with_extension` would replace the extension
+/// rather than keep it, so a log configured as `activity.txt` would rotate to `activity.1`
+/// instead of `activity.txt.1`. The same reasoning as `persist::write_atomic`.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = OsString::from(path.as_os_str());
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 /// Installs the global tracing subscriber writing to `path`. `DOMUX_LOG` sets the filter
 /// (`info` by default).
 pub fn init(path: &Path) -> anyhow::Result<()> {
@@ -60,7 +70,8 @@ pub fn init(path: &Path) -> anyhow::Result<()> {
         .with_env_filter(filter)
         .with_ansi(false)
         .with_writer(writer)
-        .init();
+        .try_init()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     Ok(())
 }
 
@@ -103,5 +114,35 @@ mod tests {
         rotating.flush().unwrap();
         assert!(!dir.path().join("server.log.1").exists());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\n");
+    }
+
+    /// The rotation keeps the whole configured name: a log at `activity.txt` becomes
+    /// `activity.txt.1`, not `activity.1`.
+    #[test]
+    fn rotation_appends_to_the_whole_configured_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("activity.txt");
+        File::create(&path).unwrap().set_len(MAX_BYTES).unwrap();
+        let mut rotating = Rotating::open(&path).unwrap();
+        rotating.write_all(b"new\n").unwrap();
+        assert!(dir.path().join("activity.txt.1").exists());
+        assert!(!dir.path().join("activity.1").exists());
+    }
+
+    /// `init` installs the one global subscriber a process may have, so a second call is a
+    /// reported error rather than a panic that takes the server down.
+    #[test]
+    fn init_creates_the_log_and_reports_a_subscriber_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("server.log");
+        init(&path).unwrap();
+        assert!(path.exists());
+        let error = init(&dir.path().join("second.log")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("global default trace dispatcher"),
+            "the conflict is returned: {error}"
+        );
     }
 }

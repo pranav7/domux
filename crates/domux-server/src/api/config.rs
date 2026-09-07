@@ -19,5 +19,7 @@ pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
     ctx.events.push(Event::ConfigReloaded {
         error: error.clone(),
     });
+    // The top bar shows a config error and the keys the keymap names.
+    ctx.view_dirty = true;
     ok(ConfigReloadResult { error, warnings })
 }

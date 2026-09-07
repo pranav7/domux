@@ -21,5 +21,6 @@ pub fn help(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
         .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
     view.overlay = Some(Overlay::Help);
     view.focus = Focus::Region(RegionKind::Overlay);
+    ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
