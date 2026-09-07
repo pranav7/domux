@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/domux-term", "crates/m0-spike"]
+members = ["crates/domux-term", "crates/domux-core", "crates/domux-server", "crates/domux-client", "crates/domux"]
 
 [workspace.package]
 version = "2.0.0-alpha.0"
@@ -16,4 +16,4 @@ unsafe_op_in_unsafe_fn = "warn"
 all = "warn"
 
 [profile.release]
-debug = 1          # symbols for profiling the spike
+debug = 1          # symbols for profiling

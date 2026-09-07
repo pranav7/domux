@@ -12,7 +12,7 @@ else
 fi
 if [ ! -d "$SRC/include/ghostty" ]; then
   echo "no ghostty source at $SRC" >&2
-  echo "run: cargo build -p domux-term --features ghostty" >&2
+  echo "run: cargo build -p domux-term --locked" >&2
   exit 1
 fi
 printf '%s\n' "$SRC"

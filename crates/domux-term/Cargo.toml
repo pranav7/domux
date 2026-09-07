@@ -13,8 +13,10 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
-bitflags = "2.13.1"
+bitflags = { version = "2.13.1", features = ["serde"] }
 compact_str = "0.10.0"
+schemars = "1.0"
+serde = { version = "1", features = ["derive"] }
 
 [build-dependencies]
 sha2 = "0.10"

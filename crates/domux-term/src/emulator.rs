@@ -2,6 +2,29 @@
 
 use crate::key::KeyEvent;
 use crate::types::{Cursor, Grid, Rgb, Size};
+use std::path::PathBuf;
+
+/// A position in the scrollback plus screen. `row` counts from the top of the scrollback:
+/// rows `0..scrollback_len()` are history and `scrollback_len()..scrollback_len()+rows` are
+/// the visible screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ScrollbackPos {
+    pub row: usize,
+    pub col: u16,
+}
+
+/// The terminal modes domux reads. Only the ones a feature needs are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Mode {
+    /// DECSET 1049 or 47: the alternate screen is active, so there is no scrollback to walk.
+    AltScreen,
+    /// DECSET 2004.
+    BracketedPaste,
+    /// DECSET 1004: the program wants focus in and out reports.
+    FocusEvents,
+    /// DECSET 1: application cursor keys.
+    AppCursor,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmulatorConfig {
@@ -46,6 +69,44 @@ pub trait Emulator: Send {
     /// Appends pasted text, wrapped in `ESC [ 200 ~` and `ESC [ 201 ~` when the inner
     /// program enabled bracketed paste (mode 2004).
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>);
+
+    /// Lines of history above the visible screen.
+    fn scrollback_len(&self) -> usize;
+
+    /// Like `snapshot_grid`, but the top row is `offset_from_bottom` lines above the live
+    /// screen's top row. An offset past the oldest line clamps to the oldest line. Offset 0
+    /// is `snapshot_grid`.
+    fn snapshot_grid_at(&mut self, offset_from_bottom: usize, out: &mut Grid);
+
+    /// The text between two positions, inclusive, or `None` when the read failed.
+    ///
+    /// Rows are joined with `\n` and each row's trailing blanks are removed. A line the
+    /// terminal soft-wrapped comes back as the one line it was written as; a break the
+    /// writer sent stays a break, so a wrapped URL reads as one URL. A wide grapheme appears
+    /// once, from either of the two cells it covers. Blank rows at the end of the range add
+    /// nothing, so reading past the end of the text does not produce trailing blank lines,
+    /// while a blank row between two rows of text still ends its line. Positions past the
+    /// end clamp, and a reversed range reads as the forward one: the endpoints are swapped
+    /// here, so no caller has to order them.
+    ///
+    /// `Some("")` is a range that holds no text and `None` is the emulator saying it could
+    /// not read the range at all. No caller may collapse the two: copying nothing because a
+    /// read failed, with nothing said, is the worst answer this method can give.
+    fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> Option<String>;
+
+    /// The title the program set with OSC 0 or OSC 2, if any.
+    fn title(&self) -> Option<String>;
+
+    /// The working directory the shell reported with OSC 7, decoded from its file URL.
+    fn cwd(&self) -> Option<PathBuf>;
+
+    /// True once if a BEL arrived since the last call.
+    fn take_bell(&mut self) -> bool;
+
+    fn mode_active(&self, mode: Mode) -> bool;
+
+    /// Appends the focus in or out report when the program enabled mode 1004; nothing otherwise.
+    fn encode_focus(&self, focused: bool, out: &mut Vec<u8>);
 }
 
 /// Appends `text` with the bracketed paste markers when `bracketed` is set. Reading mode
@@ -57,5 +118,87 @@ pub fn wrap_paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
     out.extend_from_slice(text.as_bytes());
     if bracketed {
         out.extend_from_slice(b"\x1b[201~");
+    }
+}
+
+/// Decodes the path of an OSC 7 `file://host/path` URL. Percent escapes are decoded; the
+/// host is ignored because domux only ever runs locally.
+pub fn osc7_path(url: &str) -> Option<PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    let path = &rest[rest.find('/')?..];
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut it = path.bytes();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hi = it.next()?;
+            let lo = it.next()?;
+            // Both nibbles are checked first because `from_str_radix` accepts a leading
+            // sign, so `%+f` would parse as 15 rather than being rejected. A malformed
+            // escape is not a path, and a guessed byte is worse than no answer.
+            if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+                return None;
+            }
+            let hex = [hi, lo];
+            let s = std::str::from_utf8(&hex).ok()?;
+            bytes.push(u8::from_str_radix(s, 16).ok()?);
+        } else {
+            bytes.push(b);
+        }
+    }
+    Some(PathBuf::from(String::from_utf8(bytes).ok()?))
+}
+
+/// The focus reports of mode 1004, for the path that encodes them by hand.
+pub fn focus_report(focused: bool) -> &'static [u8] {
+    if focused {
+        b"\x1b[I"
+    } else {
+        b"\x1b[O"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc7_path_decodes_a_file_url_and_ignores_the_host() {
+        assert_eq!(
+            osc7_path("file://localhost/Users/pranav"),
+            Some(PathBuf::from("/Users/pranav"))
+        );
+        assert_eq!(
+            osc7_path("file:///tmp/a%20b"),
+            Some(PathBuf::from("/tmp/a b"))
+        );
+        // Hex digits decode in either case.
+        assert_eq!(
+            osc7_path("file:///tmp/a%7eb"),
+            Some(PathBuf::from("/tmp/a~b"))
+        );
+        assert_eq!(
+            osc7_path("file:///tmp/a%7Eb"),
+            Some(PathBuf::from("/tmp/a~b"))
+        );
+    }
+
+    #[test]
+    fn osc7_path_reports_absent_for_anything_that_is_not_a_file_url() {
+        // A bare path is what OSC 9 and OSC 1337 report; it is not a file URL.
+        assert_eq!(osc7_path("/tmp"), None);
+        assert_eq!(osc7_path("file://host-with-no-path"), None);
+        // A truncated percent escape decodes to nothing rather than to a guess.
+        assert_eq!(osc7_path("file:///tmp/a%2"), None);
+        // Neither does a malformed one: `+` and `-` are signs an integer parser accepts,
+        // and a non-hex letter is not a digit at all.
+        assert_eq!(osc7_path("file:///tmp/a%+f"), None);
+        assert_eq!(osc7_path("file:///tmp/a%-f"), None);
+        assert_eq!(osc7_path("file:///tmp/a%zz"), None);
+    }
+
+    #[test]
+    fn focus_report_is_the_mode_1004_pair() {
+        assert_eq!(focus_report(true), b"\x1b[I");
+        assert_eq!(focus_report(false), b"\x1b[O");
     }
 }

@@ -2,15 +2,16 @@
 
 use bitflags::bitflags;
 use compact_str::CompactString;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Size {
     pub cols: u16,
     pub rows: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -18,7 +19,9 @@ pub struct Rgb {
 }
 
 /// A cell color as the inner program set it. `Default` means the outer terminal's default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum Color {
     #[default]
     Default,
@@ -27,7 +30,13 @@ pub enum Color {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    // `Serialize` and `Deserialize` have to be named here even though the impls come from
+    // the bitflags `serde` feature: the feature implements them for the hidden inner type
+    // and the derive is what forwards the public type to it. The set renders as a string of
+    // flag names.
+    //
+    // A line comment, not a doc comment: this is about the derive, not about the type.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
     pub struct Attrs: u16 {
         const BOLD = 1 << 0;
         const DIM = 1 << 1;
@@ -118,7 +127,9 @@ fn color_text(c: Color) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum CursorShape {
     #[default]
     Block,
@@ -126,7 +137,7 @@ pub enum CursorShape {
     Bar,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Cursor {
     pub row: u16,
     pub col: u16,
@@ -257,6 +268,25 @@ mod tests {
             cell.text.push(ch);
         }
         g
+    }
+
+    /// The attach protocol serializes these across a socket, so a dropped derive has to fail
+    /// here rather than in the crate that later carries them.
+    #[test]
+    fn the_grid_types_carry_serde_and_schema_derives() {
+        fn serde_both<T: Serialize + serde::de::DeserializeOwned>() {}
+        fn schema<T: schemars::JsonSchema>() {}
+        serde_both::<Size>();
+        serde_both::<Rgb>();
+        serde_both::<Color>();
+        serde_both::<Attrs>();
+        serde_both::<Cursor>();
+        serde_both::<CursorShape>();
+        schema::<Size>();
+        schema::<Rgb>();
+        schema::<Color>();
+        schema::<Cursor>();
+        schema::<CursorShape>();
     }
 
     #[test]
