@@ -7,6 +7,47 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use tokio::sync::mpsc;
 
+/// What a hint is, which is what decides when it goes away.
+///
+/// The field holds messages with different lifetimes, and telling them apart by their text
+/// only works while the text can be reproduced: the shell-failure notice names the
+/// configured shell, so a `config.reload` that changes `terminal.shell` used to leave a
+/// stored notice no generated string matched any more, and the next key cleared a notice
+/// that was still true. The kind is the identity; the text is only what the reader sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintKind {
+    /// The answer to one key: a failed action, a clipboard that could not be written. It
+    /// stands until the next key and no longer.
+    Action,
+    /// The respawn guard's notice. True until a shell survives or the config is reloaded.
+    ShellFailure,
+    /// A config file that did not load. True until the config is reloaded.
+    ConfigError,
+}
+
+/// One line for the clock's place, and what makes it go away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hint {
+    pub kind: HintKind,
+    pub text: String,
+}
+
+impl Hint {
+    pub fn action(text: impl Into<String>) -> Hint {
+        Hint {
+            kind: HintKind::Action,
+            text: text.into(),
+        }
+    }
+
+    pub fn shell_failure(text: impl Into<String>) -> Hint {
+        Hint {
+            kind: HintKind::ShellFailure,
+            text: text.into(),
+        }
+    }
+}
+
 pub struct ClientConn {
     pub id: ClientId,
     pub tx: mpsc::Sender<ServerMsg>,
@@ -16,7 +57,7 @@ pub struct ClientConn {
     pub needs_full: bool,
     pub last_cursor: Option<CursorState>,
     /// A one-line notice for the clock's place, such as a clipboard failure.
-    pub hint: Option<String>,
+    pub hint: Option<Hint>,
 }
 
 impl ClientConn {

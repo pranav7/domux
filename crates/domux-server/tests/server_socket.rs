@@ -590,6 +590,161 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
     server.stop().await;
 }
 
+/// The bound holds wherever a pane is replaced, so a key cannot walk around it. Enter on a
+/// pane whose child exited closes it, and closing a workspace's last pane brings a
+/// replacement shell: with the guard consulted only where the exit was counted, each Enter
+/// started another shell and key repeat was a spawn storm. A blocked workspace answers Enter
+/// with the notice instead, and `config.reload` is the way back.
+#[tokio::test]
+async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("proj");
+    std::fs::create_dir_all(&project).unwrap();
+    let config_path = dir.path().join("domux.toml");
+    std::fs::write(&config_path, "[terminal]\nshell = \"/broken/shell\"\n").unwrap();
+    // Everything exits at once, so the guard trips on the fourth start.
+    let spawner = Arc::new(SwitchingExitSpawner {
+        inner: FakeSpawner::default(),
+        count: AtomicUsize::new(0),
+        exit_through: AtomicUsize::new(usize::MAX),
+    });
+    let opts = ServerOptions {
+        socket_path: dir.path().join("s.sock"),
+        state_dir: dir.path().join("state"),
+        config: load_config(&config_path),
+        project_root: project,
+        deps: CoreDeps {
+            spawner: spawner.clone(),
+            inspector: Arc::new(FakeInspector::default()),
+            clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            id_seed: 7,
+        },
+    };
+    let server = Server::start(opts).await.unwrap();
+    let mut attached = UnixStream::connect(&server.socket_path).await.unwrap();
+    let mut wide_hello = hello(domux_core::VERSION);
+    let ClientMsg::Hello(h) = &mut wide_hello else {
+        unreachable!();
+    };
+    h.cols = 100;
+    attached
+        .write_all(&encode(&wide_hello).unwrap())
+        .await
+        .unwrap();
+    let mut decoder = Decoder::default();
+    assert!(matches!(
+        read_msg(&mut attached, &mut decoder).await,
+        ServerMsg::Welcome { .. }
+    ));
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    let mut screen = String::new();
+    while !screen.contains("shell /broken/shell exited immediately") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the guard never tripped, last screen: {screen:?}"
+        );
+        if let ServerMsg::Frame(frame) = read_msg(&mut attached, &mut decoder).await {
+            let text: String = frame
+                .cells
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect();
+            if frame.full {
+                screen = text;
+            } else {
+                screen.push_str(&text);
+            }
+        }
+    }
+    let tripped = spawner.count.load(Ordering::SeqCst);
+    assert_eq!(tripped, 4, "four starts, then the guard keeps the pane");
+    let retained = server.snapshot.lock().unwrap().all_pane_ids();
+    assert_eq!(retained.len(), 1, "the fourth pane is kept");
+    // Key repeat on the retained pane: ten Enters, each after the last has been answered,
+    // which is what a held key looks like to the server.
+    let enter = encode(&ClientMsg::Key(domux_term::KeyEvent::press(
+        domux_term::Key::Enter,
+        domux_term::Mods::empty(),
+    )))
+    .unwrap();
+    for _ in 0..10 {
+        attached.write_all(&enter).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert_eq!(
+        spawner.count.load(Ordering::SeqCst),
+        tripped,
+        "Enter on the retained pane started another shell"
+    );
+    assert_eq!(
+        server.snapshot.lock().unwrap().all_pane_ids(),
+        retained,
+        "Enter closed the retained pane rather than answering with the notice"
+    );
+    // `pane.close` reaches a replacement the same way, and is bounded the same way. The
+    // workspace keeps a tab - one without a tab is a state no frame can draw - and the pane
+    // in it has no process, which `pane.list` reports as a screen of 0x0 rather than a size
+    // nothing is drawing.
+    let closed = call(&server.socket_path, "pane.close", serde_json::json!({})).await;
+    assert!(closed.result.is_some(), "{closed:?}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        spawner.count.load(Ordering::SeqCst),
+        tripped,
+        "closing the pane started another shell"
+    );
+    let listed = call(&server.socket_path, "pane.list", serde_json::json!({})).await;
+    let listed = listed.result.expect("result");
+    let panes = listed.as_array().expect("a list of panes");
+    assert_eq!(panes.len(), 1, "the workspace kept exactly one pane");
+    assert_eq!(panes[0]["cols"], 0, "and it has no process: {panes:?}");
+    // The shell is fixed and the config reloaded: the workspace gets its allowance back and
+    // the next shell starts. This one lives, so nothing trips the guard again.
+    spawner.exit_through.store(tripped, Ordering::SeqCst);
+    std::fs::write(&config_path, "[terminal]\nshell = \"/bin/sh\"\n").unwrap();
+    let reloaded = call(&server.socket_path, "config.reload", serde_json::json!({})).await;
+    assert!(reloaded.result.is_some(), "{reloaded:?}");
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    while spawner.count.load(Ordering::SeqCst) == tripped {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no shell started after the config was reloaded"
+        );
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        spawner.count.load(Ordering::SeqCst),
+        tripped + 1,
+        "the reload started one shell, and that one lives"
+    );
+    // A client attaching now is told nothing: the notice named a state that is over.
+    let mut after = UnixStream::connect(&server.socket_path).await.unwrap();
+    after
+        .write_all(&encode(&wide_hello).unwrap())
+        .await
+        .unwrap();
+    let mut decoder = Decoder::default();
+    assert!(matches!(
+        read_msg(&mut after, &mut decoder).await,
+        ServerMsg::Welcome { .. }
+    ));
+    let frame = match read_msg(&mut after, &mut decoder).await {
+        ServerMsg::Frame(frame) => frame,
+        other => panic!("{other:?}"),
+    };
+    let screen: String = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect();
+    assert!(
+        !screen.contains("exited immediately"),
+        "the notice outlived the state it named: {screen:?}"
+    );
+    server.stop().await;
+}
+
 /// Only the workspace's last pane counts towards the guard. Closing any other one leaves
 /// the workspace a tab, so nothing replaces it and there is no loop to bound - and counting
 /// it would spend the allowance on ordinary short-lived commands in a split.

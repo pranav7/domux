@@ -51,6 +51,9 @@ pub struct Ctx<'a> {
     pub pending_spawns: Vec<PaneId>,
     pub pending_kills: Vec<PaneId>,
     pub detach_clients: Vec<ClientId>,
+    /// Set by a config reload that loaded: the respawn guard's blocks are the core's, and a
+    /// new config is the signal that the shell it tripped on may be fixed.
+    pub release_respawn_blocks: bool,
 }
 
 impl Ctx<'_> {

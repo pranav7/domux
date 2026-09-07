@@ -87,7 +87,9 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
     if let Some(pane) = core.focused_pane(client) {
         if core.panes.get(&pane).is_some_and(|rt| rt.exited.is_some()) {
             if key.key == Key::Enter {
-                core.close_pane(&pane);
+                // Not `close_pane`: closing the workspace's last pane starts a replacement
+                // shell, and the respawn guard has to bound that however it is reached.
+                core.close_exited_pane(&pane);
             }
             return Route::Pane;
         }

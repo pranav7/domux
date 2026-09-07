@@ -12,6 +12,9 @@ pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
     let warnings = loaded.warnings.clone();
     if loaded.error.is_none() {
         *ctx.config = loaded;
+        // The config that made the respawn guard trip is gone, so the block on the
+        // workspaces it stopped goes with it.
+        ctx.release_respawn_blocks = true;
     } else {
         ctx.config.error = loaded.error;
         ctx.config.warnings = loaded.warnings;

@@ -1,7 +1,7 @@
 //! The core task: the one owner of the Model, every PaneRuntime and every ClientConn.
 
 use crate::api::{self, Ctx};
-use crate::client::ClientConn;
+use crate::client::{ClientConn, Hint, HintKind};
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::render::{self, RenderInput};
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
@@ -468,7 +468,7 @@ impl Core {
             ClientMsg::Detach => self.detach(&client, Some("detached")),
             ClientMsg::ClipboardFailed(reason) => {
                 if let Some(conn) = self.clients.get_mut(&client) {
-                    conn.hint = Some(format!("clipboard failed: {reason}"));
+                    conn.hint = Some(Hint::action(format!("clipboard failed: {reason}")));
                 }
                 self.view_dirty = true;
             }
@@ -493,27 +493,32 @@ impl Core {
                 if let Err(e) = self.dispatch(method, Some(client.clone())) {
                     tracing::info!(client = %client, action = %action, "{}", e.message);
                     if let Some(conn) = self.clients.get_mut(client) {
-                        conn.hint = Some(e.message);
+                        conn.hint = Some(Hint::action(e.message));
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!(action = %action, "{}", e.message);
                 if let Some(conn) = self.clients.get_mut(client) {
-                    conn.hint = Some(e.message);
+                    conn.hint = Some(Hint::action(e.message));
                 }
             }
         }
     }
 
     /// Clears the notice a failed action left, so it stands until the next key and no
-    /// longer. The shell-failure notice is not one of those: it describes a state that is
-    /// still true, and typing does not make it untrue, so it is left for
-    /// `clear_shell_failure_hint` to withdraw when a pane survives.
+    /// longer. A system notice is not one of those: it describes a state that is still true,
+    /// and typing does not make it untrue, so it is left for whoever set it to withdraw when
+    /// the state ends. Which is which is the hint's kind, not its text: a notice that names
+    /// the configured shell stops matching a freshly generated one the moment the config
+    /// changes, and a message must not depend on being reproducible to survive a keystroke.
     fn clear_action_hint(&mut self, client: &ClientId) {
-        let shell = self.shell_failure_hint();
         if let Some(conn) = self.clients.get_mut(client) {
-            if conn.hint.as_deref() != Some(shell.as_str()) {
+            if conn
+                .hint
+                .as_ref()
+                .is_some_and(|h| h.kind == HintKind::Action)
+            {
                 conn.hint = None;
             }
         }
@@ -564,6 +569,7 @@ impl Core {
             pending_spawns: Vec::new(),
             pending_kills: Vec::new(),
             detach_clients: Vec::new(),
+            release_respawn_blocks: false,
         };
         let result = api::dispatch(method, &mut ctx);
         let events = std::mem::take(&mut ctx.events);
@@ -573,12 +579,18 @@ impl Core {
         let stop = ctx.stop_requested;
         // Read out of `ctx` before it is dropped: the borrow of `self` ends with it.
         let view_dirty = ctx.view_dirty;
+        let release_blocks = ctx.release_respawn_blocks;
         drop(ctx);
         if stop {
             self.stopping = true;
         }
         self.view_dirty |= view_dirty;
         self.pending_events.extend(events);
+        // Before the side effects: a workspace whose block has just been lifted takes its
+        // replacement pane from the invariant below like any other.
+        if release_blocks {
+            self.release_respawn_blocks();
+        }
         self.apply_side_effects(spawns, kills, detaches);
         result
     }
@@ -620,6 +632,9 @@ impl Core {
             .collect();
         let replaced = !created.is_empty();
         for new in created {
+            if self.replacement_is_blocked(&new) {
+                continue;
+            }
             let size = self.provisional_size(&new);
             self.spawn_pane(&new, size);
         }
@@ -629,6 +644,30 @@ impl Core {
         if acted || replaced {
             self.view_dirty = true;
         }
+    }
+
+    /// Whether the respawn guard holds the workspace this replacement pane landed in.
+    ///
+    /// The one place the bound is enforced, because this is the one place a pane is
+    /// replaced: `close_exited_panes` counts the exits, but Enter on a dead pane, `pane.close`
+    /// and `tab.close` all reach a replacement through the workspace invariant above without
+    /// passing through the counter, and each of those was an unbounded way to start shells
+    /// after the bound had tripped. The pane itself stays in the model - a workspace without
+    /// a tab is a state no frame and no view method can answer for - it simply gets no
+    /// process until `config.reload` says the shell is fixed, and the notice says so.
+    fn replacement_is_blocked(&mut self, pane: &PaneId) -> bool {
+        let Some(workspace) = self
+            .model
+            .pane_location(pane)
+            .map(|location| location.workspace)
+        else {
+            return false;
+        };
+        if !self.respawn_blocked.contains(&workspace) {
+            return false;
+        }
+        self.set_shell_failure_hint(&workspace);
+        true
     }
 
     /// The size the smallest client on the pane's tab will give it, so its PTY starts at the
@@ -825,16 +864,16 @@ impl Core {
             .filter(|view| &view.workspace == workspace)
         {
             if let Some(conn) = self.clients.get_mut(&view.id) {
-                conn.hint = Some(hint.clone());
+                conn.hint = Some(Hint::shell_failure(hint.clone()));
             }
         }
         self.view_dirty = true;
     }
 
     /// Clears only the hint this guard set, so a clipboard failure or another notice put
-    /// there since is left alone.
+    /// there since is left alone. By kind: the stored text names the shell the guard tripped
+    /// on, which a reload may since have changed.
     fn clear_shell_failure_hint(&mut self, workspace: &WorkspaceId) {
-        let hint = self.shell_failure_hint();
         for view in self
             .model
             .clients
@@ -842,7 +881,11 @@ impl Core {
             .filter(|view| &view.workspace == workspace)
         {
             if let Some(conn) = self.clients.get_mut(&view.id) {
-                if conn.hint.as_deref() == Some(hint.as_str()) {
+                if conn
+                    .hint
+                    .as_ref()
+                    .is_some_and(|h| h.kind == HintKind::ShellFailure)
+                {
                     conn.hint = None;
                 }
             }
@@ -855,6 +898,52 @@ impl Core {
     fn shell_failure_hint(&self) -> String {
         let shell = self.config.config.terminal.shell_or_default();
         format!("shell {shell} exited immediately; set terminal.shell in domux.toml")
+    }
+
+    /// Enter on a pane whose child exited (`terminal.remain_on_exit`) closes it, which in a
+    /// workspace of one pane brings a fresh tab and a fresh shell.
+    ///
+    /// A workspace the respawn guard has blocked gets the notice again instead. Retrying by
+    /// hand is a reasonable thing to want, but Enter is a key a terminal repeats, so a retry
+    /// on this key is a spawn storm on a held key. `config.reload` is the retry: it is the
+    /// signal that the shell was fixed rather than that the key was pressed again.
+    pub fn close_exited_pane(&mut self, pane: &PaneId) {
+        match self
+            .model
+            .pane_location(pane)
+            .map(|location| location.workspace)
+        {
+            Some(workspace) if self.respawn_blocked.contains(&workspace) => {
+                self.set_shell_failure_hint(&workspace)
+            }
+            _ => self.close_pane(pane),
+        }
+    }
+
+    /// A reload is the "I have fixed it" signal, so every blocked workspace gets its whole
+    /// allowance back, its notice withdrawn, and a process for the pane the block left
+    /// without one. It is what makes the notice actionable (principle 9): naming
+    /// `terminal.shell` is only useful if setting it has an effect short of a restart.
+    ///
+    /// Every blocked workspace, because a reload replaces the whole config and `terminal.shell`
+    /// is one setting for all of them. Called only for a reload that loaded: a file that does
+    /// not parse leaves the previous config in place, so nothing about the shell changed.
+    fn release_respawn_blocks(&mut self) {
+        for workspace in std::mem::take(&mut self.respawn_blocked) {
+            self.immediate_exits.remove(&workspace);
+            self.clear_shell_failure_hint(&workspace);
+            let stopped: Vec<PaneId> = self
+                .model
+                .workspace(&workspace)
+                .into_iter()
+                .flat_map(|ws| ws.tabs.iter().flat_map(|tab| tab.layout.pane_ids()))
+                .filter(|pane| !self.panes.contains_key(pane))
+                .collect();
+            for pane in stopped {
+                let size = self.provisional_size(&pane);
+                self.spawn_pane(&pane, size);
+            }
+        }
     }
 
     /// Kills the PTY and removes the pane from the Model. A workspace never ends up without a
@@ -984,7 +1073,7 @@ impl Core {
                 keymap: &self.config.keymap,
                 now: self.deps.clock.now(),
                 config_error: self.config.error.as_ref(),
-                hint: conn.hint.as_deref(),
+                hint: conn.hint.as_ref().map(|h| h.text.as_str()),
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -1103,13 +1192,32 @@ mod tests {
                 domux_term::Mods::empty(),
             ))
         };
-        core.clients.get_mut(&client).unwrap().hint = Some("no pane to the left".into());
+        core.clients.get_mut(&client).unwrap().hint = Some(Hint::action("no pane to the left"));
         core.client_input(client.clone(), press());
         assert_eq!(core.clients[&client].hint, None);
         let shell = core.shell_failure_hint();
-        core.clients.get_mut(&client).unwrap().hint = Some(shell.clone());
+        core.clients.get_mut(&client).unwrap().hint = Some(Hint::shell_failure(shell.clone()));
         core.client_input(client.clone(), press());
-        assert_eq!(core.clients[&client].hint, Some(shell));
+        assert_eq!(
+            core.clients[&client].hint,
+            Some(Hint::shell_failure(shell.clone()))
+        );
+        // And it is the kind that keeps it, not the text: a reload can change
+        // `terminal.shell` while the workspace is still blocked, which leaves a stored
+        // notice naming the old shell that no freshly generated string matches. Comparing
+        // text cleared a notice that was still true on the very next key.
+        core.config.config.terminal.shell = Some("/bin/other".into());
+        assert_ne!(
+            core.shell_failure_hint(),
+            shell,
+            "the notice text has moved"
+        );
+        core.client_input(client.clone(), press());
+        assert_eq!(
+            core.clients[&client].hint,
+            Some(Hint::shell_failure(shell)),
+            "a key cleared a notice whose text the config had moved under it"
+        );
     }
 
     /// The other side of the same flag, and the flag itself rather than the side-effect
