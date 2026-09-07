@@ -27,7 +27,10 @@ pub struct StateFile {
 pub enum StateError {
     #[error("state.json is schema version {found} but this domux reads up to {supported}; upgrade domux or move the file aside")]
     Newer { found: u32, supported: u32 },
-    #[error("state.json could not be read: {0}; the previous file is state.json.bak")]
+    /// No file is named here. The `.bak` this used to point at is rotated on every write,
+    /// so it holds the refused file for one structure change and then does not; the server
+    /// moves the refused file somewhere nothing rotates and logs that path instead.
+    #[error("state.json could not be read: {0}")]
     Corrupt(String),
 }
 

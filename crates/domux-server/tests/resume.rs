@@ -156,11 +156,13 @@ async fn a_corrupt_state_file_starts_fresh_and_leaves_the_file_for_inspection() 
     let mut h = Harness::start_with(opts).await;
     let f = h.frame(h.client.clone()).await;
     assert_eq!(row(&f, 0), "| proj › main  1 │ + │ 14:32   Fri 4 Sep |");
+    h.api("tab.create", json!({})).await.unwrap();
+    h.api("tab.create", json!({})).await.unwrap();
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
-        std::fs::read_to_string(state_dir.join("state.json.bak")).unwrap(),
+        std::fs::read_to_string(state_dir.join("state.json.rejected")).unwrap(),
         "{not json",
-        "the bad file moved to .bak when the first good state was written"
+        "the bad file is moved aside at load, before any write can rotate it"
     );
 }
 
@@ -274,18 +276,24 @@ async fn a_truncated_state_file_starts_fresh_and_keeps_the_file() {
     let cut = &whole[..whole.len() / 2];
     std::fs::write(state_dir.join("state.json"), cut).unwrap();
 
-    let h = a_server_on(&state_dir).await;
+    let mut h = a_server_on(&state_dir).await;
     assert_eq!(tab_names(&h), vec![None], "a fresh tab, not the saved one");
+    // Two structure changes, because one was never the problem. `write_atomic` rotates the
+    // current file into `.bak` on every write, so a refused file left in place survives the
+    // first write and is destroyed by the second. It is moved somewhere nothing rotates.
+    h.api("tab.create", json!({})).await.unwrap();
+    h.api("tab.create", json!({})).await.unwrap();
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
-        std::fs::read_to_string(state_dir.join("state.json.bak")).unwrap(),
+        std::fs::read_to_string(state_dir.join("state.json.rejected")).unwrap(),
         cut,
-        "the truncated file is kept for inspection"
+        "the truncated file is kept for inspection, past any number of writes"
     );
 }
 
 /// A file this build does not know how to read is refused rather than read with today's
-/// field names. Starting fresh then overwrites it, so it has to survive as `.bak`.
+/// field names. Starting fresh then overwrites it, so it has to survive somewhere the
+/// writer never rotates.
 #[tokio::test]
 async fn a_state_file_from_a_newer_domux_starts_fresh_and_keeps_the_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -296,13 +304,15 @@ async fn a_state_file_from_a_newer_domux_starts_fresh_and_keeps_the_file() {
     let newer = serde_json::to_string_pretty(&v).unwrap();
     std::fs::write(state_dir.join("state.json"), &newer).unwrap();
 
-    let h = a_server_on(&state_dir).await;
+    let mut h = a_server_on(&state_dir).await;
     assert_eq!(tab_names(&h), vec![None], "a fresh tab, not the saved one");
+    h.api("tab.create", json!({})).await.unwrap();
+    h.api("tab.create", json!({})).await.unwrap();
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
-        std::fs::read_to_string(state_dir.join("state.json.bak")).unwrap(),
+        std::fs::read_to_string(state_dir.join("state.json.rejected")).unwrap(),
         newer,
-        "the newer file is kept rather than overwritten away"
+        "the newer file is kept rather than overwritten away, past any number of writes"
     );
 }
 

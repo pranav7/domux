@@ -123,7 +123,21 @@ impl Core {
             Ok(text) => match state_file::parse(&text).and_then(state_file::restore) {
                 Ok(m) => m,
                 Err(e) => {
-                    tracing::error!("{e}; starting with an empty model");
+                    // Move the refused file somewhere the writer never rotates. `write_atomic`
+                    // renames the current file to `.bak` on every write, so a refused state
+                    // file left in place survives exactly one structure change: the first
+                    // write puts it in `.bak` and the second write puts the near-empty
+                    // replacement over it. Two new tabs and the author's real state is gone.
+                    let kept = crate::persist::with_suffix(state_file, ".rejected");
+                    match std::fs::rename(state_file, &kept) {
+                        Ok(()) => tracing::error!(
+                            "{e}; the file that was refused is kept at {}; starting with an empty model",
+                            kept.display()
+                        ),
+                        Err(move_failed) => tracing::error!(
+                            "{e}; it could not be moved aside ({move_failed}), so it will be overwritten; starting with an empty model"
+                        ),
+                    }
                     Model::new(opts.deps.id_seed)
                 }
             },
