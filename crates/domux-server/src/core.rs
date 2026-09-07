@@ -439,6 +439,12 @@ impl Core {
             chord: None,
             filter: String::new(),
             last_active_seq: 0,
+            projects_cursor: None,
+            projects_scroll: 0,
+            filtering: false,
+            input: domux_core::model::TextInput::new(""),
+            overlay_under: None,
+            pill: None,
         };
         self.pending_events.extend(self.model.attach_client(view));
         let _ = tx.try_send(ServerMsg::Welcome {

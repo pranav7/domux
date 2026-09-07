@@ -28,7 +28,11 @@ pub enum RegionKind {
 }
 
 /// A one-line text input with a caret, for prompts. Pure, so every edit has a unit test.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// `Default` is the empty input, which is what `TextInput::new("")` builds. `ClientView`
+/// needs it: its `input` field is `#[serde(default)]` so a state file written before the
+/// field existed still reads back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TextInput {
     pub text: String,
     /// Caret position in chars.

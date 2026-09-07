@@ -1,6 +1,6 @@
 //! The control API's wire types: errors, events, and (Task 8) requests, responses and methods.
 
-use crate::ids::{ClientId, PaneId, TabId, WorkspaceId};
+use crate::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use crate::keymap::Action;
 use crate::model::{Direction, Focus, RegionKind};
 use crate::names::BIN_NAME;
@@ -91,6 +91,38 @@ pub enum Event {
     ClientDetached { client: ClientId },
     #[serde(rename = "config.reloaded")]
     ConfigReloaded { error: Option<String> },
+    // The project and workspace events of M2. They are declared here because Task 2 reports
+    // them from the model; Task 4 adds them to `NAMES` with the rest of the M2 event surface,
+    // so until then a subscriber filter cannot name them.
+    #[serde(rename = "project.added")]
+    ProjectAdded {
+        project: ProjectId,
+        name: String,
+        root: PathBuf,
+    },
+    #[serde(rename = "project.removed")]
+    ProjectRemoved { project: ProjectId, name: String },
+    #[serde(rename = "workspace.created")]
+    WorkspaceCreated {
+        project: ProjectId,
+        workspace: WorkspaceId,
+        handle: String,
+        path: PathBuf,
+    },
+    #[serde(rename = "workspace.renamed")]
+    WorkspaceRenamed {
+        workspace: WorkspaceId,
+        name: Option<String>,
+    },
+    #[serde(rename = "workspace.deleted")]
+    WorkspaceDeleted {
+        project: ProjectId,
+        workspace: WorkspaceId,
+        handle: String,
+        /// True when the workspace record went because its path was gone, not because
+        /// someone deleted it.
+        pruned: bool,
+    },
     #[serde(rename = "tab.created")]
     TabCreated { workspace: WorkspaceId, tab: TabId },
     #[serde(rename = "tab.renamed")]
@@ -145,6 +177,11 @@ impl Event {
             Event::ClientAttached { .. } => "client.attached",
             Event::ClientDetached { .. } => "client.detached",
             Event::ConfigReloaded { .. } => "config.reloaded",
+            Event::ProjectAdded { .. } => "project.added",
+            Event::ProjectRemoved { .. } => "project.removed",
+            Event::WorkspaceCreated { .. } => "workspace.created",
+            Event::WorkspaceRenamed { .. } => "workspace.renamed",
+            Event::WorkspaceDeleted { .. } => "workspace.deleted",
             Event::TabCreated { .. } => "tab.created",
             Event::TabRenamed { .. } => "tab.renamed",
             Event::TabClosed { .. } => "tab.closed",
