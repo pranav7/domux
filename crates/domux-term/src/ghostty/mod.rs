@@ -267,7 +267,8 @@ impl GhosttyEmulator {
     }
 
     /// Moves the viewport so `row` (counted from the top of the scrollback) is its first
-    /// row. libghostty clamps a row past the top of the active area.
+    /// row. libghostty clamps a row past the top of the active area. Every caller holds a
+    /// `ViewportRestore` first, so `snapshot_grid` and `cursor` always see the live screen.
     fn scroll_viewport_to_row(&self, row: usize) {
         // The union is 16 bytes wide and `row` fills 8 of them, so it is zeroed first rather
         // than passing the padding to C uninitialized.
@@ -276,16 +277,6 @@ impl GhosttyEmulator {
         let behavior = ffi::GhosttyTerminalScrollViewport {
             tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_ROW,
             value,
-        };
-        unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
-    }
-
-    /// Returns the viewport to the live screen. Every method that scrolls it calls this
-    /// before returning, so `snapshot_grid` and `cursor` always see the live screen.
-    fn scroll_viewport_to_bottom(&self) {
-        let behavior = ffi::GhosttyTerminalScrollViewport {
-            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
-            value: unsafe { std::mem::zeroed() },
         };
         unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
     }
@@ -544,18 +535,17 @@ impl Emulator for GhosttyEmulator {
             self.snapshot_grid(out);
             return;
         }
+        // Taken before the scroll, so the viewport returns to the live screen on every exit
+        // from here, an unwinding panic in the fill included. It holds the terminal handle
+        // rather than `&self` because the fill needs `&mut self`.
+        let _restore = ViewportRestore(self.terminal.raw);
         // `saturating_sub` is the clamp the trait promises: an offset past the oldest line
         // lands on row 0, the top of the scrollback.
         self.scroll_viewport_to_row(self.scrollback_len().saturating_sub(offset_from_bottom));
         self.fill_grid_from_render_state(out);
-        self.scroll_viewport_to_bottom();
     }
 
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String {
-        // A reversed range selects nothing, and saying so needs no call into libghostty.
-        if start > end {
-            return String::new();
-        }
         let rows = self.size.rows as usize;
         let cols = self.size.cols;
         if rows == 0 || cols == 0 {
@@ -573,10 +563,15 @@ impl Emulator for GhosttyEmulator {
             row: end.row.min(last_row),
             col: end.col.min(cols - 1),
         };
-        // Clamping two different rows onto the last one can leave the columns reversed.
-        if start > end {
-            return String::new();
-        }
+        // A reversed range reads as the forward one. A drag upward or leftward produces
+        // exactly that shape, and clamping two different rows onto the last one can reverse
+        // the columns of a range that was not reversed as given, so the swap happens after
+        // the clamp and covers both.
+        let (start, end) = if start > end {
+            (end, start)
+        } else {
+            (start, end)
+        };
         let (Some(start_ref), Some(end_ref)) = (self.grid_ref_at(start), self.grid_ref_at(end))
         else {
             return String::new();
@@ -684,13 +679,33 @@ impl Emulator for GhosttyEmulator {
                 &mut written,
             )
         };
-        // CSI I and CSI O are three bytes, so 16 is never too small. The fallback is there
-        // for a pin that somehow refuses the call: the report is a fixed pair either way.
+        // A non-success result is not retried, GHOSTTY_OUT_OF_SPACE included: CSI I and
+        // CSI O are three bytes, so a 16-byte buffer is never too small, and the fallback
+        // bytes are the ones the library itself emits (`focus.h:11-13`). Appending them is
+        // therefore the same answer, not a guess at one. `get` rather than `&buf[..written]`
+        // so that a library that reported more than it wrote appends nothing instead of
+        // panicking.
         if rc == ffi::GhosttyResult_GHOSTTY_SUCCESS {
-            out.extend_from_slice(&buf[..written]);
+            out.extend_from_slice(buf.get(..written).unwrap_or_default());
         } else {
             out.extend_from_slice(focus_report(focused));
         }
+    }
+}
+
+/// Returns the viewport to the live screen when it drops. Reading the scrollback is the one
+/// operation that moves the viewport, and a read must not leave it moved, so the restore is
+/// tied to the scope rather than written out after the read: an unwinding panic in between
+/// still runs it.
+struct ViewportRestore(ffi::GhosttyTerminal);
+
+impl Drop for ViewportRestore {
+    fn drop(&mut self) {
+        let behavior = ffi::GhosttyTerminalScrollViewport {
+            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
+            value: unsafe { std::mem::zeroed() },
+        };
+        unsafe { ffi::ghostty_terminal_scroll_viewport(self.0, behavior) };
     }
 }
 

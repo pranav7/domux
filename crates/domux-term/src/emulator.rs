@@ -82,7 +82,8 @@ pub trait Emulator: Send {
     /// blanks removed. A wide grapheme appears once, from either of the two cells it covers.
     /// Blank rows at the end of the range add nothing, so reading past the end of the text
     /// does not produce trailing blank lines, while a blank row between two rows of text
-    /// still ends its line. Positions past the end clamp, and a reversed range is empty.
+    /// still ends its line. Positions past the end clamp, and a reversed range reads as the
+    /// forward one: the endpoints are swapped here, so no caller has to order them.
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String;
 
     /// The title the program set with OSC 0 or OSC 2, if any.
@@ -123,6 +124,12 @@ pub fn osc7_path(url: &str) -> Option<PathBuf> {
         if b == b'%' {
             let hi = it.next()?;
             let lo = it.next()?;
+            // Both nibbles are checked first because `from_str_radix` accepts a leading
+            // sign, so `%+f` would parse as 15 rather than being rejected. A malformed
+            // escape is not a path, and a guessed byte is worse than no answer.
+            if !hi.is_ascii_hexdigit() || !lo.is_ascii_hexdigit() {
+                return None;
+            }
             let hex = [hi, lo];
             let s = std::str::from_utf8(&hex).ok()?;
             bytes.push(u8::from_str_radix(s, 16).ok()?);
@@ -156,6 +163,15 @@ mod tests {
             osc7_path("file:///tmp/a%20b"),
             Some(PathBuf::from("/tmp/a b"))
         );
+        // Hex digits decode in either case.
+        assert_eq!(
+            osc7_path("file:///tmp/a%7eb"),
+            Some(PathBuf::from("/tmp/a~b"))
+        );
+        assert_eq!(
+            osc7_path("file:///tmp/a%7Eb"),
+            Some(PathBuf::from("/tmp/a~b"))
+        );
     }
 
     #[test]
@@ -165,6 +181,11 @@ mod tests {
         assert_eq!(osc7_path("file://host-with-no-path"), None);
         // A truncated percent escape decodes to nothing rather than to a guess.
         assert_eq!(osc7_path("file:///tmp/a%2"), None);
+        // Neither does a malformed one: `+` and `-` are signs an integer parser accepts,
+        // and a non-hex letter is not a digit at all.
+        assert_eq!(osc7_path("file:///tmp/a%+f"), None);
+        assert_eq!(osc7_path("file:///tmp/a%-f"), None);
+        assert_eq!(osc7_path("file:///tmp/a%zz"), None);
     }
 
     #[test]

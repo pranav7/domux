@@ -189,6 +189,8 @@ fn cursor_shape_follows_decscusr() {
 #[test]
 fn scrollback_grows_as_lines_scroll_off_and_snapshot_at_offset_shows_them() {
     let mut e = make(10, 3);
+    // A fresh emulator has no history at all.
+    assert_eq!(e.scrollback_len(), 0);
     for i in 0..6 {
         e.feed(format!("line{i}\r\n").as_bytes());
     }
@@ -236,6 +238,9 @@ fn title_follows_osc_0_and_2() {
     assert_eq!(e.title(), Some("nvim main.rs".to_string()));
     e.feed(b"\x1b]0;zsh\x1b\\");
     assert_eq!(e.title(), Some("zsh".to_string()));
+    // An empty title is the library's own encoding of "no title", so it reads as absent.
+    e.feed(b"\x1b]2;\x07");
+    assert_eq!(e.title(), None);
 }
 
 #[test]
@@ -369,34 +374,38 @@ fn text_in_range_reads_a_whole_wide_grapheme_from_either_of_its_cells() {
 }
 
 #[test]
-fn text_in_range_reads_a_reversed_range_as_empty() {
+fn text_in_range_reads_a_reversed_range_as_the_forward_one() {
     let mut e = make(10, 3);
     for i in 0..6 {
         e.feed(format!("line{i}\r\n").as_bytes());
     }
-    // Reversed by row, and reversed by column within one row.
+    // Reversed by row, and reversed by column within one row. A drag upward or leftward
+    // produces exactly these, so both read as the range with its endpoints swapped.
     assert_eq!(
         e.text_in_range(
             ScrollbackPos { row: 3, col: 0 },
             ScrollbackPos { row: 1, col: 0 }
         ),
-        ""
+        "line1\nline2\nl"
     );
     assert_eq!(
         e.text_in_range(
             ScrollbackPos { row: 1, col: 4 },
             ScrollbackPos { row: 1, col: 1 }
         ),
-        ""
+        "ine1"
     );
-    // Two rows past the end clamp onto the same row, which leaves the columns reversed.
-    assert_eq!(
-        e.text_in_range(
-            ScrollbackPos { row: 100, col: 9 },
-            ScrollbackPos { row: 200, col: 0 }
-        ),
-        ""
+    // Two rows past the end clamp onto the same row, which leaves the columns reversed even
+    // though the range as given was not. It still reads as the forward range.
+    let forward = e.text_in_range(
+        ScrollbackPos { row: 100, col: 0 },
+        ScrollbackPos { row: 200, col: 9 },
     );
+    let clamped_reverse = e.text_in_range(
+        ScrollbackPos { row: 100, col: 9 },
+        ScrollbackPos { row: 200, col: 0 },
+    );
+    assert_eq!(clamped_reverse, forward);
 }
 
 #[test]
