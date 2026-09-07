@@ -1,6 +1,6 @@
 //! One pane at runtime: its PTY, its emulator, its grid. The PTY sits behind `PtySpawner`
-//! so resume tests can run without processes. Lifted from crates/m0-spike/src/pty.rs. The
-//! spike's stats.rs is not lifted: it keeps every sample in growing vectors, which suits a
+//! so resume tests can run without processes. Lifted from the M0 pane spike. The spike's
+//! sample collector is not lifted: it kept every sample in growing vectors, which suits a
 //! spike that exits and not a daemon (M0 outcome 5).
 
 use crate::copy_mode::CopyMode;
