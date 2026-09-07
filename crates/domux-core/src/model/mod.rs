@@ -48,17 +48,35 @@ pub struct Model {
     retired: VecDeque<String>,
 }
 
-/// Two models are equal when they hold the same content. `idgen`, `activity_seq` and
-/// `retired` are private machinery with no public accessor, so an inequality one of them
-/// caused could not even be explained from outside this module, and none of the three is
-/// persisted: a model read back from a state file always carries a fresh generator, a zero
-/// counter and an empty retired set. Comparing them would break `assert_eq!` for the
-/// save-and-restore check that is exactly what it is wanted for.
+/// Two models are equal when everything observable from outside this module is equal: the
+/// projects, the attached clients and `last_workspace`. `idgen`, `activity_seq` and
+/// `retired` are private with no public accessor, so an inequality one of them caused could
+/// not even be explained from outside this module, and a model read back from a state file
+/// always carries a fresh generator, a zero counter and an empty retired set.
+///
+/// The rule is observability, not persistence. `clients` is `#[serde(skip)]` like the three
+/// excluded fields, and it is kept anyway because it is public: equality that ignored a
+/// public field would report two visibly different models as the same. So a model saved and
+/// read back is genuinely not equal to the one that was saved while a client is attached,
+/// and task 10 must compare what the state file holds - the projects and `last_workspace`,
+/// or a model whose `clients` is empty - rather than expect a bare `assert_eq!` round trip
+/// to hold.
 impl PartialEq for Model {
     fn eq(&self, other: &Model) -> bool {
-        self.projects == other.projects
-            && self.clients == other.clients
-            && self.last_workspace == other.last_workspace
+        // Destructured on purpose: a field added in a later milestone stops this compiling
+        // until someone decides which side of the line it belongs on, rather than being
+        // left out of equality with no error and no test failure.
+        let Model {
+            projects,
+            clients,
+            last_workspace,
+            idgen: _,
+            activity_seq: _,
+            retired: _,
+        } = self;
+        *projects == other.projects
+            && *clients == other.clients
+            && *last_workspace == other.last_workspace
     }
 }
 
@@ -229,9 +247,20 @@ impl Model {
                 return Ok(id);
             }
         }
-        Err(ApiError::internal(format!(
-            "the {prefix} id space is full: {ID_DRAW_LIMIT} draws all hit a live or recently closed id, so close some tabs or panes"
-        )))
+        // The message names the object the caller asked for and an action that frees one of
+        // that kind. The prefix letter and the draw count are internals a reader cannot act
+        // on, and the draw count would go stale the moment `ID_DRAW_LIMIT` moved.
+        let message = match prefix {
+            "pr" => "no free project id is left: all 65536 project ids are in use or recently closed, so remove a project",
+            "w" => "no free workspace id is left: all 65536 workspace ids are in use or recently closed, so remove a workspace",
+            "t" => "no free tab id is left: all 65536 tab ids are in use or recently closed, so close a tab",
+            "p" => "no free pane id is left: all 65536 pane ids are in use or recently closed, so close a pane",
+            "c" => "no free client id is left: all 65536 client ids are in use or recently closed, so detach a client",
+            // Nothing in this crate passes another prefix. An unknown one still gets a true
+            // message rather than a guessed object name.
+            _ => "no free id is left for that kind of object: all 65536 of its ids are in use or recently closed, so close or detach one",
+        };
+        Err(ApiError::internal(message.to_string()))
     }
 
     /// Remembers a removed object's id so `next_id` will not reissue it while something may
@@ -241,7 +270,10 @@ impl Model {
     /// comparisons cost nothing beside the live scan `id_exists` already does, and one
     /// structure cannot fall out of step with itself.
     fn retire(&mut self, id: String) {
-        if self.retired.len() == RETIRED_CAPACITY {
+        // `>=` in a loop rather than `==` once: production code cannot get above the bound,
+        // but a test can construct such a state, and from one the invariant should still
+        // hold after this returns rather than the queue growing without limit.
+        while self.retired.len() >= RETIRED_CAPACITY {
             self.retired.pop_front();
         }
         self.retired.push_back(id);
@@ -1176,9 +1208,9 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_not_reissued_after_a_tab_or_pane_is_removed() {
+    fn ids_are_not_reissued_after_a_tab_is_removed() {
         // Seed 1 repeats a `hex4` value within 77 draws, so a live-only uniqueness check
-        // hands a closed pane's id to a new pane well inside this loop.
+        // hands a closed tab's id to a new tab well inside this loop.
         let mut m = Model::new(1);
         let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
         let mut seen = std::collections::HashSet::new();
@@ -1187,6 +1219,25 @@ mod tests {
             assert!(seen.insert(t.0.clone()), "tab id {t} was reissued");
             assert!(seen.insert(p.0.clone()), "pane id {p} was reissued");
             m.close_tab(&t).unwrap();
+        }
+    }
+
+    #[test]
+    fn ids_are_not_reissued_after_a_pane_is_removed() {
+        // Closing a pane is the removal the product performs most, and it retires on its
+        // own path rather than through `close_tab`'s loop. Splitting one surviving pane
+        // and closing the new one keeps the tab alive, so only the pane path runs here.
+        let mut m = Model::new(1);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (_, first, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(first.0.clone());
+        for _ in 0..300 {
+            let (p, _) = m
+                .split_pane(&first, Direction::Right, PathBuf::from("/x"))
+                .unwrap();
+            assert!(seen.insert(p.0.clone()), "pane id {p} was reissued");
+            m.close_pane(&p).unwrap();
         }
     }
 
@@ -1436,6 +1487,40 @@ mod tests {
             "{} closes retire two ids each, so the queue must have evicted",
             RETIRED_CAPACITY
         );
+
+        // And from a state above the bound, which the full-id-space test constructs in this
+        // same module, one retire still brings the queue back under it.
+        m.retired = (0..=u16::MAX).map(|v| format!("t_{v:04x}")).collect();
+        m.retire("t_0000_over".into());
+        assert_eq!(
+            m.retired.len(),
+            RETIRED_CAPACITY,
+            "the bound holds from any starting state, not only from below it"
+        );
+    }
+
+    #[test]
+    fn models_are_equal_when_their_public_content_matches() {
+        let (mut a, ws, tab, pane) = model_with_one_tab();
+        let mut b = a.clone();
+        assert_eq!(a, b);
+
+        // `clients` is public, so a difference there is one a reader outside the module can
+        // see, and equality reports it even though the field is never persisted.
+        a.attach_client(client("c_0001", &ws, &tab, &pane));
+        assert_ne!(a, b, "an attached client is public content");
+        b.attach_client(client("c_0001", &ws, &tab, &pane));
+        assert_eq!(a, b);
+
+        // The private machinery is excluded: a different generator, a different activity
+        // counter and a different retired set leave the two equal.
+        b.reseed(99);
+        b.activity_seq += 5;
+        b.retire("p_dead".into());
+        assert_eq!(a, b, "private machinery is not part of equality");
+
+        b.last_workspace = None;
+        assert_ne!(a, b, "last_workspace is public content");
     }
 
     #[test]
@@ -1449,7 +1534,8 @@ mod tests {
         assert_eq!(err.code, crate::api::ErrorCode::Internal);
         assert_eq!(
             err.message,
-            "the c id space is full: 64 draws all hit a live or recently closed id, so close some tabs or panes"
+            "no free client id is left: all 65536 client ids are in use or recently closed, so detach a client",
+            "the message names the object and an action that frees one, not the prefix letter or the draw count"
         );
         // Another prefix is a separate space and is unaffected.
         assert!(m.next_id("p").unwrap().starts_with("p_"));
