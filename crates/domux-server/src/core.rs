@@ -130,6 +130,33 @@ impl Core {
             Err(_) => Model::new(opts.deps.id_seed),
         };
         model.reseed(opts.deps.id_seed);
+        // Architecture spec section 5: a pane whose directory is gone comes back in the
+        // workspace path. Record the fallback so state.json stops naming a missing directory.
+        let fallbacks: Vec<(PaneId, PathBuf)> = model
+            .projects
+            .iter()
+            .flat_map(|p| p.workspaces.iter())
+            .flat_map(|w| {
+                w.tabs.iter().flat_map(move |t| {
+                    t.layout
+                        .panes()
+                        .into_iter()
+                        .map(move |pn| (pn.id.clone(), pn.cwd.clone(), w.path.clone()))
+                })
+            })
+            .filter(|(_, cwd, _)| !cwd.is_dir())
+            .map(|(id, _, ws_path)| (id, ws_path))
+            .collect();
+        for (pane, path) in fallbacks {
+            tracing::info!(pane = %pane, "saved directory is gone; using the workspace path {}", path.display());
+            model.set_pane_facts(
+                &pane,
+                PaneFacts {
+                    cwd: Some(path),
+                    ..Default::default()
+                },
+            );
+        }
         if model.projects.is_empty() {
             // A fresh model has every id free, so this cannot exhaust the id space.
             model
@@ -360,10 +387,15 @@ impl Core {
             ));
         }
         let id = ClientId(self.model.next_id("c").map_err(|e| e.to_string())?);
+        // Both ids come from the state file, so both can name something the file no longer
+        // holds. A client that cannot be seated cannot attach at all, so a stale id here
+        // would refuse every client and leave the server unusable with no way back but
+        // deleting the file. Fall back to a workspace and a tab that exist.
         let workspace = self
             .model
             .last_workspace
             .clone()
+            .filter(|w| self.model.workspace(w).is_some())
             .or_else(|| self.model.first_workspace())
             .ok_or("the server has no workspace")?;
         let ws = self
@@ -373,6 +405,7 @@ impl Core {
         let tab = ws
             .last_tab
             .clone()
+            .filter(|t| ws.tabs.iter().any(|x| &x.id == t))
             .or_else(|| ws.tabs.first().map(|t| t.id.clone()))
             .ok_or("the workspace has no tab")?;
         let focused = self
