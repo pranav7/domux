@@ -96,16 +96,22 @@ async fn a_second_client_sees_the_same_tab_and_the_smaller_client_sizes_the_pane
 
 #[tokio::test]
 async fn a_screen_below_the_minimum_says_what_it_needs() {
-    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 21 });
     let small = h.attach(30, 8).await;
+    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 21 });
     let f = h.frame(small.clone()).await;
     // The sentence is 43 cells and the screen is 30, so it wraps. Clipping it would drop
     // `40x10.` - the size the reader has to reach, which is the point of the notice.
     assert_eq!(row(&f, 0), "|Screen is 30x8. domux needs at|", "{f}");
     assert_eq!(row(&f, 1), "|least 40x10.                  |", "{f}");
-    h.resize(small.clone(), 40, 10).await;
+    h.detach(small.clone()).await;
+    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 21 });
+    let resized = h.attach(40, 10).await;
+    h.resize(resized.clone(), 40, 10).await;
     let f = h
-        .wait_for(small, |f| f.contains("┌ sh"), Duration::from_secs(2))
+        .wait_for(resized, |f| f.contains("┌ sh"), Duration::from_secs(2))
         .await;
     assert_eq!(
         row(&f, 0),

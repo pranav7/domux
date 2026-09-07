@@ -226,10 +226,8 @@ mod tests {
     }
 
     /// A pane with no PTY - a fake one under the harness - has no descriptor to ask about.
-    /// The real inspector must say so rather than guess, and never signal or read a number
-    /// that belongs to something else.
     #[test]
-    fn the_real_inspector_reports_nothing_when_there_is_no_descriptor() {
+    fn real_inspector_foreground_is_absent_without_a_descriptor() {
         assert_eq!(RealInspector.foreground(None), None);
     }
 

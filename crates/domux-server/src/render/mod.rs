@@ -79,20 +79,28 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
     (buf, cursor)
 }
 
-/// The size of the smallest client on `tab`; a tab nobody views keeps `fallback`.
+/// The size of the smallest client that draws panes on `tab`.
 ///
-/// Every client on a tab draws the same boxes, sized for the smallest of them, and the
-/// larger ones leave the rest of the screen blank (tmux's rule). `Core::sync_pane_sizes`
-/// sizes the PTYs from the same rectangle, so what a pane's program believes about its size
-/// is what every client actually draws.
+/// Every client that reaches the pane renderer on a tab draws the same boxes, sized for the
+/// smallest of them, and the larger ones leave the rest of the screen blank. A smaller screen
+/// shows only the size notice, so it has no claim on a pane box or its PTY. If no client draws
+/// panes, use at least the minimum as the fallback: a caller without a current pane size gets a
+/// sane size rather than the tiny notice screen.
 pub fn smallest_size(model: &Model, tab: &TabId, fallback: Size) -> Size {
     let mut size: Option<Size> = None;
-    for c in model.clients.iter().filter(|c| &c.tab == tab) {
+    for c in model
+        .clients
+        .iter()
+        .filter(|c| &c.tab == tab && c.size.cols >= MIN_COLS && c.size.rows >= MIN_ROWS)
+    {
         let s = size.get_or_insert(c.size);
         s.cols = s.cols.min(c.size.cols);
         s.rows = s.rows.min(c.size.rows);
     }
-    size.unwrap_or(fallback)
+    size.unwrap_or(Size {
+        cols: fallback.cols.max(MIN_COLS),
+        rows: fallback.rows.max(MIN_ROWS),
+    })
 }
 
 /// The size this client's pane boxes are laid out in: the smallest client's, and never

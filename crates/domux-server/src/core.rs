@@ -874,16 +874,24 @@ impl Core {
         let _ = self.persist_tx.try_send(snapshot);
     }
 
-    /// Every pane viewed by at least one client takes the size the smallest such client
-    /// gives it. Panes nobody views keep their size.
+    /// Every pane viewed by a client that draws panes takes the size the smallest such client
+    /// gives it. Panes without a drawing client keep their size.
     fn sync_pane_sizes(&mut self) {
-        // One entry per viewed tab, carrying the first client's size seen for it. The
+        // One entry per tab with a client that draws panes, carrying the first such client's
+        // size. A below-minimum client draws only the size notice, so it must not resize a PTY
+        // nobody can see. When every client is below the minimum, leave the existing pane size
+        // alone: a resize would churn its program for no visible result. `smallest_size` still
+        // raises an absent current size to the minimum, rather than adopting a tiny screen.
         // rectangle itself comes from `render::smallest_size`, the same function the
         // renderer lays the boxes out with, so a pane's program and every client agree on
-        // its size. The recorded size is only the fallback for a tab no client views, which
-        // cannot happen here: each entry was made from a client that views it.
+        // its size. The recorded size is only the fallback for a tab without another drawing
+        // client, which cannot happen here: each entry was made from a drawing client.
         let mut viewed: Vec<(TabId, Size)> = Vec::new();
-        for view in &self.model.clients {
+        for view in
+            self.model.clients.iter().filter(|view| {
+                view.size.cols >= render::MIN_COLS && view.size.rows >= render::MIN_ROWS
+            })
+        {
             if !viewed.iter().any(|(t, _)| t == &view.tab) {
                 viewed.push((view.tab.clone(), view.size));
             }
