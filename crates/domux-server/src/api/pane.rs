@@ -156,6 +156,11 @@ pub fn send_key(ctx: &mut Ctx, p: PaneSendKeyParams) -> Result<Value, ApiError> 
 
 /// The last `lines` lines ending at the cursor's row (default: as many as the screen has
 /// rows), scrollback included. Rows below the cursor are blank and are not content.
+///
+/// `lines` is counted in screen rows, because that is what the range is built from; the text
+/// that comes back is in logical lines, because `text_in_range` rejoins a line the screen
+/// wrapped. So a pane whose output wrapped answers with fewer lines than were asked for, which
+/// is the right answer for a caller that wants what was written rather than how it was drawn.
 pub fn read(ctx: &mut Ctx, p: PaneReadParams) -> Result<Value, ApiError> {
     let pane = ctx.resolve_pane_param(p.pane.as_deref())?;
     let rt = ctx

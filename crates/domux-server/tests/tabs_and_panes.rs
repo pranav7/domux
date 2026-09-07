@@ -361,3 +361,24 @@ async fn resize_answers_ok_even_when_no_split_owns_the_axis() {
     let after = h.frame(h.client.clone()).await;
     assert_eq!(row(&after, 1), row(&before, 1), "nothing moved:\n{after}");
 }
+
+/// `pane.read` counts screen rows and answers in logical lines, which is not the same number.
+/// A line the screen wrapped comes back as the one line it was written as (task 19's emulator
+/// decision), so a caller reading a pane gets a URL it can follow rather than two halves of one.
+/// `lines` bounds what is read, not what is returned.
+#[tokio::test]
+async fn pane_read_rejoins_a_line_the_screen_wrapped() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    // 55 cells in a 38 cell pane: two screen rows, one line.
+    let long = "https://example.com/a-path-long-enough-to-wrap";
+    h.feed_pane(pane, format!("{long}\r\nend").as_bytes()).await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("end"),
+        Duration::from_secs(2),
+    )
+    .await;
+    let r = h.api("pane.read", json!({"lines": 3})).await.unwrap();
+    assert_eq!(r["text"], format!("{long}\nend"));
+}

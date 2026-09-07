@@ -9,12 +9,18 @@ use std::time::Duration;
 
 /// Every cell of `frame` whose background is the accent, as `(row, column)`.
 ///
-/// Reads the frame's own style dump, whose lines are `r{row} c{from}-{to} [attrs] fg=# bg=#`, so
-/// what it counts is what a terminal would paint. Accent as a *foreground* - a focused box's
+/// Reads the frame's own style dump, whose lines are `r{row} c{from}-{to} [attrs] fg=# bg=# ul=#`,
+/// so what it counts is what a terminal would paint. Accent as a *foreground* - a focused box's
 /// border and title - is a different treatment and is deliberately not counted.
+///
+/// The background is matched where it sits in the line rather than at the end of it. `ul=` is
+/// dumped after `bg=`, so an `ends_with` here stopped seeing a cell the moment anything gave it
+/// an underline colour - and this guard protects a ruling, so it must not be defeatable by a
+/// later change nobody connects to it. Every dumped style is preceded by a space, so the leading
+/// space keeps `ul=#cba6f7` from matching as a fill.
 fn accent_filled_cells(frame: &str) -> Vec<(u16, u16)> {
     let mut out = Vec::new();
-    for line in frame.lines().filter(|l| l.ends_with("bg=#cba6f7")) {
+    for line in frame.lines().filter(|l| l.contains(" bg=#cba6f7")) {
         let mut parts = line.split(' ');
         let Some(Ok(row)) = parts
             .next()

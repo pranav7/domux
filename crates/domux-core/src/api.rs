@@ -451,6 +451,10 @@ pub struct PaneReadParams {
     #[serde(default)]
     pub pane: Option<String>,
     /// Lines from the bottom, scrollback included. Default: the visible rows.
+    ///
+    /// Screen rows, and the answer can hold fewer lines than that: a line the screen wrapped is
+    /// returned as the one line it was written as, so a wrapped URL reads back as a URL rather
+    /// than as two halves. The count bounds what is read, not what comes back.
     #[serde(default)]
     pub lines: Option<usize>,
     #[serde(default)]

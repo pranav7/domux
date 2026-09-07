@@ -6,7 +6,6 @@ use crate::render::pane_box::Selection;
 use crate::render::theme;
 use crate::render::top_bar::Piece;
 use crate::render::RenderInput;
-use domux_core::model::Focus;
 use domux_term::{Emulator, Key, KeyEvent, Mode, Mods, ScrollbackPos, Size};
 use ratatui::style::Style;
 
@@ -40,17 +39,30 @@ pub enum CopyOutcome {
 }
 
 /// The scrollback rows copy mode may walk.
-///
-/// The alternate screen keeps no history of its own, and the primary screen's history is not
-/// its to walk while it is up. It is `mode_active` that says so and never `scrollback_len()
-/// == 0`: the count is 0 for the whole time the alternate screen is up and it is also 0 when
-/// the emulator cannot answer, so reading the count as the question would make a full-screen
-/// editor - exactly where copy mode has to work - indistinguishable from a failure.
 pub fn history(rt: &PaneRuntime) -> usize {
-    if rt.emulator.mode_active(Mode::AltScreen) {
+    rows_to_walk(
+        rt.emulator.mode_active(Mode::AltScreen),
+        rt.emulator.scrollback_len(),
+    )
+}
+
+/// The gate: the alternate screen keeps no history of its own, and the primary screen's history
+/// is not its to walk while it is up.
+///
+/// It is `mode_active` that says so and never `scrollback_len() == 0`: the count is 0 for the
+/// whole time the alternate screen is up and it is also 0 when the emulator cannot answer, so
+/// reading the count as the question would make a full-screen editor - exactly where copy mode
+/// has to work - indistinguishable from a failure.
+///
+/// A function rather than a branch inside `history` because it is the only part of this a test
+/// can hold. The emulator answers 0 either way, so no end-to-end test can tell the gate from its
+/// absence, and a cleanup that inlined `scrollback_len()` here would stay green - except that it
+/// would leave this unused, and an unused function is not green.
+fn rows_to_walk(alt_screen: bool, scrollback_len: usize) -> usize {
+    if alt_screen {
         0
     } else {
-        rt.emulator.scrollback_len()
+        scrollback_len
     }
 }
 
@@ -213,13 +225,13 @@ fn move_rows(copy: &mut CopyMode, delta: i64, rows: u16) {
     copy.cursor.0 = row as u16;
 }
 
-/// The clock's place while the focused pane is in copy mode.
+/// The clock's place while the pane the keys go to is in copy mode.
+///
+/// The keys these offer are the keys `route_key` will hand that pane, so the pane is the one
+/// `RenderInput::focused_pane` names and never the `Focus::Pane` payload: hints render the
+/// bindings that are live (principle 3).
 pub fn hint_pieces(input: &RenderInput) -> Option<Vec<Piece>> {
-    if !matches!(input.view.focus, Focus::Pane(_)) {
-        return None;
-    }
-    let tab = input.model.tab(&input.view.tab)?;
-    let rt = input.panes.get(&tab.focused)?;
+    let rt = input.panes.get(input.focused_pane()?)?;
     let copy = rt.copy.as_ref()?;
     let key = Style::default().fg(theme::BLUE);
     let word = Style::default().fg(theme::OVERLAY0);
@@ -321,6 +333,15 @@ mod tests {
                 end: (3, 9)
             })
         );
+    }
+
+    /// The rows copy mode may walk while a full-screen program has the screen: none, whatever
+    /// the emulator is holding for the primary screen underneath it.
+    #[test]
+    fn no_scrollback_is_walkable_while_the_alternate_screen_is_up() {
+        assert_eq!(rows_to_walk(true, 14), 0);
+        assert_eq!(rows_to_walk(false, 14), 14);
+        assert_eq!(rows_to_walk(false, 0), 0);
     }
 
     #[test]

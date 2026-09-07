@@ -46,6 +46,24 @@ pub struct RenderInput<'a> {
     pub hint: Option<&'a Hint>,
 }
 
+impl<'a> RenderInput<'a> {
+    /// The pane the keys go to, or `None` when they go to a prompt, an overlay or nothing.
+    ///
+    /// `Focus::Pane`'s own payload is deliberately not read. `Core::focused_pane` is what
+    /// decides where a key actually goes, and it discards the payload and answers `tab.focused`,
+    /// so `tab.focused` is the pane with the keys and the focus variant only says whether a pane
+    /// has them at all. A renderer reading the payload instead could offer one pane's mode keys
+    /// while another pane was taking them. If M2 gives clients independent focus, the payload
+    /// becomes the answer in `Core::focused_pane` first and this follows it - one question, one
+    /// implementation, in that order.
+    pub fn focused_pane(&self) -> Option<&'a PaneId> {
+        match self.view.focus {
+            Focus::Pane(_) => Some(&self.model.tab(&self.view.tab)?.focused),
+            Focus::Region(_) => None,
+        }
+    }
+}
+
 /// The workpanel: everything under the top bar.
 pub fn workpanel_area(size: Size) -> domux_core::model::Rect {
     domux_core::model::Rect {
@@ -137,14 +155,14 @@ fn drawn_size(input: &RenderInput, tab: &TabId) -> Size {
 pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<CursorState> {
     let tab = input.model.tab(&input.view.tab)?;
     let area = workpanel_area(drawn_size(input, &tab.id));
-    let pane_focus = matches!(input.view.focus, Focus::Pane(_));
+    let focused_pane = input.focused_pane();
     let mut cursor = None;
     for (pane_id, rect) in solve(&tab.layout, area, tab.zoomed.as_ref()) {
         let Some(pane) = input.model.pane(&pane_id) else {
             continue;
         };
         let runtime = input.panes.get(&pane_id);
-        let focused = pane_focus && tab.focused == pane_id;
+        let focused = focused_pane == Some(&pane_id);
         let zoomed = tab.zoomed.as_ref() == Some(&pane_id);
         let copy = runtime.and_then(|r| r.copy.as_ref());
         let exited = runtime.and_then(|r| r.exited);
