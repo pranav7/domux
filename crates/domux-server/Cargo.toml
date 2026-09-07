@@ -30,3 +30,6 @@ tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# `start_paused` for the persistence task's debounce: a test that waits on a real 100 ms is a
+# test that fails on a loaded machine. Dev-only, so the shipped binary does not link it.
+tokio = { version = "1", features = ["test-util"] }
