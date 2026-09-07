@@ -14,6 +14,13 @@ use tokio::sync::mpsc;
 /// configured shell, so a `config.reload` that changes `terminal.shell` used to leave a
 /// stored notice no generated string matched any more, and the next key cleared a notice
 /// that was still true. The kind is the identity; the text is only what the reader sees.
+///
+/// A config error is deliberately not one of these kinds. It is server state - the config
+/// that is in force and the file that was rejected - and it reaches the bar as
+/// `RenderInput.config_error` (ruled 2026-09-07). A hint is losable: it lives on one
+/// connection, another hint replaces it, and `clear_action_hint` runs on every key. A config
+/// error has to stand until the file parses, which is not something the reader can type their
+/// way out of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintKind {
     /// The answer to one key: a failed action, a clipboard that could not be written. It
@@ -21,8 +28,6 @@ pub enum HintKind {
     Action,
     /// The respawn guard's notice. True until a shell survives or the config is reloaded.
     ShellFailure,
-    /// A config file that did not load. True until the config is reloaded.
-    ConfigError,
 }
 
 /// One line for the clock's place, and what makes it go away.

@@ -1106,7 +1106,7 @@ impl Core {
                 keymap: &self.config.keymap,
                 now: self.deps.clock.now(),
                 config_error: self.config.error.as_ref(),
-                hint: conn.hint.as_ref().map(|h| h.text.as_str()),
+                hint: conn.hint.as_ref(),
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);

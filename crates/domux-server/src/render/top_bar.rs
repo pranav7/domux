@@ -2,6 +2,7 @@
 //! clock or whatever displaces it: prompt keys, copy mode keys, the leader indicator, a
 //! client hint, the config error.
 
+use crate::client::HintKind;
 use crate::render::boxed::{put, put_within};
 use crate::render::tab_row::TabRow;
 use crate::render::{theme, RenderInput};
@@ -213,7 +214,7 @@ impl RightEnd {
 }
 
 /// What the right end shows, in priority order: the prompt keys, the chord indicator, the copy
-/// mode keys, a client hint, the config error, then the clock.
+/// mode keys, an action hint, the config error, a system hint, then the clock.
 ///
 /// The chord indicator comes before the copy mode keys because it answers the key just pressed:
 /// the leader inside copy mode used to start a chord the bar did not show, so the next key had
@@ -252,9 +253,15 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
     if let Some(pieces) = crate::copy_mode::hint_pieces(input) {
         return RightEnd::actionable(pieces);
     }
-    if let Some(hint) = input.hint {
-        return RightEnd::actionable(vec![Piece::new(hint.to_string(), word)]);
+    // An action hint is the answer to the key just pressed and is gone on the next one, so it
+    // outranks every state the bar was already showing (principle 8).
+    if let Some(hint) = input.hint.filter(|h| h.kind == HintKind::Action) {
+        return RightEnd::actionable(vec![Piece::new(hint.text.clone(), word)]);
     }
+    // The config error before the shell-failure notice (ruled 2026-09-07). It is the newer of
+    // the two - the config in force is still the old one, because the last edit was rejected -
+    // and it is a prerequisite for the other: `terminal.shell` cannot be set until the file
+    // parses at all.
     if let Some(err) = input.config_error {
         // `err.to_string()` names the file and, when one arrived, the line: the notice says
         // where to look rather than repeating a line number the error may not have.
@@ -263,6 +270,9 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
             dot(),
             Piece::new("domux2 config reload", key),
         ]);
+    }
+    if let Some(hint) = input.hint {
+        return RightEnd::actionable(vec![Piece::new(hint.text.clone(), word)]);
     }
     RightEnd::decorative(vec![Piece::new(
         input.now.format("%H:%M   %a %-d %b").to_string(),

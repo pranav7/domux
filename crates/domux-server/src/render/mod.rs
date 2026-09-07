@@ -13,6 +13,7 @@ pub fn to_rect(r: domux_core::model::Rect) -> Rect {
     Rect::new(r.x, r.y, r.width, r.height)
 }
 
+use crate::client::Hint;
 use crate::pane::PaneRuntime;
 use crate::render::boxed::Boxed;
 use crate::render::pane_box::{cursor_position, render_grid};
@@ -39,7 +40,10 @@ pub struct RenderInput<'a> {
     pub keymap: &'a Keymap,
     pub now: DateTime<Local>,
     pub config_error: Option<&'a ConfigError>,
-    pub hint: Option<&'a str>,
+    /// One line for the clock's place. Its kind is what decides where it sits in the right
+    /// end's priority order, so the whole hint is passed rather than its text: see
+    /// `top_bar::right_end`.
+    pub hint: Option<&'a Hint>,
 }
 
 /// The workpanel: everything under the top bar.

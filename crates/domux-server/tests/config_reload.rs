@@ -333,12 +333,22 @@ async fn a_reload_is_the_way_out_of_a_respawn_block_and_a_failed_one_is_not() {
         .as_str()
         .unwrap()
         .starts_with("domux.toml line 1"));
-    let f = h.frame(h.client.clone()).await;
-    assert!(
-        f.contains("exited immediately"),
-        "a reload that failed lifts no block:\n{f}"
+    // The bar shows the config error now, which outranks the shell notice - see
+    // `a_config_error_outranks_the_shell_failure_notice`. What says the block was not lifted is
+    // the pane still retained rather than replaced.
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("domux.toml line 1"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(!f.contains("exited immediately"), "{f}");
+    assert_eq!(
+        h.model().all_pane_ids().len(),
+        blocked,
+        "a reload that failed lifts no block"
     );
-    assert_eq!(h.model().all_pane_ids().len(), blocked);
 
     std::fs::write(h.config_path(), "[terminal]\nremain_on_exit = false\n").unwrap();
     let r = h.api("config.reload", json!({})).await.unwrap();
@@ -346,9 +356,56 @@ async fn a_reload_is_the_way_out_of_a_respawn_block_and_a_failed_one_is_not() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !f.contains("exited immediately"),
+            |f| f.contains("14:32"),
             Duration::from_secs(2),
         )
         .await;
-    assert!(f.contains("14:32"), "the notice is withdrawn:\n{f}");
+    assert!(
+        !f.contains("exited immediately"),
+        "both notices are withdrawn:\n{f}"
+    );
+}
+
+/// Two true things at once: the shell keeps exiting and the file the user just saved does not
+/// parse. The config error is what the bar shows (ruled 2026-09-07).
+///
+/// It is the newer of the two - their last edit was rejected, so the config in force is still
+/// the old one - and it is a prerequisite for the other: `terminal.shell` cannot be set until
+/// the file parses at all. Hidden behind the shell notice, the reader would believe they had
+/// fixed the shell, find it still broken, and have no way on screen to learn why.
+#[tokio::test]
+async fn a_config_error_outranks_the_shell_failure_notice() {
+    let mut h = Harness::start(Config::default(), 100, 10).await;
+    for _ in 0..5 {
+        let pane = h.focused_pane(h.client.clone());
+        h.exit_pane(pane, Some(1)).await;
+        h.frame(h.client.clone()).await;
+    }
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("exited immediately"),
+        Duration::from_secs(2),
+    )
+    .await;
+    let blocked = h.model().all_pane_ids().len();
+    std::fs::write(h.config_path(), "[keys\nleader = \"C-b\"\n").unwrap();
+    let r = h.api("config.reload", json!({})).await.unwrap();
+    assert!(r["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("domux.toml line 1"));
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("domux.toml line 1"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        !f.contains("exited immediately"),
+        "the config error has the bar:\n{f}"
+    );
+    assert!(f.contains("domux2 config reload"), "{f}");
+    // Both notices are still true: a reload that failed lifts no respawn block.
+    assert_eq!(h.model().all_pane_ids().len(), blocked);
 }
