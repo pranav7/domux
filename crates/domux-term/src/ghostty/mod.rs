@@ -267,15 +267,22 @@ impl GhosttyEmulator {
     }
 
     /// Moves the viewport so `row` (counted from the top of the scrollback) is its first
-    /// row. libghostty clamps a row past the top of the active area.
+    /// row, runs `f` on the emulator, and puts the viewport back on the live screen.
+    /// libghostty clamps a row past the top of the active area.
     ///
-    /// Returns the `ViewportRestore` that puts the viewport back on the live screen, and it
-    /// is constructed before the scroll, so the restore covers the scroll itself. The
-    /// function that moves the viewport hands back the thing that undoes it, which makes
-    /// forgetting the restore a compile error under `-D warnings` rather than a doc comment
-    /// a later caller can miss. `snapshot_grid` and `cursor` therefore always see the live
-    /// screen.
-    fn scroll_viewport_to_row(&self, row: usize) -> ViewportRestore {
+    /// The restore is a guard built before the scroll, so it covers the scroll itself and
+    /// every exit from `f`, an unwinding panic included. `snapshot_grid` and `cursor`
+    /// therefore always see the live screen.
+    ///
+    /// The guard is scoped to this function rather than returned. It holds the terminal
+    /// handle and no borrow, which is what lets `f` take `&mut self` for the fill, and it is
+    /// also what makes it unable to say how long the terminal lives. Handing it to a caller
+    /// therefore let the caller drop the emulator first and then run the guard's `Drop`
+    /// against a freed handle: that compiled with no warnings under the gate's own clippy
+    /// and the process died on signal 11. A closure removes the shape rather than warning
+    /// about it - the guard never leaves this frame, so nothing can outlive the terminal,
+    /// and there is no way to move the viewport without a scope that puts it back.
+    fn with_viewport_at<R>(&mut self, row: usize, f: impl FnOnce(&mut Self) -> R) -> R {
         let restore = ViewportRestore(self.terminal.raw);
         // The union is 16 bytes wide and `row` fills 8 of them, so it is zeroed first rather
         // than passing the padding to C uninitialized.
@@ -286,7 +293,9 @@ impl GhosttyEmulator {
             value,
         };
         unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
-        restore
+        let out = f(self);
+        drop(restore);
+        out
     }
 
     /// True while the alternate screen is the active one. Read from the active screen rather
@@ -543,16 +552,13 @@ impl Emulator for GhosttyEmulator {
             self.snapshot_grid(out);
             return;
         }
-        // The scroll hands back the restore, which it constructed before it moved anything,
-        // so the viewport returns to the live screen on every exit from here, an unwinding
-        // panic in the fill included. The guard holds the terminal handle rather than
-        // `&self`, so it does not keep a borrow across the fill's `&mut self`.
+        // The read happens inside the scope, so the viewport returns to the live screen on
+        // every exit from it, an unwinding panic in the fill included.
         //
         // `saturating_sub` is the clamp the trait promises: an offset past the oldest line
         // lands on row 0, the top of the scrollback.
-        let _restore =
-            self.scroll_viewport_to_row(self.scrollback_len().saturating_sub(offset_from_bottom));
-        self.fill_grid_from_render_state(out);
+        let row = self.scrollback_len().saturating_sub(offset_from_bottom);
+        self.with_viewport_at(row, |s| s.fill_grid_from_render_state(out));
     }
 
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String {
@@ -708,9 +714,10 @@ impl Emulator for GhosttyEmulator {
 /// tied to the scope rather than written out after the read: an unwinding panic in between
 /// still runs it.
 ///
-/// `must_use` because dropping this the moment it is produced defeats the whole point:
-/// `scroll_viewport_to_row` returns one, so a caller that scrolls and ignores the result
-/// fails the build rather than leaving the viewport moved for the next reader.
+/// The handle inside is raw and carries no lifetime, so this type cannot state that the
+/// terminal outlives it. `with_viewport_at` is its only producer and keeps it in one frame,
+/// which is what keeps that true. `must_use` guards anything later that produces one: a
+/// value dropped the moment it is made puts the viewport straight back before the read.
 #[must_use = "hold this for the whole read; dropping it now puts the viewport straight back"]
 struct ViewportRestore(ffi::GhosttyTerminal);
 
@@ -997,12 +1004,82 @@ fn key_to_ghostty(key: Key) -> (ffi::GhosttyKey, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::ffi;
+    use super::{ffi, GhosttyEmulator};
+    use crate::emulator::{Emulator, EmulatorConfig};
+    use crate::types::{Grid, Rgb, Size};
 
     #[test]
     fn library_links_and_reports_a_codepoint_width() {
         // One call through the static library proves the Zig build and link flags.
         let w = unsafe { ffi::ghostty_unicode_codepoint_width('漢' as u32) };
         assert_eq!(w, 2);
+    }
+
+    fn make(cols: u16, rows: u16) -> GhosttyEmulator {
+        GhosttyEmulator::new(EmulatorConfig {
+            size: Size { cols, rows },
+            scrollback_lines: 100,
+            default_fg: Rgb {
+                r: 0xcd,
+                g: 0xd6,
+                b: 0xf4,
+            },
+            default_bg: Rgb {
+                r: 0x1e,
+                g: 0x1e,
+                b: 0x2e,
+            },
+        })
+        .expect("ghostty emulator")
+    }
+
+    fn row_text(g: &Grid, row: u16) -> String {
+        g.row(row)
+            .iter()
+            .filter(|c| c.width > 0)
+            .map(|c| c.text.as_str())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    /// What the closure shape buys cannot be asserted directly. The escape it prevents is a
+    /// compile error now, and a compile-fail test cannot state it here: `with_viewport_at`
+    /// and `ViewportRestore` are private to this module, so a file compiled against the
+    /// crate could not name either one, and the workspace has no compile-fail harness to add
+    /// one to. The form that returned the guard let a caller in this module write
+    /// `let g = e.scroll_viewport_to_row(0); drop(e); drop(g);`, which built with no warnings
+    /// under `cargo clippy --all-targets -- -D warnings` and then died on signal 11, because
+    /// dropping the emulator frees the terminal the guard still points at.
+    ///
+    /// What stays observable is the coverage the guard exists for, and the scope has to keep
+    /// it: the restore is built before the scroll and runs on every exit from the read. This
+    /// pins the unwinding exit. Putting the viewport back with a plain call after the read
+    /// instead of with the guard leaves it on the scrollback here.
+    #[test]
+    fn viewport_returns_to_the_live_screen_when_the_read_panics() {
+        let mut e = make(10, 3);
+        for i in 0..6 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        // Six lines through three rows leaves line0 to line3 in the scrollback, so an offset
+        // of 4 puts the viewport on its top row.
+        let row = e.scrollback_len().saturating_sub(4);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            e.with_viewport_at(row, |_| panic!("the read failed"));
+        }));
+        std::panic::set_hook(hook);
+        assert!(read.is_err(), "the read has to have panicked");
+
+        let mut g = Grid::new(e.size());
+        e.snapshot_grid(&mut g);
+        assert_eq!(
+            row_text(&g, 0),
+            "line4",
+            "the panic unwound out of the read and the guard still put the viewport back"
+        );
+        assert_eq!(row_text(&g, 1), "line5");
     }
 }
