@@ -214,13 +214,11 @@ async fn status() -> anyhow::Result<()> {
     ))?;
     print_line(&format!("Socket  {}", info.socket.display()))?;
     print_line(&format!("State   {}", info.state_dir.display()))?;
-    match &info.config_error {
-        Some(e) => print_line(&format!(
-            "Config  {} (not applied: {e})",
-            info.config_file.display()
-        ))?,
-        None => print_line(&format!("Config  {}", info.config_file.display()))?,
-    }
+    print_line(&config_line(
+        &info.config_file,
+        info.config_error.as_deref(),
+        info.config_file.exists(),
+    ))?;
     print_line(&format!("Clients: {}", info.clients.len()))
 }
 
@@ -232,6 +230,21 @@ fn enter_new_session(setsid: impl Fn() -> i32) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// The config line of the report. A file that is not there must not read as one that is: on a
+/// first boot there is no domux.toml, and a bare path invites the reader to open a file that
+/// is not there, or to assume it is and wonder why an edit had no effect. The server and the
+/// CLI share a filesystem - the socket is a unix socket - so the path it names is one this
+/// process can ask about.
+fn config_line(path: &Path, error: Option<&str>, exists: bool) -> String {
+    match (error, exists) {
+        // A file that failed to load says so first: whether it is there is the smaller half
+        // of that answer, and the error names it.
+        (Some(e), _) => format!("Config  {} (not applied: {e})", path.display()),
+        (None, false) => format!("Config  {} (not created yet)", path.display()),
+        (None, true) => format!("Config  {}", path.display()),
+    }
 }
 
 /// The server's start time as a person reads it. The clock's own value carries microseconds,
@@ -329,6 +342,23 @@ mod tests {
     fn a_session_the_child_could_not_leave_ends_the_start() {
         assert!(enter_new_session(|| -1).is_err());
         assert!(enter_new_session(|| 4711).is_ok());
+    }
+
+    #[test]
+    fn the_config_line_says_when_the_file_is_not_there_yet() {
+        let path = Path::new("/home/u/.config/domux2/domux.toml");
+        assert_eq!(
+            config_line(path, None, false),
+            "Config  /home/u/.config/domux2/domux.toml (not created yet)"
+        );
+        assert_eq!(
+            config_line(path, None, true),
+            "Config  /home/u/.config/domux2/domux.toml"
+        );
+        assert_eq!(
+            config_line(path, Some("domux.toml line 3: unknown key clock"), true),
+            "Config  /home/u/.config/domux2/domux.toml (not applied: domux.toml line 3: unknown key clock)"
+        );
     }
 
     #[test]

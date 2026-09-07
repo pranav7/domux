@@ -15,7 +15,7 @@ use std::ffi::OsString;
 /// which is the whole reason the variable exists.
 pub async fn run_bare() -> anyhow::Result<()> {
     let socket = socket();
-    if inside_a_pane(std::env::var_os("DOMUX_SOCKET")) && control::is_live(&socket).await {
+    if inside_a_pane(std::env::var_os("DOMUX_PANE")) && control::is_live(&socket).await {
         return Err(nested_attach());
     }
     run().await
@@ -56,11 +56,16 @@ fn nested_attach() -> anyhow::Error {
     )
 }
 
-/// Whether this shell is already inside a pane. The server exports `DOMUX_SOCKET` into every
-/// pane, so a value means the terminal we would draw on is itself a pane. An `ssh` into
-/// another machine does not carry the variable, so a real second server is not caught by it.
-fn inside_a_pane(socket_var: Option<OsString>) -> bool {
-    socket_var.is_some_and(|v| !v.is_empty())
+/// Whether this shell is already inside a pane.
+///
+/// `DOMUX_PANE` and not `DOMUX_SOCKET`, though the server exports both. `DOMUX_SOCKET` is also
+/// a documented override - it is how you point the CLI at a scratch server beside the real one,
+/// and how the tests reach a harness - so a shell that exports it is not in a pane, and
+/// refusing there would tell the reader they are somewhere they are not while leaving them no
+/// way to attach at all. `DOMUX_PANE` carries a pane id and the server is the only thing that
+/// sets it, so it means what this asks. An `ssh` to another machine carries neither.
+fn inside_a_pane(pane_var: Option<OsString>) -> bool {
+    pane_var.is_some_and(|v| !v.is_empty())
 }
 
 #[cfg(test)]
@@ -101,12 +106,25 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_is_inside_a_pane_only_when_the_socket_variable_has_a_value() {
+    fn a_shell_is_inside_a_pane_only_when_the_pane_variable_has_a_value() {
         assert!(!inside_a_pane(None));
         assert!(!inside_a_pane(Some(OsString::new())));
-        assert!(inside_a_pane(Some(OsString::from(
-            "/tmp/domux2-501/domux2.sock"
-        ))));
+        assert!(inside_a_pane(Some(OsString::from("p_0001"))));
+    }
+
+    /// The variable this reads has to be one only the server sets. `DOMUX_SOCKET` is also the
+    /// documented way to point the CLI at a scratch server beside the real one, so reading it
+    /// here refused every attach for anyone who exports it - and told them they were inside a
+    /// pane when they were not, with no way to attach at all.
+    #[test]
+    fn the_guard_reads_the_pane_variable_and_not_the_socket_override() {
+        let source = include_str!("attach.rs");
+        let call = source
+            .lines()
+            .find(|l| l.contains("inside_a_pane(std::env::var_os("))
+            .expect("the guard's call site");
+        assert!(call.contains("DOMUX_PANE"), "{call}");
+        assert!(!call.contains("DOMUX_SOCKET"), "{call}");
     }
 
     #[test]

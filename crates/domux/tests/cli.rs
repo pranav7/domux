@@ -295,6 +295,10 @@ async fn server_start_status_and_stop_manage_a_real_server() {
     let started = cli().args(["server", "start"]).output().await.unwrap();
     let again = cli().args(["server", "start"]).output().await.unwrap();
     let status = cli().args(["server", "status"]).output().await.unwrap();
+    // A first boot has no domux.toml at all. The file is written between the two reports, so
+    // the same server answers for both a config that is not there and one that is.
+    std::fs::write(&config, "[terminal]\nscrollback = 1000\n").unwrap();
+    let with_config = cli().args(["server", "status"]).output().await.unwrap();
     // Asked while the server is still up: a session of its own is what keeps it alive when
     // the terminal that started it goes away, and a session leader's id is its own pid.
     let pid: i32 = pid_of(&status).parse().unwrap();
@@ -322,6 +326,16 @@ async fn server_start_status_and_stop_manage_a_real_server() {
     assert_eq!(
         session, pid,
         "the server did not leave this terminal's session"
+    );
+    assert!(
+        text.contains(&format!("Config  {} (not created yet)", config.display())),
+        "a config file that is not there must not read as one that is:\n{text}"
+    );
+    let text = String::from_utf8_lossy(&with_config.stdout);
+    assert!(
+        text.lines()
+            .any(|l| l == format!("Config  {}", config.display())),
+        "a config file that is there is named and nothing more:\n{text}"
     );
     assert!(
         text.contains(&format!("Socket  {}", socket.display())),
