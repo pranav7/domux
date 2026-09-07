@@ -63,7 +63,7 @@ pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
 /// for the socket. Called by `start` and by attach when the socket is absent.
 pub async fn start() -> anyhow::Result<()> {
     let socket = socket();
-    if control::is_live(&socket) {
+    if control::is_live(&socket).await {
         eprintln!("The server is already running.");
         return Ok(());
     }
@@ -86,7 +86,7 @@ pub async fn start() -> anyhow::Result<()> {
     }
     let mut child = cmd.spawn()?;
     let deadline = Instant::now() + SETTLE;
-    while !control::is_live(&socket) {
+    while !control::is_live(&socket).await {
         // A server that has already exited will never open the socket, so say so now
         // rather than after the whole wait.
         if let Some(status) = child.try_wait()? {
@@ -115,13 +115,13 @@ pub async fn start() -> anyhow::Result<()> {
 
 pub async fn stop() -> anyhow::Result<()> {
     let socket = socket();
-    if !control::is_live(&socket) {
+    if !control::is_live(&socket).await {
         eprintln!("The server is not running.");
         return Ok(());
     }
     call("server.stop", serde_json::json!({})).await?;
     let deadline = Instant::now() + SETTLE;
-    while control::is_live(&socket) {
+    while control::is_live(&socket).await {
         if Instant::now() > deadline {
             anyhow::bail!(
                 "The server acknowledged the stop but is still listening after {} seconds. Read {}.",

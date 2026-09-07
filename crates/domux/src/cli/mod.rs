@@ -32,7 +32,7 @@ pub fn not_running() -> anyhow::Error {
 /// Calls a method and turns transport and API errors into one message for stderr.
 pub async fn call(method: &str, params: Value) -> anyhow::Result<Value> {
     let socket = socket();
-    if !control::is_live(&socket) {
+    if !control::is_live(&socket).await {
         return Err(not_running());
     }
     match control::call(&socket, method, params).await? {

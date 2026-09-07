@@ -6,7 +6,7 @@ use domux_core::names::BIN_NAME;
 
 pub async fn run() -> anyhow::Result<()> {
     let socket = socket();
-    if !control::is_live(&socket) {
+    if !control::is_live(&socket).await {
         super::server::start().await?;
     }
     // `attach` returns with the terminal already restored, so every line below lands on a

@@ -12,7 +12,7 @@ pub struct EventsCmd {
 
 pub async fn run(cmd: EventsCmd) -> anyhow::Result<()> {
     let socket = socket();
-    if !control::is_live(&socket) {
+    if !control::is_live(&socket).await {
         return Err(not_running());
     }
     control::subscribe(&socket, cmd.filter, |event| {
