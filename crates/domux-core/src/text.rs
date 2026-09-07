@@ -20,6 +20,26 @@ fn grapheme_width(g: &str) -> usize {
     }
 }
 
+/// The longest prefix of `s` that fits in `max` cells. Never splits a grapheme; a wide
+/// grapheme that does not fit is dropped whole.
+///
+/// `truncate_with_ellipsis` is this plus the mark. A caller that draws its own mark needs the
+/// prefix on its own: asking for the mark with a budget the text happens to fit gets no mark,
+/// which is how the top bar's right end came to drop pieces silently at a boundary.
+pub fn truncate_to_width(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for g in s.graphemes(true) {
+        let w = grapheme_width(g);
+        if used + w > max {
+            break;
+        }
+        out.push_str(g);
+        used += w;
+    }
+    out
+}
+
 /// Shortens `s` to at most `max` cells, ending in `…` when anything was cut. Never splits a
 /// grapheme; a wide grapheme that does not fit is dropped whole.
 pub fn truncate_with_ellipsis(s: &str, max: usize) -> String {
@@ -29,17 +49,7 @@ pub fn truncate_with_ellipsis(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    let budget = max - 1; // room for the ellipsis
-    let mut out = String::new();
-    let mut used = 0;
-    for g in s.graphemes(true) {
-        let w = grapheme_width(g);
-        if used + w > budget {
-            break;
-        }
-        out.push_str(g);
-        used += w;
-    }
+    let mut out = truncate_to_width(s, max - 1); // room for the ellipsis
     out.push('…');
     out
 }
@@ -140,6 +150,14 @@ mod tests {
         assert_eq!(display_width("漢字"), 4);
         assert_eq!(display_width("é"), 1); // e plus combining acute
         assert_eq!(display_width("👍🏽"), 2); // emoji with a skin tone modifier is one grapheme
+    }
+
+    #[test]
+    fn truncate_to_width_keeps_the_prefix_that_fits_and_adds_no_mark() {
+        assert_eq!(truncate_to_width("auth cleanup", 20), "auth cleanup");
+        assert_eq!(truncate_to_width("auth cleanup", 7), "auth cl");
+        assert_eq!(truncate_to_width("漢字漢字", 5), "漢字"); // a wide grapheme is dropped whole
+        assert_eq!(truncate_to_width("abc", 0), "");
     }
 
     #[test]
