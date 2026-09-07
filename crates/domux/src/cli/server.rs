@@ -1,4 +1,4 @@
-//! `domux2 server start|stop|restart|status|log`, and the hidden `run` that is the server.
+//! `server start|stop|restart|status|log`, and the hidden `run` that is the server.
 
 use super::{call, call_as, socket};
 use clap::{Args, Subcommand};
@@ -59,7 +59,7 @@ pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
     }
 }
 
-/// Spawns `domux2 server run` in its own session, detached from this terminal, and waits
+/// Spawns `server run` in its own session, detached from this terminal, and waits
 /// for the socket. Called by `start` and by attach when the socket is absent.
 pub async fn start() -> anyhow::Result<()> {
     let socket = socket();

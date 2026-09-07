@@ -1,4 +1,4 @@
-//! domux2: attach with no arguments; everything else is a socket client.
+//! The domux V2 binary: attach with no arguments; everything else is a socket client.
 
 mod cli;
 
@@ -23,7 +23,7 @@ enum Command {
     Server(cli::server::ServerCmd),
     /// Reload domux.toml
     Config(cli::config::ConfigCmd),
-    /// Call an API method: domux2 api <method> [json params]; domux2 api schema prints the schema
+    /// Call an API method: api <method> [json params]; api schema prints the schema
     Api(cli::api::ApiCmd),
     /// Tabs: create, name, clear-name, close, select
     Tab(cli::tab::TabCmd),

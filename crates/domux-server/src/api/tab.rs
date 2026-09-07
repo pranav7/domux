@@ -20,7 +20,10 @@ fn info(ctx: &Ctx, ws: &WorkspaceId, tab: &TabId) -> Result<TabInfo, ApiError> {
         .enumerate()
         .find(|(_, t)| &t.id == tab)
         .ok_or_else(|| {
-            ApiError::not_found(format!("tab {tab} does not exist; run domux2 api tab.list"))
+            ApiError::not_found(format!(
+                "tab {tab} does not exist; run {} api tab.list",
+                domux_core::names::BIN_NAME
+            ))
         })?;
     Ok(TabInfo {
         id: t.id.clone(),

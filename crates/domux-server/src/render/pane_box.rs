@@ -1,5 +1,5 @@
 //! Draws an emulator grid inside a box's inner area, with the copy mode selection reversed.
-//! Lifted from crates/m0-spike/src/render.rs.
+//! Lifted from the M0 pane spike.
 
 use domux_term::{Attrs, Color, Cursor, Grid};
 use ratatui::buffer::Buffer;

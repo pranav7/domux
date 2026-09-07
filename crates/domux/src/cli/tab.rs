@@ -1,4 +1,4 @@
-//! `domux2 tab ...`: each subcommand is one tab.* call on the tab named by DOMUX_TAB.
+//! `tab ...`: each subcommand is one tab.* call on the tab named by DOMUX_TAB.
 
 use super::{call, location};
 use clap::{Args, Subcommand};

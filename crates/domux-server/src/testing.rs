@@ -104,7 +104,7 @@ impl Harness {
             .clone()
             .unwrap_or_else(|| tmp.path().join("proj"));
         std::fs::create_dir_all(&project_root).unwrap();
-        let socket = tmp.path().join("domux2.sock");
+        let socket = tmp.path().join(domux_core::names::SOCKET_FILE_NAME);
         let inspector = Arc::new(FakeInspector::default());
         inspector.set(
             Some(ForegroundProcess {

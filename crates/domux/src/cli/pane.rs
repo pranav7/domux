@@ -1,4 +1,4 @@
-//! `domux2 pane ...`: one pane.* call on the pane named by DOMUX_PANE.
+//! `pane ...`: one pane.* call on the pane named by DOMUX_PANE.
 
 use super::{call, call_as, location};
 use clap::{Args, Subcommand};

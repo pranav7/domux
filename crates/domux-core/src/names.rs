@@ -1,5 +1,7 @@
 //! The names that change at the M3 cut-over. Edit this file and the `[[bin]]` name in
-//! `crates/domux/Cargo.toml`; nothing else spells `domux2`.
+//! `crates/domux/Cargo.toml`; no other source spells `domux2`. Tests do, on purpose: they
+//! pin what a user reads today, so the rename fails them and someone reads each message
+//! once.
 
 /// The binary and the prefix of every path until the cut-over.
 pub const BIN_NAME: &str = "domux2";

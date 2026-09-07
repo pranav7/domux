@@ -381,9 +381,11 @@ impl Core {
             || hello.protocol != domux_core::proto::PROTOCOL_VERSION
         {
             return Err(format!(
-                "the server is domux {} and this client is {}; run domux2 server restart",
+                "the server is {} {} and this client is {}; run {} server restart",
+                domux_core::names::PRODUCT_NAME,
                 domux_core::VERSION,
-                hello.version
+                hello.version,
+                domux_core::names::BIN_NAME
             ));
         }
         let id = ClientId(self.model.next_id("c").map_err(|e| e.to_string())?);
