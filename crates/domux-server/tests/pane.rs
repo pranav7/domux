@@ -238,3 +238,62 @@ async fn a_pane_with_no_command_runs_the_shell_through_its_login_profile() {
         "the login profile did not run, row was {row:?}"
     );
 }
+
+/// What the *server* asks for, which is the half a spawner test cannot see. This fix was
+/// written and proved against `RealSpawner` while the server was still sending a command, so
+/// the login shell never ran: the request has to say "the shell" for the spawner to run one.
+#[tokio::test]
+async fn the_server_asks_for_the_shell_rather_than_naming_it_as_a_command() {
+    use domux_core::config::Config;
+    use domux_server::testing::Harness;
+
+    let mut cfg = Config::default();
+    cfg.terminal.shell = Some("/bin/dash".into());
+    let h = Harness::start(cfg, 40, 10).await;
+    let reqs = h.spawner.as_ref().expect("fake spawner").requests();
+    let first = reqs.first().expect("the first pane was spawned");
+    assert!(
+        first.command.is_empty(),
+        "a named command is not a login shell: {:?}",
+        first.command
+    );
+    assert_eq!(
+        first
+            .env
+            .iter()
+            .find(|(k, _)| k == "SHELL")
+            .map(|(_, v)| v.as_str()),
+        Some("/bin/dash"),
+        "the configured shell reaches the spawner, and the pane, through the environment"
+    );
+}
+
+/// A shell that cannot be run is refused by name. `new_default_prog` would otherwise fall back
+/// to the password database and quietly run a different shell, which turns a typo in
+/// `terminal.shell` into a pane that works and a setting that appears to do nothing.
+#[test]
+fn a_shell_that_cannot_be_run_is_refused_rather_than_swapped() {
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = request("p_0001", &[], dir.path().to_str().unwrap());
+    req.env.push(("SHELL".into(), "/no/such/shell".to_string()));
+    let Err(err) = RealSpawner.spawn(req, tx) else {
+        panic!("a shell that is not there must not spawn");
+    };
+    let said = format!("{err:#}");
+    assert!(said.contains("/no/such/shell"), "{said}");
+    assert!(said.contains("terminal.shell"), "{said}");
+
+    // A directory is not a shell either, and is the case a bare existence check would pass.
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let mut req = request("p_0002", &[], dir.path().to_str().unwrap());
+    req.env
+        .push(("SHELL".into(), dir.path().to_str().unwrap().to_string()));
+    let Err(err) = RealSpawner.spawn(req, tx) else {
+        panic!("a directory must not spawn");
+    };
+    assert!(
+        format!("{err:#}").contains("not an executable file"),
+        "{err:#}"
+    );
+}

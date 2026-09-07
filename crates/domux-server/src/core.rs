@@ -266,10 +266,19 @@ impl Core {
                 "DOMUX_SOCKET".to_string(),
                 self.socket_path.display().to_string(),
             ),
+            // Which shell the pane runs, and the shell it says it is running. The spawner
+            // reads this to run a login shell (see `SpawnRequest::command`), and a program
+            // inside the pane that asks `$SHELL` gets the shell it is actually in rather
+            // than whatever the server was started from.
+            (
+                "SHELL".to_string(),
+                self.config.config.terminal.shell_or_default(),
+            ),
         ];
         let req = SpawnRequest {
             pane: pane.clone(),
-            command: vec![self.config.config.terminal.shell_or_default()],
+            // Empty: the shell, run as a terminal would run it.
+            command: Vec::new(),
             cwd,
             env,
             size,

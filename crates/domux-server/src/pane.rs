@@ -10,8 +10,9 @@ use domux_core::ids::PaneId;
 use domux_term::{Emulator, EmulatorConfig, GhosttyEmulator, Grid, Rgb, Size};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use std::io::{self, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::RawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::sync::mpsc::Sender;
@@ -40,7 +41,7 @@ pub fn new_pane_emulator(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnRequest {
     pub pane: PaneId,
-    /// argv; empty means the configured shell.
+    /// argv. Empty means the shell named by `SHELL` in `env`, run as a *login* shell.
     pub command: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
@@ -56,6 +57,24 @@ pub trait PtyHandle: Send {
     fn raw_fd(&self) -> Option<RawFd>;
     /// The child's exit code once it has exited, else `None`.
     fn exit_status(&mut self) -> Option<i32>;
+}
+
+/// Refuses a shell the pane could not run, naming it and the setting that names it
+/// (principle 9). Without this the spawn would quietly succeed on a different shell.
+fn executable(shell: &Path) -> Result<()> {
+    let meta = std::fs::metadata(shell).with_context(|| {
+        format!(
+            "shell {} cannot be run; check terminal.shell",
+            shell.display()
+        )
+    })?;
+    if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+        anyhow::bail!(
+            "shell {} is not an executable file; check terminal.shell",
+            shell.display()
+        );
+    }
+    Ok(())
 }
 
 pub trait PtySpawner: Send + Sync {
@@ -77,15 +96,29 @@ impl PtySpawner for RealSpawner {
         // A pane with no command is a terminal, and opening a terminal runs a *login* shell:
         // that is where a shell config puts its PATH, its aliases and its functions (zsh reads
         // `.zprofile` only for a login shell). A pane that skipped them would hand the user a
-        // shell they do not recognise. `new_default_prog` is the login form - it prefixes
-        // argv[0] with `-`, the way every terminal emulator does - and it resolves `$SHELL`
-        // itself, checking the file is executable before falling back to the password database.
-        let mut cmd = if req.command.is_empty() {
-            CommandBuilder::new_default_prog()
-        } else {
-            let mut c = CommandBuilder::new(&req.command[0]);
-            c.args(&req.command[1..]);
-            c
+        // shell they do not recognise.
+        //
+        // `new_default_prog` is the only login form `CommandBuilder` has: it prefixes argv[0]
+        // with `-`, the way every terminal emulator does. It takes the shell from `SHELL` in
+        // the command's environment, which is why the caller puts it there. It would fall back
+        // to the password database for a shell it cannot execute, and that would hide a typo
+        // in `terminal.shell` behind a shell that happens to work, so that is refused here.
+        let mut cmd = match req.command.split_first() {
+            Some((program, args)) => {
+                let mut c = CommandBuilder::new(program);
+                c.args(args);
+                c
+            }
+            None => {
+                let shell = req
+                    .env
+                    .iter()
+                    .find(|(k, _)| k == "SHELL")
+                    .map(|(_, v)| v.as_str())
+                    .context("a pane with no command needs SHELL in its environment")?;
+                executable(Path::new(shell))?;
+                CommandBuilder::new_default_prog()
+            }
         };
         cmd.env("TERM", &req.term);
         cmd.env("COLORTERM", "truecolor");
