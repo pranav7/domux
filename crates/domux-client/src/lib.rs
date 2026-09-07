@@ -11,8 +11,11 @@ use crate::frame::Screen;
 use crate::terminal::TerminalGuard;
 use anyhow::Context;
 use crossterm::event::{Event, EventStream};
+// `SERVER_STOPPED` is the reason the server sends when the whole server is going away, rather
+// than one view. It is defined beside the message that carries it, so the server writing it and
+// this crate reading it are one string rather than two literals a reword could part.
 use domux_core::proto::{
-    encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION,
+    encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION, SERVER_STOPPED,
 };
 use futures::{Stream, StreamExt};
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -32,12 +35,6 @@ pub enum AttachOutcome {
     ConnectionLost,
     Refused(String),
 }
-
-/// The reason the server sends when the whole server is going away, rather than one view.
-/// Both arrive as `ServerMsg::Detached`, so this string is the only thing that tells them
-/// apart. It has to stay equal to the reason `domux_server::core` stops clients with; a test
-/// here pins the client's half of that.
-const SERVER_STOPPED: &str = "the server stopped";
 
 /// The client's own reason when the terminal it draws on has gone.
 const TERMINAL_ENDED: &str = "the terminal ended";
@@ -505,7 +502,7 @@ mod tests {
     #[test]
     fn a_server_that_stopped_is_a_different_outcome_from_a_detach() {
         assert_eq!(
-            detach_outcome("the server stopped".into()),
+            detach_outcome(SERVER_STOPPED.into()),
             AttachOutcome::ServerStopped
         );
         assert_eq!(

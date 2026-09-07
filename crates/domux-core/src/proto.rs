@@ -117,6 +117,13 @@ pub enum ServerMsg {
     },
 }
 
+/// The reason the server sends when the whole server is going away, rather than one view. Both
+/// arrive as `ServerMsg::Detached`, so this string is the only thing that tells them apart, and
+/// the server writing it and the client reading it have to agree letter for letter. It lives
+/// here, next to the message that carries it, so the compiler holds that agreement rather than
+/// a test on each side pinning its own copy.
+pub const SERVER_STOPPED: &str = "the server stopped";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
     #[error("frame of {0} bytes exceeds the {MAX_FRAME} byte limit")]

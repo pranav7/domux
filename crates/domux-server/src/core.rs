@@ -1119,7 +1119,7 @@ impl Core {
         self.publish_events();
         self.persist();
         for id in self.clients.keys().cloned().collect::<Vec<_>>() {
-            self.detach(&id, Some("the server stopped"));
+            self.detach(&id, Some(domux_core::proto::SERVER_STOPPED));
         }
         for (_, mut p) in self.panes.drain() {
             p.pty.kill();
