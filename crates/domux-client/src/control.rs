@@ -8,8 +8,16 @@ use tokio::net::UnixStream;
 
 /// Whether a server is listening. A socket file left behind by a server that died does not
 /// answer a connect, so the file existing is not the question.
-pub fn is_live(socket: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket).is_ok()
+///
+/// Async because the CLI spins on it - `server start` and `server stop` both wait for the
+/// socket to change state - and a blocking connect on the runtime thread stalls everything
+/// else the client is doing for the length of every probe.
+///
+/// The probe connects and drops without a hello, which is the only way to ask a Unix socket
+/// whether anyone is home. The server sees a connection that arrives and vanishes; when its
+/// accept path grows logging, that has to be silent rather than a warning per probe.
+pub async fn is_live(socket: &Path) -> bool {
+    UnixStream::connect(socket).await.is_ok()
 }
 
 /// One call: the request line out, the response line in. The outer result is the transport,
@@ -189,8 +197,14 @@ mod tests {
     async fn is_live_answers_for_a_socket_with_and_without_a_server() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s");
-        assert!(!is_live(&path), "no socket file at all");
+        assert!(!is_live(&path).await, "no socket file at all");
         let _listener = UnixListener::bind(&path).unwrap();
-        assert!(is_live(&path));
+        assert!(is_live(&path).await);
+        // The stale-socket case - a file a dead server left behind - is not asserted here.
+        // Dropping this listener does not reproduce it: tokio's deregistration means the fd
+        // can outlive the drop by a moment, so the probe still connects, and the test passes
+        // alone and fails in the suite. Reproducing it honestly needs a listener in a child
+        // process that is then killed, which is more machinery than a probe deserves.
+        drop(_listener);
     }
 }

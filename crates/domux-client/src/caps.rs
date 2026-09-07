@@ -205,6 +205,59 @@ mod tests {
         );
     }
 
+    /// The branch that fires for ghostty and kitty over ssh, where `TERM_PROGRAM` is not
+    /// forwarded but `TERM` is - the same case the assertion above calls the only clipboard
+    /// route. Deleting the whole `TERM` arm used to leave the workspace green.
+    #[test]
+    fn detect_reads_a_rich_terminal_from_term_when_term_program_is_not_forwarded() {
+        let over_ssh = |term: &str| CapsEnv {
+            colorterm: None,
+            term: Some(term.into()),
+            term_program: None,
+            ssh_tty: Some("/dev/pts/3".into()),
+            keyboard_enhancement: false,
+        };
+        for term in ["xterm-ghostty", "xterm-kitty"] {
+            let c = detect(&over_ssh(term));
+            assert!(c.hyperlinks, "{term} is a rich terminal");
+            assert!(c.osc52, "{term}");
+        }
+        // `TERM` alone does not make a terminal rich: a plain one over ssh keeps OSC 52,
+        // which it gets from `SSH_TTY`, and gains nothing else.
+        let c = detect(&over_ssh("xterm-256color"));
+        assert!(!c.hyperlinks, "xterm-256color is not a rich terminal");
+        assert!(c.osc52, "but ssh still routes the clipboard");
+    }
+
+    /// Every name in `RICH_TERMINALS`, and the second spelling of truecolor. Three of the
+    /// four names and the `24bit` arm were held by nothing.
+    ///
+    /// The names are written out rather than read from `RICH_TERMINALS`: a test that iterates
+    /// the constant it exists to pin shrinks when the constant does, and passes forever.
+    #[test]
+    fn detect_reads_every_rich_terminal_name_and_both_truecolor_spellings() {
+        let local = |program: &str, colorterm: Option<&str>| CapsEnv {
+            colorterm: colorterm.map(str::to_string),
+            term: Some("xterm-256color".into()),
+            term_program: Some(program.into()),
+            ssh_tty: None,
+            keyboard_enhancement: false,
+        };
+        for program in ["ghostty", "WezTerm", "iTerm.app", "kitty"] {
+            let c = detect(&local(program, None));
+            assert!(c.hyperlinks, "{program} is a rich terminal");
+            assert!(c.osc52, "{program} can take a clipboard write");
+        }
+        assert!(!detect(&local("Terminal.app", None)).hyperlinks);
+        for spelling in ["truecolor", "24bit"] {
+            assert!(
+                detect(&local("ghostty", Some(spelling))).truecolor,
+                "{spelling}"
+            );
+        }
+        assert!(!detect(&local("ghostty", Some("256"))).truecolor);
+    }
+
     /// A terminal that answers nothing at all. Every capability is off and both colours stay
     /// absent: a default here would paint the screen in colours the terminal never named.
     #[test]
