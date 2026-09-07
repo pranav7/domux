@@ -440,6 +440,21 @@ impl Harness {
             .expect("client has a tab")
     }
 
+    /// A pane's emulator size: the screen its program believes it has, which is what the
+    /// smallest client on the tab gives it. Published beside the model after every batch,
+    /// so call `frame` first when the resize you want to see was only just requested.
+    pub fn pane_size(&self, pane: &PaneId) -> Size {
+        self.server
+            .as_ref()
+            .expect("server")
+            .pane_sizes
+            .lock()
+            .unwrap()
+            .get(pane)
+            .copied()
+            .unwrap_or_else(|| panic!("no pane {pane}"))
+    }
+
     pub fn current_tab(&self, client: ClientId) -> TabId {
         self.model()
             .client(&client)

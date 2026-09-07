@@ -77,6 +77,59 @@ pub fn pad(s: &str, width: usize) -> String {
     out
 }
 
+/// Splits `s` into lines of at most `width` cells, breaking between words.
+///
+/// Measured in cells through the same `display_width` every other row uses, so a wrapped
+/// notice occupies the cells it says it does. Breaking is on whitespace, and runs of
+/// whitespace collapse: a wrapped line never starts with a space it inherited from the break.
+///
+/// A word wider than the whole line is broken across lines by grapheme rather than dropped
+/// or left to run past the edge, so no future rewording can make this drop text or hang. A
+/// single grapheme wider than the line - a wide glyph on a one-column screen - goes on a
+/// line of its own and overflows it; the renderer clips, which is the only honest thing left
+/// at that size.
+///
+/// A zero `width` has no line to put anything on, so the answer is no lines.
+pub fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    let mut used = 0usize;
+    for word in s.split_whitespace() {
+        let w = display_width(word);
+        if used > 0 && used + 1 + w > width {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        if w > width {
+            for g in word.graphemes(true) {
+                // At least one cell per grapheme, so a zero-width one cannot make the
+                // accounting stand still while the line grows.
+                let gw = grapheme_width(g).max(1);
+                if used > 0 && used + gw > width {
+                    lines.push(std::mem::take(&mut line));
+                    used = 0;
+                }
+                line.push_str(g);
+                used += gw;
+            }
+            continue;
+        }
+        if used > 0 {
+            line.push(' ');
+            used += 1;
+        }
+        line.push_str(word);
+        used += w;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +150,36 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("漢字漢字", 4), "漢…");
         assert_eq!(truncate_with_ellipsis("abc", 1), "…");
         assert_eq!(truncate_with_ellipsis("abc", 0), "");
+    }
+
+    #[test]
+    fn wrap_to_width_breaks_between_words_and_measures_in_cells() {
+        assert_eq!(
+            wrap_to_width("Screen is 30x8. domux needs at least 40x10.", 30),
+            vec!["Screen is 30x8. domux needs at", "least 40x10."]
+        );
+        // Exactly the width fits; one cell more does not.
+        assert_eq!(wrap_to_width("ab cd", 5), vec!["ab cd"]);
+        assert_eq!(wrap_to_width("ab cde", 5), vec!["ab", "cde"]);
+        // Cells, not chars: two wide glyphs fill a four-cell line.
+        assert_eq!(wrap_to_width("漢字 x", 4), vec!["漢字", "x"]);
+        assert_eq!(wrap_to_width("", 10), Vec::<String>::new());
+        assert_eq!(wrap_to_width("anything", 0), Vec::<String>::new());
+    }
+
+    /// The wording of a notice is a thing people edit. A word longer than the screen must
+    /// break rather than be dropped, run past the edge, or spin - none of which a reader
+    /// changing the words would be warned about.
+    #[test]
+    fn wrap_to_width_breaks_a_word_that_is_wider_than_the_line() {
+        assert_eq!(
+            wrap_to_width("a supercalifragilistic word", 8),
+            vec!["a", "supercal", "ifragili", "stic", "word"]
+        );
+        // One cell wide: every grapheme lands on its own line and nothing is lost.
+        assert_eq!(wrap_to_width("abc", 1), vec!["a", "b", "c"]);
+        // A grapheme wider than the whole line still gets a line; the renderer clips it.
+        assert_eq!(wrap_to_width("漢", 1), vec!["漢"]);
     }
 
     #[test]

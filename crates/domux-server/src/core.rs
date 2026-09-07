@@ -83,6 +83,8 @@ pub struct Core {
     /// the only writer and every reader gets a clone, so nothing outside holds a reference
     /// into the state the core owns.
     snapshot: Arc<Mutex<Model>>,
+    /// Published beside `snapshot`: see `ServerHandle::pane_sizes`.
+    pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
     /// Set whenever something a frame shows may have changed.
     view_dirty: bool,
     last_minute: Option<String>,
@@ -96,6 +98,7 @@ impl Core {
         persist_tx: mpsc::Sender<StateFile>,
         state_file: &Path,
         snapshot: Arc<Mutex<Model>>,
+        pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
     ) -> anyhow::Result<Core> {
         let started_at = opts.deps.clock.now().to_rfc3339();
         let mut model = match std::fs::read_to_string(state_file) {
@@ -129,6 +132,7 @@ impl Core {
             persist_tx,
             pending_events: Vec::new(),
             snapshot,
+            pane_sizes,
             view_dirty: true,
             last_minute: None,
             stopping: false,
@@ -530,6 +534,15 @@ impl Core {
         // first means a reader that has seen a frame is reading a model at least as new as
         // that frame. The other order leaves a window in which a test waits for a frame,
         // asks for the model and gets the one from before the batch.
+        //
+        // Sizes before the model, for the same reason one step smaller: a reader holding a
+        // model from this batch then finds a size for every pane in it, rather than a pane
+        // whose size has not been published yet.
+        *self.pane_sizes.lock().unwrap() = self
+            .panes
+            .iter()
+            .map(|(id, p)| (id.clone(), p.size()))
+            .collect();
         *self.snapshot.lock().unwrap() = self.model.clone();
         self.render();
     }

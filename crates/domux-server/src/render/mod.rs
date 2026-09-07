@@ -60,13 +60,18 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
             "Screen is {}x{}. domux needs at least {}x{}.",
             size.cols, size.rows, MIN_COLS, MIN_ROWS
         );
-        boxed::put(
-            &mut buf,
-            0,
-            0,
-            &msg,
-            ratatui::style::Style::default().fg(theme::TEXT),
-        );
+        // Wrapped, not clipped. The sentence is wider than any screen that reaches this
+        // branch - it is 43 cells and the branch is only taken below 40 columns - so a
+        // single row would show two thirds of it and drop the size the screen has to reach,
+        // which is the one fact the reader is here for (principle 9).
+        let style = ratatui::style::Style::default().fg(theme::TEXT);
+        for (y, line) in domux_core::text::wrap_to_width(&msg, size.cols as usize)
+            .iter()
+            .zip(0..size.rows)
+            .map(|(line, y)| (y, line))
+        {
+            boxed::put(&mut buf, 0, y, line, style);
+        }
         return (buf, None);
     }
     top_bar::draw(input, &mut buf);

@@ -3,6 +3,7 @@
 
 use domux_core::config::Config;
 use domux_server::testing::{row, Harness};
+use domux_term::Size;
 use std::time::Duration;
 
 #[tokio::test]
@@ -70,4 +71,59 @@ async fn pane_output_appears_inside_the_box_and_moves_the_cursor() {
         f.contains("cursor row=2 col=6 visible=true shape=block"),
         "{f}"
     );
+}
+
+#[tokio::test]
+async fn a_second_client_sees_the_same_tab_and_the_smaller_client_sizes_the_pane() {
+    let mut h = Harness::start(Config::default(), 60, 20).await;
+    let second = h.attach(40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let f2 = h.frame(second.clone()).await;
+    assert_eq!(
+        row(&f2, 1),
+        "|┌ sh ──────────────────────────────────┐|",
+        "{f2}"
+    );
+    let f1 = h.frame(h.client.clone()).await;
+    assert!(
+        row(&f1, 1).starts_with("|┌ sh ──────────────────────────────────┐"),
+        "the box is the small client's size:\n{f1}"
+    );
+    // The pane's own screen is the box's inside: 40 - 2 columns, and 10 rows less the top
+    // bar and the two rules.
+    assert_eq!(h.pane_size(&pane), Size { cols: 38, rows: 7 });
+}
+
+#[tokio::test]
+async fn a_screen_below_the_minimum_says_what_it_needs() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let small = h.attach(30, 8).await;
+    let f = h.frame(small.clone()).await;
+    // The sentence is 43 cells and the screen is 30, so it wraps. Clipping it would drop
+    // `40x10.` - the size the reader has to reach, which is the point of the notice.
+    assert_eq!(row(&f, 0), "|Screen is 30x8. domux needs at|", "{f}");
+    assert_eq!(row(&f, 1), "|least 40x10.                  |", "{f}");
+    h.resize(small.clone(), 40, 10).await;
+    let f = h
+        .wait_for(small, |f| f.contains("┌ sh"), Duration::from_secs(2))
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  1 │ + │ 14:32   Fri 4 Sep |",
+        "{f}"
+    );
+}
+
+/// Far below the minimum the notice degrades rather than dying: it wraps to as many rows as
+/// the screen has and stops, with no panic and nothing drawn past an edge. At 10x5 the last
+/// line does not fit, which is the honest outcome at that size.
+#[tokio::test]
+async fn a_screen_far_below_the_minimum_draws_what_fits_and_does_not_panic() {
+    let mut h = Harness::start(Config::default(), 10, 5).await;
+    let f = h.frame(h.client.clone()).await;
+    assert_eq!(row(&f, 0), "|Screen is |", "{f}");
+    assert_eq!(row(&f, 1), "|10x5.     |", "{f}");
+    assert_eq!(row(&f, 2), "|domux     |", "{f}");
+    assert_eq!(row(&f, 3), "|needs at  |", "{f}");
+    assert_eq!(row(&f, 4), "|least     |", "{f}");
 }

@@ -18,8 +18,11 @@ use crate::process::ProcessInspector;
 use anyhow::Context;
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use domux_core::config::{Config, ConfigError};
+use domux_core::ids::PaneId;
 use domux_core::keymap::Keymap;
 use domux_core::model::Model;
+use domux_term::Size;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -146,6 +149,12 @@ pub struct ServerHandle {
     /// The model as of the end of the core's last batch. The core writes it; everyone else
     /// clones what they need out of it, so no reader ever holds the core's own state.
     pub snapshot: Arc<Mutex<Model>>,
+    /// Each live pane's emulator size, which is what its program believes its screen is.
+    /// The Model does not carry it - a pane's size lives in its runtime, not in the state
+    /// that persists - so it is published beside the model rather than inside it. Written
+    /// just before `snapshot` in the same batch, so a pane visible in the model always has
+    /// a size here.
+    pub pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
     core: tokio::task::JoinHandle<()>,
     persist: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
@@ -176,12 +185,14 @@ impl Server {
         let persist = tokio::spawn(persist::spawn(state_file.clone(), persist_rx));
         let socket_path = opts.socket_path.clone();
         let snapshot = Arc::new(Mutex::new(Model::new(opts.deps.id_seed)));
+        let pane_sizes = Arc::new(Mutex::new(HashMap::new()));
         let core = Core::new(
             opts,
             core_tx.clone(),
             persist_tx,
             &state_file,
             snapshot.clone(),
+            pane_sizes.clone(),
         )?;
         let listener = socket::listen(&socket_path, core_tx.clone()).await?;
         let tick_tx = core_tx.clone();
@@ -199,6 +210,7 @@ impl Server {
             core_tx,
             socket_path,
             snapshot,
+            pane_sizes,
             core,
             persist,
             listener,
