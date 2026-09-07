@@ -27,7 +27,7 @@ async fn leader_then_binding_runs_the_action_and_nothing_reaches_the_pane() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "|").await;
+    h.key(h.client.clone(), "\\").await;
     h.wait_for(
         h.client.clone(),
         |f| f.matches('┌').count() == 2,
@@ -65,7 +65,7 @@ async fn global_focus_keys_move_focus_unless_the_foreground_is_a_passthrough_com
     let mut h = Harness::start(Config::default(), 60, 12).await;
     let left = h.focused_pane(h.client.clone());
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "|").await;
+    h.key(h.client.clone(), "\\").await;
     h.wait_for(
         h.client.clone(),
         |f| f.matches('┌').count() == 2,

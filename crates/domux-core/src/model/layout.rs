@@ -24,8 +24,11 @@ impl Rect {
     }
 }
 
-/// Cells between neighbouring boxes (interface spec assumption 18).
-pub const GAP: u16 = 1;
+/// Cells between neighbouring boxes. The spec assumed 1 (interface spec assumption 18), which
+/// put three rows of chrome between two stacked panes: a bottom border, a blank row, a top
+/// border. Every box already draws its own edge, so the blank row separated nothing and only
+/// spent screen. Zero leaves the two borders touching, which is the least a full box can use.
+pub const GAP: u16 = 0;
 /// The smallest box: one border row above and below one content row, or the columns for it.
 pub const MIN_BOX: u16 = 3;
 
@@ -470,11 +473,11 @@ mod tests {
     }
 
     #[test]
-    fn split_right_places_the_new_pane_on_the_right_with_a_one_cell_gap() {
+    fn split_right_places_the_new_pane_on_the_right_edge_to_edge() {
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         assert!(tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002")));
         let rects = solve(&tree, area(), None);
-        // 40 columns minus a gap of 1 is 39; half rounds to 20 for the first pane.
+        // The two boxes share all 40 columns, half each, with their borders touching.
         assert_eq!(
             rects[0],
             (
@@ -492,9 +495,9 @@ mod tests {
             (
                 PaneId("p_0002".into()),
                 Rect {
-                    x: 21,
+                    x: 20,
                     y: 1,
-                    width: 19,
+                    width: 20,
                     height: 9
                 }
             )
@@ -506,13 +509,14 @@ mod tests {
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
         let rects = solve(&tree, area(), None);
+        // 9 rows split in half is 4.5: the first box rounds up and the second takes 4.
         assert_eq!(
             rects[0].1,
             Rect {
                 x: 0,
                 y: 1,
                 width: 40,
-                height: 4
+                height: 5
             }
         );
         assert_eq!(
@@ -566,7 +570,7 @@ mod tests {
         assert!(tree.resize(&PaneId("p_0001".into()), Direction::Right, 2, area()));
         let rects = solve(&tree, area(), None);
         assert_eq!(rects[0].1.width, 22);
-        assert_eq!(rects[1].1.width, 17);
+        assert_eq!(rects[1].1.width, 18);
         assert!(tree.resize(&PaneId("p_0002".into()), Direction::Left, 4, area()));
         let rects = solve(&tree, area(), None);
         assert_eq!(rects[0].1.width, 18);
@@ -589,7 +593,7 @@ mod tests {
     fn resize_refuses_when_the_split_is_too_small_for_two_boxes() {
         // The split's own axis minus GAP is what the two children share, and each needs
         // MIN_BOX, so below 2 * MIN_BOX no ratio is legal and the resize is refused.
-        for height in 0..=6u16 {
+        for height in 0..2 * MIN_BOX {
             let mut tree = LayoutNode::leaf(pane("p_0001"));
             tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
             let small = Rect {
@@ -612,19 +616,19 @@ mod tests {
             Rect {
                 x: 0,
                 y: 0,
-                width: 6,
+                width: 5,
                 height: 9
             }
         ));
 
-        // 7 is the first size that fits two 3-cell boxes and the gap between them.
+        // 6 is the first size that fits two 3-cell boxes.
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
         let fits = Rect {
             x: 0,
             y: 0,
             width: 40,
-            height: 7,
+            height: 6,
         };
         assert!(tree.resize(&PaneId("p_0001".into()), Direction::Down, 1, fits));
         let rects = solve(&tree, fits, None);

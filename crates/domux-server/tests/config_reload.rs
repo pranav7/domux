@@ -71,6 +71,15 @@ async fn a_bad_reload_keeps_the_old_config_and_shows_the_line_until_fixed() {
     .await;
     std::fs::write(h.config_path(), "[keys]\nleader = \"C-b\"\n").unwrap();
     h.api("config.reload", json!({})).await.unwrap();
+    // The error line goes, and in its place the reload says what it did. That notice stands
+    // until the next key, which is when the clock comes back.
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("config reloaded") && !f.contains("domux.toml line 4"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "x").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains("14:32"),
@@ -218,7 +227,7 @@ async fn a_config_file_that_vanished_reloads_the_defaults_and_clears_the_notice(
     assert!(r["error"].is_null(), "{r}");
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("14:32"),
+        |f| f.contains("config reloaded") && !f.contains("domux.toml line 1"),
         Duration::from_secs(2),
     )
     .await;
@@ -226,9 +235,11 @@ async fn a_config_file_that_vanished_reloads_the_defaults_and_clears_the_notice(
     assert!(info["config_error"].is_null(), "{info}");
     h.key(h.client.clone(), "C-a").await;
     h.key(h.client.clone(), "c").await;
+    // The defaults are back, so the old leader made a tab - and the keys took the notice
+    // with them, which is what puts the clock back.
     h.wait_for(
         h.client.clone(),
-        |f| f.contains(" 2 "),
+        |f| f.contains(" 2 ") && f.contains("14:32"),
         Duration::from_secs(2),
     )
     .await;
@@ -356,7 +367,7 @@ async fn a_reload_is_the_way_out_of_a_respawn_block_and_a_failed_one_is_not() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("14:32"),
+            |f| f.contains("config reloaded"),
             Duration::from_secs(2),
         )
         .await;
@@ -364,6 +375,14 @@ async fn a_reload_is_the_way_out_of_a_respawn_block_and_a_failed_one_is_not() {
         !f.contains("exited immediately"),
         "both notices are withdrawn:\n{f}"
     );
+    // The reload's own notice is the transient kind, so the next key puts the clock back.
+    h.key(h.client.clone(), "x").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("14:32"),
+        Duration::from_secs(2),
+    )
+    .await;
 }
 
 /// Two true things at once: the shell keeps exiting and the file the user just saved does not

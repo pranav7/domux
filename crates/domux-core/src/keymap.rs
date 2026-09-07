@@ -328,7 +328,7 @@ mod tests {
         let km = Keymap::defaults();
         assert_eq!(km.leader, KeyName::parse("C-a").unwrap());
         assert_eq!(
-            km.binding_for(&press(Key::Char('|'), Mods::SHIFT))
+            km.binding_for(&press(Key::Char('\\'), Mods::empty()))
                 .unwrap()
                 .to_string(),
             "pane.split right"
@@ -358,7 +358,7 @@ mod tests {
         );
         assert_eq!(km.key_for("tab.rename"), Some("C-a ,".to_string()));
         assert_eq!(km.key_for("focus.left"), Some("C-h".to_string()));
-        assert_eq!(km.key_for("pane.split right"), Some("C-a |".to_string()));
+        assert_eq!(km.key_for("pane.split right"), Some("C-a \\".to_string()));
     }
 
     #[test]

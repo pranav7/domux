@@ -6,7 +6,7 @@ use serde_json::json;
 use std::time::Duration;
 
 #[tokio::test]
-async fn split_right_draws_two_boxes_one_cell_apart_and_focuses_the_new_pane() {
+async fn split_right_draws_two_boxes_edge_to_edge_and_focuses_the_new_pane() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let first = h.focused_pane(h.client.clone());
     let info = h.api("pane.split", json!({"dir": "right"})).await.unwrap();
@@ -17,14 +17,15 @@ async fn split_right_draws_two_boxes_one_cell_apart_and_focuses_the_new_pane() {
             Duration::from_secs(2),
         )
         .await;
+    // The two boxes touch, and 40 columns divide evenly between them.
     assert_eq!(
         row(&f, 1),
-        "|┌ sh ──────────────┐ ┌ sh ─────────────┐|",
+        "|┌ sh ──────────────┐┌ sh ──────────────┐|",
         "{f}"
     );
-    assert_eq!(row(&f, 9), "|└──────────────────┘ └─────────────────┘|");
+    assert_eq!(row(&f, 9), "|└──────────────────┘└──────────────────┘|");
     assert!(
-        f.contains("r1 c26-39 fg=#cba6f7"),
+        f.contains("r1 c25-39 fg=#cba6f7"),
         "the right box is focused:\n{f}"
     );
     assert!(
@@ -46,7 +47,7 @@ async fn split_right_draws_two_boxes_one_cell_apart_and_focuses_the_new_pane() {
 }
 
 #[tokio::test]
-async fn split_down_stacks_with_a_gap_row() {
+async fn split_down_stacks_with_the_boxes_touching() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     h.api("pane.split", json!({"dir": "down"})).await.unwrap();
     let f = h
@@ -56,14 +57,14 @@ async fn split_down_stacks_with_a_gap_row() {
             Duration::from_secs(2),
         )
         .await;
+    // 9 rows do not divide evenly, so the first box takes the odd one.
     assert_eq!(row(&f, 1), "|┌ sh ──────────────────────────────────┐|");
-    assert_eq!(row(&f, 4), "|└──────────────────────────────────────┘|");
+    assert_eq!(row(&f, 5), "|└──────────────────────────────────────┘|");
     assert_eq!(
-        row(&f, 5),
-        "|                                        |",
-        "one gap row"
+        row(&f, 6),
+        "|┌ sh ──────────────────────────────────┐|",
+        "the next box starts on the row below, with nothing between them"
     );
-    assert_eq!(row(&f, 6), "|┌ sh ──────────────────────────────────┐|");
     assert_eq!(row(&f, 9), "|└──────────────────────────────────────┘|");
 }
 

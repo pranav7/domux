@@ -16,7 +16,7 @@ pub struct Config {
 #[serde(default)]
 pub struct KeysConfig {
     pub leader: String,
-    /// After the leader. Key name to action, for example `"|" = "pane.split right"`.
+    /// After the leader. Key name to action, for example `"\\" = "pane.split right"`.
     pub bindings: BTreeMap<String, String>,
     /// Without the leader.
     pub global: BTreeMap<String, String>,
@@ -63,7 +63,9 @@ impl Default for KeysConfig {
         KeysConfig {
             leader: "C-a".into(),
             bindings: map(&[
-                ("|", "pane.split right"),
+                // The unshifted half of the key `|` lives on: a split is common enough that
+                // it should not need a shift.
+                ("\\", "pane.split right"),
                 ("-", "pane.split down"),
                 ("z", "pane.zoom"),
                 ("[", "pane.copy_mode"),
@@ -353,8 +355,9 @@ mod tests {
     fn defaults_match_the_architecture_spec_keymap() {
         let c = Config::default();
         assert_eq!(c.keys.leader, "C-a");
+        // The spec's keymap put this on `|`; see the M1 deviations.
         assert_eq!(
-            c.keys.bindings.get("|").map(String::as_str),
+            c.keys.bindings.get("\\").map(String::as_str),
             Some("pane.split right")
         );
         assert_eq!(
@@ -428,7 +431,7 @@ mod tests {
             Some("pane.split right")
         );
         assert_eq!(
-            parsed.config.keys.bindings.get("|").map(String::as_str),
+            parsed.config.keys.bindings.get("\\").map(String::as_str),
             Some("pane.split right"),
             "defaults stay unless overridden"
         );
@@ -502,7 +505,7 @@ mod tests {
             "a mentioned key must win over the default it replaces"
         );
         assert_eq!(
-            parsed.config.keys.bindings.get("|").map(String::as_str),
+            parsed.config.keys.bindings.get("\\").map(String::as_str),
             Some("pane.split right"),
             "an untouched default must survive alongside the override"
         );
