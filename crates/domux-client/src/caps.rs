@@ -2,7 +2,7 @@
 
 use domux_core::proto::Capabilities;
 use domux_term::Rgb;
-use std::io::{IsTerminal, Read, Write};
+use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 /// The environment the capabilities are read from, as values rather than as `std::env`
@@ -88,14 +88,27 @@ pub fn query_default_colors(timeout: Duration) -> (Option<Rgb>, Option<Rgb>) {
     {
         return (None, None);
     }
+    let text = read_replies(libc::STDIN_FILENO, timeout);
+    (find_reply(&text, "10"), find_reply(&text, "11"))
+}
+
+/// Reads OSC answers off a descriptor until both have arrived or `timeout` passes.
+///
+/// The descriptor is read directly rather than through `std::io::Stdin`. A `StdinLock` reads
+/// into an 8 KB `BufReader`, so a one byte request pulls every byte the terminal sent into a
+/// buffer this loop cannot see: `poll` then reports an empty descriptor for the rest of the
+/// window, the answers are stranded, and anything the user typed ahead is stranded with them,
+/// because the event stream reads the descriptor and never that buffer.
+///
+/// One byte per read, so the loop stops on the byte that finishes the second answer and
+/// leaves whatever follows it - type-ahead - on the descriptor for the event stream.
+fn read_replies(fd: std::os::fd::RawFd, timeout: Duration) -> String {
     let deadline = Instant::now() + timeout;
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
-    let stdin = std::io::stdin();
-    let mut lock = stdin.lock();
     while Instant::now() < deadline {
         let mut fds = [libc::pollfd {
-            fd: 0,
+            fd,
             events: libc::POLLIN,
             revents: 0,
         }];
@@ -107,7 +120,9 @@ pub fn query_default_colors(timeout: Duration) -> (Option<Rgb>, Option<Rgb>) {
         if n <= 0 {
             break;
         }
-        if lock.read(&mut byte).unwrap_or(0) == 0 {
+        // Safe: a one byte buffer this call owns, on a descriptor poll just called readable.
+        let n = unsafe { libc::read(fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n <= 0 {
             break;
         }
         buf.push(byte[0]);
@@ -115,8 +130,7 @@ pub fn query_default_colors(timeout: Duration) -> (Option<Rgb>, Option<Rgb>) {
             break;
         }
     }
-    let text = String::from_utf8_lossy(&buf);
-    (find_reply(&text, "10"), find_reply(&text, "11"))
+    String::from_utf8_lossy(&buf).into_owned()
 }
 
 fn count_replies(buf: &[u8]) -> usize {
@@ -137,6 +151,8 @@ fn find_reply(text: &str, code: &str) -> Option<Rgb> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
 
     #[test]
     fn parse_osc_color_reads_16_bit_channels() {
@@ -241,5 +257,64 @@ mod tests {
         assert_eq!(count_replies(b"\x1b]10;rgb:1e/1e/2e"), 0);
         assert_eq!(count_replies(b"\x1b]10;rgb:1e/1e/2e\x07"), 1);
         assert_eq!(count_replies(b"\x1b]10;a\x07\x1b]11;b\x07"), 2);
+    }
+
+    /// The terminal answers both queries in one write, and the user has typed ahead. Both
+    /// answers are collected, and the type-ahead is still on the descriptor for the event
+    /// stream: a read that buffered would have taken it and lost those keystrokes.
+    #[test]
+    fn read_replies_collects_both_answers_and_leaves_what_follows_them() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        writer
+            .write_all(b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07\x1b]11;rgb:1e1e/1e1e/2e2e\x07hi")
+            .unwrap();
+        let text = read_replies(reader.as_raw_fd(), Duration::from_millis(500));
+        assert_eq!(
+            (find_reply(&text, "10"), find_reply(&text, "11")),
+            (
+                Some(Rgb {
+                    r: 0xcd,
+                    g: 0xd6,
+                    b: 0xf4
+                }),
+                Some(Rgb {
+                    r: 0x1e,
+                    g: 0x1e,
+                    b: 0x2e
+                })
+            )
+        );
+        let mut rest = [0u8; 2];
+        let mut reader = reader;
+        reader.read_exact(&mut rest).unwrap();
+        assert_eq!(&rest, b"hi", "type-ahead stays on the descriptor");
+    }
+
+    /// The two answers arrive in two writes, which is what a terminal that answers each
+    /// query as it reaches it does. The loop polls again rather than stopping at the first.
+    #[test]
+    fn read_replies_collects_answers_that_arrive_in_two_writes() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        std::thread::spawn(move || {
+            writer.write_all(b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07").unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+            writer.write_all(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07").unwrap();
+        });
+        let text = read_replies(reader.as_raw_fd(), Duration::from_millis(2000));
+        assert!(
+            find_reply(&text, "10").is_some() && find_reply(&text, "11").is_some(),
+            "{text:?}"
+        );
+    }
+
+    /// A terminal that answers nothing costs the timeout and gives nothing. Absent, not black.
+    #[test]
+    fn read_replies_gives_up_at_the_deadline_when_nothing_answers() {
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let started = Instant::now();
+        let text = read_replies(reader.as_raw_fd(), Duration::from_millis(30));
+        assert_eq!(text, "");
+        assert!(started.elapsed() < Duration::from_millis(2000));
+        assert_eq!(find_reply(&text, "10"), None);
     }
 }

@@ -17,6 +17,7 @@ use crossterm::event::{Event, EventStream};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION, SERVER_STOPPED,
 };
+use domux_term::Rgb;
 use futures::{Stream, StreamExt};
 use ratatui::backend::{Backend, CrosstermBackend};
 use std::future::Future;
@@ -210,6 +211,40 @@ where
     }
 }
 
+/// How long the client waits for the terminal to answer the two colour queries. Part of the
+/// attach budget, so it is short enough that a terminal that never answers is not felt
+/// (principle 8).
+const COLOR_QUERY_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// What the client tells the server it can do: the environment's answer, plus the two
+/// colours the terminal named for itself. A colour the terminal did not name stays absent,
+/// so the server paints in its own default rather than in a colour nobody chose.
+fn client_capabilities(env: &caps::CapsEnv, colors: (Option<Rgb>, Option<Rgb>)) -> Capabilities {
+    let mut capabilities = caps::detect(env);
+    (capabilities.default_fg, capabilities.default_bg) = colors;
+    capabilities
+}
+
+/// The first message on the wire: who the client is, how big its terminal is and what that
+/// terminal can do. A function rather than a block inside `attach`, so a test reads the
+/// bytes the server would have read.
+async fn send_hello<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    caps: &Capabilities,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<()> {
+    let hello = ClientMsg::Hello(Hello {
+        version: domux_core::VERSION.into(),
+        protocol: PROTOCOL_VERSION,
+        cols,
+        rows,
+        caps: caps.clone(),
+    });
+    writer.write_all(&encode(&hello)?).await?;
+    Ok(())
+}
+
 /// The test-only panic timer. `DOMUX_CLIENT_PANIC_AFTER_MS` makes the client panic after
 /// that many milliseconds so a test can prove the terminal comes back. It panics on the
 /// client's own task rather than a spawned one: a client left running after its panic hook
@@ -236,27 +271,17 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         .with_context(|| format!("connect to {}", socket.display()))?;
     let (mut reader, mut writer) = stream.into_split();
     let env = caps::CapsEnv::from_process();
-    let mut capabilities = caps::detect(&env);
     // The hook goes on before raw mode does, so even a panic inside `enter` prints on a
     // terminal the user can still type into.
     TerminalGuard::install_panic_hook(env.keyboard_enhancement);
     let guard = TerminalGuard::enter(env.keyboard_enhancement)?;
     // In raw mode and before the event stream reads stdin: the answers are on stdin, and
     // whichever reader gets there first keeps them.
-    let (fg, bg) = caps::query_default_colors(Duration::from_millis(100));
-    capabilities.default_fg = fg;
-    capabilities.default_bg = bg;
+    let capabilities = client_capabilities(&env, caps::query_default_colors(COLOR_QUERY_TIMEOUT));
     let (cols, rows) = crossterm::terminal::size()?;
-    let hello = ClientMsg::Hello(Hello {
-        version: domux_core::VERSION.into(),
-        protocol: PROTOCOL_VERSION,
-        cols,
-        rows,
-        caps: capabilities.clone(),
-    });
     // Every `?` from here on leaves through the guard's `Drop`, which restores the terminal
     // before the error reaches a caller that prints it (principle 11).
-    writer.write_all(&encode(&hello)?).await?;
+    send_hello(&mut writer, &capabilities, cols, rows).await?;
     let mut session = Session {
         caps: capabilities,
         screen: Screen::new(cols, rows),
@@ -518,5 +543,61 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("tmux"), "{err}");
+    }
+
+    /// The hello is the first thing on the wire and the only consumer of the colour queries.
+    /// Its bytes are read back the way the server reads them.
+    #[tokio::test]
+    async fn the_hello_carries_the_protocol_version_the_size_and_the_terminals_own_colours() {
+        let env = caps::CapsEnv {
+            colorterm: Some("truecolor".into()),
+            term: Some("xterm-ghostty".into()),
+            term_program: None,
+            ssh_tty: None,
+            keyboard_enhancement: true,
+        };
+        let fg = Rgb {
+            r: 0xcd,
+            g: 0xd6,
+            b: 0xf4,
+        };
+        let bg = Rgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0x2e,
+        };
+        let caps = client_capabilities(&env, (Some(fg), Some(bg)));
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        send_hello(&mut client, &caps, 80, 24).await.unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = server.read(&mut buf).await.unwrap();
+        let mut dec = Decoder::default();
+        dec.push(&buf[..n]);
+        let Some(ClientMsg::Hello(hello)) = dec.next::<ClientMsg>().unwrap() else {
+            panic!("the first message on the wire must be the hello");
+        };
+        assert_eq!(hello.protocol, PROTOCOL_VERSION);
+        assert_eq!(hello.version, domux_core::VERSION);
+        assert_eq!((hello.cols, hello.rows), (80, 24));
+        assert_eq!(
+            (hello.caps.default_fg, hello.caps.default_bg),
+            (Some(fg), Some(bg)),
+            "the colours the terminal answered with must reach the server"
+        );
+        assert!(hello.caps.truecolor && hello.caps.kitty_keyboard && hello.caps.osc52);
+    }
+
+    /// A terminal that answered neither query. The server hears absence, not a guess.
+    #[test]
+    fn capabilities_stay_absent_when_the_terminal_named_no_colours() {
+        let env = caps::CapsEnv {
+            colorterm: None,
+            term: Some("xterm".into()),
+            term_program: None,
+            ssh_tty: None,
+            keyboard_enhancement: false,
+        };
+        let caps = client_capabilities(&env, (None, None));
+        assert_eq!(caps, Capabilities::default());
     }
 }
