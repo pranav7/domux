@@ -102,7 +102,13 @@ where
             tokio::select! {
                 read = reader.read(&mut buf) => {
                     let n = match read {
-                        Ok(0) | Err(_) => break AttachOutcome::ConnectionLost,
+                        Ok(0) => break AttachOutcome::ConnectionLost,
+                        // The error is what the user's next question is about, so it is
+                        // logged rather than folded into the outcome and lost.
+                        Err(err) => {
+                            tracing::warn!(%err, "reading from the server failed");
+                            break AttachOutcome::ConnectionLost;
+                        }
                         Ok(n) => n,
                     };
                     self.dec.push(&buf[..n]);
@@ -110,8 +116,12 @@ where
                     // A decode error is terminal for the stream, so `?` ends the session and
                     // drops the connection rather than meeting the same bytes again.
                     while let Some(msg) = self.dec.next::<ServerMsg>()? {
+                        // The first outcome in a read is the one that happened. A frame
+                        // behind it would be drawn on a screen about to be given back, and a
+                        // second outcome would overwrite the reason for the first.
                         if let Some(outcome) = self.on_server_msg(msg, writer).await? {
                             done = Some(outcome);
+                            break;
                         }
                     }
                     if let Some(outcome) = done {
@@ -156,8 +166,14 @@ where
                         }
                         break AttachOutcome::Detached("detached".into());
                     }
-                    // The terminal hung up, so there is no one to tell and nothing to draw.
-                    Stop::Hangup => break AttachOutcome::ConnectionLost,
+                    // A hangup is the terminal going away, not the connection: the server
+                    // is still there and is told, the same as when the event stream ends.
+                    Stop::Hangup => {
+                        if let Ok(bytes) = encode(&ClientMsg::Detach) {
+                            let _ = writer.write_all(&bytes).await;
+                        }
+                        break AttachOutcome::Detached(TERMINAL_ENDED.into());
+                    }
                 },
             }
         };
@@ -184,9 +200,7 @@ where
                 }
             }
             ServerMsg::Bell => {
-                use std::io::Write;
-                let mut out = std::io::stdout();
-                let _ = out.write_all(b"\x07").and_then(|()| out.flush());
+                let _ = write_bell(&mut std::io::stdout());
             }
             ServerMsg::Detached { reason } => return Ok(Some(detach_outcome(reason))),
         }
@@ -209,6 +223,13 @@ where
             _ => None,
         }
     }
+}
+
+/// The bell the outer terminal rings. A parameter rather than stdout, so a test reads the
+/// byte the terminal would have read.
+fn write_bell(out: &mut impl std::io::Write) -> std::io::Result<()> {
+    out.write_all(b"\x07")?;
+    out.flush()
 }
 
 /// How long the client waits for the terminal to answer the two colour queries. Part of the
@@ -292,9 +313,17 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     let mut events = EventStream::new();
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sighup = signal(SignalKind::hangup())?;
+    // Raw mode turns off ISIG, so the terminal never sends these itself, but `kill -INT` and
+    // `pkill -INT domux2` do. Without them the process ends with no unwind, no panic hook and
+    // no `Drop`, leaving the user in raw mode on the alternate screen with a hidden cursor
+    // (principle 11: every exit path).
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigquit = signal(SignalKind::quit())?;
     let stop = async move {
         tokio::select! {
             _ = sigterm.recv() => Stop::Terminate,
+            _ = sigint.recv() => Stop::Terminate,
+            _ = sigquit.recv() => Stop::Terminate,
             _ = sighup.recv() => Stop::Hangup,
             stop = test_panic_timer() => stop,
         }
@@ -330,6 +359,17 @@ mod tests {
 
     /// A running session with its socket and its terminal events in the test's hands.
     fn running(cols: u16, rows: u16, copy: CopyFn) -> (Events, DuplexStream, Ran) {
+        running_until(cols, rows, copy, std::future::pending::<Stop>())
+    }
+
+    /// The same, with something that ends the session from outside the socket and the
+    /// terminal: a signal, in the client the user runs.
+    fn running_until(
+        cols: u16,
+        rows: u16,
+        copy: CopyFn,
+        stop: impl Future<Output = Stop> + Send + 'static,
+    ) -> (Events, DuplexStream, Ran) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let (mut reader, mut writer) = tokio::io::split(client);
         let (events_tx, mut events_rx) = unbounded();
@@ -342,12 +382,7 @@ mod tests {
         };
         let task = tokio::spawn(async move {
             let outcome = session
-                .run(
-                    &mut reader,
-                    &mut writer,
-                    &mut events_rx,
-                    std::future::pending::<Stop>(),
-                )
+                .run(&mut reader, &mut writer, &mut events_rx, stop)
                 .await;
             (outcome, session)
         });
@@ -599,5 +634,63 @@ mod tests {
         };
         let caps = client_capabilities(&env, (None, None));
         assert_eq!(caps, Capabilities::default());
+    }
+
+    /// A signal that asks the client to end. The server is told, so the view is not left
+    /// attached to a terminal nobody is at.
+    #[tokio::test]
+    async fn a_signal_to_terminate_detaches_and_tells_the_server() {
+        let (_events, mut server, task) =
+            running_until(4, 2, clipboard_works, async { Stop::Terminate });
+        expect_frame(&mut server, &ClientMsg::Detach).await;
+        let (outcome, _) = task.await.unwrap();
+        assert_eq!(outcome.unwrap(), AttachOutcome::Detached("detached".into()));
+    }
+
+    /// A hangup is the terminal ending, not the connection being lost. The client says which
+    /// of the two happened, and the server is still there to be told.
+    #[tokio::test]
+    async fn a_hangup_detaches_as_the_terminal_ending_rather_than_a_lost_connection() {
+        let (_events, mut server, task) =
+            running_until(4, 2, clipboard_works, async { Stop::Hangup });
+        expect_frame(&mut server, &ClientMsg::Detach).await;
+        let (outcome, _) = task.await.unwrap();
+        assert_eq!(
+            outcome.unwrap(),
+            AttachOutcome::Detached(TERMINAL_ENDED.into())
+        );
+    }
+
+    /// A refusal, a frame and a second outcome in one read. The refusal is what happened:
+    /// the frame is not drawn on a screen about to be given back, and the reason is the
+    /// first one, not the last.
+    #[tokio::test]
+    async fn nothing_after_the_first_outcome_in_a_read_is_acted_on() {
+        let (_events, mut server, task) = running(4, 2, clipboard_works);
+        let mut bytes = encode(&ServerMsg::Refused {
+            reason: "the server is domux 2.0.0 and this client is 1.9.0".into(),
+        })
+        .unwrap();
+        bytes.extend(encode(&one_cell_frame("a")).unwrap());
+        bytes.extend(
+            encode(&ServerMsg::Detached {
+                reason: "detached".into(),
+            })
+            .unwrap(),
+        );
+        server.write_all(&bytes).await.unwrap();
+        let (outcome, session) = task.await.unwrap();
+        assert_eq!(
+            outcome.unwrap(),
+            AttachOutcome::Refused("the server is domux 2.0.0 and this client is 1.9.0".into())
+        );
+        session.backend.assert_buffer_lines(["    ", "    "]);
+    }
+
+    #[test]
+    fn the_bell_writes_the_byte_that_rings_the_terminal() {
+        let mut out = Vec::new();
+        write_bell(&mut out).unwrap();
+        assert_eq!(out, b"\x07");
     }
 }

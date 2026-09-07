@@ -227,10 +227,16 @@ mod tests {
         let saved = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let installed = AtomicBool::new(false);
+        // Only this thread's panic is counted: a test failing on another thread runs the
+        // process-wide hook too, and this test is about how many layers it has, not how many
+        // panics the run had.
+        let mine = std::thread::current().id();
         for _ in 0..2 {
             let counted = restores.clone();
             install_panic_hook_once(&installed, move || {
-                counted.fetch_add(1, Ordering::SeqCst);
+                if std::thread::current().id() == mine {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                }
             });
         }
         let panicked = std::panic::catch_unwind(|| panic!("a deliberate panic"));
