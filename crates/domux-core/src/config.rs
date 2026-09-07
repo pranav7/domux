@@ -124,14 +124,32 @@ impl Default for TerminalConfig {
     }
 }
 
-/// A parse error with the position the person needs to fix it.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("domux.toml line {line}: {message}")]
+/// A config error with the position the person needs to fix it, when there is one.
+///
+/// The position is optional because it does not always arrive: a toml error can come without
+/// a span, and an error found after parsing - a key whose value is not a key name, a file
+/// that could not be read - has no position in the file at all. An absent line renders as
+/// absent, never as line 1: a notice that sends the reader to the wrong line is worse than
+/// one that sends them to the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
-    pub line: usize,
-    pub column: usize,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    /// One line. Never empty, never a control character: it is drawn into the top bar, where
+    /// a newline would be dropped and would silently join two clauses into one word.
     pub message: String,
 }
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "domux.toml line {line}: {}", self.message),
+            None => write!(f, "domux.toml: {}", self.message),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigWarning(pub String);
@@ -243,13 +261,39 @@ fn warn_unknown_keys(
 
 fn to_config_error(text: &str, e: toml::de::Error) -> ConfigError {
     let (line, column) = match e.span() {
-        Some(span) => position(text, span.start),
-        None => (1, 1),
+        Some(span) => {
+            let (line, column) = position(text, span.start);
+            (Some(line), Some(column))
+        }
+        // No span, so no position. Absent, not line 1 (roadmap section 3: never fabricate).
+        None => (None, None),
     };
     ConfigError {
         line,
         column,
-        message: e.message().to_string(),
+        message: one_line(e.message()),
+    }
+}
+
+/// A message the top bar can draw: one line, no control characters, no empty result.
+///
+/// toml writes a two-clause error over two lines, `invalid string` then `expected \`"\`, \`'\``,
+/// and the renderer drops control characters, so the raw message reaches the bar as
+/// `invalid stringexpected`. Join the clauses with `; ` here, where the text is made, so the
+/// API result and the notice say the same one-line thing.
+pub(crate) fn one_line(message: &str) -> String {
+    let joined = message
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let clean = crate::text::sanitize_for_display(&joined);
+    if clean.trim().is_empty() {
+        // A message that sanitized away still has to say something (principle 9).
+        "the file could not be parsed".to_string()
+    } else {
+        clean
     }
 }
 
@@ -402,9 +446,51 @@ mod tests {
     fn parse_errors_carry_the_line_number() {
         let err =
             Config::parse("[keys]\nleader = \"C-a\"\n[terminal]\nscrollback = \n").unwrap_err();
-        assert_eq!(err.line, 4);
+        assert_eq!(err.line, Some(4));
         assert!(err.message.contains("expected"), "{}", err.message);
         assert!(err.to_string().starts_with("domux.toml line 4: "), "{err}");
+    }
+
+    /// The message is drawn into the top bar, which drops control characters. toml writes a
+    /// two-clause error over two lines, so the raw text arrives there as `invalid
+    /// stringexpected` - two clauses welded into one word.
+    #[test]
+    fn a_parse_error_message_is_one_line() {
+        let err =
+            Config::parse("[keys]\nleader = \"C-a\"\n[terminal]\nscrollback = \n").unwrap_err();
+        assert_eq!(err.message, "invalid string; expected `\"`, `'`");
+        assert!(!err.message.contains('\n'));
+        assert_eq!(
+            err.to_string(),
+            "domux.toml line 4: invalid string; expected `\"`, `'`"
+        );
+    }
+
+    #[test]
+    fn one_line_joins_clauses_and_never_answers_with_nothing() {
+        assert_eq!(
+            one_line("invalid string\nexpected `\"`"),
+            "invalid string; expected `\"`"
+        );
+        assert_eq!(one_line("  spaced  \n\n  out  "), "spaced; out");
+        assert_eq!(one_line("plain"), "plain");
+        assert_eq!(one_line("\u{7}\u{200b}"), "the file could not be parsed");
+    }
+
+    /// An error with no position renders without one. A guessed line 1 sends the reader to a
+    /// line that is not the mistake, which is worse than sending them to the file (roadmap
+    /// section 3: never fabricate).
+    #[test]
+    fn an_error_with_no_position_names_the_file_and_no_line() {
+        let err = ConfigError {
+            line: None,
+            column: None,
+            message: "[keys] leader: unknown key \"Ctrl-Q\"".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "domux.toml: [keys] leader: unknown key \"Ctrl-Q\""
+        );
     }
 
     #[test]
@@ -472,10 +558,10 @@ mod tests {
         ] {
             let err = Config::parse(text).unwrap_err();
             let max_line = text.lines().count().max(1);
+            let line = err.line.expect("a syntax error has a span");
             assert!(
-                err.line <= max_line,
-                "{text:?} reported line {} past the file's {max_line} lines",
-                err.line
+                line <= max_line,
+                "{text:?} reported line {line} past the file's {max_line} lines"
             );
         }
     }

@@ -48,9 +48,10 @@ pub fn load_config(path: &Path) -> LoadedConfig {
                 path: path.to_path_buf(),
                 config: Config::default(),
                 keymap: Keymap::defaults(),
+                // A file that could not be opened has no line to send the reader to.
                 error: Some(ConfigError {
-                    line: 1,
-                    column: 1,
+                    line: None,
+                    column: None,
                     message: format!("could not read the file: {e}"),
                 }),
                 warnings: Vec::new(),
@@ -71,13 +72,15 @@ pub fn load_config(path: &Path) -> LoadedConfig {
                         warnings,
                     }
                 }
+                // The file parsed, so the toml has no error and there is no span to take a
+                // line from: the message names the setting instead. Absent, not line 1.
                 Err(message) => LoadedConfig {
                     path: path.to_path_buf(),
                     config: Config::default(),
                     keymap: Keymap::defaults(),
                     error: Some(ConfigError {
-                        line: 1,
-                        column: 1,
+                        line: None,
+                        column: None,
                         message,
                     }),
                     warnings,

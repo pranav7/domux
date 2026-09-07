@@ -14,6 +14,30 @@ use ratatui::style::{Modifier, Style};
 pub struct Piece {
     pub text: String,
     pub style: Style,
+    /// The piece that gives up its cells first when the right end does not fit. At most one,
+    /// and every piece after it keeps its cells whole: see `squeeze`.
+    pub elastic: bool,
+}
+
+impl Piece {
+    pub fn new(text: impl Into<String>, style: Style) -> Piece {
+        Piece {
+            text: text.into(),
+            style,
+            elastic: false,
+        }
+    }
+
+    /// A piece that is cut short so the pieces after it stay whole. The config error uses it:
+    /// the message can be any length the file makes it, and the next action after it is the
+    /// half of the notice the reader cannot act without (principle 9).
+    pub fn elastic(text: impl Into<String>, style: Style) -> Piece {
+        Piece {
+            text: text.into(),
+            style,
+            elastic: true,
+        }
+    }
 }
 
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
@@ -77,9 +101,42 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     tabs.draw(x, y, tabs_budget, buf);
     let mut cx = x + tabs_budget as u16;
     let last_x = right_edge.saturating_sub(1);
-    for p in fit(pieces, right.saturating_sub(1)) {
+    for p in fit(
+        squeeze(pieces, right.saturating_sub(1)),
+        right.saturating_sub(1),
+    ) {
         cx = put_within(buf, cx, y, last_x, &p.text, p.style.bg(bg));
     }
+}
+
+/// Cuts the elastic piece short, if there is one, so the pieces after it keep their cells.
+///
+/// `fit` alone runs out of room from the left and drops whatever is still to come, which for the
+/// config error is `domux2 config reload` - the one part of the notice the reader cannot act
+/// without (principle 9). A message the file can make any length has to be the part that gives
+/// way, not the answer to it.
+///
+/// The mark is written here rather than left to `fit`, because after this the pieces fit and
+/// `fit` would hand them back untouched with nothing to say the message was cut.
+fn squeeze(mut pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
+    let total: usize = pieces.iter().map(|p| display_width(&p.text)).sum();
+    if total <= room {
+        return pieces;
+    }
+    let Some(i) = pieces.iter().position(|p| p.elastic) else {
+        return pieces;
+    };
+    let others = total - display_width(&pieces[i].text);
+    // One cell of what is left over is the mark.
+    let keep = room.saturating_sub(others).saturating_sub(1);
+    if keep == 0 {
+        // Not even one cell of it survives. Drop it whole rather than draw a lone `…`, and
+        // let `fit` cut what is left and mark that cut itself.
+        pieces.remove(i);
+        return pieces;
+    }
+    pieces[i].text = format!("{}…", truncate_to_width(&pieces[i].text, keep));
+    pieces
 }
 
 /// Fits the right end into `room` cells, cutting the piece the room runs out in and marking the
@@ -109,17 +166,11 @@ fn fit(pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
             continue;
         }
         if left > 0 {
-            out.push(Piece {
-                text: truncate_to_width(&p.text, left),
-                style: p.style,
-            });
+            out.push(Piece::new(truncate_to_width(&p.text, left), p.style));
         }
         break;
     }
-    out.push(Piece {
-        text: "…".into(),
-        style: mark,
-    });
+    out.push(Piece::new("…", mark));
     out
 }
 
@@ -129,44 +180,23 @@ pub fn right_pieces(input: &RenderInput) -> Vec<Piece> {
     let key = Style::default().fg(theme::BLUE);
     let word = Style::default().fg(theme::OVERLAY0);
     let sep = Style::default().fg(theme::SURFACE1);
-    let dot = || Piece {
-        text: " · ".into(),
-        style: sep,
-    };
+    let dot = || Piece::new(" · ", sep);
     if let Some(Overlay::Prompt(_)) = &input.view.overlay {
         return vec![
-            Piece {
-                text: "⏎".into(),
-                style: key,
-            },
-            Piece {
-                text: " save".into(),
-                style: word,
-            },
+            Piece::new("⏎", key),
+            Piece::new(" save", word),
             dot(),
-            Piece {
-                text: "esc".into(),
-                style: key,
-            },
-            Piece {
-                text: " cancel".into(),
-                style: word,
-            },
+            Piece::new("esc", key),
+            Piece::new(" cancel", word),
             dot(),
-            Piece {
-                text: "empty clears".into(),
-                style: word,
-            },
+            Piece::new("empty clears", word),
         ];
     }
     if let Some(pieces) = crate::copy_mode::hint_pieces(input) {
         return pieces;
     }
     if let Some(chord) = &input.view.chord {
-        let mut pieces = vec![Piece {
-            text: chord.leader.clone(),
-            style: key,
-        }];
+        let mut pieces = vec![Piece::new(chord.leader.clone(), key)];
         // The help key as configured, not `?` (principle 3). It is a leader binding, so the
         // leader is stripped off the front: the indicator already shows it.
         if let Some(k) = input.keymap.key_for("help") {
@@ -174,44 +204,28 @@ pub fn right_pieces(input: &RenderInput) -> Vec<Piece> {
                 .strip_prefix(&format!("{} ", chord.leader))
                 .unwrap_or(k.as_str())
                 .to_string();
-            pieces.push(Piece {
-                text: "  ".into(),
-                style: word,
-            });
-            pieces.push(Piece {
-                text: after_leader,
-                style: key,
-            });
-            pieces.push(Piece {
-                text: " keys".into(),
-                style: word,
-            });
+            pieces.push(Piece::new("  ", word));
+            pieces.push(Piece::new(after_leader, key));
+            pieces.push(Piece::new(" keys", word));
         }
         return pieces;
     }
     if let Some(hint) = input.hint {
-        return vec![Piece {
-            text: hint.to_string(),
-            style: word,
-        }];
+        return vec![Piece::new(hint.to_string(), word)];
     }
     if let Some(err) = input.config_error {
+        // `err.to_string()` names the file and, when one arrived, the line: the notice says
+        // where to look rather than repeating a line number the error may not have.
         return vec![
-            Piece {
-                text: format!("domux.toml line {}: {}", err.line, err.message),
-                style: Style::default().fg(theme::RED),
-            },
+            Piece::elastic(err.to_string(), Style::default().fg(theme::RED)),
             dot(),
-            Piece {
-                text: "domux2 config reload".into(),
-                style: key,
-            },
+            Piece::new("domux2 config reload", key),
         ];
     }
-    vec![Piece {
-        text: input.now.format("%H:%M   %a %-d %b").to_string(),
-        style: Style::default().fg(theme::SUBTEXT0),
-    }]
+    vec![Piece::new(
+        input.now.format("%H:%M   %a %-d %b").to_string(),
+        Style::default().fg(theme::SUBTEXT0),
+    )]
 }
 
 #[cfg(test)]
@@ -221,10 +235,7 @@ mod tests {
     fn pieces(widths: &[usize]) -> Vec<Piece> {
         widths
             .iter()
-            .map(|w| Piece {
-                text: "x".repeat(*w),
-                style: Style::default(),
-            })
+            .map(|w| Piece::new("x".repeat(*w), Style::default()))
             .collect()
     }
 
@@ -253,6 +264,49 @@ mod tests {
         assert_eq!(text(&out), "xxxxxxx…");
         let out = fit(pieces(&[12]), 4);
         assert_eq!(text(&out), "xxx…");
+    }
+
+    /// The config error's shape: a message that can be any length, then the next action. The
+    /// message is what gives way, and the action arrives whole (principle 9).
+    #[test]
+    fn the_elastic_piece_gives_up_its_cells_so_the_pieces_after_it_stay_whole() {
+        let notice = || {
+            vec![
+                Piece::elastic("domux.toml line 4: invalid string", Style::default()),
+                Piece::new(" · ", Style::default()),
+                Piece::new("domux2 config reload", Style::default()),
+            ]
+        };
+        let out = fit(squeeze(notice(), 40), 40);
+        assert_eq!(text(&out), "domux.toml line … · domux2 config reload");
+        assert_eq!(display_width(&text(&out)), 40);
+        // Room for everything: nothing is cut and no mark appears.
+        let out = fit(squeeze(notice(), 60), 60);
+        assert_eq!(
+            text(&out),
+            "domux.toml line 4: invalid string · domux2 config reload"
+        );
+    }
+
+    /// Below the width the pieces after it need, there is nothing left to shorten the elastic
+    /// piece to. It goes whole rather than leaving a lone `…`, and `fit` cuts what is left.
+    #[test]
+    fn an_elastic_piece_with_no_cells_left_for_it_goes_rather_than_leaving_a_mark() {
+        let notice = vec![
+            Piece::elastic("domux.toml line 4: invalid string", Style::default()),
+            Piece::new(" · ", Style::default()),
+            Piece::new("domux2 config reload", Style::default()),
+        ];
+        let out = fit(squeeze(notice, 20), 20);
+        assert_eq!(text(&out), " · domux2 config re…");
+        assert_eq!(display_width(&text(&out)), 20);
+    }
+
+    /// Without an elastic piece the room still runs out from the left, so the right end that
+    /// has no one part more important than another keeps behaving as it did.
+    #[test]
+    fn pieces_with_nothing_elastic_are_left_to_the_room_running_out() {
+        assert_eq!(text(&fit(squeeze(pieces(&[3, 9]), 8), 8)), "xxxxxxx…");
     }
 
     #[test]

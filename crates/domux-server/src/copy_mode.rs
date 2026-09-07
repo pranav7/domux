@@ -226,39 +226,15 @@ pub fn hint_pieces(input: &RenderInput) -> Option<Vec<Piece>> {
     let sep = Style::default().fg(theme::SURFACE1);
     let mut pieces = Vec::new();
     if copy.anchor.is_none() {
-        pieces.push(Piece {
-            text: "v".into(),
-            style: key,
-        });
-        pieces.push(Piece {
-            text: " select".into(),
-            style: word,
-        });
-        pieces.push(Piece {
-            text: " · ".into(),
-            style: sep,
-        });
+        pieces.push(Piece::new("v", key));
+        pieces.push(Piece::new(" select", word));
+        pieces.push(Piece::new(" · ", sep));
     }
-    pieces.push(Piece {
-        text: "⏎".into(),
-        style: key,
-    });
-    pieces.push(Piece {
-        text: " copy".into(),
-        style: word,
-    });
-    pieces.push(Piece {
-        text: " · ".into(),
-        style: sep,
-    });
-    pieces.push(Piece {
-        text: "esc".into(),
-        style: key,
-    });
-    pieces.push(Piece {
-        text: " leave".into(),
-        style: word,
-    });
+    pieces.push(Piece::new("⏎", key));
+    pieces.push(Piece::new(" copy", word));
+    pieces.push(Piece::new(" · ", sep));
+    pieces.push(Piece::new("esc", key));
+    pieces.push(Piece::new(" leave", word));
     Some(pieces)
 }
 
