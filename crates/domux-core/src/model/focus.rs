@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Where a client's keys go. `Pane` mirrors the tab's focused pane; `Region` is a domux
 /// region that handles keys itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Focus {
     Pane(PaneId),
     Region(RegionKind),

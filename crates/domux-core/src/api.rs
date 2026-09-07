@@ -1,6 +1,5 @@
 //! The control API's wire types: errors, events, and (Task 8) requests, responses and methods.
 
-use crate::ids::ClientId as ClientIdAlias;
 use crate::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use crate::keymap::Action;
 use crate::model::{Direction, Focus, RegionKind};
@@ -233,22 +232,30 @@ where
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NoParams {}
 impl Params for NoParams {}
 
+/// Confirms that a request completed without an API error.
+///
+/// `ok` never reports whether state changed. In particular, do not copy the return value from
+/// `Model::resize_pane` into this field. That value only says an ancestor with the requested axis
+/// owned the resize request.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Ack {
     pub ok: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ClientParams {
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for ClientParams {}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SubscribeParams {
     #[serde(default)]
     pub filter: Vec<String>,
@@ -262,6 +269,7 @@ impl Params for SubscribeParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TabListParams {
     #[serde(default)]
     pub workspace: Option<String>,
@@ -269,17 +277,19 @@ pub struct TabListParams {
 impl Params for TabListParams {}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TabCreateParams {
     #[serde(default)]
     pub workspace: Option<String>,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
 }
 impl Params for TabCreateParams {}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TabRenameParams {
     #[serde(default)]
     pub tab: Option<String>,
@@ -287,7 +297,7 @@ pub struct TabRenameParams {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for TabRenameParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -304,11 +314,12 @@ impl Params for TabRenameParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TabTargetParams {
     #[serde(default)]
     pub tab: Option<String>,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for TabTargetParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -320,10 +331,11 @@ impl Params for TabTargetParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TabSelectParams {
     pub tab: String,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for TabSelectParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -335,11 +347,12 @@ impl Params for TabSelectParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneTargetParams {
     #[serde(default)]
     pub pane: Option<String>,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for PaneTargetParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -351,6 +364,7 @@ impl Params for PaneTargetParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneSplitParams {
     #[serde(default)]
     pub pane: Option<String>,
@@ -358,7 +372,7 @@ pub struct PaneSplitParams {
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for PaneSplitParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -372,13 +386,14 @@ impl Params for PaneSplitParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneResizeParams {
     #[serde(default)]
     pub pane: Option<String>,
     pub dir: Direction,
     pub cells: u16,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for PaneResizeParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -392,12 +407,13 @@ impl Params for PaneResizeParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneSendTextParams {
     #[serde(default)]
     pub pane: Option<String>,
     pub text: String,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for PaneSendTextParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -410,13 +426,14 @@ impl Params for PaneSendTextParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneSendKeyParams {
     #[serde(default)]
     pub pane: Option<String>,
     /// A key name as in domux.toml: `Enter`, `C-c`, `S-Left`.
     pub key: String,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for PaneSendKeyParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -429,6 +446,7 @@ impl Params for PaneSendKeyParams {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PaneReadParams {
     #[serde(default)]
     pub pane: Option<String>,
@@ -436,7 +454,7 @@ pub struct PaneReadParams {
     #[serde(default)]
     pub lines: Option<usize>,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for PaneReadParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -449,10 +467,11 @@ impl Params for PaneReadParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct FocusRegionParams {
     pub region: RegionKind,
     #[serde(default)]
-    pub client: Option<ClientIdAlias>,
+    pub client: Option<ClientId>,
 }
 impl Params for FocusRegionParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
@@ -471,7 +490,7 @@ impl Params for FocusRegionParams {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientInfo {
-    pub id: ClientIdAlias,
+    pub id: ClientId,
     pub cols: u16,
     pub rows: u16,
     pub workspace: crate::ids::WorkspaceId,
@@ -543,6 +562,10 @@ pub struct FocusResult {
 /// so they cannot drift.
 macro_rules! methods {
     ($( $variant:ident = $name:literal : $params:ty => $result:ty ),* $(,)?) => {
+        /// A parsed API method.
+        ///
+        /// This value does not retain the original action text. Callers that need to look up a
+        /// configured key with `keymap::key_for` must keep the `Action` alongside this value.
         #[derive(Debug, Clone, PartialEq)]
         pub enum Method {
             $( $variant($params), )*
@@ -627,6 +650,38 @@ methods! {
 mod tests {
     use super::*;
 
+    const EXPECTED_METHOD_NAMES: &[&str] = &[
+        "server.info",
+        "server.stop",
+        "events.subscribe",
+        "config.reload",
+        "client.detach",
+        "help",
+        "tab.list",
+        "tab.create",
+        "tab.rename",
+        "tab.clear_name",
+        "tab.close",
+        "tab.select",
+        "pane.list",
+        "pane.split",
+        "pane.close",
+        "pane.focus",
+        "pane.zoom",
+        "pane.copy_mode",
+        "pane.resize",
+        "pane.send_text",
+        "pane.send_key",
+        "pane.read",
+        "focus.left",
+        "focus.right",
+        "focus.up",
+        "focus.down",
+        "focus.last",
+        "focus.region",
+        "focus.pane",
+    ];
+
     #[test]
     fn events_serialize_with_dotted_names() {
         let e = Event::TabCreated {
@@ -700,6 +755,54 @@ mod tests {
     }
 
     #[test]
+    fn requests_reject_unknown_params_fields_for_every_method() {
+        let cases = [
+            ("server.info", serde_json::json!({})),
+            ("server.stop", serde_json::json!({})),
+            ("events.subscribe", serde_json::json!({})),
+            ("config.reload", serde_json::json!({})),
+            ("client.detach", serde_json::json!({})),
+            ("help", serde_json::json!({})),
+            ("tab.list", serde_json::json!({})),
+            ("tab.create", serde_json::json!({})),
+            ("tab.rename", serde_json::json!({})),
+            ("tab.clear_name", serde_json::json!({})),
+            ("tab.close", serde_json::json!({})),
+            ("tab.select", serde_json::json!({"tab": "1"})),
+            ("pane.list", serde_json::json!({})),
+            ("pane.split", serde_json::json!({"dir": "right"})),
+            ("pane.close", serde_json::json!({})),
+            ("pane.focus", serde_json::json!({})),
+            ("pane.zoom", serde_json::json!({})),
+            ("pane.copy_mode", serde_json::json!({})),
+            (
+                "pane.resize",
+                serde_json::json!({"dir": "left", "cells": 2}),
+            ),
+            ("pane.send_text", serde_json::json!({"text": "hello"})),
+            ("pane.send_key", serde_json::json!({"key": "Enter"})),
+            ("pane.read", serde_json::json!({})),
+            ("focus.left", serde_json::json!({})),
+            ("focus.right", serde_json::json!({})),
+            ("focus.up", serde_json::json!({})),
+            ("focus.down", serde_json::json!({})),
+            ("focus.last", serde_json::json!({})),
+            ("focus.region", serde_json::json!({"region": "overlay"})),
+            ("focus.pane", serde_json::json!({})),
+        ];
+        assert_eq!(cases.len(), EXPECTED_METHOD_NAMES.len());
+        for (name, mut params) in cases {
+            params
+                .as_object_mut()
+                .unwrap()
+                .insert("unexpected".into(), Value::from(true));
+            let err = Method::from_request(name, params).unwrap_err();
+            assert_eq!(err.code, ErrorCode::InvalidParams, "{name}");
+            assert!(err.message.contains("unknown field"), "{name}: {err}");
+        }
+    }
+
+    #[test]
     fn positional_args_map_to_params() {
         let a = crate::keymap::Action::parse("pane.resize left 2").unwrap();
         match Method::from_action(&a).unwrap() {
@@ -721,10 +824,11 @@ mod tests {
     }
 
     #[test]
-    fn schema_lists_every_method_and_every_event() {
+    fn schema_and_method_names_match_the_wire_contract() {
         let s = schema();
         let methods = s["methods"].as_object().unwrap();
-        for name in Method::NAMES {
+        assert_eq!(Method::NAMES, EXPECTED_METHOD_NAMES);
+        for name in EXPECTED_METHOD_NAMES {
             assert!(
                 methods.contains_key(*name),
                 "{name} missing from the schema"
@@ -732,7 +836,7 @@ mod tests {
             assert!(methods[*name]["params"].is_object());
             assert!(methods[*name]["result"].is_object());
         }
-        assert_eq!(methods.len(), Method::NAMES.len());
+        assert_eq!(methods.len(), EXPECTED_METHOD_NAMES.len());
         let events = s["events"].to_string();
         for name in Event::NAMES {
             assert!(
@@ -740,6 +844,98 @@ mod tests {
                 "{name} missing from the events schema"
             );
         }
+    }
+
+    #[test]
+    fn result_fields_match_the_wire_contract() {
+        let zoom = ZoomResult {
+            zoomed: Some(PaneId("p_1234".into())),
+        };
+        assert_eq!(
+            serde_json::to_string(&zoom).unwrap(),
+            r#"{"zoomed":"p_1234"}"#
+        );
+
+        let pane = PaneInfo {
+            id: PaneId("p_1234".into()),
+            tab: TabId("t_5678".into()),
+            cwd: PathBuf::from("/tmp"),
+            command: Some("sh".into()),
+            title: None,
+            pid: Some(42),
+            focused: true,
+            zoomed: false,
+            copy_mode: true,
+            cols: 80,
+            rows: 24,
+        };
+        assert_eq!(
+            serde_json::to_string(&pane).unwrap(),
+            r#"{"id":"p_1234","tab":"t_5678","cwd":"/tmp","command":"sh","title":null,"pid":42,"focused":true,"zoomed":false,"copy_mode":true,"cols":80,"rows":24}"#
+        );
+    }
+
+    #[test]
+    fn focus_results_serialize_both_variants_as_adjacent_tags() {
+        let pane = FocusResult {
+            focus: Focus::Pane(PaneId("p_1234".into())),
+        };
+        assert_eq!(
+            serde_json::to_string(&pane).unwrap(),
+            r#"{"focus":{"kind":"pane","value":"p_1234"}}"#
+        );
+
+        let region = FocusResult {
+            focus: Focus::Region(RegionKind::Switcher),
+        };
+        assert_eq!(
+            serde_json::to_string(&region).unwrap(),
+            r#"{"focus":{"kind":"region","value":"switcher"}}"#
+        );
+    }
+
+    #[test]
+    fn focus_results_round_trip_through_json() {
+        for result in [
+            FocusResult {
+                focus: Focus::Pane(PaneId("p_1234".into())),
+            },
+            FocusResult {
+                focus: Focus::Region(RegionKind::Switcher),
+            },
+        ] {
+            let json = serde_json::to_string(&result).unwrap();
+            assert_eq!(serde_json::from_str::<FocusResult>(&json).unwrap(), result);
+        }
+    }
+
+    #[test]
+    fn focus_result_schema_matches_the_adjacent_wire_tags() {
+        let result = &schema()["methods"]["focus.left"]["result"];
+        let variants = result["$defs"]["Focus"]["oneOf"].as_array().unwrap();
+        assert_eq!(variants.len(), 2);
+
+        assert_eq!(variants[0]["properties"]["kind"]["const"], "pane");
+        assert_eq!(variants[0]["properties"]["value"]["$ref"], "#/$defs/PaneId");
+        assert_eq!(
+            variants[0]["required"],
+            serde_json::json!(["kind", "value"])
+        );
+
+        assert_eq!(variants[1]["properties"]["kind"]["const"], "region");
+        assert_eq!(
+            variants[1]["properties"]["value"]["$ref"],
+            "#/$defs/RegionKind"
+        );
+        assert_eq!(
+            variants[1]["required"],
+            serde_json::json!(["kind", "value"])
+        );
+        assert_eq!(result["$defs"]["PaneId"]["type"], "string");
+        assert!(result["$defs"]["RegionKind"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&Value::from("switcher")));
     }
 
     #[test]
