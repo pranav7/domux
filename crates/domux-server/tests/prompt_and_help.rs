@@ -545,3 +545,86 @@ async fn a_hint_too_long_for_the_room_beside_the_tabs_elides() {
         "{f}"
     );
 }
+
+/// The other two ways out of the help overlay. Esc has its own test above; `q` and `?` are
+/// the ones the footer offers a reader who is already holding the help key, and a way out
+/// that only some of the documented keys take is a dead end for the rest (principle 9).
+#[tokio::test]
+async fn help_closes_on_q_and_on_the_help_key() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    for close in ["q", "?"] {
+        h.key(h.client.clone(), "C-a").await;
+        h.key(h.client.clone(), "?").await;
+        h.wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+        h.key(h.client.clone(), close).await;
+        h.wait_for(
+            h.client.clone(),
+            |f| !f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    }
+    let pane = h.focused_pane(h.client.clone());
+    assert!(
+        h.pane_input(&pane).is_empty(),
+        "no key that closed the overlay reached the pane"
+    );
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        domux_core::model::Focus::Pane(pane),
+        "closing returned focus to the pane"
+    );
+}
+
+/// The prompt's cursor keys, each pinned by what it changes about the saved name. From
+/// `abc`: Home, `1`, End, `2`, Left, `3`, Right, Backspace. Drop any one of the five and the
+/// name comes out different, which is what makes this test bite rather than pass along.
+#[tokio::test]
+async fn the_prompt_moves_its_cursor_with_home_end_and_the_arrows() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    h.api("tab.rename", serde_json::json!({"name": "abc"}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" 1 abc "),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), ",").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Name tab 1 › abc"),
+        Duration::from_secs(2),
+    )
+    .await;
+    for key in ["Home", "1", "End", "2", "Left", "3", "Right", "Backspace"] {
+        h.key(h.client.clone(), key).await;
+    }
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("› 1abc3"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("Name tab 1 › 1abc3"),
+        "the cursor went where each key said:\n{f}"
+    );
+    h.key(h.client.clone(), "Enter").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("Name tab"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(f.contains(" 1 1abc3 "), "the edited name was saved:\n{f}");
+}
