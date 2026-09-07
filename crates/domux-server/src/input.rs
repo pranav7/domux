@@ -83,17 +83,15 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
         return Route::Global(action);
     }
 
-    // 4. The focus target. A pane whose child exited (terminal.remain_on_exit) closes on
-    //    Enter and swallows other keys; a pane in copy mode handles the key itself.
+    // 4. The focus target. A pane in copy mode handles the key itself; a pane whose child
+    //    exited (terminal.remain_on_exit) closes on Enter and swallows other keys.
+    //
+    //    Copy mode first, and on an exited pane too (ruled 2026-09-07). While it is open the
+    //    bar reads `⏎ copy · esc leave`, and with the exited branch ahead of it Esc did
+    //    nothing, there was no way out of the mode, and Enter closed the pane: a key doing
+    //    something destructive that its own visible label says it does not do (principles 3
+    //    and 10). An exited pane's scrollback is also exactly what a reader wants to copy.
     if let Some(pane) = core.focused_pane(client) {
-        if core.panes.get(&pane).is_some_and(|rt| rt.exited.is_some()) {
-            if key.key == Key::Enter {
-                // Not `close_pane`: closing the workspace's last pane starts a replacement
-                // shell, and the respawn guard has to bound that however it is reached.
-                core.close_exited_pane(&pane);
-            }
-            return Route::Pane;
-        }
         if core.panes.get(&pane).is_some_and(|rt| rt.copy.is_some()) {
             let outcome = {
                 let rt = core.panes.get_mut(&pane).expect("pane runtime");
@@ -115,6 +113,14 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
                     leave_copy_mode(core, &pane);
                 }
                 CopyOutcome::Leave => leave_copy_mode(core, &pane),
+            }
+            return Route::Pane;
+        }
+        if core.panes.get(&pane).is_some_and(|rt| rt.exited.is_some()) {
+            if key.key == Key::Enter {
+                // Not `close_pane`: closing the workspace's last pane starts a replacement
+                // shell, and the respawn guard has to bound that however it is reached.
+                core.close_exited_pane(&pane);
             }
             return Route::Pane;
         }

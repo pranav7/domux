@@ -40,6 +40,10 @@ impl Piece {
     }
 }
 
+/// The cells an actionable right end keeps whatever the tab row wants: enough of the message
+/// to read as a message, and the mark that says the rest was cut.
+const RIGHT_FLOOR: usize = 8;
+
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // The buffer is the authority on how wide the bar may be, not the client's reported
     // size: the fill below indexes cells directly, so a width taken from anywhere else
@@ -83,28 +87,34 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         Some(Overlay::Prompt(p)) => Some(p),
         _ => None,
     };
-    // The room the tab row and the right end share, and how they share it. The tab row keeps
-    // enough of it for the current tab, which has to be visible on every frame (principle 2);
-    // the right end takes what it wants from the rest and elides into it when that is not
-    // enough, rather than running off the screen edge (principle 6). Neither may reach the
-    // last column: an empty cell there keeps the bar reading as a bar rather than as text
-    // pressed against the edge, and one more cell keeps an elided right end off the tab row.
-    let room = right_edge.saturating_sub(x) as usize;
+    // The room the tab row and the right end share, and how they share it.
+    //
+    // The last column is not part of it. An empty cell there keeps the bar reading as a bar
+    // rather than as text pressed against the screen edge, so it comes off the top whichever of
+    // the two would otherwise have reached it.
+    //
+    // Of what is left, the tab row keeps enough for the current tab, which has to be visible on
+    // every frame (principle 2), and one more cell keeps an elided right end off the tab row.
+    // The right end takes what it wants from the rest and elides into it rather than running
+    // off the edge (principle 6) - and unless what it shows is the clock, it keeps a floor of
+    // its own even when that leaves the tab row less than its own: a message the reader has to
+    // act on gives way to a mark, never to nothing (principle 9).
+    let room = right_edge.saturating_sub(x).saturating_sub(1) as usize;
     // Whether the keys go to a pane rather than to a prompt or an overlay. It decides which run
     // of cells is accent-filled: see `tab_row::cell_for`.
     let pane_focus = matches!(input.view.focus, Focus::Pane(_));
     let tabs = TabRow::new(&ws.tabs, current, prompt, pane_focus);
-    let pieces = right_pieces(input);
-    let wanted = pieces.iter().map(|p| display_width(&p.text)).sum::<usize>() + 1;
-    let right = wanted.min(room.saturating_sub(tabs.floor() + 1));
+    let end = right_end(input);
+    let wanted: usize = end.pieces.iter().map(|p| display_width(&p.text)).sum();
+    let floor = if end.actionable { RIGHT_FLOOR } else { 0 };
+    let right = wanted
+        .min(room.saturating_sub(tabs.floor() + 1))
+        .max(floor.min(wanted).min(room));
     let tabs_budget = room - right;
     tabs.draw(x, y, tabs_budget, buf);
     let mut cx = x + tabs_budget as u16;
-    let last_x = right_edge.saturating_sub(1);
-    for p in fit(
-        squeeze(pieces, right.saturating_sub(1)),
-        right.saturating_sub(1),
-    ) {
+    let last_x = right_edge.saturating_sub(2);
+    for p in fit(squeeze(end.pieces, right), right) {
         cx = put_within(buf, cx, y, last_x, &p.text, p.style.bg(bg));
     }
 }
@@ -174,15 +184,47 @@ fn fit(pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
     out
 }
 
-/// What the right end shows, in priority order: the prompt keys, the copy mode keys, the chord
-/// indicator, a client hint, the config error, then the clock.
-pub fn right_pieces(input: &RenderInput) -> Vec<Piece> {
+/// What the right end shows, and whether the reader has to act on it.
+pub struct RightEnd {
+    pub pieces: Vec<Piece>,
+    /// Everything but the clock. The clock is decorative: it is the one thing on the bar that
+    /// gives way whole and silently when the room runs short. Anything else keeps `RIGHT_FLOOR`
+    /// cells and elides into them, so nothing the reader has to act on leaves the screen with
+    /// no mark to say it was there (ruled 2026-09-07).
+    pub actionable: bool,
+}
+
+impl RightEnd {
+    /// Live keys, or a state that is waiting for an answer.
+    fn actionable(pieces: Vec<Piece>) -> RightEnd {
+        RightEnd {
+            pieces,
+            actionable: true,
+        }
+    }
+
+    /// The clock, and nothing else.
+    fn decorative(pieces: Vec<Piece>) -> RightEnd {
+        RightEnd {
+            pieces,
+            actionable: false,
+        }
+    }
+}
+
+/// What the right end shows, in priority order: the prompt keys, the chord indicator, the copy
+/// mode keys, a client hint, the config error, then the clock.
+///
+/// The chord indicator comes before the copy mode keys because it answers the key just pressed:
+/// the leader inside copy mode used to start a chord the bar did not show, so the next key had
+/// a meaning the screen had not admitted to (principle 8).
+pub fn right_end(input: &RenderInput) -> RightEnd {
     let key = Style::default().fg(theme::BLUE);
     let word = Style::default().fg(theme::OVERLAY0);
     let sep = Style::default().fg(theme::SURFACE1);
     let dot = || Piece::new(" · ", sep);
     if let Some(Overlay::Prompt(_)) = &input.view.overlay {
-        return vec![
+        return RightEnd::actionable(vec![
             Piece::new("⏎", key),
             Piece::new(" save", word),
             dot(),
@@ -190,10 +232,7 @@ pub fn right_pieces(input: &RenderInput) -> Vec<Piece> {
             Piece::new(" cancel", word),
             dot(),
             Piece::new("empty clears", word),
-        ];
-    }
-    if let Some(pieces) = crate::copy_mode::hint_pieces(input) {
-        return pieces;
+        ]);
     }
     if let Some(chord) = &input.view.chord {
         let mut pieces = vec![Piece::new(chord.leader.clone(), key)];
@@ -208,24 +247,27 @@ pub fn right_pieces(input: &RenderInput) -> Vec<Piece> {
             pieces.push(Piece::new(after_leader, key));
             pieces.push(Piece::new(" keys", word));
         }
-        return pieces;
+        return RightEnd::actionable(pieces);
+    }
+    if let Some(pieces) = crate::copy_mode::hint_pieces(input) {
+        return RightEnd::actionable(pieces);
     }
     if let Some(hint) = input.hint {
-        return vec![Piece::new(hint.to_string(), word)];
+        return RightEnd::actionable(vec![Piece::new(hint.to_string(), word)]);
     }
     if let Some(err) = input.config_error {
         // `err.to_string()` names the file and, when one arrived, the line: the notice says
         // where to look rather than repeating a line number the error may not have.
-        return vec![
+        return RightEnd::actionable(vec![
             Piece::elastic(err.to_string(), Style::default().fg(theme::RED)),
             dot(),
             Piece::new("domux2 config reload", key),
-        ];
+        ]);
     }
-    vec![Piece::new(
+    RightEnd::decorative(vec![Piece::new(
         input.now.format("%H:%M   %a %-d %b").to_string(),
         Style::default().fg(theme::SUBTEXT0),
-    )]
+    )])
 }
 
 #[cfg(test)]

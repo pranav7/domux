@@ -384,3 +384,135 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
     .await;
     assert!(h.clipboard(h.client.clone()).await.is_empty());
 }
+
+/// Copy mode owns the keys while it is open, on a pane whose child exited like on any other
+/// (ruled 2026-09-07).
+///
+/// The exited-pane branch ran first, so `esc leave` was dead, there was no way out of the mode
+/// at all, and Enter - labelled `copy` on the bar at that very moment - closed the pane instead.
+/// A key must never do something its visible label does not say, least of all something
+/// destructive (principles 3 and 10). Enter closes an exited pane only when copy mode is not
+/// active, which is the state the bar says it is in.
+#[tokio::test]
+async fn copy_mode_keeps_the_keys_on_a_pane_whose_child_exited() {
+    let mut cfg = Config::default();
+    cfg.terminal.remain_on_exit = true;
+    let mut h = Harness::start(cfg, 80, 12).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.api("pane.copy_mode", serde_json::json!({}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.exit_pane(pane.clone(), Some(3)).await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("exited 3"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        row(&f, 0).ends_with("v select · ⏎ copy · esc leave |"),
+        "the bar still offers the copy mode keys:\n{f}"
+    );
+    // Esc means what it says: it leaves the mode and the pane is untouched.
+    h.key(h.client.clone(), "Esc").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(
+        h.model().pane(&pane).is_some(),
+        "leaving copy mode is not closing the pane"
+    );
+    // And so does Enter: an exited pane's scrollback is exactly what a reader wants to copy.
+    h.api("pane.copy_mode", serde_json::json!({}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "k").await;
+    h.key(h.client.clone(), "0").await;
+    h.key(h.client.clone(), "v").await;
+    h.key(h.client.clone(), "$").await;
+    h.key(h.client.clone(), "Enter").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        h.clipboard(h.client.clone()).await,
+        vec!["line 19".to_string()]
+    );
+    assert!(
+        h.model().pane(&pane).is_some(),
+        "copying from an exited pane does not close it"
+    );
+    // With copy mode closed, Enter is the exited pane's own key again and the pane goes.
+    h.key(h.client.clone(), "Enter").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains("exited 3"),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(
+        h.model().pane(&pane).is_none(),
+        "Enter closes an exited pane that is not in copy mode"
+    );
+}
+
+/// The chord indicator outranks the copy mode keys, because it answers the key just pressed:
+/// the leader inside copy mode started a chord the bar never showed, so the next key carried a
+/// meaning the screen had not admitted to (principle 8). The chord ends on that next key, and
+/// the copy mode keys come back.
+#[tokio::test]
+async fn the_leader_inside_copy_mode_shows_the_chord_rather_than_the_copy_keys() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    pane_with_lines(&mut h, 3).await;
+    h.api("pane.copy_mode", serde_json::json!({}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "C-a").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("C-a  ? keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(row(&f, 0).ends_with("C-a  ? keys |"), "{f}");
+    assert!(f.contains(" copy "), "copy mode is still open:\n{f}");
+    // An unbound second key ends the chord and changes nothing else.
+    h.key(h.client.clone(), "Tab").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("esc leave"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        row(&f, 0).ends_with("v select · ⏎ copy · esc leave |"),
+        "{f}"
+    );
+}

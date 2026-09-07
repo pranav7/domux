@@ -628,3 +628,71 @@ async fn the_prompt_moves_its_cursor_with_home_end_and_the_arrows() {
         .await;
     assert!(f.contains(" 1 1abc3 "), "the edited name was saved:\n{f}");
 }
+
+/// The right end's own floor, and what the bar may drop whole.
+///
+/// When the anchor cell wants the whole row - a long tab name on a narrow screen - the room left
+/// for the right end saturated to none, and the message was dropped with no mark at all: the key
+/// was pressed, the action failed, and the row was byte for byte what it had been (principles 8
+/// and 9). Everything but the clock now keeps a floor of its own and elides into it, taking the
+/// cells off a tab name that already knows how to draw itself cut (ruled 2026-09-07).
+#[tokio::test]
+async fn an_actionable_right_end_elides_into_a_floor_of_its_own_rather_than_going_whole() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    h.api(
+        "tab.rename",
+        serde_json::json!({"name": "a-very-long-branch-name-here-x"}),
+    )
+    .await
+    .unwrap();
+    let before = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("a-very-long"),
+            Duration::from_secs(2),
+        )
+        .await;
+    let before = row(&before, 0).to_string();
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "9").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("tab 9"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_ne!(row(&f, 0), before, "the failed key changed nothing:\n{f}");
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  1 a-very-long-br…tab 9 d… |",
+        "{f}"
+    );
+}
+
+/// The top bar's own rule, in the case that broke it: neither the tab row nor the right end may
+/// reach the last column. The empty cell there keeps the bar reading as a bar rather than as
+/// text pressed against the screen edge, so it comes off the room before the two share it -
+/// including when the right end is the clock and gives way whole.
+#[tokio::test]
+async fn the_tab_row_leaves_the_last_column_empty_when_it_wants_the_whole_row() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    h.api(
+        "tab.rename",
+        serde_json::json!({"name": "a-very-long-branch-name-here-x"}),
+    )
+    .await
+    .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("a-very-long"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  1 a-very-long-branch-nam… |",
+        "{f}"
+    );
+}
