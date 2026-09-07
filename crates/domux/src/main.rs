@@ -39,7 +39,8 @@ enum Command {
 async fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        None | Some(Command::Attach) => cli::attach::run().await,
+        None => cli::attach::run_bare().await,
+        Some(Command::Attach) => cli::attach::run().await,
         Some(Command::Server(c)) => cli::server::run(c).await,
         Some(Command::Config(c)) => cli::config::run(c).await,
         Some(Command::Api(c)) => cli::api::run(c).await,

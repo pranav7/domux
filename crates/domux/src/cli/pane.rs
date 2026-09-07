@@ -52,7 +52,11 @@ pub async fn run(cmd: PaneCmd) -> anyhow::Result<()> {
         PaneAction::Read { lines } => {
             let r: PaneReadResult =
                 call_as("pane.read", json!({ "pane": pane, "lines": lines })).await?;
-            print_line(&r.text)?;
+            // An empty answer and one blank line are not the same fact, so a pane with
+            // nothing on it prints nothing.
+            if !r.text.is_empty() {
+                print_line(&r.text)?;
+            }
         }
         PaneAction::SendText { text } => {
             call("pane.send_text", json!({ "pane": pane, "text": text })).await?;

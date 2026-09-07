@@ -557,3 +557,129 @@ async fn events_stops_quietly_when_the_reader_goes_away() {
         "a reader that stopped reading is not a failure: {status:?}"
     );
 }
+
+/// The pid out of a `server status` line, which is how a test tells one server from the next.
+fn pid_of(status: &std::process::Output) -> String {
+    let text = String::from_utf8_lossy(&status.stdout).to_string();
+    text.split("(pid ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .unwrap_or_else(|| panic!("no pid in {text}"))
+        .to_string()
+}
+
+/// `restart` is a stop and a start, and on a stopped server it is a start. It used to say
+/// "The server is not running." and then "Server started", which is true and reads as a
+/// contradiction.
+#[tokio::test]
+async fn server_restart_replaces_a_running_server_and_starts_a_stopped_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("domux2.sock");
+    let state = dir.path().join("state");
+    let cli = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+        c.env("DOMUX_SOCKET", &socket)
+            .env("DOMUX_STATE_DIR", &state)
+            .env("DOMUX_CONFIG_FILE", dir.path().join("domux.toml"))
+            .env_remove("DOMUX_TAB")
+            .env_remove("DOMUX_PANE")
+            .env_remove("DOMUX_WORKSPACE")
+            .env_remove("TMUX");
+        c
+    };
+    // Every step runs before any assertion, so a failed expectation still leaves the server
+    // stopped rather than running on a socket in a deleted temp directory.
+    let cold = cli().args(["server", "restart"]).output().await.unwrap();
+    let first = cli().args(["server", "status"]).output().await.unwrap();
+    let again = cli().args(["server", "restart"]).output().await.unwrap();
+    let second = cli().args(["server", "status"]).output().await.unwrap();
+    let stopped = cli().args(["server", "stop"]).output().await.unwrap();
+
+    let say = |o: &std::process::Output| String::from_utf8_lossy(&o.stderr).trim().to_string();
+    assert!(cold.status.success(), "{}", say(&cold));
+    assert!(
+        say(&cold).starts_with("Server started (pid "),
+        "a restart with nothing running is a start: {}",
+        say(&cold)
+    );
+    assert!(
+        !say(&cold).contains("not running"),
+        "the stop is quiet about a server that was not there: {}",
+        say(&cold)
+    );
+    assert!(first.status.success(), "{}", say(&first));
+    assert!(again.status.success(), "{}", say(&again));
+    assert_eq!(
+        say(&again).lines().next(),
+        Some("Server stopped."),
+        "{}",
+        say(&again)
+    );
+    assert!(second.status.success(), "the restart started one: {}", say(&second));
+    assert_ne!(pid_of(&first), pid_of(&second), "the restart replaced it");
+    assert_eq!(say(&stopped), "Server stopped.");
+}
+
+/// The ruling on the nested attach: bare `domux2` inside a pane refuses rather than drawing a
+/// second whole screen inside one pane of the screen it is drawing. Both halves are pinned,
+/// because the subcommands are the reason `DOMUX_SOCKET` is exported in the first place.
+#[tokio::test]
+async fn bare_domux2_inside_a_pane_refuses_while_its_subcommands_still_work() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let refused = domux2(&h).output().await.unwrap();
+    let said = String::from_utf8_lossy(&refused.stderr).trim().to_string();
+    assert_eq!(refused.status.code(), Some(1), "{said}");
+    assert!(
+        said.starts_with("domux2 is already running in this terminal."),
+        "{said}"
+    );
+    assert!(said.contains("domux2 tab create"), "{said}");
+    assert!(refused.stdout.is_empty(), "a refusal is not data");
+    let worked = domux2(&h).args(["tab", "create"]).output().await.unwrap();
+    assert!(
+        worked.status.success(),
+        "a subcommand in a pane is unaffected: {}",
+        String::from_utf8_lossy(&worked.stderr)
+    );
+}
+
+/// `api schema` answers for this build, so params cannot mean anything to it. Printing the
+/// schema and saying nothing would read as though they had been used.
+#[tokio::test]
+async fn api_schema_refuses_params_rather_than_ignoring_them() {
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", "/nonexistent/sock")
+        .args(["api", "schema", "{\"lines\":2}"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "the schema was not printed anyway");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).trim(),
+        "domux2 api schema takes no params. Run it with no argument."
+    );
+}
+
+/// An empty answer and one blank line are not the same fact.
+#[tokio::test]
+async fn pane_read_prints_nothing_for_a_pane_with_nothing_on_it() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let out = domux2(&h)
+        .env("DOMUX_PANE", pane.as_str())
+        .args(["pane", "read"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

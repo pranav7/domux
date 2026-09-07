@@ -47,24 +47,33 @@ pub enum ServerAction {
 
 pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
     match cmd.action {
-        ServerAction::Start => start().await,
+        ServerAction::Start => start(Announce::Yes).await,
         ServerAction::Stop => stop().await,
-        ServerAction::Restart => {
-            stop().await?;
-            start().await
-        }
+        ServerAction::Restart => restart().await,
         ServerAction::Status => status().await,
         ServerAction::Log => super::print_line(&paths::log_file().display().to_string()),
         ServerAction::Run => run_server().await,
     }
 }
 
+/// Whether the start reports itself. `server start` typed on its own says what it did,
+/// because the command has nothing else to show for itself. The start behind an attach says
+/// nothing: the screen that follows is the answer, and "Attach with domux2" would name an
+/// action already underway.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Announce {
+    Yes,
+    No,
+}
+
 /// Spawns `server run` in its own session, detached from this terminal, and waits
 /// for the socket. Called by `start` and by attach when the socket is absent.
-pub async fn start() -> anyhow::Result<()> {
+pub async fn start(announce: Announce) -> anyhow::Result<()> {
     let socket = socket();
     if control::is_live(&socket).await {
-        eprintln!("The server is already running.");
+        if announce == Announce::Yes {
+            eprintln!("The server is already running.");
+        }
         return Ok(());
     }
     // The child's stderr is the log, so a start that failed says why whatever failed: an
@@ -112,11 +121,20 @@ pub async fn start() -> anyhow::Result<()> {
         }
         tokio::time::sleep(POLL).await;
     }
-    eprintln!(
-        "Server started (pid {}). Attach with {BIN_NAME}.",
-        child.id()
-    );
+    if announce == Announce::Yes {
+        eprintln!(
+            "Server started (pid {}). Attach with {BIN_NAME}.",
+            child.id()
+        );
+    }
     Ok(())
+}
+
+/// Stop, then start. A server that was not running is not news to someone who asked for a
+/// restart, so the stop is quiet about it and only the start reports itself.
+async fn restart() -> anyhow::Result<()> {
+    stop_if_running().await?;
+    start(Announce::Yes).await
 }
 
 /// The log, opened for appending, so the child's stderr and the server's own tracing land in
@@ -160,10 +178,18 @@ fn last_line_after(log: &Path, offset: u64) -> Option<String> {
 }
 
 pub async fn stop() -> anyhow::Result<()> {
+    if !stop_if_running().await? {
+        eprintln!("The server is not running.");
+    }
+    Ok(())
+}
+
+/// Stops a running server and waits for the socket to go. Answers whether there was one to
+/// stop, so `restart` can be quiet about a server that was already stopped.
+async fn stop_if_running() -> anyhow::Result<bool> {
     let socket = socket();
     if !control::is_live(&socket).await {
-        eprintln!("The server is not running.");
-        return Ok(());
+        return Ok(false);
     }
     call("server.stop", serde_json::json!({})).await?;
     let deadline = Instant::now() + SETTLE;
@@ -178,7 +204,7 @@ pub async fn stop() -> anyhow::Result<()> {
         tokio::time::sleep(POLL).await;
     }
     eprintln!("Server stopped.");
-    Ok(())
+    Ok(true)
 }
 
 /// The report is data, so it goes to stdout. It is read out of the typed result rather
@@ -188,7 +214,9 @@ async fn status() -> anyhow::Result<()> {
     let info: ServerInfo = call_as("server.info", serde_json::json!({})).await?;
     print_line(&format!(
         "Server {PRODUCT_NAME} {} (pid {}), started {}",
-        info.version, info.pid, info.started_at
+        info.version,
+        info.pid,
+        human_time(&info.started_at)
     ))?;
     print_line(&format!("Socket  {}", info.socket.display()))?;
     print_line(&format!("State   {}", info.state_dir.display()))?;
@@ -200,6 +228,16 @@ async fn status() -> anyhow::Result<()> {
         None => print_line(&format!("Config  {}", info.config_file.display()))?,
     }
     print_line(&format!("Clients: {}", info.clients.len()))
+}
+
+/// The server's start time as a person reads it. The clock's own value carries microseconds,
+/// which read as machine output in a human report. A value this build cannot parse is printed
+/// exactly as it arrived rather than guessed at.
+fn human_time(started_at: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(started_at) {
+        Ok(t) => t.format("%Y-%m-%d %H:%M:%S").to_string(),
+        Err(_) => started_at.to_string(),
+    }
 }
 
 /// The pane ids of two servers must not collide, so the seed is drawn fresh. A machine
@@ -265,6 +303,15 @@ async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_start_time_is_shown_to_the_second_and_an_unreadable_one_exactly_as_it_arrived() {
+        assert_eq!(
+            human_time("2026-09-07T21:07:01.738699+01:00"),
+            "2026-09-07 21:07:01"
+        );
+        assert_eq!(human_time("whenever"), "whenever");
+    }
 
     #[test]
     fn the_reason_is_what_this_start_appended_not_an_older_run() {
