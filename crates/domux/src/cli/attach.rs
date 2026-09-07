@@ -10,8 +10,8 @@ use std::ffi::OsString;
 /// the outer client (principle 1) and puts a second accent border on the screen (principle
 /// 2). Nobody types it there wanting that; they type it out of habit.
 ///
-/// `attach` typed in full still attaches, and that is deliberate. Bare `domux2` is the habit;
-/// naming the verb is a choice. It is also the only way to reach a *different* server from
+/// `attach` typed in full still attaches, and that is deliberate. The bare command is the
+/// habit; naming the verb is a choice. It is also the only way to reach a different server from
 /// inside a pane: `DOMUX_SOCKET` set by hand points at that server, but `DOMUX_PANE` is still
 /// the outer pane's, so a guard on both forms would refuse a thing worth doing.
 ///
