@@ -1,6 +1,7 @@
 //! Writes server frames to the outer terminal through ratatui's crossterm backend.
 
 use domux_core::proto::{CursorState, FrameDiff, WireColor};
+use domux_core::text::display_width;
 use domux_term::CursorShape;
 use ratatui::backend::Backend;
 use ratatui::buffer::{Buffer, Cell};
@@ -37,7 +38,6 @@ impl Screen {
         // frame it takes the server to answer the new size with a full frame. A backend that
         // cannot say how big it is gets the frame's own size, which is what it asked for.
         let visible = backend.size().unwrap_or(Size::new(diff.cols, diff.rows));
-        let mut changed: Vec<(u16, u16)> = Vec::with_capacity(diff.cells.len());
         for u in &diff.cells {
             if u.x >= diff.cols || u.y >= diff.rows {
                 continue;
@@ -48,9 +48,21 @@ impl Screen {
             cell.bg = color(&u.bg);
             cell.underline_color = u.underline.as_ref().map(color).unwrap_or(Color::Reset);
             cell.modifier = Modifier::from_bits_truncate(u.modifiers);
-            if u.x < visible.width && u.y < visible.height {
-                changed.push((u.x, u.y));
+        }
+        // The run is built after every cell is in the buffer, because whether a position may
+        // be drawn depends on the symbol its left neighbour ended up with.
+        let mut changed: Vec<(u16, u16)> = Vec::with_capacity(diff.cells.len());
+        for u in &diff.cells {
+            if u.x >= diff.cols || u.y >= diff.rows {
+                continue;
             }
+            if u.x >= visible.width || u.y >= visible.height {
+                continue;
+            }
+            if self.is_continuation(u.x, u.y) {
+                continue;
+            }
+            changed.push((u.x, u.y));
         }
         backend.hide_cursor()?;
         backend.draw(changed.iter().map(|&(x, y)| (x, y, &self.buffer[(x, y)])))?;
@@ -70,6 +82,16 @@ impl Screen {
             _ => {}
         }
         backend.flush()
+    }
+
+    /// Whether this position is the second half of a wide grapheme, and so a cell no
+    /// terminal ever draws. The server sends one, because its own buffer holds one, and a
+    /// backend that is handed it prints the rest of the row a column late: `CrosstermBackend`
+    /// omits the `MoveTo` for a position one to the right of the last one it drew, which is
+    /// only sound for a run whose cells are each one column wide. The cell stays in the
+    /// buffer - it is what the server sent - it is just never part of a run.
+    fn is_continuation(&self, x: u16, y: u16) -> bool {
+        x > 0 && display_width(self.buffer[(x - 1, y)].symbol()) > 1
     }
 }
 
@@ -104,7 +126,7 @@ fn color(c: &WireColor) -> Color {
 mod tests {
     use super::*;
     use domux_core::proto::{CellUpdate, CursorState, FrameDiff, WireColor};
-    use ratatui::backend::TestBackend;
+    use ratatui::backend::{CrosstermBackend, TestBackend};
 
     #[test]
     fn a_full_frame_clears_then_draws_and_a_diff_only_touches_its_cells() {
@@ -267,5 +289,99 @@ mod tests {
             .unwrap();
         assert_eq!(backend.buffer()[(1, 1)].symbol(), "c");
         backend.assert_buffer_lines(["    ", " c  "]);
+    }
+
+    /// The bytes a real terminal would read for one full frame. `TestBackend` records cells
+    /// by coordinate, so it cannot see a cursor left in the wrong column; only the escape
+    /// sequence can.
+    fn bytes_for(
+        cols: u16,
+        rows: u16,
+        cells: Vec<CellUpdate>,
+        cursor: Option<CursorState>,
+    ) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        let mut backend = CrosstermBackend::new(&mut out);
+        let mut screen = Screen::new(cols, rows);
+        screen
+            .apply(
+                &FrameDiff {
+                    full: true,
+                    cols,
+                    rows,
+                    cells,
+                    cursor,
+                },
+                &mut backend,
+            )
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// What the server sends for a row starting with a wide grapheme: the grapheme, then the
+    /// blank continuation cell its own buffer holds, then the rest of the row.
+    fn wide_row(row: &[&str]) -> Vec<CellUpdate> {
+        row.iter()
+            .enumerate()
+            .map(|(x, s)| cell(x as u16, 0, s))
+            .collect()
+    }
+
+    /// The continuation cell is never drawn. Handing it to the backend would print the rest
+    /// of the row one column late and wrap its last cell onto the next row.
+    #[test]
+    fn a_wide_grapheme_repositions_the_run_past_its_continuation_cell() {
+        assert_eq!(
+            bytes_for(4, 1, wide_row(&["\u{6f22}", " ", "b", "c"]), None),
+            "\x1b[2J\x1b[?25l\x1b[1;1H\u{6f22}\x1b[1;3Hbc\x1b[39m\x1b[49m\x1b[59m\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn two_wide_graphemes_in_a_row_each_reposition_the_run() {
+        assert_eq!(
+            bytes_for(4, 1, wide_row(&["\u{6f22}", " ", "\u{5b57}", " "]), None),
+            "\x1b[2J\x1b[?25l\x1b[1;1H\u{6f22}\x1b[1;3H\u{5b57}\x1b[39m\x1b[49m\x1b[59m\x1b[0m"
+        );
+    }
+
+    /// The continuation cell of a wide grapheme in the last column has nowhere to go but the
+    /// next row, so it is the one the terminal would have wrapped.
+    #[test]
+    fn a_wide_grapheme_at_the_end_of_a_row_leaves_nothing_to_wrap() {
+        let bytes = bytes_for(4, 1, wide_row(&["a", "b", "\u{6f22}", " "]), None);
+        assert_eq!(
+            bytes,
+            "\x1b[2J\x1b[?25l\x1b[1;1Hab\u{6f22}\x1b[39m\x1b[49m\x1b[59m\x1b[0m"
+        );
+    }
+
+    /// The cursor half of a frame, in bytes: hidden while the cells are written, then put
+    /// where the server said and shown again.
+    #[test]
+    fn a_full_frame_clears_hides_the_cursor_and_shows_it_where_the_server_put_it() {
+        let bytes = bytes_for(
+            4,
+            1,
+            wide_row(&["a", "b"]),
+            Some(CursorState {
+                x: 2,
+                y: 0,
+                shape: domux_term::CursorShape::Block,
+                blink: false,
+            }),
+        );
+        assert!(bytes.starts_with("\x1b[2J\x1b[?25l"), "{bytes:?}");
+        assert!(bytes.ends_with("\x1b[1;3H\x1b[?25h"), "{bytes:?}");
+    }
+
+    /// Two cells with a gap between them are two runs: the backend only omits the `MoveTo`
+    /// for a cell one column to the right of the last one it drew.
+    #[test]
+    fn cells_that_are_not_next_to_each_other_are_repositioned() {
+        assert_eq!(
+            bytes_for(4, 1, vec![cell(0, 0, "a"), cell(3, 0, "z")], None),
+            "\x1b[2J\x1b[?25l\x1b[1;1Ha\x1b[1;4Hz\x1b[39m\x1b[49m\x1b[59m\x1b[0m"
+        );
     }
 }
