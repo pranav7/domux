@@ -191,3 +191,50 @@ async fn resize_to_the_current_size_leaves_the_pane_clean() {
     pane.snapshot();
     assert_eq!(pane.grid.size(), Size { cols: 80, rows: 24 });
 }
+
+/// Opening a terminal runs a login shell, and a pane is a terminal. A shell config keeps its
+/// PATH, its aliases and its functions in the login profile - zsh reads `.zprofile` only for a
+/// login shell - so a pane that skipped it would hand back a shell the user does not
+/// recognise: their own aliases would be gone. This asserts the profile is read, which is the
+/// fact a user would notice, rather than the `-` marker on argv[0] that produces it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_pane_with_no_command_runs_the_shell_through_its_login_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    // `sh` reads `$HOME/.profile` when it is a login shell and not otherwise. Pointing HOME at
+    // a temporary directory keeps the test off the real one.
+    std::fs::write(
+        dir.path().join(".profile"),
+        "printf 'PROFILE_READ=[%s]' \"$0\"\nexit 0\n",
+    )
+    .unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let mut req = request("p_0001", &[], dir.path().to_str().unwrap());
+    req.env.push(("SHELL".into(), "/bin/sh".into()));
+    req.env
+        .push(("HOME".into(), dir.path().to_str().unwrap().to_string()));
+    let pty = RealSpawner.spawn(req, tx).unwrap();
+    let mut pane = Reaped(PaneRuntime::new(
+        PaneId("p_0001".into()),
+        emulator(Size { cols: 200, rows: 5 }),
+        pty,
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("message before deadline")
+            .expect("open");
+        match msg {
+            CoreMsg::PaneOutput { bytes, .. } => pane.0.feed(&bytes),
+            CoreMsg::PaneExited { .. } => break,
+            _ => {}
+        }
+    }
+    pane.0.snapshot();
+    let row: String = pane.0.grid.row(0).iter().map(|c| c.text.as_str()).collect();
+    assert!(
+        row.starts_with("PROFILE_READ="),
+        "the login profile did not run, row was {row:?}"
+    );
+}

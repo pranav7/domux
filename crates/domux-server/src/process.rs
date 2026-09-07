@@ -57,12 +57,24 @@ impl ProcessInspector for RealInspector {
 /// bytes are not UTF-8: a lossy conversion would invent a name no process has.
 fn base_name(path: &[u8]) -> Option<String> {
     let first = path.split(|&b| b == 0).next().unwrap_or_default();
+    // A login shell's argv[0] carries a leading `-`: that is the marker telling the shell to
+    // read its profile, not part of its name. Every pane runs one, so this is the common case
+    // and without it every border would read `-zsh`.
+    let first = first.strip_prefix(b"-").unwrap_or(first);
     let name = Path::new(OsStr::from_bytes(first)).file_name()?;
     Some(name.to_str()?.to_string())
 }
 
 #[cfg(target_os = "macos")]
 fn process_name(pid: u32) -> Option<String> {
+    // argv[0] is the name the process was invoked as, which is the name its user knows it by
+    // and what Linux already reads from `cmdline`. The executable path is a worse answer than
+    // it looks: a versioned install resolves to a file named after its version, so asking the
+    // path what Claude Code is called answers `2.1.263`. The path stays as the fallback,
+    // because `KERN_PROCARGS2` refuses processes belonging to another user.
+    if let Some(name) = process_argv0(pid).as_deref().and_then(base_name) {
+        return Some(name);
+    }
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     // Safe: the buffer length is passed and proc_pidpath writes at most that many bytes.
     let n = unsafe {
@@ -76,6 +88,65 @@ fn process_name(pid: u32) -> Option<String> {
         return None;
     }
     base_name(&buf[..n as usize])
+}
+
+/// The raw argv[0] of a process, from the kernel's copy of its argument area.
+#[cfg(target_os = "macos")]
+fn process_argv0(pid: u32) -> Option<Vec<u8>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut len: libc::size_t = 0;
+    // Safe: a null buffer asks sysctl for the size it would write and nothing more.
+    let sized = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if sized != 0 || len == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; len];
+    // Safe: the buffer holds `len` bytes and sysctl is told that length, so it writes no more.
+    let filled = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if filled != 0 {
+        return None;
+    }
+    buf.truncate(len);
+    argv0_from_procargs2(&buf)
+}
+
+/// argv[0] out of a `KERN_PROCARGS2` buffer, which holds argc as a native-endian 32-bit int,
+/// then the executable path, then NUL padding to an alignment boundary, then the arguments
+/// separated by NULs. Absent when the buffer is truncated or the process has no argument -
+/// a short buffer must not be read as an empty name.
+#[cfg(any(target_os = "macos", test))]
+fn argv0_from_procargs2(buf: &[u8]) -> Option<Vec<u8>> {
+    const ARGC: usize = std::mem::size_of::<u32>();
+    let argc = u32::from_ne_bytes(buf.get(..ARGC)?.try_into().ok()?);
+    if argc == 0 {
+        return None;
+    }
+    let rest = buf.get(ARGC..)?;
+    // Step over the executable path, then over the NULs padding it out.
+    let path_end = rest.iter().position(|&b| b == 0)?;
+    let args = &rest[path_end..];
+    let start = args.iter().position(|&b| b != 0)?;
+    let arg = &args[start..];
+    let end = arg.iter().position(|&b| b == 0)?;
+    Some(arg[..end].to_vec())
 }
 
 #[cfg(target_os = "macos")]
@@ -242,6 +313,82 @@ mod tests {
             cwd.canonicalize().unwrap(),
             std::env::current_dir().unwrap().canonicalize().unwrap()
         );
+    }
+
+    /// The name a process is known by is argv[0], not the file behind it. The two differ
+    /// whenever a launcher sets one - and a versioned install makes the file name useless on
+    /// its own: `~/.local/bin/claude` resolves to `.../claude/versions/2.1.263`, so asking the
+    /// executable path what Claude Code is called answers `2.1.263`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_process_is_named_by_argv0_not_by_the_file_behind_it() {
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows: 5,
+                cols: 40,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        // `exec -a` sets argv[0] apart from the path, which is what a launcher does. The two
+        // answers here are `claude` and `sleep`, so the assertion cannot pass by accident.
+        // macOS `/bin/sh` is bash and has `exec -a`; this test is macOS-only, and Linux reads
+        // argv[0] from `cmdline` already.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "exec -a claude /bin/sleep 30"]);
+        let _child = ChildGuard(pair.slave.spawn_command(cmd).unwrap());
+        drop(pair.slave);
+        let fd = pair.master.as_raw_fd().expect("master fd");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match RealInspector.foreground(Some(fd)) {
+                Some(p) if p.name == "claude" => break,
+                other => {
+                    let last = other.map(|p| p.name);
+                    assert!(
+                        Instant::now() <= deadline,
+                        "foreground never became claude, last {last:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_login_shells_argv0_names_the_shell_without_its_marker() {
+        assert_eq!(base_name(b"-zsh").as_deref(), Some("zsh"));
+        assert_eq!(base_name(b"-bash").as_deref(), Some("bash"));
+        // A non-login invocation is a path and keeps every part of its base name.
+        assert_eq!(base_name(b"/bin/zsh").as_deref(), Some("zsh"));
+        assert_eq!(base_name(b"my-prog").as_deref(), Some("my-prog"));
+        // The marker alone is not a name.
+        assert_eq!(base_name(b"-"), None);
+    }
+
+    /// The buffer is argc, the executable path, NUL padding, then the arguments.
+    #[test]
+    fn argv0_is_read_from_the_kernels_argument_area() {
+        let mut buf = 2u32.to_ne_bytes().to_vec();
+        buf.extend_from_slice(b"/usr/local/share/app/versions/9.9.9\0\0\0");
+        buf.extend_from_slice(b"claude\0--resume\0");
+        assert_eq!(argv0_from_procargs2(&buf).as_deref(), Some(&b"claude"[..]));
+    }
+
+    #[test]
+    fn a_truncated_argument_area_yields_no_name() {
+        // Too short to hold argc at all.
+        assert_eq!(argv0_from_procargs2(&[0, 0]), None);
+        // argc says there are no arguments.
+        let mut none = 0u32.to_ne_bytes().to_vec();
+        none.extend_from_slice(b"/bin/sh\0\0sh\0");
+        assert_eq!(argv0_from_procargs2(&none), None);
+        // The path is there but the argument after it was cut off, which is not an empty
+        // name: reading it as one would title a pane with nothing at all.
+        let mut cut = 1u32.to_ne_bytes().to_vec();
+        cut.extend_from_slice(b"/bin/sh\0\0sh");
+        assert_eq!(argv0_from_procargs2(&cut), None);
     }
 
     #[test]

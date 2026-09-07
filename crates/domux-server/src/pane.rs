@@ -74,8 +74,14 @@ impl PtySpawner for RealSpawner {
     fn spawn(&self, req: SpawnRequest, tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>> {
         let pty = native_pty_system();
         let pair = pty.openpty(pty_size(req.size)).context("openpty")?;
+        // A pane with no command is a terminal, and opening a terminal runs a *login* shell:
+        // that is where a shell config puts its PATH, its aliases and its functions (zsh reads
+        // `.zprofile` only for a login shell). A pane that skipped them would hand the user a
+        // shell they do not recognise. `new_default_prog` is the login form - it prefixes
+        // argv[0] with `-`, the way every terminal emulator does - and it resolves `$SHELL`
+        // itself, checking the file is executable before falling back to the password database.
         let mut cmd = if req.command.is_empty() {
-            CommandBuilder::new(std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()))
+            CommandBuilder::new_default_prog()
         } else {
             let mut c = CommandBuilder::new(&req.command[0]);
             c.args(&req.command[1..]);
