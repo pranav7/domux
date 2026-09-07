@@ -18,6 +18,10 @@ pub struct Piece {
     /// The piece that gives up its cells first when the right end does not fit. At most one,
     /// and every piece after it keeps its cells whole: see `squeeze`.
     pub elastic: bool,
+    /// A separator that exists only to join the elastic piece to the pieces after it. It has no
+    /// meaning of its own, so when that piece is cut down to its mark this narrows to a space:
+    /// ` · ` between a mark and an action reads as punctuation, not as elision.
+    pub joiner: bool,
 }
 
 impl Piece {
@@ -26,6 +30,17 @@ impl Piece {
             text: text.into(),
             style,
             elastic: false,
+            joiner: false,
+        }
+    }
+
+    /// The separator between the elastic piece and what follows it. See `Piece::joiner`.
+    pub fn joiner(text: impl Into<String>, style: Style) -> Piece {
+        Piece {
+            text: text.into(),
+            style,
+            elastic: false,
+            joiner: true,
         }
     }
 
@@ -37,6 +52,7 @@ impl Piece {
             text: text.into(),
             style,
             elastic: true,
+            joiner: false,
         }
     }
 }
@@ -95,7 +111,9 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // the two would otherwise have reached it.
     //
     // Of what is left, the tab row keeps enough for the current tab, which has to be visible on
-    // every frame (principle 2), and one more cell keeps an elided right end off the tab row.
+    // every frame (principle 2), and one more cell is the gap that keeps the right end off the
+    // tab row - taken out of the tab row's drawing budget below, so it is a blank cell whichever
+    // of the two wins the arithmetic here.
     // The right end takes what it wants from the rest and elides into it rather than running
     // off the edge (principle 6) - and unless what it shows is the clock, it keeps a floor of
     // its own even when that leaves the tab row less than its own: a message the reader has to
@@ -112,10 +130,21 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .min(room.saturating_sub(tabs.floor() + 1))
         .max(floor.min(wanted).min(room));
     let tabs_budget = room - right;
-    tabs.draw(x, y, tabs_budget, buf);
-    let mut cx = x + tabs_budget as u16;
+    // One cell of the tab row's budget is the gap before the right end, left blank. The tab row
+    // fills its budget to the last cell whenever it is cut, so without the gap its own cut mark
+    // abuts the right end and the two read as one run of text - at the narrowest widths, two
+    // elision marks running together (`indeed…… domux…`).
+    let gap = usize::from(right > 0);
+    tabs.draw(x, y, tabs_budget.saturating_sub(gap), buf);
     let last_x = right_edge.saturating_sub(2);
-    for p in fit(squeeze(end.pieces, right), right) {
+    let drawn = fit(squeeze(end.pieces, right), right);
+    // Flush to the right, on the width the pieces actually came back with rather than on the
+    // cells reserved for them: an elastic piece can shrink below its reservation, and a notice
+    // that floats short of the edge reads as a label dropped mid-bar rather than as the end of
+    // the bar.
+    let width: usize = drawn.iter().map(|p| display_width(&p.text)).sum();
+    let mut cx = x + room.saturating_sub(width) as u16;
+    for p in drawn {
         cx = put_within(buf, cx, y, last_x, &p.text, p.style.bg(bg));
     }
 }
@@ -141,9 +170,16 @@ fn squeeze(mut pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
     // One cell of what is left over is the mark.
     let keep = room.saturating_sub(others).saturating_sub(1);
     if keep == 0 {
-        // Not even one cell of it survives. Drop it whole rather than draw a lone `…`, and
-        // let `fit` cut what is left and mark that cut itself.
-        pieces.remove(i);
+        // Not even one cell of its text survives. It becomes the mark rather than going: a
+        // notice that shows only its next action reads as an offer rather than as an error,
+        // and the mark keeps the piece's own style, so the alarm colour stays on the bar
+        // (ruled 2026-09-07). Its joiner narrows to a space, because a right end that opens
+        // with a bare ` · ` reads as a sentence with its subject cut off.
+        pieces[i].text = "…".to_string();
+        pieces[i].elastic = false;
+        if let Some(j) = pieces.get_mut(i + 1).filter(|p| p.joiner) {
+            j.text = " ".to_string();
+        }
         return pieces;
     }
     pieces[i].text = format!("{}…", truncate_to_width(&pieces[i].text, keep));
@@ -224,6 +260,9 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
     let word = Style::default().fg(theme::OVERLAY0);
     let sep = Style::default().fg(theme::SURFACE1);
     let dot = || Piece::new(" · ", sep);
+    // The config error's separator joins its message to the action after it, so it narrows with
+    // that message rather than outliving it: see `Piece::joiner`.
+    let joining_dot = || Piece::joiner(" · ", sep);
     if let Some(Overlay::Prompt(_)) = &input.view.overlay {
         return RightEnd::actionable(vec![
             Piece::new("⏎", key),
@@ -267,7 +306,7 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
         // where to look rather than repeating a line number the error may not have.
         return RightEnd::actionable(vec![
             Piece::elastic(err.to_string(), Style::default().fg(theme::RED)),
-            dot(),
+            joining_dot(),
             Piece::new("domux2 config reload", key),
         ]);
     }
@@ -343,15 +382,40 @@ mod tests {
     /// Below the width the pieces after it need, there is nothing left to shorten the elastic
     /// piece to. It goes whole rather than leaving a lone `…`, and `fit` cuts what is left.
     #[test]
-    fn an_elastic_piece_with_no_cells_left_for_it_goes_rather_than_leaving_a_mark() {
+    fn an_elastic_piece_with_no_cells_left_for_it_becomes_its_mark_and_its_joiner_narrows() {
+        let notice = || {
+            vec![
+                Piece::elastic("domux.toml line 4: invalid string", Style::default()),
+                Piece::joiner(" · ", Style::default()),
+                Piece::new("domux2 config reload", Style::default()),
+            ]
+        };
+        // Not " · domux2 config re…": a right end that opens with a bare separator reads as a
+        // sentence with its subject cut off, and one that shows only the action reads as an
+        // offer rather than as an error.
+        let out = fit(squeeze(notice(), 20), 20);
+        assert_eq!(text(&out), "… domux2 config rel…");
+        assert_eq!(display_width(&text(&out)), 20);
+        // The floor an actionable right end keeps. Both marks survive it.
+        let out = fit(squeeze(notice(), RIGHT_FLOOR), RIGHT_FLOOR);
+        assert_eq!(text(&out), "… domux…");
+        assert_eq!(display_width(&text(&out)), RIGHT_FLOOR);
+    }
+
+    /// The mark keeps the message's style, not the action's, so the alarm colour stays on the
+    /// bar after the words it belonged to are gone.
+    #[test]
+    fn the_mark_left_by_an_elided_message_keeps_the_message_style() {
+        let red = Style::default().fg(theme::RED);
         let notice = vec![
-            Piece::elastic("domux.toml line 4: invalid string", Style::default()),
-            Piece::new(" · ", Style::default()),
+            Piece::elastic("domux.toml line 4: invalid string", red),
+            Piece::joiner(" · ", Style::default()),
             Piece::new("domux2 config reload", Style::default()),
         ];
-        let out = fit(squeeze(notice, 20), 20);
-        assert_eq!(text(&out), " · domux2 config re…");
-        assert_eq!(display_width(&text(&out)), 20);
+        let out = squeeze(notice, 20);
+        assert_eq!(out[0].text, "…");
+        assert_eq!(out[0].style, red);
+        assert_eq!(out[1].text, " ");
     }
 
     /// Without an elastic piece the room still runs out from the left, so the right end that

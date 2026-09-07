@@ -409,3 +409,88 @@ async fn a_config_error_outranks_the_shell_failure_notice() {
     // Both notices are still true: a reload that failed lifts no respawn block.
     assert_eq!(h.model().all_pane_ids().len(), blocked);
 }
+
+/// Three things the bar keeps at the widths where the notice does not fit whole.
+///
+/// The tab row fills its budget to the last cell whenever it is cut, so without a reserved gap
+/// its own elision mark abuts the right end's and the two read as one run of text. The message
+/// is elided to a mark rather than dropped, because a right end showing only `domux2 config
+/// reload` reads as an offer rather than as an error, and the mark carries the message's own
+/// red. Its separator narrows with it, because a right end that opens with a bare ` · ` reads
+/// as a sentence with its subject cut off. And the right end stays flush to the edge on the
+/// width it came back with, not on the cells reserved for it: an elastic piece shrinks below
+/// its reservation, and a notice floating short of the edge reads as a label dropped mid-bar.
+#[tokio::test]
+async fn a_config_notice_too_wide_to_fit_keeps_a_gap_a_mark_and_the_right_edge() {
+    // Both shapes of tab row: one tab too wide for the row, and more tabs than fit. The second
+    // is what floats the right end - the message shrinks further than the cells reserved for
+    // it, so a right end placed at its reservation stops short of the edge.
+    for (cols, tabs) in [
+        // 74 is the width where the message shrinks a cell further than the room reserved for
+        // it, so it is the one that catches a right end placed at its reservation.
+        (74u16, 1usize),
+        (74, 9),
+        (70, 1),
+        (60, 1),
+        (55, 1),
+        (50, 1),
+        (46, 1),
+        (42, 1),
+        (70, 9),
+        (60, 9),
+        (50, 9),
+    ] {
+        let mut h = Harness::start(Config::default(), cols, 10).await;
+        for i in 1..tabs {
+            h.api("tab.create", json!({})).await.unwrap();
+            h.api("tab.rename", json!({"name": format!("long name {i}")}))
+                .await
+                .unwrap();
+        }
+        h.api("tab.rename", json!({"name": "a very long tab name indeed"}))
+            .await
+            .unwrap();
+        std::fs::write(h.config_path(), "[keys\nleader = \"C-b\"\n").unwrap();
+        let r = h.api("config.reload", json!({})).await.unwrap();
+        assert!(r["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("domux.toml line 1"));
+        let f = h
+            .wait_for(
+                h.client.clone(),
+                |f| row(f, 0).contains("domux"),
+                Duration::from_secs(2),
+            )
+            .await;
+        let bar = row(&f, 0);
+        assert!(!bar.contains("……"), "{cols} columns, {tabs} tabs: {bar}");
+        // The narrowest of these widths cuts the action itself, so this is `domux` and not
+        // `domux2 config reload`: what is pinned is the shape of the right end, not its length.
+        assert!(
+            bar.contains("… domux"),
+            "{cols} columns, {tabs} tabs: {bar}"
+        );
+        assert!(
+            !bar.contains(" · domux"),
+            "{cols} columns, {tabs} tabs: {bar}"
+        );
+        // `row` returns the screen row between two `|` delimiters. One blank column at the
+        // right edge is the bar's own, and there is only one: the right end sits flush on the
+        // width it came back with, not on the cells that were reserved for it.
+        let inner = bar
+            .strip_prefix('|')
+            .and_then(|b| b.strip_suffix('|'))
+            .unwrap();
+        assert_eq!(
+            domux_core::text::display_width(inner) as u16,
+            cols,
+            "{cols} columns, {tabs} tabs: {bar}"
+        );
+        assert!(
+            inner.ends_with(' ') && !inner.ends_with("  "),
+            "{cols} columns, {tabs} tabs: {bar}"
+        );
+        h.stop().await;
+    }
+}

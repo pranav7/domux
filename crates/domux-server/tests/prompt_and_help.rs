@@ -669,9 +669,12 @@ async fn an_actionable_right_end_elides_into_a_floor_of_its_own_rather_than_goin
         )
         .await;
     assert_ne!(row(&f, 0), before, "the failed key changed nothing:\n{f}");
+    // A cell of the tab row's budget is the gap before the right end, so the two elisions do
+    // not abut: `…tab 9 d…` read as one run of text, with the tab row's cut mark looking like
+    // part of the message (ruled 2026-09-07).
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 a-very-long-br…tab 9 d… |",
+        "| proj › main  1 a-very-long-b… tab 9 d… |",
         "{f}"
     );
 }
