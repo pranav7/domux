@@ -4,6 +4,7 @@ pub mod api;
 pub mod client;
 pub mod copy_mode;
 pub mod core;
+pub mod input;
 pub mod log;
 pub mod pane;
 pub mod persist;

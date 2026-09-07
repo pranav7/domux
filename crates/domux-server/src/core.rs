@@ -7,6 +7,7 @@ use crate::render::{self, RenderInput};
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, Event, Method, Request, Response};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
+use domux_core::keymap::Action;
 use domux_core::model::{ClientView, Focus, Model, PaneFacts};
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
@@ -433,7 +434,10 @@ impl Core {
         self.model.touch_client(&client);
         match msg {
             ClientMsg::Hello(_) => {}
-            ClientMsg::Key(key) => self.key(&client, key),
+            ClientMsg::Key(key) => {
+                self.clear_action_hint(&client);
+                self.key(&client, key);
+            }
             ClientMsg::Paste(text) => {
                 if let Some(pane) = self.focused_pane(&client) {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -471,15 +475,46 @@ impl Core {
         }
     }
 
-    /// Task 17 replaces this with `input::route_key`. Until then every key goes to the pane.
+    /// One key, routed by `input::route_key`. Every key gets a frame: the chord indicator
+    /// appearing, an action's result, a hint cleared or replaced (principle 8).
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
-        if let Some(pane) = self.focused_pane(client) {
-            if let Some(p) = self.panes.get_mut(&pane) {
-                let mut out = Vec::new();
-                p.emulator.encode_key(&key, &mut out);
-                if !out.is_empty() {
-                    p.write(&out);
+        let _ = crate::input::route_key(self, client, key);
+        self.view_dirty = true;
+    }
+
+    /// Runs a keymap action through the same dispatcher the API uses.
+    ///
+    /// A failed action's message shows in the clock's place until the next key, so a key
+    /// that cannot do what it says still answers (principle 8) and the message names the
+    /// object and the next action (principle 9).
+    pub fn run_action(&mut self, client: &ClientId, action: &Action) {
+        match Method::from_action(action) {
+            Ok(method) => {
+                if let Err(e) = self.dispatch(method, Some(client.clone())) {
+                    tracing::info!(client = %client, action = %action, "{}", e.message);
+                    if let Some(conn) = self.clients.get_mut(client) {
+                        conn.hint = Some(e.message);
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(action = %action, "{}", e.message);
+                if let Some(conn) = self.clients.get_mut(client) {
+                    conn.hint = Some(e.message);
+                }
+            }
+        }
+    }
+
+    /// Clears the notice a failed action left, so it stands until the next key and no
+    /// longer. The shell-failure notice is not one of those: it describes a state that is
+    /// still true, and typing does not make it untrue, so it is left for
+    /// `clear_shell_failure_hint` to withdraw when a pane survives.
+    fn clear_action_hint(&mut self, client: &ClientId) {
+        let shell = self.shell_failure_hint();
+        if let Some(conn) = self.clients.get_mut(client) {
+            if conn.hint.as_deref() != Some(shell.as_str()) {
+                conn.hint = None;
             }
         }
     }
@@ -506,7 +541,7 @@ impl Core {
         }
     }
 
-    /// The one entry point for methods, from the API and (Task 17) from keys.
+    /// The one entry point for methods, from the API and from keys.
     pub fn dispatch(
         &mut self,
         method: Method,
@@ -1040,6 +1075,41 @@ mod tests {
         core.dispatch(Method::ServerInfo(NoParams::default()), None)
             .unwrap();
         assert!(!core.view_dirty);
+    }
+
+    /// A failed action's notice stands until the next key. The shell-failure notice is not
+    /// one of those: it names a state that is still true, and typing does not make it
+    /// untrue, so a key must leave it where it is.
+    #[test]
+    fn a_key_clears_an_action_hint_and_keeps_the_shell_failure_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let (tx, _rx) = mpsc::channel(64);
+        let client = core
+            .attach(
+                Hello {
+                    version: domux_core::VERSION.into(),
+                    protocol: domux_core::proto::PROTOCOL_VERSION,
+                    cols: 80,
+                    rows: 24,
+                    caps: Default::default(),
+                },
+                tx,
+            )
+            .unwrap();
+        let press = || {
+            ClientMsg::Key(domux_term::KeyEvent::press(
+                domux_term::Key::Char('j'),
+                domux_term::Mods::empty(),
+            ))
+        };
+        core.clients.get_mut(&client).unwrap().hint = Some("no pane to the left".into());
+        core.client_input(client.clone(), press());
+        assert_eq!(core.clients[&client].hint, None);
+        let shell = core.shell_failure_hint();
+        core.clients.get_mut(&client).unwrap().hint = Some(shell.clone());
+        core.client_input(client.clone(), press());
+        assert_eq!(core.clients[&client].hint, Some(shell));
     }
 
     /// The other side of the same flag, and the flag itself rather than the side-effect
