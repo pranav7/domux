@@ -1,8 +1,10 @@
-//! Composes one client's frame. Task 15 adds `compose`; the primitives live in submodules.
+//! Composes one client's frame: the top bar, then the tab's pane boxes.
 
 pub mod boxed;
 pub mod pane_box;
+pub mod tab_row;
 pub mod theme;
+pub mod top_bar;
 
 use ratatui::layout::Rect;
 
@@ -16,6 +18,7 @@ use crate::render::pane_box::{cursor_position, render_grid};
 use chrono::{DateTime, Local};
 use domux_core::config::ConfigError;
 use domux_core::ids::PaneId;
+use domux_core::ids::TabId;
 use domux_core::keymap::Keymap;
 use domux_core::model::layout::solve;
 use domux_core::model::{ClientView, Focus, Model};
@@ -48,7 +51,7 @@ pub fn workpanel_area(size: Size) -> domux_core::model::Rect {
     }
 }
 
-/// One client's whole screen. Task 15 adds the top bar; this draws the pane boxes.
+/// One client's whole screen: the top bar over the tab's pane boxes.
 pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
     let size = input.view.size;
     let mut buf = Buffer::empty(Rect::new(0, 0, size.cols, size.rows));
@@ -66,13 +69,48 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
         );
         return (buf, None);
     }
+    top_bar::draw(input, &mut buf);
     let cursor = draw_panes(input, &mut buf);
     (buf, cursor)
 }
 
+/// The size of the smallest client on `tab`; a tab nobody views keeps `fallback`.
+///
+/// Every client on a tab draws the same boxes, sized for the smallest of them, and the
+/// larger ones leave the rest of the screen blank (tmux's rule). `Core::sync_pane_sizes`
+/// sizes the PTYs from the same rectangle, so what a pane's program believes about its size
+/// is what every client actually draws.
+pub fn smallest_size(model: &Model, tab: &TabId, fallback: Size) -> Size {
+    let mut size: Option<Size> = None;
+    for c in model.clients.iter().filter(|c| &c.tab == tab) {
+        let s = size.get_or_insert(c.size);
+        s.cols = s.cols.min(c.size.cols);
+        s.rows = s.rows.min(c.size.rows);
+    }
+    size.unwrap_or(fallback)
+}
+
+/// The size this client's pane boxes are laid out in: the smallest client's, and never
+/// larger than the client's own screen.
+///
+/// The second clamp is load-bearing. `Boxed::render` and `render_grid` index the buffer
+/// without checking their area against it, so an area past its edge panics rather than
+/// clips, and this is the first place an area is computed from something other than the
+/// buffer's own size: a client reports its size in its hello and its resizes, and nothing
+/// clamps that. When the rendering view is one of `model.clients` the smallest is already
+/// no larger, but `compose` is public and a caller can pass a view the model does not hold,
+/// in which case a larger client on the tab would otherwise size this buffer's boxes.
+fn drawn_size(input: &RenderInput, tab: &TabId) -> Size {
+    let smallest = smallest_size(input.model, tab, input.view.size);
+    Size {
+        cols: smallest.cols.min(input.view.size.cols),
+        rows: smallest.rows.min(input.view.size.rows),
+    }
+}
+
 pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<CursorState> {
     let tab = input.model.tab(&input.view.tab)?;
-    let area = workpanel_area(input.view.size);
+    let area = workpanel_area(drawn_size(input, &tab.id));
     let pane_focus = matches!(input.view.focus, Focus::Pane(_));
     let mut cursor = None;
     for (pane_id, rect) in solve(&tab.layout, area, tab.zoomed.as_ref()) {

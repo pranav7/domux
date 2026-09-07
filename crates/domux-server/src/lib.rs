@@ -19,8 +19,9 @@ use anyhow::Context;
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use domux_core::config::{Config, ConfigError};
 use domux_core::keymap::Keymap;
+use domux_core::model::Model;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 /// The configuration as loaded: what applies, and what went wrong. A bad file never blocks
@@ -142,6 +143,9 @@ pub struct ServerOptions {
 pub struct ServerHandle {
     pub core_tx: mpsc::Sender<CoreMsg>,
     pub socket_path: PathBuf,
+    /// The model as of the end of the core's last batch. The core writes it; everyone else
+    /// clones what they need out of it, so no reader ever holds the core's own state.
+    pub snapshot: Arc<Mutex<Model>>,
     core: tokio::task::JoinHandle<()>,
     persist: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
@@ -171,7 +175,14 @@ impl Server {
         let state_file = opts.state_dir.join("state.json");
         let persist = tokio::spawn(persist::spawn(state_file.clone(), persist_rx));
         let socket_path = opts.socket_path.clone();
-        let core = Core::new(opts, core_tx.clone(), persist_tx, &state_file)?;
+        let snapshot = Arc::new(Mutex::new(Model::new(opts.deps.id_seed)));
+        let core = Core::new(
+            opts,
+            core_tx.clone(),
+            persist_tx,
+            &state_file,
+            snapshot.clone(),
+        )?;
         let listener = socket::listen(&socket_path, core_tx.clone()).await?;
         let tick_tx = core_tx.clone();
         let tick = tokio::spawn(async move {
@@ -187,6 +198,7 @@ impl Server {
         Ok(ServerHandle {
             core_tx,
             socket_path,
+            snapshot,
             core,
             persist,
             listener,

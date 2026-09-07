@@ -6,13 +6,14 @@ use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::render::{self, RenderInput};
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, Event, Method, Request, Response};
-use domux_core::ids::{ClientId, PaneId};
+use domux_core::ids::{ClientId, PaneId, TabId};
 use domux_core::model::{ClientView, Focus, Model, PaneFacts};
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
 use domux_term::{Emulator, Rgb, Size};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
 pub enum CoreMsg {
@@ -78,6 +79,10 @@ pub struct Core {
     core_tx: mpsc::Sender<CoreMsg>,
     persist_tx: mpsc::Sender<StateFile>,
     pending_events: Vec<Event>,
+    /// The model as of the end of the last batch, for readers outside the core. The core is
+    /// the only writer and every reader gets a clone, so nothing outside holds a reference
+    /// into the state the core owns.
+    snapshot: Arc<Mutex<Model>>,
     /// Set whenever something a frame shows may have changed.
     view_dirty: bool,
     last_minute: Option<String>,
@@ -90,6 +95,7 @@ impl Core {
         core_tx: mpsc::Sender<CoreMsg>,
         persist_tx: mpsc::Sender<StateFile>,
         state_file: &Path,
+        snapshot: Arc<Mutex<Model>>,
     ) -> anyhow::Result<Core> {
         let started_at = opts.deps.clock.now().to_rfc3339();
         let mut model = match std::fs::read_to_string(state_file) {
@@ -122,6 +128,7 @@ impl Core {
             core_tx,
             persist_tx,
             pending_events: Vec::new(),
+            snapshot,
             view_dirty: true,
             last_minute: None,
             stopping: false,
@@ -470,10 +477,7 @@ impl Core {
     fn tick(&mut self) {
         let mut changed = false;
         for (id, pane) in &self.panes {
-            let fg = pane
-                .pty
-                .raw_fd()
-                .and_then(|fd| self.deps.inspector.foreground(fd));
+            let fg = self.deps.inspector.foreground(pane.pty.raw_fd());
             let cwd = pane
                 .emulator
                 .cwd()
@@ -522,6 +526,11 @@ impl Core {
         self.close_exited_panes();
         self.publish_events();
         self.sync_pane_sizes();
+        // Before the frames, not after: `render` does not touch the model, and publishing
+        // first means a reader that has seen a frame is reading a model at least as new as
+        // that frame. The other order leaves a window in which a test waits for a frame,
+        // asks for the model and gets the one from before the batch.
+        *self.snapshot.lock().unwrap() = self.model.clone();
         self.render();
     }
 
@@ -598,14 +607,20 @@ impl Core {
     /// Every pane viewed by at least one client takes the size the smallest such client
     /// gives it. Panes nobody views keep their size.
     fn sync_pane_sizes(&mut self) {
-        let mut smallest: HashMap<domux_core::ids::TabId, Size> = HashMap::new();
+        // One entry per viewed tab, carrying the first client's size seen for it. The
+        // rectangle itself comes from `render::smallest_size`, the same function the
+        // renderer lays the boxes out with, so a pane's program and every client agree on
+        // its size. The recorded size is only the fallback for a tab no client views, which
+        // cannot happen here: each entry was made from a client that views it.
+        let mut viewed: Vec<(TabId, Size)> = Vec::new();
         for view in &self.model.clients {
-            let e = smallest.entry(view.tab.clone()).or_insert(view.size);
-            e.cols = e.cols.min(view.size.cols);
-            e.rows = e.rows.min(view.size.rows);
+            if !viewed.iter().any(|(t, _)| t == &view.tab) {
+                viewed.push((view.tab.clone(), view.size));
+            }
         }
         let mut events = Vec::new();
-        for (tab_id, size) in smallest {
+        for (tab_id, fallback) in viewed {
+            let size = render::smallest_size(&self.model, &tab_id, fallback);
             let Some(tab) = self.model.tab(&tab_id) else {
                 continue;
             };

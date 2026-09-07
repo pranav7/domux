@@ -110,23 +110,37 @@ fn wire(c: Color) -> WireColor {
     match c {
         Color::Rgb(r, g, b) => WireColor::Rgb(r, g, b),
         Color::Indexed(i) => WireColor::Indexed(i),
-        Color::Black => WireColor::Indexed(0),
-        Color::Red => WireColor::Indexed(1),
-        Color::Green => WireColor::Indexed(2),
-        Color::Yellow => WireColor::Indexed(3),
-        Color::Blue => WireColor::Indexed(4),
-        Color::Magenta => WireColor::Indexed(5),
-        Color::Cyan => WireColor::Indexed(6),
-        Color::Gray => WireColor::Indexed(7),
-        Color::DarkGray => WireColor::Indexed(8),
-        Color::LightRed => WireColor::Indexed(9),
-        Color::LightGreen => WireColor::Indexed(10),
-        Color::LightYellow => WireColor::Indexed(11),
-        Color::LightBlue => WireColor::Indexed(12),
-        Color::LightMagenta => WireColor::Indexed(13),
-        Color::LightCyan => WireColor::Indexed(14),
-        Color::White => WireColor::Indexed(15),
         Color::Reset => WireColor::Reset,
+        named => WireColor::Indexed(wire_index(named)),
+    }
+}
+
+/// The ANSI index a ratatui named colour stands for, 0 to 15. Named colours have no place
+/// on the wire, so this is the one mapping: `wire` sends it and the harness reads a frame
+/// back through it, and a client rendering `Indexed(1)` paints the cell a client rendering
+/// `Red` would.
+///
+/// `Rgb`, `Indexed` and `Reset` are not named colours and have no index; they answer 0,
+/// which is why `wire` handles them before it asks.
+pub fn wire_index(c: Color) -> u8 {
+    match c {
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Rgb(..) | Color::Indexed(_) | Color::Reset => 0,
     }
 }
 

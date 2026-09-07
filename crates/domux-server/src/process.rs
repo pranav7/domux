@@ -21,14 +21,19 @@ pub struct ForegroundProcess {
 }
 
 pub trait ProcessInspector: Send + Sync {
-    fn foreground(&self, pty_fd: RawFd) -> Option<ForegroundProcess>;
+    /// Who is in the foreground of the pane behind `pty_fd`. `None` for the descriptor
+    /// means the pane has no PTY to ask - a fake one in a test - rather than a descriptor
+    /// the caller invented, so the real inspector answers `None` and never signals a
+    /// number that belongs to something else.
+    fn foreground(&self, pty_fd: Option<RawFd>) -> Option<ForegroundProcess>;
     fn cwd_of(&self, pid: u32) -> Option<PathBuf>;
 }
 
 pub struct RealInspector;
 
 impl ProcessInspector for RealInspector {
-    fn foreground(&self, pty_fd: RawFd) -> Option<ForegroundProcess> {
+    fn foreground(&self, pty_fd: Option<RawFd>) -> Option<ForegroundProcess> {
+        let pty_fd = pty_fd?;
         // Safe: tcgetpgrp only reads; a bad fd returns -1.
         let pgid = unsafe { libc::tcgetpgrp(pty_fd) };
         if pgid <= 0 {
@@ -162,7 +167,7 @@ impl FakeInspector {
 }
 
 impl ProcessInspector for FakeInspector {
-    fn foreground(&self, _pty_fd: RawFd) -> Option<ForegroundProcess> {
+    fn foreground(&self, _pty_fd: Option<RawFd>) -> Option<ForegroundProcess> {
         self.state.lock().unwrap().0.clone()
     }
     fn cwd_of(&self, _pid: u32) -> Option<PathBuf> {
@@ -208,7 +213,7 @@ mod tests {
         let inspector = RealInspector;
         let deadline = Instant::now() + Duration::from_secs(5);
         let fg = loop {
-            match inspector.foreground(fd) {
+            match inspector.foreground(Some(fd)) {
                 Some(p) if p.name == "sleep" => break p,
                 _ if Instant::now() > deadline => panic!("foreground never became sleep"),
                 _ => std::thread::sleep(Duration::from_millis(20)),
@@ -218,6 +223,14 @@ mod tests {
             inspector.cwd_of(fg.pid).map(|p| p.canonicalize().unwrap()),
             Some(canonical)
         );
+    }
+
+    /// A pane with no PTY - a fake one under the harness - has no descriptor to ask about.
+    /// The real inspector must say so rather than guess, and never signal or read a number
+    /// that belongs to something else.
+    #[test]
+    fn the_real_inspector_reports_nothing_when_there_is_no_descriptor() {
+        assert_eq!(RealInspector.foreground(None), None);
     }
 
     #[test]
@@ -235,14 +248,17 @@ mod tests {
 
     #[test]
     fn foreground_is_absent_for_a_bad_fd() {
-        assert_eq!(RealInspector.foreground(-1), None);
+        assert_eq!(RealInspector.foreground(Some(-1)), None);
     }
 
     #[test]
     fn foreground_is_absent_for_an_fd_that_is_not_a_terminal() {
         use std::os::unix::io::AsRawFd;
         let file = tempfile::NamedTempFile::new().unwrap();
-        assert_eq!(RealInspector.foreground(file.as_file().as_raw_fd()), None);
+        assert_eq!(
+            RealInspector.foreground(Some(file.as_file().as_raw_fd())),
+            None
+        );
     }
 
     #[test]
@@ -328,7 +344,7 @@ mod tests {
     #[test]
     fn fake_inspector_returns_what_it_was_told() {
         let fake = FakeInspector::default();
-        assert_eq!(fake.foreground(0), None);
+        assert_eq!(fake.foreground(None), None);
         fake.set(
             Some(ForegroundProcess {
                 pid: 42,
@@ -336,7 +352,7 @@ mod tests {
             }),
             Some(PathBuf::from("/tmp")),
         );
-        assert_eq!(fake.foreground(0).unwrap().name, "nvim");
+        assert_eq!(fake.foreground(None).unwrap().name, "nvim");
         assert_eq!(fake.cwd_of(42), Some(PathBuf::from("/tmp")));
     }
 }

@@ -268,3 +268,123 @@ fn a_title_that_sanitizes_to_nothing_leaves_the_border_unbroken() {
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 0), "┌──────────┐");
 }
+
+/// A model with one project, one workspace, one tab and one pane, plus the clients given.
+fn model_with_clients(
+    sizes: &[(&str, Size)],
+) -> (domux_core::model::Model, domux_core::ids::TabId) {
+    use domux_core::model::{ClientView, Focus, Model};
+    let mut model = Model::new(7);
+    let (_, ws, _) = model
+        .add_folder_project(std::path::PathBuf::from("/tmp/proj"))
+        .unwrap();
+    let (tab, pane, _) = model
+        .create_tab(&ws, std::path::PathBuf::from("/tmp/proj"))
+        .unwrap();
+    for (id, size) in sizes {
+        model.attach_client(ClientView {
+            id: domux_core::ids::ClientId((*id).into()),
+            size: *size,
+            caps: Default::default(),
+            workspace: ws.clone(),
+            tab: tab.clone(),
+            focus: Focus::Pane(pane.clone()),
+            sidebar_open: false,
+            overlay: None,
+            chord: None,
+            filter: String::new(),
+            last_active_seq: 0,
+        });
+    }
+    (model, tab)
+}
+
+/// Task 15 is where a drawn area stops being written by hand and starts being computed, and
+/// what it is computed from is a client's own reported size, which nothing clamps. Neither
+/// `Boxed::render` nor `render_grid` checks its area against the buffer, so an area one
+/// column too wide panics rather than clips.
+///
+/// The boundary is a client on the tab that is larger than the buffer being drawn: the pane
+/// boxes take the smallest client's size, and a view the model does not hold - which
+/// `compose` accepts, since it is public and takes the view by reference - would otherwise
+/// take that larger client's size into a buffer its own size. Every cell must land inside.
+#[test]
+fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
+    use domux_core::model::ClientView;
+    use domux_server::render::{compose, RenderInput};
+    use std::collections::HashMap;
+
+    let (model, tab) = model_with_clients(&[(
+        "c_big",
+        Size {
+            cols: 200,
+            rows: 60,
+        },
+    )]);
+    // Deliberately not attached: the view is the one being drawn, and the model holds only
+    // the larger client.
+    let view = ClientView {
+        size: Size { cols: 40, rows: 10 },
+        ..model
+            .client(&domux_core::ids::ClientId("c_big".into()))
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(view.tab, tab);
+    let panes = HashMap::new();
+    let (buffer, _) = compose(&RenderInput {
+        model: &model,
+        panes: &panes,
+        view: &view,
+        keymap: &domux_core::keymap::Keymap::defaults(),
+        now: chrono::Local::now(),
+        config_error: None,
+        hint: None,
+    });
+    assert_eq!(buffer.area, Rect::new(0, 0, 40, 10));
+    assert_eq!(
+        row(&buffer, 1).chars().next(),
+        Some('┌'),
+        "the box still starts at the workpanel's left edge"
+    );
+    assert!(
+        row(&buffer, 1).ends_with('┐'),
+        "and its right border lands on the last column of this client's own screen: {:?}",
+        row(&buffer, 1)
+    );
+}
+
+/// The mirror of the case above: the smallest client is smaller than this one, so the box
+/// stops short and the rest of the larger screen stays blank (tmux's rule).
+#[test]
+fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
+    use domux_server::render::{compose, RenderInput};
+    use std::collections::HashMap;
+
+    let (model, _) = model_with_clients(&[
+        ("c_big", Size { cols: 60, rows: 20 }),
+        ("c_small", Size { cols: 40, rows: 10 }),
+    ]);
+    let view = model
+        .client(&domux_core::ids::ClientId("c_big".into()))
+        .unwrap()
+        .clone();
+    let panes = HashMap::new();
+    let (buffer, _) = compose(&RenderInput {
+        model: &model,
+        panes: &panes,
+        view: &view,
+        keymap: &domux_core::keymap::Keymap::defaults(),
+        now: chrono::Local::now(),
+        config_error: None,
+        hint: None,
+    });
+    let top = row(&buffer, 1);
+    assert_eq!(top.chars().nth(39), Some('┐'), "{top:?}");
+    assert!(
+        top[top.char_indices().nth(40).unwrap().0..]
+            .chars()
+            .all(|c| c == ' '),
+        "everything past the smallest client's width is blank: {top:?}"
+    );
+}
