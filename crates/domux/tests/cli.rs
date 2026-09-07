@@ -9,6 +9,7 @@ use domux_core::config::Config;
 use domux_server::testing::Harness;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -171,10 +172,12 @@ async fn pane_split_read_and_send_text_act_on_the_pane_from_the_environment() {
     );
     h.frame(h.client.clone()).await;
     assert_eq!(h.pane_input(&pane), b"echo hi".to_vec());
-    h.feed_pane(pane.clone(), b"alpha\r\nbeta").await;
+    // Three lines and a read of two, so the answer tells `--lines 2` from the default: on a
+    // pane holding only two, both answers are the same text and the flag is unheld.
+    h.feed_pane(pane.clone(), b"alpha\r\nbeta\r\ngamma").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("beta"),
+        |f| f.contains("gamma"),
         Duration::from_secs(2),
     )
     .await;
@@ -184,7 +187,7 @@ async fn pane_split_read_and_send_text_act_on_the_pane_from_the_environment() {
         .output()
         .await
         .unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "alpha\nbeta\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "beta\ngamma\n");
     // No DOMUX_PANE: the split lands on the view's focused pane instead.
     let out = domux2(&h)
         .args(["pane", "split", "down"])
@@ -292,6 +295,10 @@ async fn server_start_status_and_stop_manage_a_real_server() {
     let started = cli().args(["server", "start"]).output().await.unwrap();
     let again = cli().args(["server", "start"]).output().await.unwrap();
     let status = cli().args(["server", "status"]).output().await.unwrap();
+    // Asked while the server is still up: a session of its own is what keeps it alive when
+    // the terminal that started it goes away, and a session leader's id is its own pid.
+    let pid: i32 = pid_of(&status).parse().unwrap();
+    let session = unsafe { libc::getsid(pid) };
     let log = cli().args(["server", "log"]).output().await.unwrap();
     let stopped = cli().args(["server", "stop"]).output().await.unwrap();
     let stopped_again = cli().args(["server", "stop"]).output().await.unwrap();
@@ -312,6 +319,10 @@ async fn server_start_status_and_stop_manage_a_real_server() {
         "{text}"
     );
     assert!(text.contains("Clients: 0"), "{text}");
+    assert_eq!(
+        session, pid,
+        "the server did not leave this terminal's session"
+    );
     assert!(
         text.contains(&format!("Socket  {}", socket.display())),
         "{text}"
@@ -329,10 +340,13 @@ async fn server_start_status_and_stop_manage_a_real_server() {
     assert!(!socket.exists(), "the stop took the socket with it");
 }
 
+/// Runs the client on a real pty, waits for `wants` to show on the screen, sends leader d and
+/// waits for it to exit. Hands back everything the client wrote and how it ended.
 /// Principle 13: the client's own terminal handling is only proved on a real terminal.
-#[tokio::test]
-async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
-    let h = Harness::start(Config::default(), 40, 10).await;
+async fn attach_and_detach_in_a_pty(
+    cmd: CommandBuilder,
+    wants: &str,
+) -> (Vec<u8>, portable_pty::ExitStatus) {
     let pty = native_pty_system();
     let pair = pty
         .openpty(PtySize {
@@ -342,17 +356,12 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
             pixel_height: 0,
         })
         .unwrap();
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux2"));
-    cmd.arg("attach");
-    cmd.env("DOMUX_SOCKET", h.socket_path());
-    cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("TMUX");
     let mut child = pair.slave.spawn_command(cmd).unwrap();
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().unwrap();
     let mut writer = pair.master.take_writer().unwrap();
-    // The pty only reads on a blocking thread; the test itself never blocks, so the
-    // harness server on this runtime keeps drawing.
+    // The pty only reads on a blocking thread; the test itself never blocks, so a harness
+    // server on this runtime keeps drawing.
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -363,17 +372,17 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
         }
     });
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         while let Ok(chunk) = rx.try_recv() {
             output.extend(chunk);
         }
-        if visible(&output).contains("┌ sh") {
+        if visible(&output).contains(wants) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "no screen within 10 s:\n{}",
+            "no screen showing {wants:?} within 20 s:\n{}",
             visible(&output)
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -408,6 +417,18 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
             }
         }
     }
+    (output, status)
+}
+
+#[tokio::test]
+async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux2"));
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("TMUX");
+    let (output, status) = attach_and_detach_in_a_pty(cmd, "\u{250c} sh").await;
     assert!(status.success(), "{status:?}");
     // The lifecycle is in the sequences themselves, so those are read raw.
     let raw = String::from_utf8_lossy(&output);
@@ -418,6 +439,61 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
         text.trim_end()
             .ends_with("Detached. Run domux2 to reattach."),
         "{text}"
+    );
+}
+
+/// The task's own title, both halves: bare `domux2` attaches, and starts the server when the
+/// socket is absent. Nothing points this one at a harness - the socket is where a real run
+/// looks for it, and the server that answers is a real `server run` this command started.
+#[tokio::test]
+async fn bare_domux2_starts_the_server_when_the_socket_is_absent_and_attaches_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path().join("run");
+    let state = dir.path().join("state");
+    let config = dir.path().join("domux.toml");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(&config, "[terminal]\nshell = \"/bin/sh\"\n").unwrap();
+    let socket = run.join("domux2.sock");
+    assert!(!socket.exists(), "nothing is listening yet");
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux2"));
+    cmd.env("XDG_RUNTIME_DIR", &run);
+    cmd.env("DOMUX_STATE_DIR", &state);
+    cmd.env("DOMUX_CONFIG_FILE", &config);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("DOMUX_SOCKET");
+    cmd.env_remove("TMUX");
+    // A real shell's name is the machine's business (/bin/sh is bash on macOS and dash on
+    // most Linux), so this waits for the pane box rather than for a title.
+    let (output, status) = attach_and_detach_in_a_pty(cmd, "\u{250c}").await;
+    // The server outlives the client, so it is stopped before any assertion can fail and
+    // leave it running on a socket in a deleted temp directory.
+    let stopped = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("XDG_RUNTIME_DIR", &run)
+        .env("DOMUX_STATE_DIR", &state)
+        .env("DOMUX_CONFIG_FILE", &config)
+        .env_remove("DOMUX_SOCKET")
+        .env_remove("TMUX")
+        .args(["server", "stop"])
+        .output()
+        .await
+        .unwrap();
+    assert!(status.success(), "{status:?}");
+    let text = visible(&output);
+    assert!(
+        text.trim_end()
+            .ends_with("Detached. Run domux2 to reattach."),
+        "{text}"
+    );
+    // The start behind an attach is silent: "Attach with domux2" would name an action already
+    // underway, and this is the first command a new user types.
+    assert!(
+        !text.contains("Server started"),
+        "the cold start named an action already underway:\n{text}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&stopped.stderr).trim(),
+        "Server stopped.",
+        "bare domux2 left a server running for the next attach"
     );
 }
 
@@ -446,7 +522,46 @@ async fn server_start_says_why_the_server_could_not_start() {
     assert!(said.contains("It said: "), "{said}");
     assert!(said.contains("Not a directory"), "{said}");
     let log = std::fs::read_to_string(state.join("server.log")).expect("the log was written");
-    assert!(log.contains("Not a directory"), "{log}");
+    // Two lines, and each holds one half of the fix. Tracing's carries a timestamp and a
+    // level, so the server logged its own failure; the bare one is the child's stderr as the
+    // child wrote it, which is the half that survives a failure before the server's logging
+    // is up, a panic, and anything the runtime prints.
+    assert!(
+        log.lines()
+            .any(|l| l.contains("ERROR") && l.contains("Not a directory")),
+        "the server logged its own failure:\n{log}"
+    );
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("create ") && l.contains("Not a directory")),
+        "the child's stderr is the log:\n{log}"
+    );
+}
+
+/// A control server that answers one call with `reply` and hands back the request the CLI
+/// sent, so a test can read the method and the params rather than only the effect. The CLI
+/// probes a socket with a connect and a drop before every call, so a connection that carries
+/// no request is skipped rather than answered.
+fn one_call(socket: &Path, reply: serde_json::Value) -> tokio::task::JoinHandle<serde_json::Value> {
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut line = String::new();
+            if tokio::io::BufReader::new(r)
+                .read_line(&mut line)
+                .await
+                .unwrap_or(0)
+                == 0
+            {
+                continue;
+            }
+            let response = serde_json::json!({ "id": 1, "result": reply });
+            let _ = w.write_all(format!("{response}\n").as_bytes()).await;
+            return serde_json::from_str(&line).unwrap();
+        }
+    })
 }
 
 /// The one case the liveness probe cannot rule out: a server that accepts the connection and
@@ -615,7 +730,11 @@ async fn server_restart_replaces_a_running_server_and_starts_a_stopped_one() {
         "{}",
         say(&again)
     );
-    assert!(second.status.success(), "the restart started one: {}", say(&second));
+    assert!(
+        second.status.success(),
+        "the restart started one: {}",
+        say(&second)
+    );
     assert_ne!(pid_of(&first), pid_of(&second), "the restart replaced it");
     assert_eq!(say(&stopped), "Server stopped.");
 }
@@ -681,5 +800,300 @@ async fn pane_read_prints_nothing_for_a_pane_with_nothing_on_it() {
         out.stdout.is_empty(),
         "{:?}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// Runs one subcommand against a server that answers `reply`, and hands back the request it
+/// sent. Every location variable is cleared first, so a case that wants one sets it itself.
+async fn request_for(
+    socket: &Path,
+    env: &[(&str, &str)],
+    args: &[&str],
+    reply: serde_json::Value,
+) -> serde_json::Value {
+    let server = one_call(socket, reply);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+    c.env("DOMUX_SOCKET", socket)
+        .env_remove("DOMUX_TAB")
+        .env_remove("DOMUX_PANE")
+        .env_remove("DOMUX_WORKSPACE")
+        .env_remove("TMUX");
+    for (name, value) in env {
+        c.env(name, value);
+    }
+    let out = c.args(args).output().await.unwrap();
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .unwrap_or_else(|_| panic!("{args:?} never called the server"))
+        .unwrap()
+}
+
+/// One subcommand, the shell it is typed in, and the call it must make.
+struct Case {
+    args: Vec<&'static str>,
+    env: &'static [(&'static str, &'static str)],
+    method: &'static str,
+    params: serde_json::Value,
+    /// What the server answers. An empty object is enough for every subcommand that reads
+    /// nothing back; the two that read a typed result say so with `answered`.
+    reply: serde_json::Value,
+}
+
+fn case(
+    args: &[&'static str],
+    env: &'static [(&'static str, &'static str)],
+    method: &'static str,
+    params: serde_json::Value,
+) -> Case {
+    Case {
+        args: args.to_vec(),
+        env,
+        method,
+        params,
+        reply: serde_json::json!({}),
+    }
+}
+
+impl Case {
+    fn answered(mut self, reply: serde_json::Value) -> Case {
+        self.reply = reply;
+        self
+    }
+}
+
+/// A shell inside a pane, and one outside every tab.
+const IN_A_TAB: &[(&str, &str)] = &[("DOMUX_TAB", "t_1"), ("DOMUX_WORKSPACE", "w_1")];
+const IN_A_PANE: &[(&str, &str)] = &[("DOMUX_PANE", "p_1")];
+const ANYWHERE: &[(&str, &str)] = &[];
+
+/// Every subcommand is one API call, and the method name and the params are the whole of what
+/// it sends. A typo in one of these literals reaches a user as `not_found` at a terminal, so
+/// each one is read off the wire here rather than trusted.
+#[tokio::test]
+async fn every_subcommand_sends_the_method_and_the_params_it_claims() {
+    let dir = tempfile::tempdir().unwrap();
+    let cases = vec![
+        case(
+            &["tab", "create"],
+            IN_A_TAB,
+            "tab.create",
+            serde_json::json!({ "workspace": "w_1" }),
+        ),
+        case(
+            &["tab", "name", "release"],
+            IN_A_TAB,
+            "tab.rename",
+            serde_json::json!({ "tab": "t_1", "name": "release" }),
+        ),
+        case(
+            &["tab", "clear-name"],
+            IN_A_TAB,
+            "tab.clear_name",
+            serde_json::json!({ "tab": "t_1" }),
+        ),
+        case(
+            &["tab", "close"],
+            IN_A_TAB,
+            "tab.close",
+            serde_json::json!({ "tab": "t_1" }),
+        ),
+        case(
+            &["tab", "select", "2"],
+            IN_A_TAB,
+            "tab.select",
+            serde_json::json!({ "tab": "2" }),
+        ),
+        case(
+            &["pane", "split", "left"],
+            IN_A_PANE,
+            "pane.split",
+            serde_json::json!({ "pane": "p_1", "dir": "left" }),
+        ),
+        case(
+            &["pane", "close"],
+            IN_A_PANE,
+            "pane.close",
+            serde_json::json!({ "pane": "p_1" }),
+        ),
+        case(
+            &["pane", "focus"],
+            IN_A_PANE,
+            "pane.focus",
+            serde_json::json!({ "pane": "p_1" }),
+        ),
+        // The argument names a pane other than this one, and it wins over the environment.
+        case(
+            &["pane", "focus", "p_9"],
+            IN_A_PANE,
+            "pane.focus",
+            serde_json::json!({ "pane": "p_9" }),
+        ),
+        case(
+            &["pane", "zoom"],
+            IN_A_PANE,
+            "pane.zoom",
+            serde_json::json!({ "pane": "p_1" }),
+        ),
+        case(
+            &["pane", "read", "--lines", "7"],
+            IN_A_PANE,
+            "pane.read",
+            serde_json::json!({ "pane": "p_1", "lines": 7 }),
+        )
+        .answered(serde_json::json!({ "text": "" })),
+        case(
+            &["pane", "send-text", "echo hi"],
+            IN_A_PANE,
+            "pane.send_text",
+            serde_json::json!({ "pane": "p_1", "text": "echo hi" }),
+        ),
+        case(
+            &["pane", "send-key", "C-c"],
+            IN_A_PANE,
+            "pane.send_key",
+            serde_json::json!({ "pane": "p_1", "key": "C-c" }),
+        ),
+        case(
+            &["config", "reload"],
+            ANYWHERE,
+            "config.reload",
+            serde_json::json!({}),
+        )
+        .answered(serde_json::json!({ "error": null, "warnings": [] })),
+        case(
+            &["events", "tab.*", "pane.split"],
+            ANYWHERE,
+            "events.subscribe",
+            serde_json::json!({ "filter": ["tab.*", "pane.split"] }),
+        ),
+        case(
+            &["api", "focus.left"],
+            ANYWHERE,
+            "focus.left",
+            serde_json::json!({}),
+        ),
+        case(
+            &["api", "pane.resize", "{\"pane\":\"p_2\",\"delta\":3}"],
+            ANYWHERE,
+            "pane.resize",
+            serde_json::json!({ "pane": "p_2", "delta": 3 }),
+        ),
+        case(
+            &["server", "stop"],
+            ANYWHERE,
+            "server.stop",
+            serde_json::json!({}),
+        ),
+    ];
+
+    for (n, c) in cases.into_iter().enumerate() {
+        let socket = dir.path().join(format!("s{n}.sock"));
+        let request = request_for(&socket, c.env, &c.args, c.reply).await;
+        assert_eq!(request["method"], c.method, "{:?}", c.args);
+        assert_eq!(request["params"], c.params, "{:?}", c.args);
+    }
+}
+
+/// A tab command outside a pane acts on the view's own tab, which is what the server reads a
+/// null `tab` as. An absent variable must arrive as null rather than as a name no object has.
+#[tokio::test]
+async fn a_shell_outside_a_pane_sends_no_location_at_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let request = request_for(
+        &dir.path().join("s.sock"),
+        &[("DOMUX_TAB", ""), ("DOMUX_WORKSPACE", "")],
+        &["tab", "create"],
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(request["params"], serde_json::json!({ "workspace": null }));
+    let request = request_for(
+        &dir.path().join("s2.sock"),
+        &[],
+        &["tab", "close"],
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(request["params"], serde_json::json!({ "tab": null }));
+}
+
+/// A reload whose file did not load is a failure of the reload, not a cheerful line over a
+/// config that never applied. Warnings are the server's own, and are not this CLI's to drop.
+#[tokio::test]
+async fn config_reload_reports_warnings_and_fails_when_the_file_did_not_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let server = one_call(
+        &socket,
+        serde_json::json!({
+            "error": "domux.toml line 3: unknown key clock",
+            "warnings": ["unknown table [worktrees] (line 1) is ignored"],
+        }),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env_remove("TMUX")
+        .args(["config", "reload"])
+        .output()
+        .await
+        .unwrap();
+    server.await.unwrap();
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(
+        said.contains("warning: unknown table [worktrees] (line 1) is ignored"),
+        "{said}"
+    );
+    assert!(
+        said.contains("domux.toml line 3: unknown key clock"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("Config reloaded."),
+        "a config that did not apply was not reloaded: {said}"
+    );
+    assert!(out.stdout.is_empty(), "a message is not data");
+
+    let socket = dir.path().join("s2.sock");
+    let server = one_call(
+        &socket,
+        serde_json::json!({ "error": null, "warnings": [] }),
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env_remove("TMUX")
+        .args(["config", "reload"])
+        .output()
+        .await
+        .unwrap();
+    server.await.unwrap();
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "a message is not data");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).trim(),
+        "Config reloaded."
+    );
+}
+
+/// `events` needs a server, and says the one thing every subcommand says when there is none.
+#[tokio::test]
+async fn events_without_a_server_says_the_server_is_not_running() {
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", "/nonexistent/sock")
+        .env_remove("TMUX")
+        .args(["events", "tab.*"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr).trim(),
+        "The server is not running. Start it with domux2 server start."
     );
 }

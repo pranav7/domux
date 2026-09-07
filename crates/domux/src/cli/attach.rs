@@ -5,12 +5,12 @@ use domux_client::{attach, control, AttachOutcome};
 use domux_core::names::BIN_NAME;
 use std::ffi::OsString;
 
-/// Bare `domux2`, which is how the attach is normally typed. Inside a pane it refuses: a
+/// The bare command, which is how the attach is normally typed. Inside a pane it refuses: a
 /// second whole screen drawn inside one pane of the screen it is drawing takes the keys from
 /// the outer client (principle 1) and puts a second accent border on the screen (principle
 /// 2). Nobody types it there wanting that; they type it out of habit.
 ///
-/// `domux2 attach` typed in full still attaches, and every other subcommand is unaffected:
+/// `attach` typed in full still attaches, and every other subcommand is unaffected:
 /// `DOMUX_SOCKET` is exported into every pane so that a shell there can reach its own server,
 /// which is the whole reason the variable exists.
 pub async fn run_bare() -> anyhow::Result<()> {
@@ -24,8 +24,8 @@ pub async fn run_bare() -> anyhow::Result<()> {
 pub async fn run() -> anyhow::Result<()> {
     let socket = socket();
     if !control::is_live(&socket).await {
-        // The attach that follows is the answer, so the start says nothing: "Attach with
-        // domux2" would name an action already underway.
+        // The attach that follows is the answer, so the start says nothing: telling the
+        // reader to attach would name an action already underway.
         super::server::start(super::server::Announce::No).await?;
     }
     // `attach` returns with the terminal already restored, so the line below lands on a
@@ -66,6 +66,39 @@ fn inside_a_pane(socket_var: Option<OsString>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_detach_and_a_stopped_server_are_endings_the_reader_is_told_about() {
+        assert_eq!(
+            ending(AttachOutcome::Detached("detached".into())).unwrap(),
+            "Detached. Run domux2 to reattach."
+        );
+        assert_eq!(
+            ending(AttachOutcome::ServerStopped).unwrap(),
+            "The server stopped."
+        );
+    }
+
+    #[test]
+    fn a_lost_connection_and_a_refusal_are_failures_with_a_next_action() {
+        let lost = ending(AttachOutcome::ConnectionLost)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            lost,
+            "Lost the connection to the server. Run domux2 server status."
+        );
+        // The server's own sentence, which already names both versions and the way out.
+        let refused = ending(AttachOutcome::Refused(
+            "the server is domux 2.0.0 and this client is 1.9.0".into(),
+        ))
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            refused,
+            "the server is domux 2.0.0 and this client is 1.9.0"
+        );
+    }
 
     #[test]
     fn a_shell_is_inside_a_pane_only_when_the_socket_variable_has_a_value() {

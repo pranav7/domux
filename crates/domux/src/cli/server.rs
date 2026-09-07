@@ -58,8 +58,8 @@ pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
 
 /// Whether the start reports itself. `server start` typed on its own says what it did,
 /// because the command has nothing else to show for itself. The start behind an attach says
-/// nothing: the screen that follows is the answer, and "Attach with domux2" would name an
-/// action already underway.
+/// nothing: the screen that follows is the answer, and telling the reader to attach would
+/// name an action already underway.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Announce {
     Yes,
@@ -89,15 +89,9 @@ pub async fn start(announce: Announce) -> anyhow::Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(sink));
     // Safe: `setsid` has no preconditions in a freshly forked child, and both calls in the
-    // closure are async-signal-safe. A child that could not leave this terminal's session
-    // would die with the terminal, so the failure ends the start rather than hiding.
+    // closure are async-signal-safe.
     unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
+        cmd.pre_exec(|| enter_new_session(|| libc::setsid()));
     }
     let mut child = cmd.spawn()?;
     let deadline = Instant::now() + SETTLE;
@@ -230,6 +224,16 @@ async fn status() -> anyhow::Result<()> {
     print_line(&format!("Clients: {}", info.clients.len()))
 }
 
+/// Puts the child in its own session, so it outlives the terminal that started it. A child
+/// that could not leave this terminal's session would die with the terminal, so a failure
+/// ends the start rather than passing for one.
+fn enter_new_session(setsid: impl Fn() -> i32) -> std::io::Result<()> {
+    if setsid() == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// The server's start time as a person reads it. The clock's own value carries microseconds,
 /// which read as machine output in a human report. A value this build cannot parse is printed
 /// exactly as it arrived rather than guessed at.
@@ -240,13 +244,18 @@ fn human_time(started_at: &str) -> String {
     }
 }
 
-/// The pane ids of two servers must not collide, so the seed is drawn fresh. A machine
-/// that cannot answer for eight random bytes is reported, never seeded with zeroes.
+/// The pane ids of two servers must not collide, so the seed is drawn fresh.
 fn id_seed() -> anyhow::Result<u64> {
+    id_seed_from(Path::new("/dev/urandom"))
+}
+
+/// A machine that cannot answer for eight random bytes is reported, never seeded with zeroes:
+/// two servers seeded the same way would hand out the same pane ids.
+fn id_seed_from(source: &Path) -> anyhow::Result<u64> {
     let mut bytes = [0u8; 8];
-    std::fs::File::open("/dev/urandom")
+    File::open(source)
         .and_then(|mut f| f.read_exact(&mut bytes))
-        .map_err(|e| anyhow::anyhow!("could not read /dev/urandom for an id seed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("could not read {} for an id seed: {e}", source.display()))?;
     Ok(u64::from_le_bytes(bytes))
 }
 
@@ -303,6 +312,24 @@ async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_id_seed_is_the_bytes_it_read_and_a_source_it_cannot_read_is_a_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let eight = dir.path().join("eight");
+        std::fs::write(&eight, [1u8, 0, 0, 0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(id_seed_from(&eight).unwrap(), 1);
+        let short = dir.path().join("short");
+        std::fs::write(&short, [1u8, 2, 3]).unwrap();
+        assert!(id_seed_from(&short).is_err(), "three bytes are not a seed");
+        assert!(id_seed_from(&dir.path().join("gone")).is_err());
+    }
+
+    #[test]
+    fn a_session_the_child_could_not_leave_ends_the_start() {
+        assert!(enter_new_session(|| -1).is_err());
+        assert!(enter_new_session(|| 4711).is_ok());
+    }
 
     #[test]
     fn a_start_time_is_shown_to_the_second_and_an_unreadable_one_exactly_as_it_arrived() {
