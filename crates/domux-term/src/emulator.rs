@@ -78,13 +78,21 @@ pub trait Emulator: Send {
     /// is `snapshot_grid`.
     fn snapshot_grid_at(&mut self, offset_from_bottom: usize, out: &mut Grid);
 
-    /// The text between two positions, inclusive, rows joined with `\n`, each row's trailing
-    /// blanks removed. A wide grapheme appears once, from either of the two cells it covers.
-    /// Blank rows at the end of the range add nothing, so reading past the end of the text
-    /// does not produce trailing blank lines, while a blank row between two rows of text
-    /// still ends its line. Positions past the end clamp, and a reversed range reads as the
-    /// forward one: the endpoints are swapped here, so no caller has to order them.
-    fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String;
+    /// The text between two positions, inclusive, or `None` when the read failed.
+    ///
+    /// Rows are joined with `\n` and each row's trailing blanks are removed. A line the
+    /// terminal soft-wrapped comes back as the one line it was written as; a break the
+    /// writer sent stays a break, so a wrapped URL reads as one URL. A wide grapheme appears
+    /// once, from either of the two cells it covers. Blank rows at the end of the range add
+    /// nothing, so reading past the end of the text does not produce trailing blank lines,
+    /// while a blank row between two rows of text still ends its line. Positions past the
+    /// end clamp, and a reversed range reads as the forward one: the endpoints are swapped
+    /// here, so no caller has to order them.
+    ///
+    /// `Some("")` is a range that holds no text and `None` is the emulator saying it could
+    /// not read the range at all. No caller may collapse the two: copying nothing because a
+    /// read failed, with nothing said, is the worst answer this method can give.
+    fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> Option<String>;
 
     /// The title the program set with OSC 0 or OSC 2, if any.
     fn title(&self) -> Option<String>;

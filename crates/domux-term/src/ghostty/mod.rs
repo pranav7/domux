@@ -553,11 +553,11 @@ impl Emulator for GhosttyEmulator {
         self.with_viewport_at(row, |s| s.fill_grid_from_render_state(out));
     }
 
-    fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> String {
+    fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> Option<String> {
         let rows = self.size.rows as usize;
         let cols = self.size.cols;
         if rows == 0 || cols == 0 {
-            return String::new();
+            return None;
         }
         // Rows `0..scrollback_len` are history and the `rows` after them are the screen, so
         // this is the last row that exists. `ghostty_terminal_grid_ref` rejects a point past
@@ -582,7 +582,7 @@ impl Emulator for GhosttyEmulator {
         };
         let (Some(start_ref), Some(end_ref)) = (self.grid_ref_at(start), self.grid_ref_at(end))
         else {
-            return String::new();
+            return None;
         };
 
         // Both endpoints are inclusive and `rectangle: false` means a linear selection, which
@@ -593,14 +593,14 @@ impl Emulator for GhosttyEmulator {
             end: end_ref,
             rectangle: false,
         };
-        // `unwrap: false` keeps one output line per grid row, which is what the trait
-        // documents. Ghostty's own clipboard uses `unwrap: true` to rejoin a soft-wrapped
-        // line; whether copy mode should follow it is a decision for the copy mode task, not
-        // a default to slip in here.
+        // `unwrap: true` rejoins the rows a soft-wrapped line was drawn as, which is what
+        // the trait documents and what ghostty's own clipboard does: a break the writer sent
+        // is a line, a break the screen width caused is not. Ruled with copy mode in front of
+        // it (task 19): a user who selects a wrapped URL wants one URL back.
         let options = ffi::GhosttyTerminalSelectionFormatOptions {
             size: std::mem::size_of::<ffi::GhosttyTerminalSelectionFormatOptions>(),
             emit: ffi::GhosttyFormatterFormat_GHOSTTY_FORMATTER_FORMAT_PLAIN,
-            unwrap: false,
+            unwrap: true,
             trim: true,
             selection: &selection,
         };
@@ -620,9 +620,12 @@ impl Emulator for GhosttyEmulator {
         if !matches!(
             rc,
             ffi::GhosttyResult_GHOSTTY_SUCCESS | ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE
-        ) || needed == 0
-        {
-            return String::new();
+        ) {
+            return None;
+        }
+        // Zero bytes is the answer for a range of blank cells, not a failure to read one.
+        if needed == 0 {
+            return Some(String::new());
         }
         let mut buf = vec![0u8; needed];
         let mut written: usize = 0;
@@ -636,11 +639,12 @@ impl Emulator for GhosttyEmulator {
             )
         };
         if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS {
-            return String::new();
+            return None;
         }
         buf.truncate(written);
-        // Bytes that are not UTF-8 are not a fact domux can report, so they read as absent.
-        String::from_utf8(buf).unwrap_or_default()
+        // Bytes that are not UTF-8 are not a fact domux can report, so they read as absent
+        // rather than as the empty text of a range that held nothing.
+        String::from_utf8(buf).ok()
     }
 
     fn title(&self) -> Option<String> {

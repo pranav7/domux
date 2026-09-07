@@ -165,16 +165,21 @@ pub fn read(ctx: &mut Ctx, p: PaneReadParams) -> Result<Value, ApiError> {
     let size = rt.emulator.size();
     let end = rt.emulator.scrollback_len() + rt.emulator.cursor().row as usize;
     let lines = p.lines.unwrap_or(size.rows as usize).max(1).min(end + 1);
-    let text = rt.emulator.text_in_range(
-        ScrollbackPos {
-            row: end + 1 - lines,
-            col: 0,
-        },
-        ScrollbackPos {
-            row: end,
-            col: size.cols.saturating_sub(1),
-        },
-    );
+    // A read the emulator could not make is reported as the failure it is. Empty text is a
+    // pane with nothing on it, and the caller may not be left to guess which it got.
+    let text = rt
+        .emulator
+        .text_in_range(
+            ScrollbackPos {
+                row: end + 1 - lines,
+                col: 0,
+            },
+            ScrollbackPos {
+                row: end,
+                col: size.cols.saturating_sub(1),
+            },
+        )
+        .ok_or_else(|| ApiError::internal(format!("pane {pane} could not be read")))?;
     ok(PaneReadResult {
         text: text.trim_end_matches('\n').to_string(),
     })

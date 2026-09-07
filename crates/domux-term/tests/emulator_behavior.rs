@@ -39,6 +39,14 @@ fn text_of_row(e: &mut dyn Emulator, row: u16) -> String {
     row_text(&g, row)
 }
 
+/// `text_in_range`, asserting that the read itself worked. `None` is the emulator saying it
+/// could not read the range, which is a different answer from empty text - the test below
+/// that is about that difference calls `text_in_range` directly.
+fn text(e: &mut dyn Emulator, start: ScrollbackPos, end: ScrollbackPos) -> String {
+    e.text_in_range(start, end)
+        .expect("the emulator could not read the range")
+}
+
 fn responses(e: &mut dyn Emulator) -> Vec<u8> {
     let mut out = Vec::new();
     e.take_responses(&mut out);
@@ -217,13 +225,15 @@ fn text_in_range_joins_rows_with_newlines_and_trims_trailing_blanks() {
     for i in 0..6 {
         e.feed(format!("line{i}\r\n").as_bytes());
     }
-    let text = e.text_in_range(
+    let joined = text(
+        &mut e,
         ScrollbackPos { row: 1, col: 2 },
         ScrollbackPos { row: 3, col: 1 },
     );
-    assert_eq!(text, "ne1\nline2\nli");
+    assert_eq!(joined, "ne1\nline2\nli");
     // Row `scrollback_len()` is the first visible row, so row 4 is the live screen's top row.
-    let whole_row = e.text_in_range(
+    let whole_row = text(
+        &mut e,
         ScrollbackPos { row: 4, col: 0 },
         ScrollbackPos { row: 4, col: 9 },
     );
@@ -315,14 +325,16 @@ fn text_in_range_spans_more_rows_than_the_screen_and_clamps_past_the_end() {
     // Seven rows exist: line0 to line5 in rows 0 to 5, then the blank row the cursor sits on.
     // A position past the end clamps onto the last row, and the blank row it lands on adds
     // nothing: selecting past the end of the text does not copy a phantom blank line.
-    let all = e.text_in_range(
+    let all = text(
+        &mut e,
         ScrollbackPos { row: 0, col: 0 },
         ScrollbackPos { row: 99, col: 99 },
     );
     assert_eq!(all, "line0\nline1\nline2\nline3\nline4\nline5");
     // The same range stopping on the last row of text reads the same.
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 0, col: 0 },
             ScrollbackPos { row: 5, col: 9 }
         ),
@@ -336,7 +348,8 @@ fn text_in_range_keeps_a_blank_row_inside_the_range_and_drops_trailing_ones() {
     e.feed(b"line0\r\n\r\nline2\r\n");
     // A blank row between two rows of text still ends its line.
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 0, col: 0 },
             ScrollbackPos { row: 3, col: 9 }
         ),
@@ -349,7 +362,8 @@ fn text_in_range_reads_a_whole_wide_grapheme_from_either_of_its_cells() {
     let mut e = make(10, 3);
     e.feed("a\u{6f22}b".as_bytes());
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 0, col: 0 },
             ScrollbackPos { row: 0, col: 9 }
         ),
@@ -358,14 +372,16 @@ fn text_in_range_reads_a_whole_wide_grapheme_from_either_of_its_cells() {
     // Column 1 holds the grapheme and column 2 its zero-width spacer. Either cell reads as
     // the whole grapheme, never as half of one and never as empty.
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 0, col: 1 },
             ScrollbackPos { row: 0, col: 1 }
         ),
         "\u{6f22}"
     );
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 0, col: 2 },
             ScrollbackPos { row: 0, col: 2 }
         ),
@@ -386,14 +402,16 @@ fn text_in_range_reads_a_reversed_range_as_the_forward_one() {
     // Reversed by row, and reversed by column within one row. A drag upward or leftward
     // produces exactly these, so both read as the range with its endpoints swapped.
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 3, col: 0 },
             ScrollbackPos { row: 1, col: 0 }
         ),
         "line1\nline2\nl"
     );
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 1, col: 4 },
             ScrollbackPos { row: 1, col: 1 }
         ),
@@ -404,14 +422,16 @@ fn text_in_range_reads_a_reversed_range_as_the_forward_one() {
     // asserted against the text, not against each other, so neither can pass by both being
     // empty.
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 100, col: 0 },
             ScrollbackPos { row: 200, col: 9 },
         ),
         "tail"
     );
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 100, col: 9 },
             ScrollbackPos { row: 200, col: 0 },
         ),
@@ -428,7 +448,8 @@ fn text_in_range_reads_the_screen_when_there_is_no_scrollback() {
     e.feed(b"hi");
     assert_eq!(e.scrollback_len(), 0);
     assert_eq!(
-        e.text_in_range(
+        text(
+            &mut e,
             ScrollbackPos { row: 0, col: 0 },
             ScrollbackPos { row: 2, col: 9 }
         ),
@@ -445,7 +466,8 @@ fn text_in_range_reads_the_screen_when_there_is_no_scrollback() {
     assert_eq!(alt.scrollback_len(), 0);
     // The cursor kept its row, so the alternate screen holds two blank rows then the text.
     assert_eq!(
-        alt.text_in_range(
+        text(
+            &mut alt,
             ScrollbackPos { row: 0, col: 0 },
             ScrollbackPos { row: 2, col: 9 }
         ),
@@ -461,7 +483,8 @@ fn reading_the_scrollback_leaves_the_live_screen_where_it_was() {
     }
     let mut g = Grid::new(e.size());
     e.snapshot_grid_at(4, &mut g);
-    e.text_in_range(
+    text(
+        &mut e,
         ScrollbackPos { row: 0, col: 0 },
         ScrollbackPos { row: 2, col: 9 },
     );
@@ -469,4 +492,49 @@ fn reading_the_scrollback_leaves_the_live_screen_where_it_was() {
     assert_eq!(row_text(&g, 0), "line4");
     assert_eq!(row_text(&g, 1), "line5");
     assert_eq!(e.cursor().row, 2);
+}
+
+#[test]
+fn text_in_range_rejoins_a_soft_wrapped_line() {
+    let mut e = make(10, 3);
+    // Fifteen cells of text on a ten-column screen: the terminal broke the line, the writer
+    // did not. Copying it back has to give the line that was written, not the two rows it
+    // was drawn as - a wrapped URL pastes as one URL.
+    e.feed(b"abcdefghijklmno\r\nend");
+    assert_eq!(
+        text(
+            &mut e,
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 2, col: 9 }
+        ),
+        "abcdefghijklmno\nend"
+    );
+}
+
+/// The two answers a caller must not collapse: a range that holds no text reads as empty
+/// text, and a read that could not happen reads as absent. Copy mode tells them apart -
+/// one leaves the clipboard alone and says the selection was blank, the other says the read
+/// failed - and it can only do that if the emulator does.
+#[test]
+fn text_in_range_reads_a_blank_range_as_empty_text_and_a_failed_read_as_absent() {
+    let mut e = make(10, 3);
+    e.feed(b"hi");
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 1, col: 0 },
+            ScrollbackPos { row: 2, col: 9 }
+        ),
+        Some(String::new()),
+        "blank rows hold no text, and that is an answer"
+    );
+    // A screen with no cells cannot be read at all. The empty string would be a fabricated
+    // answer here: nothing was read, so nothing is reported.
+    e.resize(Size { cols: 0, rows: 0 });
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 0, col: 0 },
+            ScrollbackPos { row: 0, col: 0 }
+        ),
+        None
+    );
 }
