@@ -6,6 +6,7 @@
 //! and everything else reaches the pane's emulator unchanged. The leader pressed twice sends
 //! the leader itself, so a program that wants `C-a` can still have it.
 
+use crate::client::Hint;
 use crate::copy_mode::{self, CopyOutcome};
 use crate::core::Core;
 use domux_core::api::Method;
@@ -103,6 +104,13 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
                 CopyOutcome::Copy(text) => {
                     if let Some(conn) = core.clients.get(client) {
                         let _ = conn.tx.try_send(ServerMsg::Clipboard(text));
+                    }
+                    leave_copy_mode(core, &pane);
+                }
+                CopyOutcome::NotCopied(why) => {
+                    // An action hint: it answers this key and is gone on the next one.
+                    if let Some(conn) = core.clients.get_mut(client) {
+                        conn.hint = Some(Hint::action(why));
                     }
                     leave_copy_mode(core, &pane);
                 }

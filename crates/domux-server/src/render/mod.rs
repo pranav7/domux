@@ -144,12 +144,10 @@ pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<Cursor
         let zoomed = tab.zoomed.as_ref() == Some(&pane_id);
         let copy = runtime.and_then(|r| r.copy.as_ref());
         let exited = runtime.and_then(|r| r.exited);
-        let flag_text = flag(
-            zoomed,
-            copy.map(|c| c.offset),
-            exited,
-            runtime.map(|r| r.emulator.scrollback_len()).unwrap_or(0),
-        );
+        // The rows copy mode may walk, which is not the same question as how many rows the
+        // emulator is holding: see `copy_mode::history`.
+        let history = runtime.map(crate::copy_mode::history).unwrap_or(0);
+        let flag_text = flag(zoomed, copy.map(|c| c.offset), exited, history);
         let title = pane.command.clone().unwrap_or_default();
         let inner = Boxed {
             title: &title,
@@ -158,7 +156,7 @@ pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<Cursor
         }
         .render(to_rect(rect), buf);
         if let Some(rt) = runtime {
-            let selection = copy.and_then(|c| c.selection());
+            let selection = copy.and_then(|c| c.selection_at(history));
             render_grid(&rt.grid, selection.as_ref(), inner, buf);
             if focused {
                 let c = match copy {

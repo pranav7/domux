@@ -308,6 +308,11 @@ impl PaneRuntime {
         }
         let _ = self.pty.resize(size);
         self.emulator.resize(size);
+        // Copy mode is measured in the pane's screen, so it follows the screen: a cursor left
+        // outside it would stop being drawn, and `$` would stop meaning the last column.
+        if let Some(copy) = self.copy.as_mut() {
+            copy.resized(size);
+        }
         self.dirty = true;
     }
 
@@ -317,8 +322,15 @@ impl PaneRuntime {
 
     /// Refreshes `grid` from the emulator (at the copy mode offset when in copy mode).
     pub fn snapshot(&mut self) {
-        match &self.copy {
-            Some(copy) => self.emulator.snapshot_grid_at(copy.offset, &mut self.grid),
+        // The offset is clamped here as well as on every key, because the history can shrink
+        // without a key being pressed: a program switching to the alternate screen takes it
+        // to none, and the viewport has to come back to the screen with it.
+        let history = crate::copy_mode::history(self);
+        match self.copy.as_mut() {
+            Some(copy) => {
+                copy.offset = copy.offset.min(history);
+                self.emulator.snapshot_grid_at(copy.offset, &mut self.grid);
+            }
             None => self.emulator.snapshot_grid(&mut self.grid),
         }
         self.dirty = false;
