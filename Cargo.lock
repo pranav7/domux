@@ -569,9 +569,12 @@ dependencies = [
  "domux-core",
  "domux-server",
  "libc",
+ "portable-pty",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

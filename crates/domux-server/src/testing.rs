@@ -534,6 +534,12 @@ impl Harness {
         &self.state_dir
     }
 
+    /// The socket this harness server listens on, for a test that drives a real client or
+    /// the CLI through `DOMUX_SOCKET`.
+    pub fn socket_path(&self) -> &Path {
+        &self.socket
+    }
+
     fn core_tx(&self) -> mpsc::Sender<CoreMsg> {
         self.server.as_ref().expect("server").core_tx.clone()
     }
