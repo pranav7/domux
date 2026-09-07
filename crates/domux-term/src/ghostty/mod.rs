@@ -283,19 +283,11 @@ impl GhosttyEmulator {
     /// about it - the guard never leaves this frame, so nothing can outlive the terminal,
     /// and there is no way to move the viewport without a scope that puts it back.
     fn with_viewport_at<R>(&mut self, row: usize, f: impl FnOnce(&mut Self) -> R) -> R {
-        let restore = ViewportRestore(self.terminal.raw);
-        // The union is 16 bytes wide and `row` fills 8 of them, so it is zeroed first rather
-        // than passing the padding to C uninitialized.
-        let mut value: ffi::GhosttyTerminalScrollViewportValue = unsafe { std::mem::zeroed() };
-        value.row = row;
-        let behavior = ffi::GhosttyTerminalScrollViewport {
-            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_ROW,
-            value,
-        };
-        unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
-        let out = f(self);
-        drop(restore);
-        out
+        // The handle is copied out before the closure borrows `self`, so `f` still gets
+        // `&mut self` for the fill while the guard lives in `viewport`, where nothing else
+        // can build one.
+        let raw = self.terminal.raw;
+        viewport::scrolled_to(raw, row, || f(self))
     }
 
     /// True while the alternate screen is the active one. Read from the active screen rather
@@ -713,21 +705,52 @@ impl Emulator for GhosttyEmulator {
 /// operation that moves the viewport, and a read must not leave it moved, so the restore is
 /// tied to the scope rather than written out after the read: an unwinding panic in between
 /// still runs it.
+/// Owns the viewport guard so that nothing outside can build one.
 ///
-/// The handle inside is raw and carries no lifetime, so this type cannot state that the
-/// terminal outlives it. `with_viewport_at` is its only producer and keeps it in one frame,
-/// which is what keeps that true. `must_use` guards anything later that produces one: a
-/// value dropped the moment it is made puts the viewport straight back before the read.
-#[must_use = "hold this for the whole read; dropping it now puts the viewport straight back"]
-struct ViewportRestore(ffi::GhosttyTerminal);
+/// The guard holds a raw handle and carries no lifetime, so the type cannot state that the
+/// terminal outlives it. An earlier version returned the guard from the scroll function and
+/// relied on `must_use` to stop a caller discarding it. That caught the discard and missed
+/// the real hazard: a caller could keep the guard, drop the emulator, and then run `Drop`
+/// against a freed handle. It compiled with no warnings under the gate's own clippy and the
+/// process died on signal 11.
+///
+/// Keeping the type private to this module leaves `scrolled_to` as its only producer, and
+/// `scrolled_to` never lets it escape the frame. The guarantee is then the module system's
+/// rather than a comment's, which is the difference that failed the first time.
+mod viewport {
+    use super::ffi;
 
-impl Drop for ViewportRestore {
-    fn drop(&mut self) {
+    /// Scrolls the viewport to `row`, runs `f`, and puts the viewport back on the way out,
+    /// including when `f` unwinds. The guard is built before the scroll, so a panic inside
+    /// the scroll itself is covered too.
+    pub(super) fn scrolled_to<R>(
+        terminal: ffi::GhosttyTerminal,
+        row: usize,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        let _restore = Restore(terminal);
+        // The union is 16 bytes wide and `row` fills 8 of them, so it is zeroed first rather
+        // than passing the padding to C uninitialized.
+        let mut value: ffi::GhosttyTerminalScrollViewportValue = unsafe { std::mem::zeroed() };
+        value.row = row;
         let behavior = ffi::GhosttyTerminalScrollViewport {
-            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
-            value: unsafe { std::mem::zeroed() },
+            tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_ROW,
+            value,
         };
-        unsafe { ffi::ghostty_terminal_scroll_viewport(self.0, behavior) };
+        unsafe { ffi::ghostty_terminal_scroll_viewport(terminal, behavior) };
+        f()
+    }
+
+    struct Restore(ffi::GhosttyTerminal);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let behavior = ffi::GhosttyTerminalScrollViewport {
+                tag: ffi::GhosttyTerminalScrollViewportTag_GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
+                value: unsafe { std::mem::zeroed() },
+            };
+            unsafe { ffi::ghostty_terminal_scroll_viewport(self.0, behavior) };
+        }
     }
 }
 
