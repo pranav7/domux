@@ -267,9 +267,16 @@ impl GhosttyEmulator {
     }
 
     /// Moves the viewport so `row` (counted from the top of the scrollback) is its first
-    /// row. libghostty clamps a row past the top of the active area. Every caller holds a
-    /// `ViewportRestore` first, so `snapshot_grid` and `cursor` always see the live screen.
-    fn scroll_viewport_to_row(&self, row: usize) {
+    /// row. libghostty clamps a row past the top of the active area.
+    ///
+    /// Returns the `ViewportRestore` that puts the viewport back on the live screen, and it
+    /// is constructed before the scroll, so the restore covers the scroll itself. The
+    /// function that moves the viewport hands back the thing that undoes it, which makes
+    /// forgetting the restore a compile error under `-D warnings` rather than a doc comment
+    /// a later caller can miss. `snapshot_grid` and `cursor` therefore always see the live
+    /// screen.
+    fn scroll_viewport_to_row(&self, row: usize) -> ViewportRestore {
+        let restore = ViewportRestore(self.terminal.raw);
         // The union is 16 bytes wide and `row` fills 8 of them, so it is zeroed first rather
         // than passing the padding to C uninitialized.
         let mut value: ffi::GhosttyTerminalScrollViewportValue = unsafe { std::mem::zeroed() };
@@ -279,6 +286,7 @@ impl GhosttyEmulator {
             value,
         };
         unsafe { ffi::ghostty_terminal_scroll_viewport(self.terminal.raw, behavior) };
+        restore
     }
 
     /// True while the alternate screen is the active one. Read from the active screen rather
@@ -535,13 +543,15 @@ impl Emulator for GhosttyEmulator {
             self.snapshot_grid(out);
             return;
         }
-        // Taken before the scroll, so the viewport returns to the live screen on every exit
-        // from here, an unwinding panic in the fill included. It holds the terminal handle
-        // rather than `&self` because the fill needs `&mut self`.
-        let _restore = ViewportRestore(self.terminal.raw);
+        // The scroll hands back the restore, which it constructed before it moved anything,
+        // so the viewport returns to the live screen on every exit from here, an unwinding
+        // panic in the fill included. The guard holds the terminal handle rather than
+        // `&self`, so it does not keep a borrow across the fill's `&mut self`.
+        //
         // `saturating_sub` is the clamp the trait promises: an offset past the oldest line
         // lands on row 0, the top of the scrollback.
-        self.scroll_viewport_to_row(self.scrollback_len().saturating_sub(offset_from_bottom));
+        let _restore =
+            self.scroll_viewport_to_row(self.scrollback_len().saturating_sub(offset_from_bottom));
         self.fill_grid_from_render_state(out);
     }
 
@@ -697,6 +707,11 @@ impl Emulator for GhosttyEmulator {
 /// operation that moves the viewport, and a read must not leave it moved, so the restore is
 /// tied to the scope rather than written out after the read: an unwinding panic in between
 /// still runs it.
+///
+/// `must_use` because dropping this the moment it is produced defeats the whole point:
+/// `scroll_viewport_to_row` returns one, so a caller that scrolls and ignores the result
+/// fails the build rather than leaving the viewport moved for the next reader.
+#[must_use = "hold this for the whole read; dropping it now puts the viewport straight back"]
 struct ViewportRestore(ffi::GhosttyTerminal);
 
 impl Drop for ViewportRestore {

@@ -376,9 +376,13 @@ fn text_in_range_reads_a_whole_wide_grapheme_from_either_of_its_cells() {
 #[test]
 fn text_in_range_reads_a_reversed_range_as_the_forward_one() {
     let mut e = make(10, 3);
-    for i in 0..6 {
+    for i in 0..5 {
         e.feed(format!("line{i}\r\n").as_bytes());
     }
+    // No trailing newline, so the last row that exists holds text. The clamp case below
+    // needs that: against the blank row a trailing newline leaves, both directions read ""
+    // and the case pins nothing.
+    e.feed(b"tail");
     // Reversed by row, and reversed by column within one row. A drag upward or leftward
     // produces exactly these, so both read as the range with its endpoints swapped.
     assert_eq!(
@@ -396,16 +400,24 @@ fn text_in_range_reads_a_reversed_range_as_the_forward_one() {
         "ine1"
     );
     // Two rows past the end clamp onto the same row, which leaves the columns reversed even
-    // though the range as given was not. It still reads as the forward range.
-    let forward = e.text_in_range(
-        ScrollbackPos { row: 100, col: 0 },
-        ScrollbackPos { row: 200, col: 9 },
+    // though the range as given was not. It still reads as the forward range. Both sides are
+    // asserted against the text, not against each other, so neither can pass by both being
+    // empty.
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 100, col: 0 },
+            ScrollbackPos { row: 200, col: 9 },
+        ),
+        "tail"
     );
-    let clamped_reverse = e.text_in_range(
-        ScrollbackPos { row: 100, col: 9 },
-        ScrollbackPos { row: 200, col: 0 },
+    assert_eq!(
+        e.text_in_range(
+            ScrollbackPos { row: 100, col: 9 },
+            ScrollbackPos { row: 200, col: 0 },
+        ),
+        "tail",
+        "the clamp collapsed the rows and reversed the columns, and the swap undoes that"
     );
-    assert_eq!(clamped_reverse, forward);
 }
 
 #[test]
