@@ -2,7 +2,7 @@
 //! an optional flag at the right end, the accent and a bold title when focused.
 
 use crate::render::theme;
-use domux_core::text::{display_width, truncate_with_ellipsis};
+use domux_core::text::{display_width, sanitize_for_display, truncate_with_ellipsis};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -61,17 +61,34 @@ impl Boxed<'_> {
             }
         }
         // Title: " title " starting one cell in. Flag: " flag " ending one cell before the corner.
+        //
+        // Both strings are program-controlled - a pane's title is whatever it emitted with
+        // OSC 0 or OSC 2 - so sanitize before measuring. Without it a control character
+        // measures one cell, passes every bound and is then flushed into the terminal, and a
+        // zero-width grapheme measures none, satisfies any budget and still takes a cell when
+        // drawn. After sanitizing, a measured cell is a drawn cell.
+        let title = sanitize_for_display(self.title);
+        let flag = self.flag.map(sanitize_for_display);
         let mut budget = area.width.saturating_sub(4) as usize; // corners plus the two title pads
-        let flag_cells = self.flag.map(|f| display_width(f) + 2).unwrap_or(0);
+        let flag_cells = flag.as_deref().map(|f| display_width(f) + 2).unwrap_or(0);
+        // `budget > flag_cells` rather than `budget >= flag_cells + 1`: clippy's int_plus_one
+        // rejects the second and they are the same predicate on usize.
         if flag_cells > 0 && budget > flag_cells {
             budget -= flag_cells;
-            let flag = format!(" {} ", self.flag.unwrap_or(""));
+            let text = format!(" {} ", flag.as_deref().unwrap_or(""));
             let start = right as usize - 1 - (flag_cells - 1);
-            put(buf, start as u16, area.y, &flag, flag_style);
+            put_within(buf, start as u16, area.y, right, &text, flag_style);
         }
         if budget > 0 && area.width >= 4 {
-            let title = truncate_with_ellipsis(self.title, budget);
-            put(buf, area.x + 1, area.y, &format!(" {title} "), title_style);
+            let text = truncate_with_ellipsis(&title, budget);
+            put_within(
+                buf,
+                area.x + 1,
+                area.y,
+                right,
+                &format!(" {text} "),
+                title_style,
+            );
         }
         Rect::new(
             area.x + 1,
@@ -82,11 +99,19 @@ impl Boxed<'_> {
     }
 }
 
-/// Writes `text` from `x`, one grapheme per cell, wide graphemes taking two.
+/// Writes `text` from `x`, one grapheme per cell, wide graphemes taking two, clipping at the
+/// buffer's right edge.
 pub fn put(buf: &mut Buffer, x: u16, y: u16, text: &str, style: Style) -> u16 {
+    put_within(buf, x, y, buf.area.x + buf.area.width - 1, text, style)
+}
+
+/// `put`, but clipping at `last_x` inclusive as well as at the buffer. A box passes its own
+/// right edge here so that no arithmetic mistake upstream can write into a neighbouring box:
+/// budgets keep text inside the border, and this keeps a wrong budget from escaping it.
+pub fn put_within(buf: &mut Buffer, x: u16, y: u16, last_x: u16, text: &str, style: Style) -> u16 {
     use unicode_segmentation::UnicodeSegmentation;
     let mut cx = x;
-    let max_x = buf.area.x + buf.area.width;
+    let max_x = (buf.area.x + buf.area.width).min(last_x.saturating_add(1));
     for g in text.graphemes(true) {
         let w = display_width(g).max(1) as u16;
         if cx + w > max_x {

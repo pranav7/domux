@@ -44,6 +44,25 @@ pub fn truncate_with_ellipsis(s: &str, max: usize) -> String {
     out
 }
 
+/// Strips what a terminal cannot draw as a cell: control characters, and graphemes that
+/// occupy no cells at all. Program-controlled text reaches the UI verbatim - a pane's title
+/// is whatever it emitted with OSC 0 or OSC 2 - so every such string passes through here
+/// before it is rendered.
+///
+/// Two concrete failures this prevents. A control character reports a display width of 1, so
+/// it satisfies every budget and is then written into a cell: ratatui flushes the byte and a
+/// literal newline inside a border desynchronises the whole screen. A zero-width grapheme
+/// reports 0, so a title of them satisfies any budget while still consuming one cell each
+/// when drawn, and the row runs past its box.
+///
+/// After this, every remaining grapheme occupies at least one cell, so a width measured here
+/// is the width that will be drawn.
+pub fn sanitize_for_display(s: &str) -> String {
+    s.graphemes(true)
+        .filter(|g| !g.chars().any(char::is_control) && grapheme_width(g) > 0)
+        .collect()
+}
+
 /// Pads `s` with spaces on the right to `width` cells. Longer strings are returned unchanged.
 pub fn pad(s: &str, width: usize) -> String {
     let w = display_width(s);
@@ -78,6 +97,48 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("漢字漢字", 4), "漢…");
         assert_eq!(truncate_with_ellipsis("abc", 1), "…");
         assert_eq!(truncate_with_ellipsis("abc", 0), "");
+    }
+
+    #[test]
+    fn sanitize_for_display_drops_control_characters() {
+        // `display_width("\n") == 1`, so a control character passes every budget check and is
+        // then written into a cell verbatim. Fifteen of them inside a border move the cursor
+        // fifteen lines and desynchronise the frame.
+        assert_eq!(sanitize_for_display("a\nb"), "ab");
+        assert_eq!(sanitize_for_display("a\tb\rc"), "abc");
+        assert_eq!(sanitize_for_display("a\u{1b}[31mb"), "a[31mb");
+        assert_eq!(sanitize_for_display("bell\u{7}"), "bell");
+    }
+
+    #[test]
+    fn sanitize_for_display_drops_zero_width_graphemes() {
+        // These measure 0 cells but `put` still gives each one a cell, so a title made of
+        // them satisfies any budget and then overruns its box.
+        assert_eq!(sanitize_for_display("\u{200b}".repeat(40).as_str()), "");
+        assert_eq!(sanitize_for_display("a\u{feff}b"), "ab");
+        assert_eq!(sanitize_for_display("soft\u{ad}hyphen"), "softhyphen");
+    }
+
+    #[test]
+    fn sanitize_for_display_keeps_every_drawable_grapheme() {
+        assert_eq!(sanitize_for_display("auth cleanup"), "auth cleanup");
+        assert_eq!(sanitize_for_display("漢字"), "漢字");
+        assert_eq!(sanitize_for_display("é"), "é"); // e plus a combining acute is one cluster
+        assert_eq!(sanitize_for_display("👍🏽"), "👍🏽");
+    }
+
+    #[test]
+    fn sanitized_text_measures_the_width_it_will_draw() {
+        // The invariant the renderer depends on: after sanitizing, no grapheme measures 0,
+        // so a budget computed from `display_width` is the number of cells `put` will use.
+        for raw in ["\u{200b}\u{200b}ab", "a\nb", "漢\u{feff}字", "plain"] {
+            let clean = sanitize_for_display(raw);
+            let drawn: usize = clean
+                .graphemes(true)
+                .map(|g| grapheme_width(g).max(1))
+                .sum();
+            assert_eq!(display_width(&clean), drawn, "raw: {raw:?}");
+        }
     }
 
     #[test]

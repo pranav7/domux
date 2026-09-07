@@ -1,11 +1,11 @@
 use domux_core::model::Rect as LRect;
-use domux_server::render::boxed::Boxed;
+use domux_server::render::boxed::{put_within, Boxed};
 use domux_server::render::pane_box::{cursor_position, render_grid, Selection};
 use domux_server::render::{theme, to_rect};
 use domux_term::{Attrs, Color, Cursor, Grid, Rgb, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::{Modifier, Style};
 
 fn row(buf: &Buffer, y: u16) -> String {
     (0..buf.area.width)
@@ -152,5 +152,77 @@ fn cursor_position_offsets_by_the_inner_area_and_hides_when_invisible() {
             height: 4
         }),
         Rect::new(1, 2, 3, 4)
+    );
+}
+
+/// A pane's title is whatever the program in it emitted with OSC 0 or OSC 2, so these two
+/// inputs are program-controlled and reach `Boxed` unfiltered once a caller exists.
+#[test]
+fn a_zero_width_title_stays_inside_its_box() {
+    // 40 zero-width spaces measure 0 cells, so they satisfy any budget, and `put` then gives
+    // each one a cell. Before the fix this wrote 42 cells from x1 in a 5-wide box.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 60, 3));
+    let title = "\u{200b}".repeat(40);
+    Boxed {
+        title: &title,
+        flag: None,
+        focused: false,
+    }
+    .render(Rect::new(0, 0, 5, 3), &mut buf);
+    for x in 5..60u16 {
+        assert_eq!(
+            buf[(x, 0)].symbol(),
+            " ",
+            "cell x{x} is outside the 5-wide box and must be untouched"
+        );
+    }
+    assert_eq!(
+        buf[(4, 0)].symbol(),
+        "┐",
+        "the box keeps its own right corner"
+    );
+}
+
+#[test]
+fn a_control_character_title_never_reaches_a_cell() {
+    // A newline measures 1 cell, so it passes every bound, and ratatui flushes the byte:
+    // the terminal drops a line for each and the whole frame desynchronises.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+    let title = "\n".repeat(30);
+    Boxed {
+        title: &title,
+        flag: None,
+        focused: false,
+    }
+    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    for x in 0..20u16 {
+        let s = buf[(x, 0)].symbol();
+        assert!(
+            !s.chars().any(char::is_control),
+            "cell x{x} holds control character {s:?}"
+        );
+    }
+}
+
+#[test]
+fn put_within_clips_at_the_boundary_it_is_given() {
+    // The second layer, independent of sanitizing: even handed text that fits no budget,
+    // a box's own right edge stops the write. A wide grapheme straddling the edge is
+    // dropped whole rather than half-drawn.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+    let end = put_within(&mut buf, 2, 0, 6, "abcdefghij", Style::default());
+    assert_eq!(end, 7, "stops one past the inclusive boundary");
+    assert_eq!(buf[(6, 0)].symbol(), "e");
+    for x in 7..20u16 {
+        assert_eq!(buf[(x, 0)].symbol(), " ", "cell x{x} is past the boundary");
+    }
+
+    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+    put_within(&mut buf, 2, 0, 3, "漢字", Style::default());
+    assert_eq!(buf[(2, 0)].symbol(), "漢");
+    assert_eq!(
+        buf[(4, 0)].symbol(),
+        " ",
+        "the second wide grapheme does not fit and is dropped"
     );
 }
