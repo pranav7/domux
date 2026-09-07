@@ -276,7 +276,10 @@ impl LayoutNode {
                     SplitDir::Down => area.height,
                 }
                 .saturating_sub(GAP) as f32;
-                if total <= 0.0 {
+                // Both children need MIN_BOX out of `total`, so below 2 * MIN_BOX there is no
+                // legal ratio and the boundary genuinely cannot move. Refusing is honest;
+                // widening the clamp would place a box below MIN_BOX.
+                if total < 2.0 * MIN_BOX as f32 {
                     return Some(false);
                 }
                 let towards_second = matches!(dir, Direction::Right | Direction::Down);
@@ -369,7 +372,9 @@ fn solve_into(node: &LayoutNode, area: Rect, out: &mut Vec<(PaneId, Rect)>) {
 }
 
 /// The pane next to `from` in `dir`: among panes whose edge faces `from` across the gap, the
-/// one whose extent on the other axis overlaps `from` most; ties go to the nearest edge.
+/// nearest one. Distance ranks first so focus never skips a column or a row; among panes at
+/// the same distance the one whose extent on the other axis overlaps `from` most wins, and
+/// among panes tied on both the earliest in reading order wins.
 pub fn neighbour_by_geometry(
     rects: &[(PaneId, Rect)],
     from: &PaneId,
@@ -408,7 +413,7 @@ pub fn neighbour_by_geometry(
         }
         let better = match best {
             None => true,
-            Some((_, o, d)) => overlap > o || (overlap == o && distance < d),
+            Some((_, o, d)) => distance < d || (distance == d && overlap > o),
         };
         if better {
             best = Some((id, overlap, distance));
@@ -581,25 +586,99 @@ mod tests {
     }
 
     #[test]
-    fn neighbour_by_geometry_prefers_the_pane_with_the_largest_overlap() {
-        // Left pane spans rows 1-9; right column split into two: top rows 1-4, bottom rows 6-9.
+    fn resize_refuses_when_the_split_is_too_small_for_two_boxes() {
+        // The split's own axis minus GAP is what the two children share, and each needs
+        // MIN_BOX, so below 2 * MIN_BOX no ratio is legal and the resize is refused.
+        for height in 0..=6u16 {
+            let mut tree = LayoutNode::leaf(pane("p_0001"));
+            tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
+            let small = Rect {
+                x: 0,
+                y: 0,
+                width: 40,
+                height,
+            };
+            assert!(
+                !tree.resize(&PaneId("p_0001".into()), Direction::Down, 1, small),
+                "a height of {height} has no room for two boxes"
+            );
+        }
+        let mut wide = LayoutNode::leaf(pane("p_0001"));
+        wide.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002"));
+        assert!(!wide.resize(
+            &PaneId("p_0001".into()),
+            Direction::Right,
+            1,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 6,
+                height: 9
+            }
+        ));
+
+        // 7 is the first size that fits two 3-cell boxes and the gap between them.
+        let mut tree = LayoutNode::leaf(pane("p_0001"));
+        tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
+        let fits = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 7,
+        };
+        assert!(tree.resize(&PaneId("p_0001".into()), Direction::Down, 1, fits));
+        let rects = solve(&tree, fits, None);
+        assert_eq!(rects[0].1.height, 3);
+        assert_eq!(rects[1].1.height, 3);
+    }
+
+    #[test]
+    fn neighbour_by_geometry_prefers_the_nearest_pane_over_a_larger_overlap() {
+        // Split(Right, p1, Split(Right, Split(Down, p2, p4), p3)) over {0, 1, 40, 9} gives
+        // p1 {0,1,20,9}, p2 {21,1,9,4}, p4 {21,6,9,4}, p3 {31,1,9,9}, in that reading order.
+        // Every pane in the right two columns faces p1, so p3 is the largest overlap from p1
+        // (9 rows against 4) and the first candidate in order from p3's own left. Both times
+        // the right answer is the middle column, one cell away, not p3's tall column.
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002"));
-        tree.split_leaf(&PaneId("p_0002".into()), Direction::Down, pane("p_0003"));
+        tree.split_leaf(&PaneId("p_0002".into()), Direction::Right, pane("p_0003"));
+        tree.split_leaf(&PaneId("p_0002".into()), Direction::Down, pane("p_0004"));
         let rects = solve(&tree, area(), None);
         let left = PaneId("p_0001".into());
+
+        // Ranking by overlap first answers p3 here, two columns away.
         assert_eq!(
             neighbour_by_geometry(&rects, &left, Direction::Right),
             Some(PaneId("p_0002".into()))
         );
+        // Ranking by overlap first answers p1; taking the first facing candidate also
+        // answers p1, since p1 comes before p2 in reading order.
         assert_eq!(
             neighbour_by_geometry(&rects, &PaneId("p_0003".into()), Direction::Left),
-            Some(left.clone())
+            Some(PaneId("p_0002".into()))
         );
         assert_eq!(
             neighbour_by_geometry(&rects, &PaneId("p_0002".into()), Direction::Down),
-            Some(PaneId("p_0003".into()))
+            Some(PaneId("p_0004".into()))
         );
         assert_eq!(neighbour_by_geometry(&rects, &left, Direction::Left), None);
+    }
+
+    #[test]
+    fn neighbour_by_geometry_prefers_the_largest_overlap_at_the_same_distance() {
+        // Split(Right, Split(Down, Split(Down, p2, p4), p1), p3) over {0, 1, 40, 9} gives
+        // p2 {0,1,20,2}, p4 {0,4,20,1}, p1 {0,6,20,4}, p3 {21,1,19,9}, in that reading order.
+        // All three left panes face p3 one cell away, so distance cannot separate them and
+        // the tie-break decides: p1 overlaps 4 rows against p2's 2 and p4's 1, even though
+        // p2 comes first in reading order.
+        let mut tree = LayoutNode::leaf(pane("p_0001"));
+        tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0003"));
+        tree.split_leaf(&PaneId("p_0001".into()), Direction::Up, pane("p_0002"));
+        tree.split_leaf(&PaneId("p_0002".into()), Direction::Down, pane("p_0004"));
+        let rects = solve(&tree, area(), None);
+        assert_eq!(
+            neighbour_by_geometry(&rects, &PaneId("p_0003".into()), Direction::Left),
+            Some(PaneId("p_0001".into()))
+        );
     }
 }
