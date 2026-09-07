@@ -6,8 +6,9 @@ use crate::model::{Model, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 1 at the end of M1. M2 makes it 2, M3 3, M4 4, each with a migration and a fixture.
-pub const SCHEMA_VERSION: u32 = 1;
+/// 1 at the end of M1, 2 at M2 (roadmap decision 5). M3 makes it 3, M4 4, each with a
+/// migration and a fixture.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
@@ -16,6 +17,10 @@ pub struct StateFile {
     pub saved_at: String,
     pub projects: Vec<Project>,
     pub last_workspace: Option<WorkspaceId>,
+    /// The state a new client's sidebar starts in (roadmap decision 4). Added in schema
+    /// version 2.
+    #[serde(default)]
+    pub sidebar_open: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -30,8 +35,18 @@ pub enum StateError {
 /// next version's JSON.
 type Migration = (u32, fn(&mut Value) -> Result<(), String>);
 
-/// Migrations from version N to N+1, in order. Each edits the JSON in place. M1 has none.
-pub const MIGRATIONS: &[Migration] = &[];
+/// Version 1 knew nothing about the sidebar, so a file written by M1 starts with it
+/// hidden: the author's screen must not change shape on the first start after an upgrade.
+pub fn v1_to_v2(value: &mut Value) -> Result<(), String> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "state.json is not an object".to_string())?;
+    object.entry("sidebar_open").or_insert(Value::Bool(false));
+    Ok(())
+}
+
+/// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar.
+pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2)];
 
 pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
     StateFile {
@@ -39,6 +54,7 @@ pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
         saved_at: saved_at.to_string(),
         projects: model.projects.clone(),
         last_workspace: model.last_workspace.clone(),
+        sidebar_open: model.sidebar_open,
     }
 }
 
@@ -48,6 +64,7 @@ pub fn restore(file: StateFile) -> Result<Model, StateError> {
     let mut model = Model::new(0x5eed);
     model.projects = file.projects;
     model.last_workspace = file.last_workspace;
+    model.sidebar_open = file.sidebar_open;
     for p in &model.projects {
         for w in &p.workspaces {
             for t in &w.tabs {
@@ -112,7 +129,7 @@ pub fn to_json(file: &StateFile) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Direction;
+    use crate::model::{Direction, ProjectKind, WorkspaceHandle};
     use serde_json::json;
     use std::path::PathBuf;
 
@@ -127,7 +144,10 @@ mod tests {
     #[test]
     fn v1_fixture_restores_tabs_panes_names_and_focus() {
         let file = parse(&fixture()).unwrap();
-        assert_eq!(file.schema_version, 1);
+        assert_eq!(
+            file.schema_version, SCHEMA_VERSION,
+            "parse migrates in place"
+        );
         let model = restore(file).unwrap();
         let ws = model
             .workspace(&crate::ids::WorkspaceId("w_c3a1".into()))
@@ -200,8 +220,10 @@ mod tests {
         ));
     }
 
-    /// A stand-in rung: `MIGRATIONS` is empty in M1, so the walk itself would otherwise
-    /// ship untested and M2 would be the first thing to run it.
+    /// A stand-in rung, kept independent of `MIGRATIONS` so the walk itself stays tested
+    /// even on a version whose real ladder happens to refuse or short-circuit. Anchored to
+    /// `SCHEMA_VERSION - 1` rather than a literal so it keeps working as later milestones
+    /// bump the constant.
     fn add_a_field(v: &mut Value) -> Result<(), String> {
         v["added"] = Value::from("yes");
         Ok(())
@@ -213,9 +235,10 @@ mod tests {
 
     #[test]
     fn the_ladder_runs_the_rung_for_the_version_found_and_stamps_the_new_version() {
-        let ladder: &[Migration] = &[(0, add_a_field)];
-        let mut value = json!({ "schema_version": 0 });
-        climb(&mut value, 0, ladder).unwrap();
+        let found = SCHEMA_VERSION - 1;
+        let ladder: &[Migration] = &[(found, add_a_field)];
+        let mut value = json!({ "schema_version": found });
+        climb(&mut value, found, ladder).unwrap();
         assert_eq!(value["added"], Value::from("yes"));
         assert_eq!(value["schema_version"], Value::from(SCHEMA_VERSION));
     }
@@ -277,5 +300,83 @@ mod tests {
         let back =
             restore(parse(&to_json(&snapshot(&m, "2026-09-05T10:00:00Z"))).unwrap()).unwrap();
         assert_eq!(back, m);
+    }
+
+    /// `StateFile::sidebar_open` carries `#[serde(default)]`, whose fallback is also
+    /// `false`. That makes a migrated file that starts hidden indistinguishable, from the
+    /// outside, from a migration that quietly does nothing at all: both leave the key
+    /// absent and both restore to `false`. This test pins `v1_to_v2` directly, so a
+    /// no-op migration function - one that returns `Ok(())` without touching the value -
+    /// fails here even though every test that goes through `parse` and `restore` would
+    /// still pass.
+    #[test]
+    fn v1_to_v2_actually_writes_sidebar_open_false_when_absent() {
+        let mut value = json!({
+            "schema_version": 1,
+            "saved_at": "x",
+            "projects": [],
+            "last_workspace": null
+        });
+        v1_to_v2(&mut value).unwrap();
+        assert_eq!(value["sidebar_open"], Value::from(false));
+    }
+
+    #[test]
+    fn a_schema_version_1_file_migrates_and_starts_with_the_sidebar_hidden() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v1.json"
+        ))
+        .unwrap();
+        let file = parse(&text).unwrap();
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert!(
+            !file.sidebar_open,
+            "a file written before the sidebar existed starts hidden"
+        );
+        let model = restore(file).unwrap();
+        assert!(!model.projects.is_empty(), "the M1 fixture still restores");
+        assert!(!model.sidebar_open);
+    }
+
+    #[test]
+    fn a_schema_version_2_file_round_trips_with_git_projects_slots_and_names() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v2.json"
+        ))
+        .unwrap();
+        let model = restore(parse(&text).unwrap()).unwrap();
+        assert!(model.sidebar_open, "the fixture remembers an open sidebar");
+        let p = &model.projects[0];
+        assert_eq!(p.name, "audrey-app");
+        assert_eq!(
+            p.kind,
+            ProjectKind::Git {
+                default_branch: "main".into()
+            }
+        );
+        assert_eq!(p.workspaces.len(), 2);
+        assert_eq!(p.workspaces[1].handle, WorkspaceHandle::Slot(1));
+        assert_eq!(p.workspaces[1].name.as_deref(), Some("auth cleanup"));
+        let again = to_json(&snapshot(&model, "2026-09-05T10:00:00+01:00"));
+        assert_eq!(restore(parse(&again).unwrap()).unwrap(), model);
+    }
+
+    #[test]
+    fn a_file_from_a_newer_domux_is_refused_by_name_and_not_guessed_at() {
+        let err =
+            parse(r#"{"schema_version":9,"saved_at":"x","projects":[],"last_workspace":null}"#)
+                .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StateError::Newer {
+                    found: 9,
+                    supported: 2
+                }
+            ),
+            "{err}"
+        );
     }
 }

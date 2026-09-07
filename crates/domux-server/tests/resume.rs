@@ -6,7 +6,7 @@ use serde_json::json;
 use std::time::Duration;
 
 #[tokio::test]
-async fn state_json_is_written_after_structure_changes_with_schema_version_1_and_a_bak() {
+async fn state_json_is_written_after_structure_changes_with_the_current_schema_and_a_bak() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     h.api("tab.create", json!({})).await.unwrap();
     h.wait_for(
@@ -19,7 +19,7 @@ async fn state_json_is_written_after_structure_changes_with_schema_version_1_and
     let path = h.state_dir().join("state.json");
     let text = std::fs::read_to_string(&path).expect("state.json exists");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], domux_core::state_file::SCHEMA_VERSION);
     assert_eq!(
         v["projects"][0]["workspaces"][0]["tabs"]
             .as_array()
