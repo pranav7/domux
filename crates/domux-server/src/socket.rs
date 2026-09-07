@@ -14,11 +14,18 @@ use tokio::task::JoinHandle;
 
 pub async fn listen(path: &Path, core_tx: mpsc::Sender<CoreMsg>) -> anyhow::Result<JoinHandle<()>> {
     if let Some(dir) = path.parent() {
+        // Only a directory this server creates is made private. The socket's parent is
+        // whatever `DOMUX_SOCKET` points at, and narrowing a directory domux does not own is
+        // a side effect on someone else's files: `DOMUX_SOCKET=$HOME/s.sock` used to chmod
+        // the home directory to 0700, and `/tmp/s.sock` failed with a bare "Operation not
+        // permitted" because /tmp belongs to root.
+        let existed = dir.exists();
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         #[cfg(unix)]
-        {
+        if !existed {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("make {} private", dir.display()))?;
         }
     }
     if path.exists() {
@@ -29,6 +36,16 @@ pub async fn listen(path: &Path, core_tx: mpsc::Sender<CoreMsg>) -> anyhow::Resu
         std::fs::remove_file(path)?;
     }
     let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+    // The socket is what access control rests on, not the directory around it: anyone who can
+    // connect can spawn processes in this user's panes. `bind` takes its mode from the umask,
+    // which is 022 on a stock shell, so without this the socket is srwxr-xr-x and any user on
+    // the machine can drive the server.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("make {} private", path.display()))?;
+    }
     Ok(tokio::spawn(async move {
         loop {
             match listener.accept().await {

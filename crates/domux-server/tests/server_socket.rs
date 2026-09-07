@@ -874,3 +874,48 @@ async fn a_region_that_arrives_in_a_later_milestone_returns_unavailable() {
     );
     server.stop().await;
 }
+
+/// The socket is what access control rests on: anyone who can connect to it can spawn
+/// processes in this user's panes. `bind` takes its mode from the umask, which is 022 on a
+/// stock shell, so the socket arrived as `srwxr-xr-x` and any user on the machine could drive
+/// the server. The directory around it was standing in for this, and only by accident: it is
+/// whatever `DOMUX_SOCKET` points at.
+#[tokio::test]
+async fn the_socket_is_private_to_the_user_who_started_the_server() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    // A world-writable parent, so nothing but the socket's own mode can be protecting it.
+    let open = dir.path().join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let path = open.join("domux2.sock");
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let handle = domux_server::socket::listen(&path, tx).await.unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "socket mode is {mode:o}, not 0600");
+    // A directory the server did not create keeps the permissions it had.
+    let dir_mode = std::fs::metadata(&open).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        dir_mode, 0o777,
+        "the server narrowed a directory it does not own"
+    );
+    handle.abort();
+}
+
+/// The directory the server does create is its own, and is private from the moment it exists.
+#[tokio::test]
+async fn a_socket_directory_the_server_creates_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("made-by-domux").join("domux2.sock");
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let handle = domux_server::socket::listen(&path, tx).await.unwrap();
+    let mode = std::fs::metadata(path.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700, "directory mode is {mode:o}, not 0700");
+    handle.abort();
+}
