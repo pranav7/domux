@@ -20,9 +20,12 @@ domux-server = { path = "../domux-server" }
 domux-client = { path = "../domux-client" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+serde = "1"
 serde_json = "1"
+tracing = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "signal", "process"] }
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+portable-pty = "0.9"
