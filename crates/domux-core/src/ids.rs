@@ -160,6 +160,57 @@ mod tests {
     }
 
     #[test]
+    fn id_error_names_the_prefix_the_id_type_really_has() {
+        // Message ids are `m1`, `m2`, `m7`: an `m` and digits, with no underscore. This
+        // message used to read "starting with m_", a prefix no message id has ever had, and
+        // the wrong text was what the plan specified, so only this test stops a future
+        // transcription from putting it back.
+        let err = "x7".parse::<MessageId>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"expected an id starting with m, got "x7""#
+        );
+
+        // The underscore-prefixed types keep their underscore, so both shapes are pinned.
+        let err = "t_8f2a".parse::<PaneId>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"expected an id starting with p_, got "t_8f2a""#
+        );
+        let err = "w_c3a1".parse::<ProjectId>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"expected an id starting with pr_, got "w_c3a1""#
+        );
+    }
+
+    #[test]
+    fn from_seed_gives_adjacent_seeds_different_streams() {
+        // `from_seed` used to guard the all-zero xorshift state with `seed | 1`, which
+        // mapped 42 and 43 onto the same state and made two different seeds produce byte
+        // for byte the same ids.
+        let stream = |seed: u64| {
+            let mut g = IdGen::from_seed(seed);
+            (0..8).map(|_| g.hex4()).collect::<Vec<String>>()
+        };
+        for seed in [1u64, 41, 42, 99, 1000, u64::MAX - 1] {
+            assert_ne!(
+                stream(seed),
+                stream(seed + 1),
+                "seeds {seed} and {} share a stream",
+                seed + 1
+            );
+        }
+
+        // Seed 0 is the one exception, and it has to be: xorshift64* can never leave the
+        // all-zero state, so 0 is mapped onto 1 and those two seeds do share a stream.
+        assert_eq!(stream(0), stream(1));
+
+        // A seed is still deterministic.
+        assert_eq!(stream(42), stream(42));
+    }
+
+    #[test]
     fn idgen_is_deterministic_for_a_seed_and_yields_four_hex_chars() {
         let mut a = IdGen::from_seed(42);
         let mut b = IdGen::from_seed(42);
