@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "saved_at": "2026-09-05T10:00:00Z",
+  "projects": [
+    {
+      "id": "pr_19f0",
+      "name": "domux",
+      "root": "/Users/pranav/projects/domux",
+      "kind": { "kind": "folder" },
+      "workspaces": [
+        {
+          "id": "w_c3a1",
+          "handle": "main",
+          "name": null,
+          "path": "/Users/pranav/projects/domux",
+          "tabs": [
+            {
+              "id": "t_41b2",
+              "name": "tests",
+              "layout": {
+                "node": "split",
+                "dir": "right",
+                "ratio": 0.5,
+                "first": { "node": "leaf", "kind": "terminal", "id": "p_8f2a", "cwd": "/Users/pranav/projects/domux" },
+                "second": { "node": "leaf", "kind": "terminal", "id": "p_0b11", "cwd": "/Users/pranav/projects/domux/crates" }
+              },
+              "focused": "p_0b11",
+              "zoomed": null,
+              "last_focused": "p_8f2a"
+            }
+          ],
+          "last_tab": "t_41b2"
+        }
+      ]
+    }
+  ],
+  "last_workspace": "w_c3a1"
+}
