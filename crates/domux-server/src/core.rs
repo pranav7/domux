@@ -159,8 +159,33 @@ impl Core {
             .collect();
         for (ws, path) in empty {
             match self.model.create_tab(&ws, path) {
-                Ok((_, _, events)) => self.pending_events.extend(events),
+                Ok((tab, _, events)) => {
+                    self.pending_events.extend(events);
+                    self.seat_stranded_clients(&ws, &tab);
+                }
                 Err(e) => tracing::error!("could not create a tab in workspace {ws}: {e}"),
+            }
+        }
+    }
+
+    /// Moves every client of `ws` whose tab the model no longer holds onto `tab`.
+    ///
+    /// `close_tab` moves a client to the tab that took the closed one's place, and there is
+    /// none when the workspace's last tab closes: the client is then pointing at a tab that
+    /// is gone, which no frame and no view method can answer for. The replacement tab this
+    /// workspace just got is that place.
+    fn seat_stranded_clients(&mut self, ws: &domux_core::ids::WorkspaceId, tab: &TabId) {
+        let stranded: Vec<ClientId> = self
+            .model
+            .clients
+            .iter()
+            .filter(|c| &c.workspace == ws && self.model.tab(&c.tab).is_none())
+            .map(|c| c.id.clone())
+            .collect();
+        for client in stranded {
+            match self.model.select_tab(&client, tab) {
+                Ok(events) => self.pending_events.extend(events),
+                Err(e) => tracing::error!("could not seat client {client} on tab {tab}: {e}"),
             }
         }
     }
@@ -214,6 +239,13 @@ impl Core {
                         ..Default::default()
                     },
                 );
+                // Ask the inspector now rather than waiting for the next tick. A pane's box
+                // shows its command, and up to a second of an untitled box is up to a
+                // second of a frame that does not yet say what is running (principle 8).
+                let observed = self.panes.get(pane).map(|rt| self.observe_pane(rt));
+                if let Some(facts) = observed {
+                    self.model.set_pane_facts(pane, facts);
+                }
             }
             Err(e) => tracing::error!("spawn pane {pane}: {e}"),
         }
@@ -467,31 +499,108 @@ impl Core {
             client,
             events: Vec::new(),
             stop_requested: false,
+            pending_spawns: Vec::new(),
+            pending_kills: Vec::new(),
+            detach_clients: Vec::new(),
         };
         let result = api::dispatch(method, &mut ctx);
         let events = std::mem::take(&mut ctx.events);
-        if ctx.stop_requested {
+        let spawns = std::mem::take(&mut ctx.pending_spawns);
+        let kills = std::mem::take(&mut ctx.pending_kills);
+        let detaches = std::mem::take(&mut ctx.detach_clients);
+        let stop = ctx.stop_requested;
+        drop(ctx);
+        if stop {
             self.stopping = true;
         }
         self.pending_events.extend(events);
-        self.view_dirty = true;
+        self.apply_side_effects(spawns, kills, detaches);
         result
+    }
+
+    /// Does what a handler recorded but could not do itself: kill the PTYs of the panes it
+    /// closed, start the panes it created, drop the clients it detached, and leave no
+    /// workspace without a tab.
+    ///
+    /// Kills come before spawns so a close-and-replace frees its process before the
+    /// replacement starts, and `sync_pane_sizes` comes last so a new PTY is at the size the
+    /// smallest client actually draws before its program has printed anything.
+    pub fn apply_side_effects(
+        &mut self,
+        spawns: Vec<PaneId>,
+        kills: Vec<PaneId>,
+        detaches: Vec<ClientId>,
+    ) {
+        for pane in kills {
+            if let Some(mut rt) = self.panes.remove(&pane) {
+                rt.pty.kill();
+            }
+        }
+        for pane in spawns {
+            let size = self.provisional_size(&pane);
+            self.spawn_pane(&pane, size);
+        }
+        for client in detaches {
+            self.detach(&client, Some("detached"));
+        }
+        let before = self.model.all_pane_ids();
+        self.ensure_every_workspace_has_a_tab();
+        for new in self
+            .model
+            .all_pane_ids()
+            .into_iter()
+            .filter(|p| !before.contains(p))
+        {
+            let size = self.provisional_size(&new);
+            self.spawn_pane(&new, size);
+        }
+        self.sync_pane_sizes();
+        self.view_dirty = true;
+    }
+
+    /// The size the smallest client on the pane's tab will give it, so its PTY starts at the
+    /// size it will be drawn at rather than at a default it is resized away from one batch
+    /// later. The same arithmetic as `sync_pane_sizes`, which settles it either way.
+    fn provisional_size(&self, pane: &PaneId) -> Size {
+        let fallback = Size { cols: 80, rows: 24 };
+        let Some(loc) = self.model.pane_location(pane) else {
+            return fallback;
+        };
+        let Some(tab) = self.model.tab(&loc.tab) else {
+            return fallback;
+        };
+        let area = render::workpanel_area(render::smallest_size(&self.model, &loc.tab, fallback));
+        domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
+            .into_iter()
+            .find(|(p, _)| p == pane)
+            .map(|(_, r)| Size {
+                cols: r.width.saturating_sub(2).max(1),
+                rows: r.height.saturating_sub(2).max(1),
+            })
+            .unwrap_or(fallback)
+    }
+
+    /// What the process inspector and the emulator say about one pane right now. Each field
+    /// is `None` when nothing answered, so `set_pane_facts` leaves that fact alone rather
+    /// than clearing it.
+    fn observe_pane(&self, pane: &PaneRuntime) -> PaneFacts {
+        let fg = self.deps.inspector.foreground(pane.pty.raw_fd());
+        let cwd = pane
+            .emulator
+            .cwd()
+            .or_else(|| fg.as_ref().and_then(|f| self.deps.inspector.cwd_of(f.pid)));
+        PaneFacts {
+            command: fg.as_ref().map(|f| f.name.clone()),
+            pid: fg.as_ref().map(|f| f.pid),
+            cwd,
+            title: pane.emulator.title(),
+        }
     }
 
     fn tick(&mut self) {
         let mut changed = false;
         for (id, pane) in &self.panes {
-            let fg = self.deps.inspector.foreground(pane.pty.raw_fd());
-            let cwd = pane
-                .emulator
-                .cwd()
-                .or_else(|| fg.as_ref().and_then(|f| self.deps.inspector.cwd_of(f.pid)));
-            let facts = PaneFacts {
-                command: fg.as_ref().map(|f| f.name.clone()),
-                pid: fg.as_ref().map(|f| f.pid),
-                cwd,
-                title: pane.emulator.title(),
-            };
+            let facts = self.observe_pane(pane);
             if let Some(current) = self.model.pane(id) {
                 if (facts.command.is_some() && facts.command != current.command)
                     || (facts.cwd.is_some() && facts.cwd.as_ref() != Some(&current.cwd))
@@ -565,24 +674,21 @@ impl Core {
     /// Kills the PTY and removes the pane from the Model. A workspace never ends up without a
     /// tab: when the last one closes a fresh tab with a shell replaces it.
     pub fn close_pane(&mut self, pane: &PaneId) {
-        if let Some(mut rt) = self.panes.remove(pane) {
-            rt.pty.kill();
-        }
-        match self.model.close_pane(pane) {
-            Ok((_, _, events)) => self.pending_events.extend(events),
-            Err(e) => tracing::debug!("close pane {pane}: {e}"),
-        }
-        let before = self.model.all_pane_ids();
-        self.ensure_every_workspace_has_a_tab();
-        for new in self
-            .model
-            .all_pane_ids()
-            .into_iter()
-            .filter(|p| !before.contains(p))
-        {
-            self.spawn_pane(&new, Size { cols: 80, rows: 24 });
-        }
-        self.view_dirty = true;
+        // Closing the tab's last pane closes the tab, and `close_pane` then names every
+        // pane that went with it, so the kill list comes from the model rather than from
+        // this one id.
+        let kills = match self.model.close_pane(pane) {
+            Ok((panes, _, events)) => {
+                self.pending_events.extend(events);
+                panes
+            }
+            Err(e) => {
+                // The model does not hold it; the runtime may still, so it is still killed.
+                tracing::debug!("close pane {pane}: {e}");
+                vec![pane.clone()]
+            }
+        };
+        self.apply_side_effects(Vec::new(), kills, Vec::new());
     }
 
     fn publish_events(&mut self) {
