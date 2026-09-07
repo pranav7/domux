@@ -331,6 +331,10 @@ async fn server_start_status_and_stop_manage_a_real_server() {
         text.contains(&format!("Config  {} (not created yet)", config.display())),
         "a config file that is not there must not read as one that is:\n{text}"
     );
+    assert!(
+        text.lines().any(|l| l == "Leader  C-a"),
+        "the report says which key starts a chord:\n{text}"
+    );
     let text = String::from_utf8_lossy(&with_config.stdout);
     assert!(
         text.lines()
@@ -352,6 +356,61 @@ async fn server_start_status_and_stop_manage_a_real_server() {
         "the stop persisted the structure"
     );
     assert!(!socket.exists(), "the stop took the socket with it");
+}
+
+/// The config file and the running server can disagree about the leader: the file is read at
+/// start and on `config.reload`, so an edit made after the server started is not in force. The
+/// report has to answer for the server, because that is the key that works.
+///
+/// This is a real trap and not a theoretical one. A leader set in a file the running server
+/// had never read left no way to find the leader that did work: the help overlay is the one
+/// place that lists it, and reaching the help overlay needs the leader.
+#[tokio::test]
+async fn server_status_reports_the_leader_in_force_not_the_one_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("domux2.sock");
+    let state = dir.path().join("state");
+    let config = dir.path().join("domux.toml");
+    let cli = || {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+        c.env("DOMUX_SOCKET", &socket)
+            .env("DOMUX_STATE_DIR", &state)
+            .env("DOMUX_CONFIG_FILE", &config)
+            .env_remove("DOMUX_TAB")
+            .env_remove("DOMUX_PANE")
+            .env_remove("DOMUX_WORKSPACE")
+            .env_remove("TMUX");
+        c
+    };
+    let leader_line = |o: &std::process::Output| {
+        String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .find(|l| l.starts_with("Leader"))
+            .unwrap_or("(no leader line)")
+            .to_string()
+    };
+
+    // Every step runs before any assertion, so a failed one still stops the server.
+    cli().args(["server", "start"]).output().await.unwrap();
+    // Written after the server started, which is the whole point: it is on disk and not yet
+    // in force.
+    std::fs::write(&config, "[keys]\nleader = \"C-s\"\n").unwrap();
+    let before = cli().args(["server", "status"]).output().await.unwrap();
+    cli().args(["config", "reload"]).output().await.unwrap();
+    let after = cli().args(["server", "status"]).output().await.unwrap();
+    let stopped = cli().args(["server", "stop"]).output().await.unwrap();
+
+    assert_eq!(
+        leader_line(&before),
+        "Leader  C-a",
+        "an edit the server has not read is not the leader in force"
+    );
+    assert_eq!(
+        leader_line(&after),
+        "Leader  C-s",
+        "the reload put it in force"
+    );
+    assert!(stopped.status.success());
 }
 
 /// Runs the client on a real pty, waits for `wants` to show on the screen, sends leader d and

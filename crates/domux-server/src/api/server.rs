@@ -26,6 +26,8 @@ pub fn info(ctx: &mut Ctx) -> Result<Value, ApiError> {
         config_file: ctx.config.path.clone(),
         pid: std::process::id(),
         started_at: ctx.started_at.to_string(),
+        // The keymap's, not the file's: what answers keys right now.
+        leader: ctx.config.keymap.leader.to_string(),
         config_error: ctx.config.error.as_ref().map(|e| e.to_string()),
         clients,
     })

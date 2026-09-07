@@ -511,6 +511,10 @@ pub struct ServerInfo {
     pub config_file: PathBuf,
     pub pid: u32,
     pub started_at: String,
+    /// The leader the running server is using, as a key name. The config file can disagree
+    /// with it - it is read at start and on `config.reload`, so an edit not yet reloaded is
+    /// not in force - and when the two disagree this is the one that answers keys.
+    pub leader: String,
     pub config_error: Option<String>,
     pub clients: Vec<ClientInfo>,
 }

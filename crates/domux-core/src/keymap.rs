@@ -167,19 +167,32 @@ impl Keymap {
     pub fn from_config(cfg: &KeysConfig) -> Result<(Keymap, Vec<KeymapWarning>), String> {
         let leader = KeyName::parse(&cfg.leader).map_err(|e| format!("[keys] leader: {e}"))?;
         let mut warnings = Vec::new();
-        let mut table =
-            |name: &str, map: &std::collections::BTreeMap<String, String>| -> Vec<Binding> {
-                let mut out = Vec::new();
-                for (k, v) in map {
-                    match (KeyName::parse(k), Action::parse(v)) {
-                        (Ok(key), Ok(action)) => out.push(Binding { key, action }),
-                        (Err(e), _) | (_, Err(e)) => {
-                            warnings.push(KeymapWarning(format!("[{name}] {k:?}: {e}")))
+        let mut table = |name: &str,
+                         map: &std::collections::BTreeMap<String, String>|
+         -> Vec<Binding> {
+            let mut out = Vec::new();
+            for (k, v) in map {
+                match (KeyName::parse(k), Action::parse(v)) {
+                    (Ok(key), Ok(action)) => {
+                        // The action is checked against the methods the server has, and
+                        // against what each one takes, so a typo is read out of the file
+                        // by whoever is editing it rather than discovered later by
+                        // pressing the key. The binding is kept even so: a bad key cannot
+                        // be represented and has to be dropped, but a bad action can, and
+                        // keeping it means the key answers with the reason instead of
+                        // falling through to the pane and doing nothing at all.
+                        if let Err(e) = crate::api::Method::from_action(&action) {
+                            warnings.push(KeymapWarning(format!("[{name}] {k:?}: {}", e.message)));
                         }
+                        out.push(Binding { key, action });
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        warnings.push(KeymapWarning(format!("[{name}] {k:?}: {e}")))
                     }
                 }
-                out
-            };
+            }
+            out
+        };
         let bindings = table("keys.bindings", &cfg.bindings);
         let global = table("keys.global", &cfg.global);
         let mut passthrough_keys = Vec::new();
@@ -359,6 +372,40 @@ mod tests {
         assert_eq!(km.key_for("tab.rename"), Some("C-a ,".to_string()));
         assert_eq!(km.key_for("focus.left"), Some("C-h".to_string()));
         assert_eq!(km.key_for("pane.split right"), Some("C-a \\".to_string()));
+    }
+
+    /// A typo in an action used to be accepted in silence: the file loaded, `config.reload`
+    /// answered "config reloaded", and the key was found to do nothing only by pressing it.
+    /// The whole point of reloading is to learn whether the edit took.
+    #[test]
+    fn an_action_the_server_cannot_do_is_a_warning_and_the_binding_stays() {
+        let mut cfg = crate::config::KeysConfig::default();
+        cfg.bindings.insert("v".into(), "config.explode".into());
+        let (km, warnings) = Keymap::from_config(&cfg).unwrap();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].0.contains("\"v\""), "{:?}", warnings[0]);
+        assert!(
+            warnings[0].0.contains("config.explode"),
+            "the warning names the action that is wrong: {:?}",
+            warnings[0]
+        );
+        // Kept, unlike a bad key: the key answers with the reason when pressed rather than
+        // falling through to the pane and doing nothing at all.
+        assert!(km
+            .binding_for(&press(Key::Char('v'), Mods::empty()))
+            .is_some());
+    }
+
+    /// Arguments are part of the action, so an argument the method cannot take is the same
+    /// typo and is read out of the file at the same moment.
+    #[test]
+    fn an_action_whose_arguments_do_not_fit_is_a_warning_too() {
+        for action in ["tab.select", "pane.resize left twice"] {
+            let mut cfg = crate::config::KeysConfig::default();
+            cfg.bindings.insert("v".into(), action.into());
+            let (_, warnings) = Keymap::from_config(&cfg).unwrap();
+            assert_eq!(warnings.len(), 1, "{action:?}: {warnings:?}");
+        }
     }
 
     #[test]

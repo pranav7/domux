@@ -219,6 +219,10 @@ async fn status() -> anyhow::Result<()> {
         info.config_error.as_deref(),
         info.config_file.exists(),
     ))?;
+    // After the config line, because that is the question it answers: the file can say one
+    // leader while the server runs another, and nothing else on screen would tell you which
+    // key to press.
+    print_line(&format!("Leader  {}", info.leader))?;
     print_line(&format!("Clients: {}", info.clients.len()))
 }
 
