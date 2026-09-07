@@ -19,7 +19,12 @@ async fn state_json_is_written_after_structure_changes_with_the_current_schema_a
     let path = h.state_dir().join("state.json");
     let text = std::fs::read_to_string(&path).expect("state.json exists");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(v["schema_version"], domux_core::state_file::SCHEMA_VERSION);
+    // Deliberately the literal 2, not `state_file::SCHEMA_VERSION`: this assertion exists to
+    // pin the format contract, the number that actually reaches the author's disk. Comparing
+    // against the constant would make it track a bump instead of catching one; a
+    // `SCHEMA_VERSION` change with no new migration rung would go unnoticed here even though
+    // domux-core's own tests would fail.
+    assert_eq!(v["schema_version"], 2);
     assert_eq!(
         v["projects"][0]["workspaces"][0]["tabs"]
             .as_array()

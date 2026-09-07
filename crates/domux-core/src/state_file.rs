@@ -328,6 +328,15 @@ mod tests {
             "/fixtures/state/v1.json"
         ))
         .unwrap();
+        // Deliberately the literal 1, not a variable: this test exists to prove a
+        // version-1 file migrates, so it must first prove the fixture actually is one.
+        // Without this, editing the fixture's schema_version to 2 would still leave every
+        // assertion below green while `v1_to_v2` never ran.
+        let raw: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            raw["schema_version"], 1,
+            "the fixture must be a version-1 file"
+        );
         let file = parse(&text).unwrap();
         assert_eq!(file.schema_version, SCHEMA_VERSION);
         assert!(
