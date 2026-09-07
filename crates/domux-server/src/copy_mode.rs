@@ -54,3 +54,12 @@ pub fn handle_key(_pane: &mut PaneRuntime, key: &KeyEvent) -> CopyOutcome {
         CopyOutcome::Continue
     }
 }
+
+/// The copy mode keys for the top bar's right end, or `None` when the pane the view is on is
+/// not in copy mode. Task 19 fills the text; until then copy mode adds no keys of its own and
+/// the right end shows whatever it would otherwise.
+pub fn hint_pieces(
+    _input: &crate::render::RenderInput,
+) -> Option<Vec<crate::render::top_bar::Piece>> {
+    None
+}

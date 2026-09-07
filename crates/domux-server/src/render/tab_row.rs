@@ -1,78 +1,208 @@
 //! Tab cells: `1` or `2 pr1`, the current tab filled accent, `│` separators, `+`.
+//!
+//! The row is built as cells and only then drawn, because it has to fit a budget. The current
+//! tab is the one visible focus target (principle 2), so it is what the row keeps: when the
+//! tabs are wider than the room, the row shows the widest run of tabs around the current one
+//! that fits and marks each elided end with `…`, rather than dropping tabs off either end with
+//! nothing to say it did (principle 6).
 
-use crate::render::boxed::put;
+use crate::render::boxed::put_within;
 use crate::render::theme;
-use domux_core::model::{PromptKind, Tab};
+use domux_core::model::{PromptKind, Tab, TextInput};
+use domux_core::text::{display_width, sanitize_for_display};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
-/// Draws the tab cells from `x` on row `y` and returns the x after the trailing separator.
-/// When `prompt` names the current tab, its cell shows the prompt instead of its name
-/// (interface spec 4.7): `Name tab 2 › input▮`.
+/// The cells an elided end takes: `…` and the separator after it.
+const ELISION: usize = 2;
+/// The cells the `+` takes: ` + ` and the separator after it.
+const PLUS: usize = 4;
+
+/// One cell of the row: the styled runs it draws, and the cells they take.
 ///
-/// Every write goes through `put`, which clips at the buffer's right edge, so a tab row
-/// wider than the screen is truncated rather than drawn past it.
-pub fn draw_tabs(
-    tabs: &[Tab],
-    current: usize,
-    prompt: Option<&PromptKind>,
-    x: u16,
-    y: u16,
-    buf: &mut Buffer,
-) -> u16 {
-    let bg = theme::MANTLE;
-    let sep = Style::default().fg(theme::SURFACE0).bg(bg);
-    let mut cx = x;
-    for (i, tab) in tabs.iter().enumerate() {
-        if i > 0 {
-            cx = put(buf, cx, y, "│", sep);
-        }
-        let is_current = i == current;
-        if let (true, Some(prompt)) = (is_current, prompt) {
-            cx = draw_prompt_cell(prompt, i + 1, cx, y, buf);
-            continue;
-        }
-        let label = match &tab.name {
-            Some(name) => format!(" {} {} ", i + 1, name),
-            None => format!(" {} ", i + 1),
-        };
-        let style = if is_current {
-            Style::default()
-                .fg(theme::BASE)
-                .bg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme::OVERLAY1).bg(bg)
-        };
-        cx = put(buf, cx, y, &label, style);
-    }
-    cx = put(buf, cx, y, "│", sep);
-    cx = put(
-        buf,
-        cx,
-        y,
-        " + ",
-        Style::default().fg(theme::SURFACE2).bg(bg),
-    );
-    put(buf, cx, y, "│", sep)
+/// Measured on sanitized text, so the width is the width `put_within` will draw. A tab name is
+/// typed at the prompt or passed to `tab.rename`, so it can hold a control character or a
+/// zero-width grapheme, and a budget measured on cells that will not be drawn is not a budget.
+struct TabCell {
+    runs: Vec<(String, Style)>,
+    width: usize,
 }
 
-fn draw_prompt_cell(prompt: &PromptKind, number: usize, x: u16, y: u16, buf: &mut Buffer) -> u16 {
-    let PromptKind::TabName { input, .. } = prompt;
+impl TabCell {
+    fn new(runs: Vec<(String, Style)>) -> TabCell {
+        let runs: Vec<(String, Style)> = runs
+            .into_iter()
+            .map(|(text, style)| (sanitize_for_display(&text), style))
+            .collect();
+        let width = runs.iter().map(|(text, _)| display_width(text)).sum();
+        TabCell { runs, width }
+    }
+
+    /// The cells this tab takes in the row: its own, plus the separator after it.
+    fn slot(&self) -> usize {
+        self.width + 1
+    }
+}
+
+/// The tab row of one workspace, ready to measure and then draw.
+pub struct TabRow {
+    cells: Vec<TabCell>,
+    current: usize,
+}
+
+impl TabRow {
+    pub fn new(tabs: &[Tab], current: usize, prompt: Option<&PromptKind>) -> TabRow {
+        let cells = tabs
+            .iter()
+            .enumerate()
+            .map(|(i, tab)| cell_for(tab, i, current, prompt))
+            .collect();
+        TabRow { cells, current }
+    }
+
+    /// The cells the whole row wants: every tab and its separator, then `│ + │`.
+    fn natural(&self) -> usize {
+        self.cells.iter().map(TabCell::slot).sum::<usize>() + PLUS
+    }
+
+    /// The cells the row keeps before the right end takes any: the current tab's own cell, its
+    /// separator, and an elision mark at each end. Never more than the whole row wants.
+    pub fn floor(&self) -> usize {
+        let current = self
+            .cells
+            .get(self.current)
+            .map(|c| c.slot() + 2 * ELISION)
+            .unwrap_or(PLUS);
+        self.natural().min(current)
+    }
+
+    /// Draws the row from `x` on row `y` into `budget` cells, and returns the x after the last
+    /// cell it drew.
+    pub fn draw(&self, x: u16, y: u16, budget: usize, buf: &mut Buffer) -> u16 {
+        let sep = Style::default().fg(theme::SURFACE0).bg(theme::MANTLE);
+        let plus_style = Style::default().fg(theme::SURFACE2).bg(theme::MANTLE);
+        if budget == 0 {
+            return x;
+        }
+        // Inclusive, and clamped into `u16` before the cast: a budget is derived from a
+        // client's reported screen, which nothing clamps, and a wrapped edge would let the row
+        // write over its neighbour instead of stopping at it.
+        let last_x = x
+            .saturating_add(budget.min(u16::MAX as usize) as u16)
+            .saturating_sub(1);
+        let n = self.cells.len();
+        if n == 0 {
+            let cx = put_within(buf, x, y, last_x, "│", sep);
+            let cx = put_within(buf, cx, y, last_x, " + ", plus_style);
+            return put_within(buf, cx, y, last_x, "│", sep);
+        }
+        let current = self.current.min(n - 1);
+        // The window of tabs the row shows. It starts at the current tab, which must be
+        // visible, and grows one tab at a time to each side while the row still fits.
+        let mut lo = current;
+        let mut hi = current + 1;
+        let mut tabs = self.cells[current].slot();
+        let framed = |lo: usize, hi: usize, tabs: usize| {
+            tabs + if lo > 0 { ELISION } else { 0 } + if hi < n { ELISION } else { 0 }
+        };
+        // The `+` is reserved before the window grows, so it does not appear and disappear as
+        // the current tab changes width. It goes only when the current tab needs its cells.
+        let plus = framed(lo, hi, tabs) + PLUS <= budget;
+        let cap = budget - if plus { PLUS } else { 0 };
+        loop {
+            let mut grew = false;
+            if hi < n && framed(lo, hi + 1, tabs + self.cells[hi].slot()) <= cap {
+                tabs += self.cells[hi].slot();
+                hi += 1;
+                grew = true;
+            }
+            if lo > 0 && framed(lo - 1, hi, tabs + self.cells[lo - 1].slot()) <= cap {
+                lo -= 1;
+                tabs += self.cells[lo].slot();
+                grew = true;
+            }
+            if !grew {
+                break;
+            }
+        }
+        if framed(lo, hi, tabs) > budget {
+            // Not even the current tab's own cell fits. It is drawn cut at one cell short of
+            // the budget and that cell is the `…`, so a cut cell says it was cut (principle 6)
+            // instead of ending wherever the clip fell.
+            let mut cx = x;
+            for (text, style) in &self.cells[current].runs {
+                cx = put_within(buf, cx, y, last_x.saturating_sub(1), text, *style);
+            }
+            return put_within(buf, cx, y, last_x, "…", sep);
+        }
+        let mut cx = x;
+        if lo > 0 {
+            cx = put_within(buf, cx, y, last_x, "…", sep);
+            cx = put_within(buf, cx, y, last_x, "│", sep);
+        }
+        for cell in &self.cells[lo..hi] {
+            for (text, style) in &cell.runs {
+                cx = put_within(buf, cx, y, last_x, text, *style);
+            }
+            cx = put_within(buf, cx, y, last_x, "│", sep);
+        }
+        if hi < n {
+            cx = put_within(buf, cx, y, last_x, "…", sep);
+            cx = put_within(buf, cx, y, last_x, "│", sep);
+        }
+        if plus {
+            cx = put_within(buf, cx, y, last_x, " + ", plus_style);
+            cx = put_within(buf, cx, y, last_x, "│", sep);
+        }
+        cx
+    }
+}
+
+fn cell_for(tab: &Tab, i: usize, current: usize, prompt: Option<&PromptKind>) -> TabCell {
+    // The prompt belongs to the cell of the tab it names, which is not always the current one:
+    // `tab.rename` with no name can name another tab and still open the prompt in this view.
+    if let Some(PromptKind::TabName { tab: named, input }) = prompt {
+        if named == &tab.id {
+            return prompt_cell(i + 1, input);
+        }
+    }
+    let label = match &tab.name {
+        Some(name) => format!(" {} {} ", i + 1, name),
+        None => format!(" {} ", i + 1),
+    };
+    let style = if i == current {
+        Style::default()
+            .fg(theme::BASE)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::OVERLAY1).bg(theme::MANTLE)
+    };
+    TabCell::new(vec![(label, style)])
+}
+
+/// `Name tab 2 › pr1▮` (interface spec 4.7): the label at reduced weight, the name as typed,
+/// and a block caret, all in the tab's own accent-filled cell.
+fn prompt_cell(number: usize, input: &TextInput) -> TabCell {
     let fill = Style::default().fg(theme::BASE).bg(theme::ACCENT);
     let label = fill.add_modifier(Modifier::DIM);
-    let mut cx = put(buf, x, y, &format!(" Name tab {number} › "), label);
     let before: String = input.text.chars().take(input.cursor).collect();
     let after: String = input.text.chars().skip(input.cursor).collect();
-    cx = put(buf, cx, y, &before, fill);
-    // The caret: reverse the cell under it so it reads without colour.
+    // The caret: reverse the cell under it so it reads without colour. A caret at the end of
+    // the name has no character under it, and neither has one over a character a terminal
+    // cannot draw, so it takes a space.
     let caret = after
         .chars()
         .next()
-        .map(|c| c.to_string())
+        .map(|c| sanitize_for_display(&c.to_string()))
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| " ".to_string());
-    cx = put(buf, cx, y, &caret, fill.add_modifier(Modifier::REVERSED));
     let rest: String = after.chars().skip(1).collect();
-    cx = put(buf, cx, y, &rest, fill);
-    put(buf, cx, y, " ", fill)
+    TabCell::new(vec![
+        (format!(" Name tab {number} › "), label),
+        (before, fill),
+        (caret, fill.add_modifier(Modifier::REVERSED)),
+        (rest, fill),
+        (" ".to_string(), fill),
+    ])
 }

@@ -1,0 +1,382 @@
+//! Naming a tab in its own cell, the chord indicator, and the keys help overlay, plus the
+//! three top bar defects earlier reviews deferred to Task 18: the prompt drawn on the cell of
+//! the tab it names, the tab row eliding around a current tab that must stay visible, and a
+//! right end that elides instead of running off the screen edge.
+
+use domux_core::config::Config;
+use domux_server::testing::{row, Harness};
+use std::time::Duration;
+
+#[tokio::test]
+async fn leader_comma_opens_the_prompt_in_the_tab_cell_and_the_clock_gives_way() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), ",").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Name tab 1 ›"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  Name tab 1 ›   │ + │           ⏎ save · esc cancel · empty clears |",
+        "{f}"
+    );
+    assert!(
+        f.contains("r0 c13-26 dim fg=#1e1e2e bg=#cba6f7"),
+        "the label at reduced weight in the accent cell:\n{f}"
+    );
+    assert!(
+        f.contains("r0 c27-27 inverse fg=#1e1e2e bg=#cba6f7"),
+        "the block caret:\n{f}"
+    );
+    assert!(f.contains("fg=#89b4fa"), "keys in blue:\n{f}");
+    h.type_text(h.client.clone(), "tests").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("› tests"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  Name tab 1 › tests  │ + │      ⏎ save · esc cancel · empty clears |",
+        "{f}"
+    );
+    let pane = h.focused_pane(h.client.clone());
+    assert!(h.pane_input(&pane).is_empty(), "the prompt owns the keys");
+    h.key(h.client.clone(), "Enter").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(" 1 tests "),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  1 tests │ + │                                   14:32   Fri 4 Sep |",
+        "{f}"
+    );
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        domux_core::model::Focus::Pane(pane),
+        "focus returned to the pane"
+    );
+}
+
+#[tokio::test]
+async fn esc_cancels_and_an_empty_name_clears_and_leader_r_clears_without_a_prompt() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    h.api("tab.rename", serde_json::json!({"name": "old"}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" 1 old "),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), ",").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Name tab 1 ›"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("› old"),
+        "the prompt starts with the current name:\n{f}"
+    );
+    h.key(h.client.clone(), "Esc").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("Name tab"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(f.contains(" 1 old "), "esc changed nothing:\n{f}");
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), ",").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Name tab 1 ›"),
+        Duration::from_secs(2),
+    )
+    .await;
+    for _ in 0..3 {
+        h.key(h.client.clone(), "Backspace").await;
+    }
+    h.key(h.client.clone(), "Enter").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("Name tab"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("main  1 │"),
+        "an empty name gave the tab its number back:\n{f}"
+    );
+    h.api("tab.rename", serde_json::json!({"name": "again"}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("again"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "R").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains("again"),
+        Duration::from_secs(2),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn the_chord_indicator_shows_the_leader_and_the_help_key_in_the_clocks_place() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    h.key(h.client.clone(), "C-a").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("C-a"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(row(&f, 0).ends_with("C-a  ? keys |"), "{f}");
+    assert!(!f.contains("14:32"), "the clock gave way:\n{f}");
+    h.key(h.client.clone(), "Esc").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("14:32"),
+        Duration::from_secs(2),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn help_lists_the_configured_bindings_and_esc_closes_it() {
+    let mut cfg = Config::default();
+    cfg.keys.leader = "C-b".into();
+    cfg.keys
+        .bindings
+        .insert("g".into(), "pane.split right".into());
+    cfg.keys.bindings.insert("|".into(), "".into());
+    // 80x30, not 80x24: the full list is 23 rows and the box loses two to its border.
+    // The 80x24 case is the next test, which is where truncation is the behaviour under test.
+    let mut h = Harness::start(cfg, 80, 30).await;
+    h.key(h.client.clone(), "C-b").await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(f.contains("C-b g      pane.split right"), "{f}");
+    assert!(
+        f.contains("C-b 1-9    tab.select <n>"),
+        "the nine digits collapse into one row:\n{f}"
+    );
+    assert!(!f.contains("C-b |"), "the unbound default is gone:\n{f}");
+    assert!(f.contains("C-h        focus.left"), "{f}");
+    assert!(
+        f.contains("nvim, vim, fzf keep C-h, C-j, C-k, C-l, C-\\"),
+        "{f}"
+    );
+    assert!(f.contains("esc close"), "{f}");
+    let pane = h.focused_pane(h.client.clone());
+    h.key(h.client.clone(), "j").await;
+    h.frame(h.client.clone()).await;
+    assert!(h.pane_input(&pane).is_empty(), "the overlay owns the keys");
+    h.key(h.client.clone(), "Esc").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains("┌ Keys"),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        domux_core::model::Focus::Pane(pane)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn help_keeps_the_footer_when_the_screen_is_too_short_for_every_binding() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    // The list does not fit, so it says how much it dropped and still shows the way out.
+    // An overlay that swallowed `esc close` would be a dead end (principle 9).
+    assert!(
+        f.contains("more, see domux.toml"),
+        "the truncation is named:\n{f}"
+    );
+    assert!(
+        f.contains("esc close"),
+        "the footer survives truncation:\n{f}"
+    );
+    h.key(h.client.clone(), "Esc").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains("┌ Keys"),
+        Duration::from_secs(2),
+    )
+    .await;
+}
+
+/// A defect the Task 16 review found and deferred here: `tab.rename` with no name on a tab
+/// that is not the current one drew the prompt over the *current* tab's cell and labelled it
+/// with the *current* tab's number, while the prompt held the other tab's id - wrong cell,
+/// wrong label, right target, so the reader could not tell what was about to be renamed.
+///
+/// The current-tab case hides the bug, so the case under test is the non-current one: the
+/// client is on tab 2 and the prompt names tab 1.
+#[tokio::test]
+async fn the_prompt_draws_in_the_cell_of_the_tab_it_names_not_the_current_one() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    h.api("tab.create", serde_json::json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" 1 │ 2 │"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.api("tab.rename", serde_json::json!({"tab": "1"}))
+        .await
+        .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Name tab"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  Name tab 1 ›   │ 2 │ + │       ⏎ save · esc cancel · empty clears |",
+        "{f}"
+    );
+    assert!(
+        f.contains("r0 c13-26 dim fg=#1e1e2e bg=#cba6f7"),
+        "the prompt fills tab 1's cell, not tab 2's:\n{f}"
+    );
+    assert!(
+        f.contains("r0 c30-32 bold fg=#1e1e2e bg=#cba6f7"),
+        "tab 2 is still the current cell:\n{f}"
+    );
+    h.type_text(h.client.clone(), "one").await;
+    h.key(h.client.clone(), "Enter").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("1 one"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains(" 1 one │ 2 │"),
+        "the name landed on the tab the prompt named:\n{f}"
+    );
+}
+
+/// A defect the Task 15 review found and deferred here: the top bar dropped tabs, the `+` and
+/// the whole right end with no indicator, and could hide the current tab. The current tab is
+/// the one visible focus target (principle 2), so it stays; each elided end says so with `…`
+/// rather than the row just ending (principle 6).
+#[tokio::test]
+async fn the_tab_row_elides_both_ends_around_the_current_tab_when_the_tabs_do_not_fit() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    for _ in 0..8 {
+        h.api("tab.create", serde_json::json!({})).await.unwrap();
+    }
+    h.api("tab.select", serde_json::json!({"tab": "5"}))
+        .await
+        .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("│ 5 │"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main …│ 3 │ 4 │ 5 │ 6 │ 7 │…│ + │ 14:32   Fri 4 Sep |",
+        "{f}"
+    );
+    assert!(
+        f.contains("r0 c23-25 bold fg=#1e1e2e bg=#cba6f7"),
+        "tab 5 is the current cell:\n{f}"
+    );
+}
+
+/// The same defect at the width where even `+` has to go: nine tabs on a 40 column screen.
+/// The current tab and the mark that says tabs were dropped are the last two things to go.
+#[tokio::test]
+async fn the_tab_row_drops_the_plus_before_the_current_tab_on_a_narrow_screen() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    for _ in 0..7 {
+        h.api("tab.create", serde_json::json!({})).await.unwrap();
+    }
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("│ 8 │"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main …│ 8 │   14:32   Fri 4 Sep |",
+        "{f}"
+    );
+    assert!(
+        f.contains("r0 c15-17 bold fg=#1e1e2e bg=#cba6f7"),
+        "the current tab is what the row keeps:\n{f}"
+    );
+}
+
+/// A defect the Task 17 review found and deferred here: the right end had no collision
+/// handling beyond `max(x + 1)`, so a hint too long for the room beside the tab row started
+/// one cell after the tabs and ran off the screen edge. It elides instead (principle 6), and
+/// a cell of gap keeps it off the tab row.
+#[tokio::test]
+async fn a_hint_too_long_for_the_room_beside_the_tabs_elides() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "9").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("tab 9 does not"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 0),
+        "| proj › main  1 │ + │ tab 9 does not e… |",
+        "{f}"
+    );
+}

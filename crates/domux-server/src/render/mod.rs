@@ -1,6 +1,7 @@
 //! Composes one client's frame: the top bar, then the tab's pane boxes.
 
 pub mod boxed;
+pub mod overlay;
 pub mod pane_box;
 pub mod tab_row;
 pub mod theme;
@@ -21,7 +22,7 @@ use domux_core::ids::PaneId;
 use domux_core::ids::TabId;
 use domux_core::keymap::Keymap;
 use domux_core::model::layout::solve;
-use domux_core::model::{ClientView, Focus, Model};
+use domux_core::model::{ClientView, Focus, Model, Overlay};
 use domux_core::proto::CursorState;
 use domux_term::{Emulator, Size};
 use ratatui::buffer::Buffer;
@@ -76,6 +77,14 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
     }
     top_bar::draw(input, &mut buf);
     let cursor = draw_panes(input, &mut buf);
+    overlay::draw(input, &mut buf);
+    // An overlay other than the prompt covers the pane the cursor is in, so the outer terminal
+    // hides the cursor rather than blinking it under the box: the overlay is the one visible
+    // focus target (principle 2). The prompt draws its own caret in the tab cell.
+    let cursor = match &input.view.overlay {
+        None | Some(Overlay::Prompt(_)) => cursor,
+        Some(_) => None,
+    };
     (buf, cursor)
 }
 
