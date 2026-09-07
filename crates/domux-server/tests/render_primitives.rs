@@ -1,0 +1,156 @@
+use domux_core::model::Rect as LRect;
+use domux_server::render::boxed::Boxed;
+use domux_server::render::pane_box::{cursor_position, render_grid, Selection};
+use domux_server::render::{theme, to_rect};
+use domux_term::{Attrs, Color, Cursor, Grid, Rgb, Size};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::Modifier;
+
+fn row(buf: &Buffer, y: u16) -> String {
+    (0..buf.area.width)
+        .map(|x| buf[(x, y)].symbol().to_string())
+        .collect()
+}
+
+#[test]
+fn boxed_draws_title_one_cell_in_and_the_flag_at_the_right_end() {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+    let inner = Boxed {
+        title: "zsh",
+        flag: Some("zoomed"),
+        focused: false,
+    }
+    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    assert_eq!(row(&buf, 0), "┌ zsh ───── zoomed ┐");
+    assert_eq!(row(&buf, 1), "│                  │");
+    assert_eq!(row(&buf, 2), "└──────────────────┘");
+    assert_eq!(inner, Rect::new(1, 1, 18, 1));
+    assert_eq!(buf[(0, 0)].fg, theme::SURFACE2);
+    assert_eq!(buf[(2, 0)].fg, theme::OVERLAY1);
+    assert!(!buf[(2, 0)].modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn focused_box_uses_the_accent_and_a_bold_title() {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
+    Boxed {
+        title: "sh",
+        flag: None,
+        focused: true,
+    }
+    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    assert_eq!(row(&buf, 0), "┌ sh ──────┐");
+    assert_eq!(buf[(0, 0)].fg, theme::ACCENT);
+    assert_eq!(buf[(2, 0)].fg, theme::ACCENT);
+    assert!(buf[(2, 0)].modifier.contains(Modifier::BOLD));
+    assert!(
+        !buf[(6, 0)].modifier.contains(Modifier::BOLD),
+        "the rule is plain weight"
+    );
+}
+
+#[test]
+fn long_titles_are_truncated_by_grapheme_and_tiny_boxes_do_not_panic() {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+    Boxed {
+        title: "漢字漢字漢字",
+        flag: None,
+        focused: false,
+    }
+    .render(Rect::new(0, 0, 10, 3), &mut buf);
+    // `row` reads one symbol per cell, and `put` calls `reset()` on the cell after each
+    // wide grapheme, which ratatui renders as a space. So a 10-cell row is 10 symbols:
+    // the box corner, the title's leading space, 漢 and its spacer, 字 and its spacer, the
+    // ellipsis, the title's trailing space, one rule cell, and the closing corner.
+    assert_eq!(row(&buf, 0), "┌ 漢 字 … ─┐");
+    let mut tiny = Buffer::empty(Rect::new(0, 0, 2, 1));
+    let inner = Boxed {
+        title: "x",
+        flag: Some("zoomed"),
+        focused: true,
+    }
+    .render(Rect::new(0, 0, 2, 1), &mut tiny);
+    assert_eq!(inner.width, 0);
+}
+
+#[test]
+fn grid_cells_map_to_symbols_styles_wide_spacers_and_selection() {
+    let mut g = Grid::new(Size { cols: 6, rows: 2 });
+    let a = g.cell_mut(0, 0);
+    a.text = "a".into();
+    a.attrs = Attrs::BOLD;
+    a.fg = Color::Indexed(1);
+    let wide = g.cell_mut(0, 1);
+    wide.text = "漢".into();
+    wide.width = 2;
+    g.cell_mut(0, 2).width = 0;
+    let x = g.cell_mut(0, 3);
+    x.text = "x".into();
+    x.bg = Color::Rgb(Rgb { r: 1, g: 2, b: 3 });
+    let mut buf = Buffer::empty(Rect::new(0, 0, 8, 4));
+    let inner = Rect::new(1, 1, 6, 2);
+    render_grid(
+        &g,
+        Some(&Selection {
+            start: (0, 3),
+            end: (1, 1),
+        }),
+        inner,
+        &mut buf,
+    );
+    assert_eq!(buf[(1, 1)].symbol(), "a");
+    assert!(buf[(1, 1)].modifier.contains(Modifier::BOLD));
+    assert_eq!(buf[(1, 1)].fg, ratatui::style::Color::Indexed(1));
+    assert_eq!(buf[(2, 1)].symbol(), "漢");
+    assert_eq!(
+        buf[(3, 1)].symbol(),
+        " ",
+        "spacer cell is reset so the diff skips it"
+    );
+    assert_eq!(buf[(4, 1)].bg, ratatui::style::Color::Rgb(1, 2, 3));
+    assert!(
+        buf[(4, 1)].modifier.contains(Modifier::REVERSED),
+        "selected"
+    );
+    assert!(
+        buf[(2, 2)].modifier.contains(Modifier::REVERSED),
+        "selection continues on the next row"
+    );
+    assert!(
+        !buf[(3, 2)].modifier.contains(Modifier::REVERSED),
+        "selection ends at its end column"
+    );
+    assert!(!buf[(1, 1)].modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
+fn cursor_position_offsets_by_the_inner_area_and_hides_when_invisible() {
+    let inner = Rect::new(11, 6, 18, 8);
+    let c = Cursor {
+        row: 2,
+        col: 3,
+        ..Cursor::default()
+    };
+    assert_eq!(cursor_position(inner, &c), Some(Position { x: 14, y: 8 }));
+    assert_eq!(
+        cursor_position(
+            inner,
+            &Cursor {
+                visible: false,
+                ..c
+            }
+        ),
+        None
+    );
+    assert_eq!(cursor_position(inner, &Cursor { col: 40, ..c }), None);
+    assert_eq!(
+        to_rect(LRect {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4
+        }),
+        Rect::new(1, 2, 3, 4)
+    );
+}
