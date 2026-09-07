@@ -496,10 +496,28 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         })
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
     // The survivor's own exit is not immediate, so it is replaced without counting; its
     // three replacements then exit at once and the fourth is kept. 3 + 1 + 3 = 7.
-    assert_eq!(spawner.count.load(Ordering::SeqCst), 7);
+    //
+    // Poll to the expected count rather than sleeping a fixed span and asserting once: the
+    // work is four spawns deep and a loaded runner does not finish it in any span short
+    // enough to keep this test quick. A fixed 200 ms saw 5 of 7 on CI.
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    while spawner.count.load(Ordering::SeqCst) < 7 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the replacements stopped at {} of 7",
+            spawner.count.load(Ordering::SeqCst)
+        );
+        tokio::task::yield_now().await;
+    }
+    // Then hold still: the fourth replacement must be kept, not replaced again.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        spawner.count.load(Ordering::SeqCst),
+        7,
+        "the guard let a fifth replacement through"
+    );
     server.stop().await;
 }
 
