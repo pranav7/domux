@@ -1,6 +1,6 @@
 //! `server start|stop|restart|status|log`, and the hidden `run` that is the server.
 
-use super::{call, call_as, socket};
+use super::{call, call_as, print_line, socket};
 use anyhow::Context;
 use clap::{Args, Subcommand};
 use domux_client::control;
@@ -54,10 +54,7 @@ pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
             start().await
         }
         ServerAction::Status => status().await,
-        ServerAction::Log => {
-            println!("{}", paths::log_file().display());
-            Ok(())
-        }
+        ServerAction::Log => super::print_line(&paths::log_file().display().to_string()),
         ServerAction::Run => run_server().await,
     }
 }
@@ -189,18 +186,20 @@ pub async fn stop() -> anyhow::Result<()> {
 /// rather than printing a line of question marks.
 async fn status() -> anyhow::Result<()> {
     let info: ServerInfo = call_as("server.info", serde_json::json!({})).await?;
-    println!(
+    print_line(&format!(
         "Server {PRODUCT_NAME} {} (pid {}), started {}",
         info.version, info.pid, info.started_at
-    );
-    println!("Socket  {}", info.socket.display());
-    println!("State   {}", info.state_dir.display());
+    ))?;
+    print_line(&format!("Socket  {}", info.socket.display()))?;
+    print_line(&format!("State   {}", info.state_dir.display()))?;
     match &info.config_error {
-        Some(e) => println!("Config  {} (not applied: {e})", info.config_file.display()),
-        None => println!("Config  {}", info.config_file.display()),
+        Some(e) => print_line(&format!(
+            "Config  {} (not applied: {e})",
+            info.config_file.display()
+        ))?,
+        None => print_line(&format!("Config  {}", info.config_file.display()))?,
     }
-    println!("Clients: {}", info.clients.len());
-    Ok(())
+    print_line(&format!("Clients: {}", info.clients.len()))
 }
 
 /// The pane ids of two servers must not collide, so the seed is drawn fresh. A machine

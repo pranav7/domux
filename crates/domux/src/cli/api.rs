@@ -1,6 +1,6 @@
 //! `api <method> [json params]` and `api schema`.
 
-use super::call;
+use super::{call, print_line};
 use clap::Args;
 
 #[derive(Args)]
@@ -15,10 +15,7 @@ pub async fn run(cmd: ApiCmd) -> anyhow::Result<()> {
     // The schema describes this build, not a running server, so it answers with nothing
     // listening.
     if cmd.method == "schema" {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&domux_core::api::schema())?
-        );
+        print_line(&serde_json::to_string_pretty(&domux_core::api::schema())?)?;
         return Ok(());
     }
     let params: serde_json::Value = match cmd.params {
@@ -27,6 +24,5 @@ pub async fn run(cmd: ApiCmd) -> anyhow::Result<()> {
         None => serde_json::json!({}),
     };
     let result = call(&cmd.method, params).await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
+    print_line(&serde_json::to_string_pretty(&result)?)
 }

@@ -1,6 +1,6 @@
 //! `pane ...`: one pane.* call on the pane named by DOMUX_PANE.
 
-use super::{call, call_as, location};
+use super::{call, call_as, location, print_line};
 use clap::{Args, Subcommand};
 use domux_core::api::PaneReadResult;
 use serde_json::json;
@@ -52,7 +52,7 @@ pub async fn run(cmd: PaneCmd) -> anyhow::Result<()> {
         PaneAction::Read { lines } => {
             let r: PaneReadResult =
                 call_as("pane.read", json!({ "pane": pane, "lines": lines })).await?;
-            println!("{}", r.text);
+            print_line(&r.text)?;
         }
         PaneAction::SendText { text } => {
             call("pane.send_text", json!({ "pane": pane, "text": text })).await?;

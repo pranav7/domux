@@ -11,7 +11,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 /// The CLI pointed at this harness's socket, and at no pane: every test that wants a
@@ -447,4 +447,113 @@ async fn server_start_says_why_the_server_could_not_start() {
     assert!(said.contains("Not a directory"), "{said}");
     let log = std::fs::read_to_string(state.join("server.log")).expect("the log was written");
     assert!(log.contains("Not a directory"), "{log}");
+}
+
+/// The one case the liveness probe cannot rule out: a server that accepts the connection and
+/// answers nothing. Every subcommand used to print a bare "EOF while parsing a value at line
+/// 1 column 0", which names no state, no object and no next action.
+#[tokio::test]
+async fn a_server_that_answers_nothing_names_the_method_the_socket_and_the_next_action() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("domux2.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let closer = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env_remove("TMUX")
+        .args(["server", "status"])
+        .output()
+        .await
+        .unwrap();
+    closer.abort();
+    let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(
+        said.starts_with(&format!(
+            "The server did not answer server.info on {}. Run domux2 server status.: ",
+            socket.display()
+        )),
+        "{said}"
+    );
+    // What follows the context is the cause. Printing only the outermost error would have
+    // dropped it, and with it the half of the sentence that says what actually failed.
+    assert!(
+        said.split("server status.: ")
+            .nth(1)
+            .is_some_and(|c| !c.is_empty()),
+        "{said}"
+    );
+}
+
+/// `events | head` is the normal way to read a stream. A reader that stops reading is the end
+/// of the output, not a failure: the write returns a broken pipe, and the CLI stops rather
+/// than panicking with a status of 101.
+#[tokio::test]
+async fn events_stops_quietly_when_the_reader_goes_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("domux2.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    // A server that keeps sending, so the CLI keeps writing into the pipe the test closed.
+    let streamer = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (r, mut w) = stream.into_split();
+        let mut line = String::new();
+        if tokio::io::BufReader::new(r)
+            .read_line(&mut line)
+            .await
+            .unwrap_or(0)
+            == 0
+        {
+            // The liveness probe. The call itself is the next connection.
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, w2) = stream.into_split();
+            let mut line = String::new();
+            tokio::io::BufReader::new(r)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            w = w2;
+        }
+        if w.write_all(b"{\"id\":1,\"result\":{}}\n").await.is_err() {
+            return;
+        }
+        loop {
+            if w.write_all(b"{\"event\":\"tab.created\",\"tab\":\"t_1\"}\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env_remove("TMUX")
+        .arg("events")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let first = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
+        .await
+        .expect("an event line within 10 s")
+        .unwrap()
+        .expect("an event line");
+    assert!(first.contains("tab.created"), "{first}");
+    drop(lines); // the reader goes away, as `head` does after its last line
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        .await
+        .expect("the CLI ended when the reader did")
+        .unwrap();
+    streamer.abort();
+    assert!(
+        status.success(),
+        "a reader that stopped reading is not a failure: {status:?}"
+    );
 }
