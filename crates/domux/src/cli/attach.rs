@@ -1,4 +1,4 @@
-//! `domux2` and `domux2 attach`: start the server when needed, then attach.
+//! The bare command and `attach`: start the server when needed, then attach.
 
 use super::socket;
 use domux_client::{attach, control, AttachOutcome};

@@ -1,4 +1,4 @@
-//! `domux2 config reload`
+//! `config reload`
 
 use super::call_as;
 use clap::{Args, Subcommand};

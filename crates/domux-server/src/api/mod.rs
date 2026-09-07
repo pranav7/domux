@@ -62,7 +62,12 @@ impl Ctx<'_> {
         self.client
             .clone()
             .or_else(|| self.model.most_recent_client())
-            .ok_or_else(|| ApiError::not_found("no client is attached; run domux2 to attach one"))
+            .ok_or_else(|| {
+                ApiError::not_found(format!(
+                    "no client is attached; run {} to attach one",
+                    domux_core::names::BIN_NAME
+                ))
+            })
     }
 
     /// The tab a `tab` param names (number, id or name in the view's workspace), or the

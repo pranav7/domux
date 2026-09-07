@@ -1,4 +1,4 @@
-//! `domux2 events [filter...]`: events.subscribe, one JSON object per line, until Ctrl-C.
+//! `events [filter...]`: events.subscribe, one JSON object per line, until Ctrl-C.
 
 use super::{not_running, socket};
 use clap::Args;

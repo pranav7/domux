@@ -9,6 +9,7 @@ pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir};
 
 use crate::api::{ApiError, Event};
 use crate::ids::{ClientId, IdGen, PaneId, ProjectId, TabId, WorkspaceId};
+use crate::names::BIN_NAME;
 use crate::proto::Capabilities;
 use domux_term::Size;
 use schemars::JsonSchema;
@@ -534,7 +535,9 @@ impl Model {
     ) -> Result<Vec<Event>, ApiError> {
         let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
         let t = self.tab_mut(tab).ok_or_else(|| {
-            ApiError::not_found(format!("tab {tab} does not exist; run domux2 api tab.list"))
+            ApiError::not_found(format!(
+                "tab {tab} does not exist; run {BIN_NAME} api tab.list"
+            ))
         })?;
         t.name = name.clone();
         Ok(vec![Event::TabRenamed {
@@ -552,7 +555,9 @@ impl Model {
             .workspace_of_tab(tab)
             .map(|w| w.id.clone())
             .ok_or_else(|| {
-                ApiError::not_found(format!("tab {tab} does not exist; run domux2 api tab.list"))
+                ApiError::not_found(format!(
+                    "tab {tab} does not exist; run {BIN_NAME} api tab.list"
+                ))
             })?;
         let w = self.workspace_mut(&ws_id).expect("workspace exists");
         let index = w
@@ -603,7 +608,9 @@ impl Model {
     /// Moves one client to a tab in its workspace and focuses that tab's focused pane.
     pub fn select_tab(&mut self, client: &ClientId, tab: &TabId) -> Result<Vec<Event>, ApiError> {
         let focused = self.tab(tab).map(|t| t.focused.clone()).ok_or_else(|| {
-            ApiError::not_found(format!("tab {tab} does not exist; run domux2 api tab.list"))
+            ApiError::not_found(format!(
+                "tab {tab} does not exist; run {BIN_NAME} api tab.list"
+            ))
         })?;
         let ws_id = self
             .workspace_of_tab(tab)
@@ -611,7 +618,7 @@ impl Model {
             .expect("tab has a workspace");
         let c = self.client_mut(client).ok_or_else(|| {
             ApiError::not_found(format!(
-                "client {client} is not attached; run domux2 api server.info"
+                "client {client} is not attached; run {BIN_NAME} api server.info"
             ))
         })?;
         c.tab = tab.clone();
@@ -638,7 +645,7 @@ impl Model {
     ) -> Result<(PaneId, Vec<Event>), ApiError> {
         let loc = self.pane_location(pane).ok_or_else(|| {
             ApiError::not_found(format!(
-                "pane {pane} does not exist; run domux2 api pane.list"
+                "pane {pane} does not exist; run {BIN_NAME} api pane.list"
             ))
         })?;
         let new_id = PaneId(self.next_id("p")?);
@@ -700,7 +707,7 @@ impl Model {
     ) -> Result<(Vec<PaneId>, Option<TabId>, Vec<Event>), ApiError> {
         let loc = self.pane_location(pane).ok_or_else(|| {
             ApiError::not_found(format!(
-                "pane {pane} does not exist; run domux2 api pane.list"
+                "pane {pane} does not exist; run {BIN_NAME} api pane.list"
             ))
         })?;
         let is_last = self
@@ -770,7 +777,7 @@ impl Model {
     pub fn focus_pane(&mut self, pane: &PaneId) -> Result<Vec<Event>, ApiError> {
         let loc = self.pane_location(pane).ok_or_else(|| {
             ApiError::not_found(format!(
-                "pane {pane} does not exist; run domux2 api pane.list"
+                "pane {pane} does not exist; run {BIN_NAME} api pane.list"
             ))
         })?;
         let t = self.tab_mut(&loc.tab).expect("tab exists");
@@ -793,7 +800,9 @@ impl Model {
 
     pub fn toggle_zoom(&mut self, tab: &TabId) -> Result<Vec<Event>, ApiError> {
         let t = self.tab_mut(tab).ok_or_else(|| {
-            ApiError::not_found(format!("tab {tab} does not exist; run domux2 api tab.list"))
+            ApiError::not_found(format!(
+                "tab {tab} does not exist; run {BIN_NAME} api tab.list"
+            ))
         })?;
         t.zoomed = if t.zoomed.is_some() {
             None
@@ -819,7 +828,7 @@ impl Model {
     ) -> Result<bool, ApiError> {
         let loc = self.pane_location(pane).ok_or_else(|| {
             ApiError::not_found(format!(
-                "pane {pane} does not exist; run domux2 api pane.list"
+                "pane {pane} does not exist; run {BIN_NAME} api pane.list"
             ))
         })?;
         let t = self.tab_mut(&loc.tab).expect("tab exists");
@@ -879,7 +888,7 @@ impl Model {
             .map(|t| t.id.clone())
             .ok_or_else(|| {
                 ApiError::not_found(format!(
-                    "tab {target:?} does not exist; run domux2 api tab.list"
+                    "tab {target:?} does not exist; run {BIN_NAME} api tab.list"
                 ))
             })
     }
@@ -894,7 +903,7 @@ impl Model {
             Ok(id)
         } else {
             Err(ApiError::not_found(format!(
-                "pane {target} does not exist; run domux2 api pane.list"
+                "pane {target} does not exist; run {BIN_NAME} api pane.list"
             )))
         }
     }

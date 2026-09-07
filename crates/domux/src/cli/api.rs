@@ -1,4 +1,4 @@
-//! `domux2 api <method> [json params]` and `domux2 api schema`.
+//! `api <method> [json params]` and `api schema`.
 
 use super::call;
 use clap::Args;

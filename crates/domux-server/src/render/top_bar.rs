@@ -152,7 +152,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
 /// Cuts the elastic piece short, if there is one, so the pieces after it keep their cells.
 ///
 /// `fit` alone runs out of room from the left and drops whatever is still to come, which for the
-/// config error is `domux2 config reload` - the one part of the notice the reader cannot act
+/// config error is the `config reload` action - the one part of the notice the reader cannot act
 /// without (principle 9). A message the file can make any length has to be the part that gives
 /// way, not the answer to it.
 ///
@@ -307,7 +307,10 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
         return RightEnd::actionable(vec![
             Piece::elastic(err.to_string(), Style::default().fg(theme::RED)),
             joining_dot(),
-            Piece::new("domux2 config reload", key),
+            Piece::new(
+                format!("{} config reload", domux_core::names::BIN_NAME),
+                key,
+            ),
         ]);
     }
     if let Some(hint) = input.hint {

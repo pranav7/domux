@@ -3,6 +3,7 @@
 use crate::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use crate::keymap::Action;
 use crate::model::{Direction, Focus, RegionKind};
+use crate::names::BIN_NAME;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -586,19 +587,19 @@ macro_rules! methods {
                 let params = if params.is_null() { Value::Object(Default::default()) } else { params };
                 match name {
                     $( $name => serde_json::from_value::<$params>(params).map(Method::$variant).map_err(|e| ApiError::invalid_params(format!("{}: {e}", $name))), )*
-                    other => Err(ApiError::not_found(format!("method {other} does not exist; run domux2 api schema for the list"))),
+                    other => Err(ApiError::not_found(format!("method {other} does not exist; run {BIN_NAME} api schema for the list"))),
                 }
             }
 
             pub fn from_action(action: &Action) -> Result<Method, ApiError> {
                 match action.method.as_str() {
                     $( $name => <$params as Params>::from_args(&action.args).map(Method::$variant), )*
-                    other => Err(ApiError::not_found(format!("action {other:?} is not a method; run domux2 api schema for the list"))),
+                    other => Err(ApiError::not_found(format!("action {other:?} is not a method; run {BIN_NAME} api schema for the list"))),
                 }
             }
         }
 
-        /// The schema `domux2 api schema` prints: every method's params and result, and
+        /// The schema that `api schema` prints: every method's params and result, and
         /// the event union.
         pub fn schema() -> Value {
             let mut methods = serde_json::Map::new();

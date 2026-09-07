@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!(
-    "the process inspector has no `process_name` or `process_cwd` for this platform: domux2 \
+    "the process inspector has no `process_name` or `process_cwd` for this platform: domux \
      supports macOS and Linux, so add an arm for this target or build on one of those"
 );
 

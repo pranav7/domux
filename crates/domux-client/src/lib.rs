@@ -52,7 +52,8 @@ fn detach_outcome(reason: String) -> AttachOutcome {
 fn refuse_inside_tmux(tmux: Option<std::ffi::OsString>) -> anyhow::Result<()> {
     if tmux.is_some() {
         anyhow::bail!(
-            "domux2 runs in its own terminal, not inside tmux; open a new Ghostty tab and run it there"
+            "{} runs in its own terminal, not inside tmux; open a new Ghostty tab and run it there",
+            domux_core::names::BIN_NAME
         );
     }
     Ok(())
@@ -314,7 +315,7 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sighup = signal(SignalKind::hangup())?;
     // Raw mode turns off ISIG, so the terminal never sends these itself, but `kill -INT` and
-    // `pkill -INT domux2` do. Without them the process ends with no unwind, no panic hook and
+    // `pkill -INT` on the binary do. Without them the process ends with no unwind, no panic hook and
     // no `Drop`, leaving the user in raw mode on the alternate screen with a hidden cursor
     // (principle 11: every exit path).
     let mut sigint = signal(SignalKind::interrupt())?;
