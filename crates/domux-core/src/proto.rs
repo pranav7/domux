@@ -20,8 +20,19 @@ pub struct Capabilities {
 
 /// Bumped when a message shape changes. The server refuses a client with another value.
 pub const PROTOCOL_VERSION: u32 = 1;
-/// A frame larger than this is a bug or an attack, never a screen.
+/// A frame larger than this is a bug or an attack, never a screen. The value is also what
+/// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.
 pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
+
+/// The two constants are related, so hold the relation here rather than trusting a reader to
+/// re-derive it. A valid frame's first byte is the top byte of a length no larger than
+/// `MAX_FRAME`, and `is_control_api_first_byte` is sound only while that byte can never be
+/// `{`. Raising `MAX_FRAME` to 0x7b000000 or above breaks the build instead of misrouting an
+/// attach connection.
+const _: () = assert!(
+    MAX_FRAME.to_be_bytes()[0] < b'{',
+    "MAX_FRAME is so large that a frame's first byte could be the control API's opening brace"
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
@@ -114,13 +125,31 @@ pub enum ProtoError {
     Decode(String),
 }
 
-/// A message as bytes: a 4-byte little-endian length, then bincode.
-pub fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
+/// The 4-byte big-endian length prefix for a body of `body_len` bytes, or `FrameTooLarge`
+/// when no honest prefix exists: the decoder would refuse the frame anyway, and above
+/// `u32::MAX` the length does not fit the prefix at all, so writing one would put a number on
+/// the wire that is not the body's length and desynchronise the stream. Split out from
+/// `encode` so the limit is testable without allocating a frame that size.
+fn length_prefix(body_len: usize) -> Result<[u8; 4], ProtoError> {
+    if body_len > MAX_FRAME as usize {
+        // A body wider than the variant's `u32` cannot be reported exactly. `u32::MAX` reads
+        // as "at least this large", and it is far above the limit either way.
+        return Err(ProtoError::FrameTooLarge(
+            u32::try_from(body_len).unwrap_or(u32::MAX),
+        ));
+    }
+    Ok((body_len as u32).to_be_bytes())
+}
+
+/// A message as bytes: a 4-byte big-endian length, then bincode. Fails rather than emit a
+/// frame the peer's `Decoder` would refuse.
+pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
     let body = bincode::serialize(msg).expect("serializable message");
+    let prefix = length_prefix(body.len())?;
     let mut out = Vec::with_capacity(body.len() + 4);
-    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&prefix);
     out.extend_from_slice(&body);
-    out
+    Ok(out)
 }
 
 /// Accumulates bytes and yields whole messages.
@@ -134,13 +163,21 @@ impl Decoder {
         self.buf.extend_from_slice(bytes);
     }
 
+    /// The next whole message, or `Ok(None)` when the buffer does not hold one yet. Push
+    /// more bytes and call again.
+    ///
+    /// A `ProtoError` is terminal for the stream: the caller must drop the connection. The
+    /// offending bytes are deliberately left at the front of the buffer, so a caller that
+    /// ignores the error gets the same error forever rather than silent progress. Draining
+    /// past a bad frame would mean trusting the length that the failed decode just called
+    /// into question, and resynchronising on a guess is worse than stopping.
     // Not `Iterator::next`: the message type is chosen per call, and decoding can fail.
     #[allow(clippy::should_implement_trait)]
     pub fn next<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, ProtoError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
-        let len = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
+        let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
         if len > MAX_FRAME {
             return Err(ProtoError::FrameTooLarge(len));
         }
@@ -156,7 +193,9 @@ impl Decoder {
 }
 
 /// The control API is newline-delimited JSON, so its first byte is `{`. An attach frame
-/// starts with a length whose first byte is `{` only for a 2 GB hello, which never happens.
+/// starts with a big-endian length, so its first byte is the top byte of a body length that
+/// `MAX_FRAME` caps at 64 MiB, which is at most 0x04. `{` is 0x7b, so the two can never
+/// collide. The const assertion next to `MAX_FRAME` enforces that relation.
 pub fn is_control_api_first_byte(b: u8) -> bool {
     b == b'{'
 }
@@ -183,8 +222,8 @@ mod tests {
             mods: Mods::SHIFT,
             action: KeyAction::Press,
         });
-        let mut bytes = encode(&hello);
-        bytes.extend(encode(&key));
+        let mut bytes = encode(&hello).unwrap();
+        bytes.extend(encode(&key).unwrap());
         let mut d = Decoder::default();
         // Feed one byte at a time to prove partial frames are buffered.
         let mut out: Vec<ClientMsg> = Vec::new();
@@ -221,7 +260,7 @@ mod tests {
         };
         let msg = ServerMsg::Frame(diff.clone());
         let mut d = Decoder::default();
-        d.push(&encode(&msg));
+        d.push(&encode(&msg).unwrap());
         assert_eq!(d.next::<ServerMsg>().unwrap(), Some(ServerMsg::Frame(diff)));
         assert_eq!(d.next::<ServerMsg>().unwrap(), None);
     }
@@ -229,7 +268,7 @@ mod tests {
     #[test]
     fn oversized_frames_are_rejected_before_allocation() {
         let mut d = Decoder::default();
-        d.push(&(MAX_FRAME + 1).to_le_bytes());
+        d.push(&(MAX_FRAME + 1).to_be_bytes());
         assert!(matches!(
             d.next::<ServerMsg>(),
             Err(ProtoError::FrameTooLarge(_))
@@ -239,7 +278,80 @@ mod tests {
     #[test]
     fn the_first_byte_tells_the_protocols_apart() {
         assert!(is_control_api_first_byte(b'{'));
-        assert!(!is_control_api_first_byte(encode(&ClientMsg::Detach)[0]));
+        assert!(!is_control_api_first_byte(
+            encode(&ClientMsg::Detach).unwrap()[0]
+        ));
+        // The hello is the frame the discrimination actually sees, so pin that one too.
+        let hello = ClientMsg::Hello(Hello {
+            version: "2.0.0-alpha.0".into(),
+            protocol: PROTOCOL_VERSION,
+            cols: 120,
+            rows: 40,
+            caps: Capabilities::default(),
+        });
+        assert!(!is_control_api_first_byte(encode(&hello).unwrap()[0]));
+    }
+
+    /// The framing is the contract between a client and a server that were built at
+    /// different times, so pin the bytes themselves. A round trip is symmetric and stays
+    /// green through a change to the byte order or to whether the length counts itself.
+    #[test]
+    fn a_frame_is_a_big_endian_length_then_the_bincode_body() {
+        // `Detach` is variant 5, which bincode writes as a 4-byte body.
+        assert_eq!(
+            encode(&ClientMsg::Detach).unwrap(),
+            vec![0, 0, 0, 4, 5, 0, 0, 0]
+        );
+    }
+
+    /// 123 is `{`. With a little-endian length this frame's first byte was `{`, so a real
+    /// attach connection was routed to the control API.
+    #[test]
+    fn a_123_byte_body_is_not_mistaken_for_the_control_api() {
+        let frame = encode(&ClientMsg::Paste("x".repeat(111))).unwrap();
+        assert_eq!(frame.len() - 4, 123, "the body must be exactly 123 bytes");
+        assert!(!is_control_api_first_byte(frame[0]));
+    }
+
+    #[test]
+    fn encoding_refuses_a_body_over_the_frame_limit() {
+        // The peer would answer `FrameTooLarge` and, since that error is terminal, then stall
+        // on it forever, so the send side has to refuse first.
+        assert!(length_prefix(MAX_FRAME as usize).is_ok());
+        assert!(matches!(
+            length_prefix(MAX_FRAME as usize + 1),
+            Err(ProtoError::FrameTooLarge(n)) if n == MAX_FRAME + 1
+        ));
+    }
+
+    #[test]
+    fn a_body_wider_than_the_length_field_is_refused_not_truncated() {
+        // 4 GiB + 1 truncates to a length of 1, which would put a number on the wire that is
+        // not the body's length and desynchronise every later frame.
+        assert!(matches!(
+            length_prefix(1usize << 32 | 1),
+            Err(ProtoError::FrameTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn a_zero_length_frame_is_a_decode_error() {
+        let mut d = Decoder::default();
+        d.push(&0u32.to_be_bytes());
+        assert!(matches!(d.next::<ClientMsg>(), Err(ProtoError::Decode(_))));
+    }
+
+    #[test]
+    fn a_decode_error_repeats_so_a_stream_cannot_silently_resume() {
+        let mut d = Decoder::default();
+        // A well-formed 4-byte frame whose body is not a `ClientMsg`: 0xffffffff is no variant.
+        d.push(&4u32.to_be_bytes());
+        d.push(&[0xff, 0xff, 0xff, 0xff]);
+        d.push(&encode(&ClientMsg::Detach).unwrap());
+        assert!(matches!(d.next::<ClientMsg>(), Err(ProtoError::Decode(_))));
+        // The bad bytes stay put, so the good frame behind them is never mistaken for
+        // progress. The caller must drop the connection.
+        assert!(matches!(d.next::<ClientMsg>(), Err(ProtoError::Decode(_))));
     }
 
     /// `Mods` is a `bitflags` type, so its serialized shape comes from the bitflags crate
