@@ -112,12 +112,23 @@ fn process_name(pid: u32) -> Option<String> {
     // The kernel truncates `comm` to 15 bytes and a process can rewrite it through `prctl`, so
     // it is a self-declared short name where macOS observes the executable. Read the command
     // line instead and take the base name of its first entry.
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    if cmdline.first().is_some_and(|&b| b != 0) {
+    linux_process_name_from_reads(std::fs::read(format!("/proc/{pid}/cmdline")), || {
+        std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()
+    })
+}
+
+/// Resolves Linux process-name bytes while keeping failed reads distinct from empty cmdlines.
+#[cfg(any(target_os = "linux", test))]
+fn linux_process_name_from_reads(
+    cmdline: std::io::Result<Vec<u8>>,
+    read_comm: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let cmdline = cmdline.ok()?;
+    if !cmdline.is_empty() {
         return base_name(&cmdline);
     }
     // An empty command line means a kernel thread, where `comm` is the only name there is.
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let comm = read_comm()?;
     let name = comm.trim();
     if name.is_empty() {
         None
@@ -269,6 +280,49 @@ mod tests {
     fn base_name_is_absent_for_a_path_with_no_last_component() {
         assert_eq!(base_name(b""), None);
         assert_eq!(base_name(b"/"), None);
+    }
+
+    #[test]
+    fn linux_name_is_absent_when_cmdline_read_fails() {
+        let result = linux_process_name_from_reads(
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            || panic!("must not read comm after a failed cmdline read"),
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn linux_name_uses_comm_when_cmdline_is_empty() {
+        let result = linux_process_name_from_reads(Ok(Vec::new()), || Some("kworker/0:1\n".into()));
+        assert_eq!(result.as_deref(), Some("kworker/0:1"));
+    }
+
+    #[test]
+    fn linux_name_is_absent_when_cmdline_starts_with_nul() {
+        let result = linux_process_name_from_reads(Ok(b"\0argument\0".to_vec()), || {
+            panic!("must not read comm for a nonempty cmdline")
+        });
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn child_guard_reaps_the_child_during_unwinding() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .unwrap();
+        let pid = child.id() as libc::pid_t;
+        let result = std::panic::catch_unwind(|| {
+            let _child = ChildGuard(Box::new(child));
+            panic!("unwind while child guard owns the child");
+        });
+        assert!(result.is_err());
+        // Safe: kill with signal zero does not send a signal or mutate the process.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
     }
 
     #[test]
