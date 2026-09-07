@@ -6,7 +6,8 @@ use crate::client::HintKind;
 use crate::render::boxed::{put, put_within};
 use crate::render::tab_row::TabRow;
 use crate::render::{theme, RenderInput};
-use domux_core::model::{Focus, Overlay};
+use domux_core::ids::TabId;
+use domux_core::model::{ConfirmKind, Focus, Overlay};
 use domux_core::text::{display_width, truncate_to_width};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
@@ -255,6 +256,22 @@ impl RightEnd {
 /// The chord indicator comes before the copy mode keys because it answers the key just pressed:
 /// the leader inside copy mode used to start a chord the bar did not show, so the next key had
 /// a meaning the screen had not admitted to (principle 8).
+/// How the tab row labels this tab: its number, and its name when it has one. The question
+/// has to name the tab the reader is looking at, and the number is the only part of a tab
+/// that is always on screen.
+fn tab_label(input: &RenderInput, tab: &TabId) -> String {
+    let Some(ws) = input.model.workspace(&input.view.workspace) else {
+        return "this tab".into();
+    };
+    let Some(i) = ws.tabs.iter().position(|t| &t.id == tab) else {
+        return "this tab".into();
+    };
+    match &ws.tabs[i].name {
+        Some(name) => format!("tab {} {}", i + 1, name),
+        None => format!("tab {}", i + 1),
+    }
+}
+
 pub fn right_end(input: &RenderInput) -> RightEnd {
     let key = Style::default().fg(theme::BLUE);
     let word = Style::default().fg(theme::OVERLAY0);
@@ -263,6 +280,19 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
     // The config error's separator joins its message to the action after it, so it narrows with
     // that message rather than outliving it: see `Piece::joiner`.
     let joining_dot = || Piece::joiner(" · ", sep);
+    // A question the reader has to answer outranks everything else the bar could say: until
+    // they answer it, no other key does what it normally does.
+    if let Some(Overlay::Confirm(ConfirmKind::CloseTab(tab))) = &input.view.overlay {
+        return RightEnd::actionable(vec![
+            Piece::new(format!("close {}?", tab_label(input, tab)), word),
+            dot(),
+            Piece::new("y", key),
+            Piece::new(" close", word),
+            dot(),
+            Piece::new("esc", key),
+            Piece::new(" keep", word),
+        ]);
+    }
     if let Some(Overlay::Prompt(_)) = &input.view.overlay {
         return RightEnd::actionable(vec![
             Piece::new("⏎", key),

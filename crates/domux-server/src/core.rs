@@ -8,7 +8,7 @@ use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, Event, Method, Request, Response};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
-use domux_core::model::{ClientView, Focus, Model, PaneFacts};
+use domux_core::model::{ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, RegionKind};
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
 use domux_term::{Emulator, Rgb, Size};
@@ -525,6 +525,14 @@ impl Core {
     pub fn run_action(&mut self, client: &ClientId, action: &Action) {
         match Method::from_action(action) {
             Ok(method) => {
+                if let Some(confirm) = self.confirmation_for(client, &method) {
+                    if let Some(view) = self.model.client_mut(client) {
+                        view.overlay = Some(Overlay::Confirm(confirm));
+                        view.focus = Focus::Region(RegionKind::Overlay);
+                    }
+                    self.view_dirty = true;
+                    return;
+                }
                 if let Err(e) = self.dispatch(method, Some(client.clone())) {
                     tracing::info!(client = %client, action = %action, "{}", e.message);
                     if let Some(conn) = self.clients.get_mut(client) {
@@ -539,6 +547,26 @@ impl Core {
                 }
             }
         }
+    }
+
+    /// The question a key has to ask before it acts, if any. Closing a tab takes every
+    /// process in it with it and nothing brings them back, so the key asks first
+    /// (principle 10). The API method does not ask: a caller that sent `tab.close` has
+    /// already decided, and a script is not who this protects.
+    ///
+    /// The tab is resolved here rather than in the handler so the question can name the tab
+    /// the close would actually take, which is not always the current one: a binding may
+    /// carry its own target, as `tab.close 2`.
+    fn confirmation_for(&self, client: &ClientId, method: &Method) -> Option<ConfirmKind> {
+        let Method::TabClose(p) = method else {
+            return None;
+        };
+        let view = self.model.client(client)?;
+        let tab = match p.tab.as_deref() {
+            Some(t) => self.model.resolve_tab(&view.workspace, t).ok()?,
+            None => view.tab.clone(),
+        };
+        Some(ConfirmKind::CloseTab(tab))
     }
 
     /// Clears the notice a failed action left, so it stands until the next key and no

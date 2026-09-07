@@ -79,7 +79,7 @@ pub enum PromptKind {
     TabName { tab: TabId, input: TextInput },
 }
 
-/// What a confirmation asks about. M2 opens these; M1 only declares them.
+/// What a confirmation asks about. M1 opens `CloseTab`; M2 opens the other two.
 ///
 /// Adjacently tagged, for the reason `Focus` is: an internally tagged enum cannot represent a
 /// newtype variant holding a string, and serde fails at runtime rather than at compile time -
@@ -88,13 +88,14 @@ pub enum PromptKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ConfirmKind {
+    CloseTab(TabId),
     DeleteWorkspace(WorkspaceId),
     RemoveProject(ProjectId),
 }
 
 /// The overlay a client has open, if any (roadmap section 5.3). Every V2.0 variant is
-/// declared here; M1 opens `Prompt` and `Help`, M2 `Switcher`, `NameWorkspace` and
-/// `Confirm`, M3 `Agents`, M4 `Usage`.
+/// declared here; M1 opens `Prompt`, `Help` and `Confirm`, M2 `Switcher` and
+/// `NameWorkspace`, M3 `Agents`, M4 `Usage`.
 ///
 /// Adjacently tagged, like `Focus` and `ConfirmKind`. Internal tagging could not serialize
 /// `NameWorkspace` or `Confirm` at all, and it serialized `Prompt` into JSON with two `kind`
@@ -127,6 +128,7 @@ mod tests {
                 input: TextInput::new("hello"),
             }),
             Overlay::NameWorkspace(WorkspaceId("w_0001".into())),
+            Overlay::Confirm(ConfirmKind::CloseTab(TabId("t_0001".into()))),
             Overlay::Confirm(ConfirmKind::DeleteWorkspace(WorkspaceId("w_0001".into()))),
             Overlay::Confirm(ConfirmKind::RemoveProject(ProjectId("p_0001".into()))),
             Overlay::Usage,
@@ -138,9 +140,15 @@ mod tests {
                 | Overlay::Agents
                 | Overlay::Prompt(_)
                 | Overlay::NameWorkspace(_)
-                | Overlay::Confirm(_)
                 | Overlay::Usage
                 | Overlay::Help => {}
+                // The same forcing function one level down: a new question to ask has to be
+                // added to the list above, or this stops compiling.
+                Overlay::Confirm(c) => match c {
+                    ConfirmKind::CloseTab(_)
+                    | ConfirmKind::DeleteWorkspace(_)
+                    | ConfirmKind::RemoveProject(_) => {}
+                },
             }
         }
         all

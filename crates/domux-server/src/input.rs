@@ -12,7 +12,7 @@ use crate::core::Core;
 use domux_core::api::Method;
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::keymap::Action;
-use domux_core::model::{Chord, Focus, Overlay, PromptKind};
+use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind};
 use domux_core::proto::ServerMsg;
 use domux_term::{Emulator, Key, KeyAction, KeyEvent, Mods};
 
@@ -150,7 +150,8 @@ fn forward_to_pane(core: &mut Core, client: &ClientId, key: &KeyEvent) {
 }
 
 /// Keys inside an overlay. The prompt edits its input; Enter saves, Esc cancels. The help
-/// overlay closes on Esc, `q` or `?`. Closing returns focus to the pane.
+/// overlay closes on Esc, `q` or `?`. A confirmation acts on `y` and cancels on anything
+/// else. Closing returns focus to the pane.
 fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
     let Some(overlay) = core
         .model
@@ -190,10 +191,24 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             }
             set_prompt(core, client, PromptKind::TabName { tab, input });
         }
+        // `y` and nothing else closes the tab. Any other key cancels rather than waiting for
+        // one of two right answers: the safe outcome is the one a stray keystroke should
+        // reach, and a reader who typed something else has already stopped reading the
+        // question. Esc and `n` are in that set, and are what the bar offers.
+        Overlay::Confirm(ConfirmKind::CloseTab(tab)) => {
+            close_overlay(core, client);
+            if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
+                let method = Method::TabClose(domux_core::api::TabTargetParams {
+                    tab: Some(tab.to_string()),
+                    client: Some(client.clone()),
+                });
+                let _ = core.dispatch(method, Some(client.clone()));
+            }
+        }
         Overlay::Switcher
         | Overlay::Agents
         | Overlay::NameWorkspace(_)
-        | Overlay::Confirm(_)
+        | Overlay::Confirm(ConfirmKind::DeleteWorkspace(_) | ConfirmKind::RemoveProject(_))
         | Overlay::Usage => {
             // M1 never opens these. M2 to M4 add their key handling here.
         }

@@ -79,6 +79,8 @@ impl Default for KeysConfig {
                 ("7", "tab.select 7"),
                 ("8", "tab.select 8"),
                 ("9", "tab.select 9"),
+                // Destructive, so the key asks first: see `Core::confirmation_for`.
+                ("x", "tab.close"),
                 ("R", "tab.clear_name"),
                 (",", "tab.rename"),
                 ("d", "client.detach"),
