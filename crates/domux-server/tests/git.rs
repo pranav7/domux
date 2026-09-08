@@ -506,9 +506,10 @@ fn worktree_remove_finishes_when_the_directory_is_already_gone() {
 
 #[test]
 fn is_dirty_compares_against_the_default_branch_when_the_slot_has_no_upstream() {
-    // The branch `is_dirty` takes for every slot `worktree_add` builds, since the add is
-    // `--no-track`. It is also the branch it takes for a slot whose remote branch was
-    // deleted, and `is_dirty` is Task 18's safety gate.
+    // The branch `is_dirty` takes for **every** slot `worktree_add` builds, since the add is
+    // `--no-track` (decision record 0007). This is the normal path now, not the edge case it
+    // was written as, and `is_dirty` is Task 18's gate in front of deleting a workspace. A
+    // fixture here that set an upstream would take the main path back out of the suite.
     let (_tmp, repo) = repo_with_origin("main");
     let path = git::slot_path(&repo, 1);
     git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
@@ -518,6 +519,47 @@ fn is_dirty_compares_against_the_default_branch_when_the_slot_has_no_upstream() 
         git::is_dirty(&path, "workspace-1").unwrap(),
         "an unpushed commit is dirty with no upstream too"
     );
+}
+
+/// The one case where dropping the upstream changes what `is_dirty` answers: a slot branched
+/// from a base that is not the default branch reads dirty the moment it is made.
+///
+/// Measured, not reasoned: a fresh slot from `origin/release` with an empty `git status`
+/// answers `true`, because the fallback range is `origin/main..workspace-1` and it holds
+/// release's own commit. With an upstream the range was `origin/release..workspace-1`, which
+/// is empty. Those two ranges agree whenever the base **is** `origin/<default branch>` - which
+/// is why nothing else in the suite moved - because the upstream `git worktree add -b` used to
+/// set pointed at the base, never at the slot's own remote branch.
+///
+/// This is a limitation being written down, not a rule being blessed. **Task 18 inherits it:**
+/// with `[worktrees] base` set to anything but the default branch, every workspace is born
+/// dirty and a gate that refuses to delete a dirty workspace refuses all of them. The fix is
+/// to give `is_dirty` the base to compare against, which is a signature it has no callers to
+/// break; it belongs with the task that builds those callers.
+#[test]
+fn a_slot_from_a_base_other_than_the_default_branch_reads_dirty_while_it_has_no_upstream() {
+    let (_tmp, repo) = repo_with_origin("main");
+    run_git(&repo, &["checkout", "-q", "-b", "release"]);
+    commit(&repo, "release-only.md", "released\n");
+    run_git(&repo, &["push", "-q", "origin", "release"]);
+    run_git(&repo, &["checkout", "-q", "main"]);
+    let path = git::slot_path(&repo, 1);
+    git::worktree_add(&repo, &path, "workspace-1", "origin/release").unwrap();
+    assert_eq!(
+        run_git(&path, &["status", "--porcelain"]),
+        "",
+        "nothing has touched the slot"
+    );
+    assert!(
+        git::is_dirty(&path, "workspace-1").unwrap(),
+        "and it still reads dirty, because the fallback measures it against origin/main"
+    );
+
+    // The comparison that makes it the same slot on the default base: there, the fallback and
+    // the upstream range are the same range, so a fresh slot reads clean.
+    let plain = git::slot_path(&repo, 2);
+    git::worktree_add(&repo, &plain, "workspace-2", "origin/main").unwrap();
+    assert!(!git::is_dirty(&plain, "workspace-2").unwrap());
 }
 
 /// The other branch of `is_dirty`: a slot whose upstream somebody set by hand is measured

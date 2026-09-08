@@ -82,7 +82,8 @@ two concurrent creates would both choose it, and both would run `git worktree ad
 reader would expect: `git::worktree_add`'s occupied-directory check does **not** catch it,
 because `is_occupied` answers false for a directory that is missing or empty and it runs
 before `fetch`, `prune` and `create_dir_all`. Both calls pass that check, and the loser fails
-later inside `git worktree add` itself, in git's own words rather than domux's.
+later inside `git worktree add` itself, in git's own words rather than domux's. (Task 17 ran
+this: the words are about the **ref**, not the directory - see the correction below.)
 
 Whoever adds such a job owns the answer, and the shape to reach for is a set of claims on the
 core, taken with the job and released when it finishes. It is deliberately not built here:
