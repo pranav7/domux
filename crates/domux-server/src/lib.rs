@@ -13,6 +13,7 @@ pub mod process;
 pub mod render;
 pub mod socket;
 pub mod testing;
+pub mod worktree_conf;
 
 use crate::core::{Core, CoreMsg};
 use crate::pane::PtySpawner;
