@@ -11,13 +11,31 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Writes a `gh` at `dir/gh` that records its arguments beside itself and then runs `body`.
-/// The provider is given the path, so no test changes PATH and no test races another.
-fn fake_gh(dir: &Path, body: &str) -> PathBuf {
-    let path = dir.join("gh");
+/// A directory for the fake `gh` and a directory for it to be run in, kept apart on purpose:
+/// a script that recorded into the directory it was run in, or into the workspace it was
+/// pointed at, would say "gh ran here" wherever it actually ran.
+fn bin_and_workspace(dir: &Path) -> (PathBuf, PathBuf) {
+    let bin = dir.join("bin");
+    let workspace = dir.join("workspace");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    (bin, workspace)
+}
+
+/// Writes a `gh` at `bin/gh` that records its arguments and its working directory beside
+/// itself and then runs `body`. The provider is given the path, so no test changes PATH and
+/// no test races another.
+///
+/// Both records go to `$(dirname "$0")`, which is the absolute path the provider ran, never a
+/// relative one: a relative path would land wherever `gh` happened to be run, which for the
+/// mutant these records exist to catch is the m2 worktree.
+fn fake_gh(bin: &Path, body: &str) -> PathBuf {
+    let path = bin.join("gh");
     std::fs::write(
         &path,
-        format!("#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\n{body}\n"),
+        format!(
+            "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\npwd > \"$(dirname \"$0\")/cwd\"\n{body}\n"
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -25,14 +43,14 @@ fn fake_gh(dir: &Path, body: &str) -> PathBuf {
 }
 
 /// A `gh` that prints `json` and succeeds.
-fn gh_printing(dir: &Path, json: &str) -> PathBuf {
-    fake_gh(dir, &format!("cat <<'JSON'\n{json}\nJSON"))
+fn gh_printing(bin: &Path, json: &str) -> PathBuf {
+    fake_gh(bin, &format!("cat <<'JSON'\n{json}\nJSON"))
 }
 
 /// A `gh` that says why it could not answer and fails, as the real one does when the forge
 /// refuses it.
-fn gh_failing(dir: &Path, message: &str) -> PathBuf {
-    fake_gh(dir, &format!("echo '{message}' >&2\nexit 1"))
+fn gh_failing(bin: &Path, message: &str) -> PathBuf {
+    fake_gh(bin, &format!("echo '{message}' >&2\nexit 1"))
 }
 
 /// The one clock every target here is stamped with, so the fact's stamp can be checked
@@ -89,6 +107,29 @@ fn gh_output_becomes_a_pr_number_a_state_and_a_title() {
         None,
         "no pull request is absent, not zero"
     );
+    // `--state all` asks for closed pull requests too, and a draft can be closed without ever
+    // being marked ready, so `gh` does return this row. Only an open draft is DRAFT: the
+    // switcher would otherwise colour a closed pull request as live work nobody has.
+    let closed_draft =
+        parse_gh_pr_list(r#"[{"number":5,"state":"CLOSED","title":"x","isDraft":true}]"#)
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        closed_draft.state,
+        FactState::Closed,
+        "a draft that was closed is closed, not open work"
+    );
+
+    assert_eq!(
+        parse_gh_pr_list(r#"[{"number":6,"state":"OPEN","title":"one\ntwo","isDraft":false}]"#)
+            .unwrap()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("one two"),
+        "a title is one row on the screen, so a line break in it would break that row"
+    );
+
     assert_eq!(
         parse_gh_pr_list(r#"[{"number":7,"state":"OPEN","title":"  ","isDraft":false}]"#)
             .unwrap()
@@ -106,13 +147,14 @@ fn gh_output_becomes_a_pr_number_a_state_and_a_title() {
 #[test]
 fn the_provider_runs_gh_with_v1_s_arguments_in_the_workspace_directory() {
     let dir = tempfile::tempdir().unwrap();
+    let (bin, workspace) = bin_and_workspace(dir.path());
     let gh = gh_printing(
-        dir.path(),
+        &bin,
         r#"[{"number":212,"state":"OPEN","title":"Consolidate auth middleware","isDraft":false}]"#,
     );
     let provider = PrProvider::new(&gh);
     let fact = provider
-        .fetch(&target(dir.path().to_path_buf(), "feat/auth-cleanup"))
+        .fetch(&target(workspace.clone(), "feat/auth-cleanup"))
         .unwrap()
         .unwrap();
     assert_eq!(fact.text, "PR#212");
@@ -133,10 +175,20 @@ fn the_provider_runs_gh_with_v1_s_arguments_in_the_workspace_directory() {
         "the provider stamps the target's own clock, not one it read itself, so it agrees \
          with whatever the registry's freshness check is measured against"
     );
-    let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+    let args = std::fs::read_to_string(bin.join("args")).unwrap();
     assert_eq!(
         args.trim(),
         "pr list --head feat/auth-cleanup --state all --limit 1 --json number,state,title,isDraft"
+    );
+    // `gh pr list` reads which repository it is talking about from the directory it runs in.
+    // Run anywhere else and every workspace would be stamped with the pull request of the
+    // repository the server was started in, which is a number about another branch drawn
+    // against this one (principle 4).
+    let cwd = std::fs::read_to_string(bin.join("cwd")).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(cwd.trim()).unwrap(),
+        std::fs::canonicalize(&workspace).unwrap(),
+        "gh runs in the workspace, not wherever the server was started"
     );
     assert_eq!(provider.scope(), ProviderScope::Workspace);
     assert_eq!(provider.name(), FACT_PR);
@@ -146,26 +198,24 @@ fn the_provider_runs_gh_with_v1_s_arguments_in_the_workspace_directory() {
 #[test]
 fn a_workspace_on_the_default_branch_and_one_with_no_branch_are_skipped() {
     let dir = tempfile::tempdir().unwrap();
-    let gh = gh_printing(dir.path(), "[]");
+    let (bin, workspace) = bin_and_workspace(dir.path());
+    let gh = gh_printing(&bin, "[]");
     let p = PrProvider::new(&gh);
-    assert_eq!(
-        p.fetch(&target(dir.path().to_path_buf(), "main")).unwrap(),
-        None
-    );
+    assert_eq!(p.fetch(&target(workspace.clone(), "main")).unwrap(), None);
     assert!(
-        !dir.path().join("args").exists(),
+        !bin.join("args").exists(),
         "gh is not even run for the default branch: --head main matches every pull request \
          ever opened from it"
     );
-    let mut t = target(dir.path().to_path_buf(), "feat/x");
+    let mut t = target(workspace.clone(), "feat/x");
     t.branch = None;
     assert_eq!(
         p.fetch(&t).unwrap(),
         None,
         "with no branch fact there is nothing to look up"
     );
-    assert!(!dir.path().join("args").exists());
-    let gone = target(dir.path().join("no-such-workspace"), "feat/x");
+    assert!(!bin.join("args").exists());
+    let gone = target(workspace.join("no-such-workspace"), "feat/x");
     assert_eq!(
         p.fetch(&gone).unwrap(),
         None,
@@ -176,9 +226,10 @@ fn a_workspace_on_the_default_branch_and_one_with_no_branch_are_skipped() {
 #[test]
 fn gh_failing_or_missing_leaves_the_pull_request_absent_with_a_reason() {
     let dir = tempfile::tempdir().unwrap();
-    let gh = gh_failing(dir.path(), "gh: could not find any commits");
+    let (bin, workspace) = bin_and_workspace(dir.path());
+    let gh = gh_failing(&bin, "gh: could not find any commits");
     let err = PrProvider::new(&gh)
-        .fetch(&target(dir.path().to_path_buf(), "feat/x"))
+        .fetch(&target(workspace.clone(), "feat/x"))
         .unwrap_err();
     assert!(err.contains("could not find any commits"), "{err}");
     assert!(
@@ -186,9 +237,9 @@ fn gh_failing_or_missing_leaves_the_pull_request_absent_with_a_reason() {
         "the reason says what domux ran: {err}"
     );
 
-    let missing = dir.path().join("no-such-gh");
+    let missing = bin.join("no-such-gh");
     let err = PrProvider::new(&missing)
-        .fetch(&target(dir.path().to_path_buf(), "feat/x"))
+        .fetch(&target(workspace, "feat/x"))
         .unwrap_err();
     assert!(
         err.contains("no-such-gh"),
@@ -206,8 +257,9 @@ fn gh_failing_or_missing_leaves_the_pull_request_absent_with_a_reason() {
 #[test]
 fn gh_that_never_answers_is_stopped_rather_than_left_in_flight() {
     let dir = tempfile::tempdir().unwrap();
-    let gh = fake_gh(dir.path(), "sleep 30");
-    let t = target(dir.path().to_path_buf(), "feat/x");
+    let (bin, workspace) = bin_and_workspace(dir.path());
+    let gh = fake_gh(&bin, "sleep 30");
+    let t = target(workspace, "feat/x");
     let started = Instant::now();
     let err = finishes_within(Duration::from_secs(5), "PrProvider::fetch", move || {
         PrProvider::new(&gh)
@@ -235,12 +287,13 @@ fn gh_that_never_answers_is_stopped_rather_than_left_in_flight() {
 #[test]
 fn a_long_error_from_gh_reaches_the_reason_rather_than_blocking_on_a_full_pipe() {
     let dir = tempfile::tempdir().unwrap();
+    let (bin, workspace) = bin_and_workspace(dir.path());
     let gh = fake_gh(
-        dir.path(),
+        &bin,
         "dd if=/dev/zero bs=1000 count=200 2>/dev/null | tr '\\0' 'x' >&2\n\
          echo 'gh: could not find any commits' >&2\nexit 1",
     );
-    let t = target(dir.path().to_path_buf(), "feat/x");
+    let t = target(workspace, "feat/x");
     // Five seconds is far more than two small processes and 200KB of pipe need, so a failure
     // here is the drain and not a slow machine.
     let err = finishes_within(
@@ -288,7 +341,7 @@ fn the_pull_request_interval_time_to_live_and_bound_are_the_values_the_switcher_
 }
 
 #[test]
-fn a_real_server_observes_the_branch_and_then_the_pull_request() {
+fn the_default_providers_are_the_branch_then_the_pull_request() {
     let providers = default_providers();
     let names: Vec<&str> = providers.iter().map(|p| p.name()).collect();
     assert_eq!(

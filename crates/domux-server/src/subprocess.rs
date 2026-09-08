@@ -46,10 +46,20 @@ pub fn output_within(mut command: Command, limit: Duration) -> io::Result<Output
     let deadline = Instant::now() + limit;
     loop {
         if let Some(status) = child.try_wait()? {
+            // Output that could not be collected is a failure, not an empty answer. A child
+            // that exits at once but leaves a grandchild holding the pipe cannot be read to
+            // the end, and an `Output` saying "it worked and printed nothing" would hand the
+            // caller a `gh` answer that never arrived (principle 4). The bound is what stops
+            // the wait; saying so is what keeps the result honest.
+            let (Some(stdout), Some(stderr)) =
+                (collected(&stdout, deadline), collected(&stderr, deadline))
+            else {
+                return Err(timed_out(limit));
+            };
             return Ok(Output {
                 status,
-                stdout: collected(&stdout, deadline),
-                stderr: collected(&stderr, deadline),
+                stdout,
+                stderr,
             });
         }
         if Instant::now() >= deadline {
@@ -57,13 +67,19 @@ pub fn output_within(mut command: Command, limit: Duration) -> io::Result<Output
             // The child has been signalled, so this returns at once. Without it the process
             // stays a zombie for the life of the server.
             let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("no answer within {} seconds", limit.as_secs()),
-            ));
+            return Err(timed_out(limit));
         }
         thread::sleep(POLL);
     }
+}
+
+/// The one reason a bounded command gives when it ran out of time, whether it was the command
+/// that would not finish or its output that could not be read.
+fn timed_out(limit: Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("no answer within {} seconds", limit.as_secs()),
+    )
 }
 
 /// Reads one pipe to its end on its own thread and sends what it read.
@@ -82,15 +98,15 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>> {
     rx
 }
 
-/// What one pipe held, waiting no later than the deadline.
+/// What one pipe held, or `None` when it could not be read by the deadline.
 ///
 /// The child has exited by the time this is called, so the reader is normally already done.
-/// It is not done when the child left a grandchild holding the pipe open, and waiting for
-/// that grandchild is the hang all over again: the bytes are given up on instead, and the
-/// call stays bounded.
-fn collected(rx: &mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Vec<u8> {
+/// It is not done when the child left a grandchild holding the pipe open, and waiting for that
+/// grandchild is the hang all over again: the wait ends, and the caller is told it ended
+/// rather than handed an empty answer that reads like a command with nothing to say.
+fn collected(rx: &mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Option<Vec<u8>> {
     let wait = (deadline + DRAIN).saturating_duration_since(Instant::now());
-    rx.recv_timeout(wait).unwrap_or_default()
+    rx.recv_timeout(wait).ok()
 }
 
 #[cfg(test)]
@@ -164,6 +180,28 @@ mod tests {
             started.elapsed() < Duration::from_secs(5),
             "the limit is what ended it, not the command: {:?}",
             started.elapsed()
+        );
+    }
+
+    /// A child that prints, exits at once, and leaves a grandchild holding the pipe. The
+    /// reader never reaches end of file, so the bytes cannot be collected inside the bound.
+    ///
+    /// What must not come back is a successful `Output` with an empty stdout: `gh` printing a
+    /// pull request number and domux reading none of it would be recorded as "the command
+    /// worked and said nothing", which is a fact nobody observed (principle 4). It is also the
+    /// wrong foundation for the git retrofit, which will read this module's answers the same
+    /// way.
+    #[test]
+    fn output_that_could_not_be_read_is_a_timeout_and_never_an_empty_success() {
+        let err = finishes_within(
+            Duration::from_secs(15),
+            "output_within on a child whose grandchild holds the pipe",
+            || output_within(sh("(sleep 30 &) ; printf ok"), Duration::from_secs(1)).unwrap_err(),
+        );
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut, "{err}");
+        assert!(
+            err.to_string().contains("no answer within"),
+            "the reason is the bound, not a parse failure further up: {err}"
         );
     }
 
