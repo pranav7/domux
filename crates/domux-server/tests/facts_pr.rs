@@ -294,14 +294,17 @@ fn a_long_error_from_gh_reaches_the_reason_rather_than_blocking_on_a_full_pipe()
          echo 'gh: could not find any commits' >&2\nexit 1",
     );
     let t = target(workspace, "feat/x");
-    // Five seconds is far more than two small processes and 200KB of pipe need, so a failure
-    // here is the drain and not a slow machine.
+    // Thirty seconds against a measured 0.02 to 0.14 seconds, so the margin absorbs a loaded
+    // machine. It used to be five, and under parallel mutation sweeps it timed out and read as
+    // a drain failure: the bound and the machine were not distinguishable at that width. The
+    // outer bound is the anti-hang guard and is deliberately a different number, so one value
+    // is not carrying both properties.
     let err = finishes_within(
-        Duration::from_secs(15),
+        Duration::from_secs(60),
         "PrProvider::fetch against a gh that prints 200KB",
         move || {
             PrProvider::new(&gh)
-                .with_timeout(Duration::from_secs(5))
+                .with_timeout(Duration::from_secs(30))
                 .fetch(&t)
                 .unwrap_err()
         },
