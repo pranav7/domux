@@ -432,14 +432,24 @@ impl Core {
                 let fact = fact.filter(|_| crate::facts::scope_lives(&key, &self.model));
                 let present = fact.is_some();
                 let changed = shown(self.facts.get(&key)) != shown(fact.as_ref());
+                let cached = crate::facts::CACHED_FACTS.contains(&key.name.as_str());
                 self.facts.set(key.clone(), fact);
                 if changed {
                     self.pending_events
                         .push(Event::FactUpdated { key, present });
                     self.view_dirty = true;
+                }
+                // Every answer, not only one that changed what the screen shows. `changed`
+                // compares what is drawn, which deliberately ignores the stamp, so a pull
+                // request found every minute that never changes would keep a fresh stamp in
+                // the registry and the first fetch's stamp on disk. After a run longer than
+                // the time to live the next start would drop the entry and the switcher would
+                // open blank, which is the one thing the cache exists to prevent. One small
+                // file a minute per workspace is the price, and it is an atomic write.
+                if cached {
                     self.facts.save_cache(
                         &crate::facts::pr_cache_path(&self.state_dir),
-                        &[domux_core::facts::FACT_PR],
+                        crate::facts::CACHED_FACTS,
                     );
                 }
             }
@@ -1885,6 +1895,42 @@ mod tests {
             "a provider that looks again every few seconds must not redraw the screen every few seconds"
         );
         assert!(!core.view_dirty);
+    }
+
+    /// The file's own stamp is what the sweep on the next start reads. It has to move with
+    /// the registry's, and the thing that decides whether to draw is no help here: `shown`
+    /// ignores the stamp on purpose, so an answer that repeats yesterday's number is "no
+    /// change" to the screen and a whole new age to the cache.
+    #[test]
+    fn a_pull_request_that_did_not_change_still_refreshes_the_stamp_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(stamped(
+                "PR#212",
+                Some(FactState::Open),
+                "2026-09-04T14:32:00",
+            )),
+        });
+        assert!(pr_cache(&core).contains("14:32:00"), "{}", pr_cache(&core));
+        // The same number, looked up ten minutes later, which is past the time to live the
+        // first write went to disk with.
+        core.handle(CoreMsg::FactFetched {
+            key,
+            fact: Some(stamped(
+                "PR#212",
+                Some(FactState::Open),
+                "2026-09-04T14:42:00",
+            )),
+        });
+        let cache = pr_cache(&core);
+        assert!(
+            cache.contains("14:42:00") && !cache.contains("14:32:00"),
+            "the cached number ages out and the switcher opens blank unless the file keeps \
+             the stamp the registry has: {cache}"
+        );
     }
 
     #[test]

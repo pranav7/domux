@@ -346,6 +346,21 @@ mod tests {
             !text.contains("state"),
             "an absent state is omitted: {text}"
         );
+        // The cache file is written from this shape and read back by another run of the
+        // server, so what a fact leaves out is a contract, not a formatting preference. An
+        // absent value is absent; `null` in the file is a value that says a fact arrived and
+        // carried nothing, which is not what happened (principle 4).
+        assert!(
+            !text.contains("url"),
+            "an absent url is omitted too: {text}"
+        );
         assert_eq!(serde_json::from_str::<Fact>(&text).unwrap(), f);
+        let with_url = f.with_url("https://forge.invalid/audrey-app/pull/212");
+        let text = serde_json::to_string(&with_url).unwrap();
+        assert!(
+            text.contains("/pull/212"),
+            "and a url that is there is written: {text}"
+        );
+        assert_eq!(serde_json::from_str::<Fact>(&text).unwrap(), with_url);
     }
 }
