@@ -31,6 +31,18 @@ fn is_repo_tells_a_checkout_from_a_plain_folder() {
 }
 
 #[test]
+fn default_branch_answers_main_for_a_directory_that_is_not_a_repository() {
+    // The one answer in this file that is a guess rather than a fact. It is V1's behaviour and
+    // the brief's, so it is pinned here rather than removed: callers ask `is_repo` first, and a
+    // change to this line has to change this test with it.
+    let plain = tempfile::tempdir().unwrap();
+    assert!(!git::is_repo(plain.path()));
+    assert_eq!(git::default_branch(plain.path()), "main");
+    // A directory that is not there at all is not a repository either.
+    assert!(!git::is_repo(&plain.path().join("nowhere")));
+}
+
+#[test]
 fn worktree_add_creates_the_slot_on_a_fresh_branch_from_the_base() {
     let (_tmp, repo) = repo_with_origin("main");
     let path = git::slot_path(&repo, 1);
@@ -211,7 +223,7 @@ fn worktree_add_recreates_a_slot_whose_directory_was_deleted_behind_git_s_back()
 }
 
 #[test]
-fn worktree_remove_refuses_a_dirty_slot_unless_it_is_forced() {
+fn worktree_remove_refuses_a_slot_with_modified_or_untracked_files_unless_it_is_forced() {
     // This is the one call in V2 that deletes a directory the author was working in. An
     // unconditional `--force` would pass every other test in this file.
     let (_tmp, repo) = repo_with_origin("main");
@@ -340,4 +352,115 @@ fn is_repo_is_false_for_a_bare_repository() {
     std::fs::create_dir_all(&bare).unwrap();
     run_git(&bare, &["init", "-q", "--bare"]);
     assert!(!git::is_repo(&bare));
+}
+
+#[test]
+fn a_git_command_refuses_a_directory_that_is_not_absolute() {
+    // `git -C ""` is a documented no-op: git runs in the process directory. An empty or
+    // relative root would point every command in this file at whatever the server was started
+    // in, `clean -fd` and `reset --hard` included.
+    let err = git::clean(std::path::Path::new("")).unwrap_err();
+    assert!(err.to_string().contains("is not an absolute path"), "{err}");
+    assert!(err.to_string().contains("pass the project root"), "{err}");
+    assert!(git::run(std::path::Path::new("some/relative/dir"), &["status"]).is_err());
+    assert!(git::existing_slots(std::path::Path::new("")).is_err());
+    // The slot path is a second directory, and `worktree_add` creates its parent with the
+    // process's own working directory rather than git's, so it is refused separately.
+    let (_tmp, repo) = repo_with_origin("main");
+    let relative = std::path::Path::new(".domux/worktrees/workspace-1");
+    assert!(git::worktree_add(&repo, relative, "workspace-1", "origin/main").is_err());
+    assert!(git::worktree_remove(&repo, relative, "workspace-1", false).is_err());
+    assert!(
+        !std::path::Path::new(".domux").exists(),
+        "a refused create makes no directory in the process's own directory"
+    );
+}
+
+#[test]
+fn reset_to_base_resets_the_slots_own_branch_when_another_one_is_checked_out() {
+    // Clearing a slot resets the slot's branch. Without the checkout, `reset --hard` lands on
+    // whatever HEAD is at, and a branch the author checked out inside the slot loses its
+    // commits. This is the destructive operation with the fewest ways to notice it went wrong.
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    run_git(&path, &["checkout", "-q", "-b", "feature-x"]);
+    commit(&path, "feature.md", "a week of work\n");
+    let kept = run_git(&path, &["rev-parse", "feature-x"]);
+    git::reset_to_base(&path, "workspace-1", "origin/main").unwrap();
+    assert_eq!(
+        git::branch_of(&path).unwrap(),
+        "workspace-1",
+        "the slot is back on its own branch"
+    );
+    assert_eq!(
+        run_git(&path, &["rev-parse", "feature-x"]),
+        kept,
+        "the branch that is not the slot's is untouched"
+    );
+}
+
+#[test]
+fn worktree_add_refuses_a_slot_directory_that_is_already_there_before_it_moves_the_branch() {
+    // The directory is present and its registration is gone, so pruning cannot clear it. git
+    // would let `branch -f` succeed here and only then find the directory in the way, which
+    // leaves the author's commit reachable from the reflog and nowhere else.
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    commit(&path, "feature.md", "a week of work\n");
+    let kept = run_git(&repo, &["rev-parse", "workspace-1"]);
+    std::fs::remove_dir_all(repo.join(".git/worktrees/workspace-1")).unwrap();
+    let err = git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap_err();
+    assert!(err.to_string().contains("already there"), "{err}");
+    assert_eq!(
+        run_git(&repo, &["rev-parse", "workspace-1"]),
+        kept,
+        "the branch still points at the author's commit"
+    );
+    assert!(
+        path.join("feature.md").is_file(),
+        "and the files are still there"
+    );
+}
+
+#[test]
+fn worktree_add_accepts_a_slot_directory_that_is_empty() {
+    // git accepts an empty directory, so the guard above must not be widened to `exists()`: a
+    // leftover empty directory would then be a slot number nobody could ever create.
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    std::fs::create_dir_all(&path).unwrap();
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    assert!(path.join("README.md").is_file());
+}
+
+#[test]
+fn worktree_remove_finishes_when_the_directory_is_already_gone() {
+    // Task 18 deletes a workspace whose directory the author may have removed by hand. git
+    // exits zero here, and the branch still has to go.
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
+    git::worktree_remove(&repo, &path, "workspace-1", false).unwrap();
+    assert!(git::existing_slots(&repo).unwrap().is_empty());
+    assert!(!run_git(&repo, &["branch", "--list", "workspace-1"]).contains("workspace-1"));
+}
+
+#[test]
+fn is_dirty_compares_against_the_default_branch_when_the_slot_has_no_upstream() {
+    // `worktree add -b` sets tracking, so the fallback is hard to reach and no other test
+    // reaches it. It is still the branch `is_dirty` takes for any slot whose upstream was
+    // unset or whose remote branch was deleted, and `is_dirty` is Task 18's safety gate.
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    run_git(&path, &["branch", "--unset-upstream"]);
+    assert!(!git::is_dirty(&path, "workspace-1").unwrap());
+    commit(&path, "work.md", "a week of work\n");
+    assert!(
+        git::is_dirty(&path, "workspace-1").unwrap(),
+        "an unpushed commit is dirty with no upstream too"
+    );
 }

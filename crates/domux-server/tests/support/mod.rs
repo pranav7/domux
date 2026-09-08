@@ -38,7 +38,11 @@ pub fn repo_with_origin(branch: &str) -> (tempfile::TempDir, PathBuf) {
     std::fs::create_dir_all(&work).unwrap();
     // A bare init that failed here would surface later as a confusing push error, so read
     // its status rather than dropping it.
+    // Every other git call in these tests names its directory with `-C`. This one takes the
+    // repository as an argument instead, so it is given an explicit working directory as well:
+    // without one it would run in the test binary's own directory, inside a real checkout.
     let status = Command::new("git")
+        .current_dir(tmp.path())
         .args(["init", "-q", "--bare", "-b", branch])
         .arg(&origin)
         .status()

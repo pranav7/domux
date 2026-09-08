@@ -17,10 +17,29 @@ pub struct GitError {
     pub message: String,
 }
 
+/// `git -C ""` is a documented no-op: git runs wherever the server was started, which is
+/// somebody's checkout, and a relative path resolves against the same place. Every directory
+/// this file acts on is refused unless it is absolute, so `clean -fd` and `reset --hard`
+/// cannot land somewhere nobody named.
+fn not_absolute(command: String, dir: &Path) -> GitError {
+    GitError {
+        command,
+        message: format!(
+            "the directory \"{}\" is not an absolute path; pass the project root",
+            dir.display()
+        ),
+    }
+}
+
 /// Runs git in `dir` and returns its trimmed stdout. stderr and stdout are joined in the
-/// error so git's own words reach the engineer (principle 9).
+/// error so git's own words reach the engineer (principle 9). Refuses a `dir` that is not
+/// absolute, which includes the empty path: the check lives here, at the one place every
+/// command goes through, so an operation added later cannot miss it.
 pub fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     let command = format!("git {}", args.join(" "));
+    if !dir.is_absolute() {
+        return Err(not_absolute(command, dir));
+    }
     tracing::debug!(dir = %dir.display(), %command, "git");
     let out = Command::new("git")
         .arg("-C")
@@ -91,9 +110,20 @@ pub fn slot_path(root: &Path, slot: u32) -> PathBuf {
 /// The slot numbers whose directories exist under either worktree directory, sorted. This
 /// is V1's `lowestFreeWorkspaceSlot` inverted: the model holds the records, and this tells
 /// it what is already on disk (Task 16 adopts them). A worktree directory that is not there
-/// is no slots; one that is there and cannot be read is an error, because reporting it as
-/// empty would hand out a slot number that is already taken.
+/// is no slots; one that is there and cannot be read is an error. Answering "no slots" for a
+/// directory that is there hands out a slot number that is already taken, and the cost is not
+/// the clean refusal it looks like: with the directory present but its registration gone,
+/// `git branch -f` succeeds and moves the branch off the author's commit before
+/// `git worktree add` finds the directory in the way, leaving that commit in the reflog and
+/// nowhere else. `worktree_add` refuses an occupied directory before it touches the branch,
+/// so this is the second lock on that door rather than the only one.
 pub fn existing_slots(root: &Path) -> Result<Vec<u32>, GitError> {
+    if !root.is_absolute() {
+        return Err(not_absolute(
+            format!("read {}", root.join(WORKTREE_DIR).display()),
+            root,
+        ));
+    }
     let mut slots = Vec::new();
     for dir in [WORKTREE_DIR, LEGACY_WORKTREE_DIR] {
         let dir = root.join(dir);
@@ -132,11 +162,36 @@ pub fn fetch(root: &Path, base: &str) -> Result<(), GitError> {
     run(root, &["fetch", "-q", remote, branch]).map(|_| ())
 }
 
+/// Anything at `path` that `git worktree add` would refuse: a file, or a directory with
+/// something in it. A directory it cannot read counts as occupied, because the alternative is
+/// to guess that it is empty.
+fn is_occupied(path: &Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
 /// `git worktree add` on a fresh branch from `base`. A branch of that name that already
 /// exists is force-reset to the base first, which is V1's rule: the slot number is the
 /// identity, and a stale branch from a deleted slot must not decide what the new one holds.
 /// Prunes registrations for directories removed outside git before it starts.
 pub fn worktree_add(root: &Path, path: &Path, branch: &str, base: &str) -> Result<(), GitError> {
+    if !path.is_absolute() {
+        return Err(not_absolute("git worktree add".to_string(), path));
+    }
+    // git refuses an occupied path too, but only after `git branch -f` has moved the branch
+    // off the commit it held, which leaves that commit reachable from the reflog and nowhere
+    // else. Ask first. An empty directory is not occupied: git accepts one, and refusing it
+    // would turn a leftover directory into a slot nobody can create.
+    if is_occupied(path) {
+        return Err(GitError {
+            command: format!("git worktree add {}", path.display()),
+            message: "the slot directory is already there; remove it or pick another slot"
+                .to_string(),
+        });
+    }
     fetch(root, base)?;
     prune(root)?;
     if let Some(parent) = path.parent() {
@@ -167,14 +222,21 @@ pub fn worktree_add(root: &Path, path: &Path, branch: &str, base: &str) -> Resul
 
 /// Removes the worktree and then its branch. A branch that is already gone is not an error:
 /// a create that crashed halfway leaves one or the other (V1 tolerates the same). Without
-/// `force` git refuses a worktree holding uncommitted or untracked work, and that refusal
+/// `force` git refuses a worktree holding modified or untracked files, and that refusal
 /// reaches the caller: this is the call that deletes a directory the author was in.
+///
+/// git's refusal does not cover committed work that was never pushed. A slot holding a week
+/// of commits and nothing uncommitted is removed with `force` false, and the branch goes with
+/// it. `is_dirty` in front of this call is the only guard against that.
 pub fn worktree_remove(
     root: &Path,
     path: &Path,
     branch: &str,
     force: bool,
 ) -> Result<(), GitError> {
+    if !path.is_absolute() {
+        return Err(not_absolute("git worktree remove".to_string(), path));
+    }
     let path = path.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove"];
     if force {
@@ -182,11 +244,24 @@ pub fn worktree_remove(
     }
     args.push(&path);
     run(root, &args)?;
-    match run(root, &["branch", "-D", branch]) {
-        Ok(_) => Ok(()),
-        Err(e) if e.message.contains("not found") => Ok(()),
-        Err(e) => Err(e),
+    // Ask git whether the branch is there rather than reading the words of a `branch -D`
+    // failure. git translates those, so a machine in another locale would report an error for
+    // a slot it removed correctly, and matching on prose also swallows failures that happen to
+    // contain the same phrase.
+    if run(
+        root,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
+    {
+        run(root, &["branch", "-D", branch])?;
     }
+    Ok(())
 }
 
 pub fn prune(root: &Path) -> Result<(), GitError> {
