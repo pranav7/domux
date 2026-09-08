@@ -243,7 +243,14 @@ pub struct Core {
     ///
     /// Keys are strings so the mechanism is not slot-shaped: `CoreJob::claim` names what a
     /// job holds. `start_job` is the only writer and `job_finished` the only remover, so a
-    /// claim cannot be taken without a job to release it.
+    /// claim cannot be taken without a job to release it: a job that panics still sends
+    /// `JobFinished`, and every path out of an arm runs after the claim is already gone.
+    ///
+    /// A job that never finishes at all is the one case this does not cover. `spawn_blocking`
+    /// has no deadline, so a `git fetch` against a host that swallows packets holds its slot
+    /// number until the server stops, and later creates skip past it. The caller hangs on the
+    /// same job, so it is visible rather than silent, and the deadline belongs to the lane
+    /// (decision record 0006) rather than to the claim.
     claims: HashSet<String>,
 }
 
@@ -1006,11 +1013,20 @@ impl Core {
             self.claims.remove(&claim);
         }
         let result = match outcome {
-            JobOutcome::Failed { message, code } => Err(ApiError {
-                code,
-                message,
-                data: None,
-            }),
+            JobOutcome::Failed { message, code } => {
+                // A refusal is a red pill, the same line a result is a green one (interface
+                // spec 7.3, and the theme table's `red` for refusal pills). It does not
+                // duplicate `Core::answer`'s hint: the hint is the top bar's answer to the key
+                // just pressed, and the pill is the result line in the sidebar's hint row and
+                // the overlay's footer. Different surfaces, and a caller with a command line
+                // gets neither - it gets the error itself.
+                self.set_pill(client.as_ref(), message.clone(), false);
+                Err(ApiError {
+                    code,
+                    message,
+                    data: None,
+                })
+            }
             JobOutcome::ProjectRead {
                 root,
                 default_branch,
@@ -2064,6 +2080,77 @@ mod tests {
         id
     }
 
+    /// A finished job releases the claim it held and **only** that one.
+    ///
+    /// A unit test rather than a harness one, because no fixture the harness can build tells
+    /// the two apart. `clear()` and `remove()` differ only when a third create arrives while
+    /// two are still building: with two in flight, the second has already chosen its number by
+    /// the time the first finishes, so clearing everything is harmless. Reaching the
+    /// difference end to end needs a fourth call landing inside the window between one job
+    /// finishing and the others ending - a race, and a test that is a race is a test that
+    /// inverts a mutation verdict when it flakes. Here the state is set directly and the
+    /// question is asked exactly.
+    #[test]
+    fn a_finished_job_releases_its_own_claim_and_leaves_the_others_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let (first, second) = (
+            slot_claim(&ProjectId("pr_1".into()), 1),
+            slot_claim(&ProjectId("pr_1".into()), 2),
+        );
+        core.claims.insert(first.clone());
+        core.claims.insert(second.clone());
+
+        core.job_finished(
+            JobOutcome::Failed {
+                message: "no".into(),
+                code: ErrorCode::Unavailable,
+            },
+            None,
+            None,
+            Some(first.clone()),
+        );
+
+        assert!(!core.claims.contains(&first), "its own claim is released");
+        assert!(
+            core.claims.contains(&second),
+            "and a create still building keeps its number; releasing everything here would \
+             hand workspace-2 to the next call while this one is still making it"
+        );
+    }
+
+    /// Two projects can hold the same slot number at once, so a create in one never moves the
+    /// numbering of another.
+    ///
+    /// The claim key carries the project for this reason. Without it both projects share one
+    /// key, and a second project's first slot comes out numbered 2 - permanently, since a slot
+    /// number never renumbers (architecture spec 2). Every harness fixture has one project, so
+    /// this is the shape that separates them.
+    #[test]
+    fn a_claim_in_one_project_does_not_move_another_project_s_numbering() {
+        let mut model = Model::new(7);
+        let (one, _, _) = model
+            .add_git_project(PathBuf::from("/a/audrey-app"), "main".into())
+            .unwrap();
+        let (two, _, _) = model
+            .add_git_project(PathBuf::from("/b/other-app"), "main".into())
+            .unwrap();
+        let mut claims = HashSet::new();
+        claims.insert(slot_claim(&one, 1));
+
+        let free = |project: &ProjectId| {
+            model
+                .lowest_free_slot(project, |n| claims.contains(&slot_claim(project, n)))
+                .unwrap()
+        };
+        assert_eq!(free(&one), 2, "the project holding the claim skips it");
+        assert_eq!(
+            free(&two),
+            1,
+            "and the other project's first slot is still 1"
+        );
+    }
+
     /// A pill stays for `PILL_SECONDS` and then goes, so a result does not sit in the hint
     /// row for the rest of the session (interface spec 12.12).
     ///
@@ -2120,6 +2207,55 @@ mod tests {
         assert!(
             core.view_dirty,
             "the screen is told, or the row stays drawn"
+        );
+    }
+
+    /// A pill lands on the client the call came from, and every stale pill goes, not just the
+    /// first one.
+    ///
+    /// Two clients, because with one attached "the caller's screen" and "some screen" are the
+    /// same screen, and "every pill expires" and "the first pill expires" are the same
+    /// sentence. The second client is also the one the call names, so the fixture puts the
+    /// answer somewhere the wrong implementation would not look.
+    #[test]
+    fn a_pill_lands_on_the_calling_client_and_every_stale_pill_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let first = attached(&mut core);
+        let second = attached(&mut core);
+        assert_ne!(first, second);
+
+        core.set_pill(Some(&second), "Created workspace-1".into(), true);
+        assert!(
+            core.model.client(&first).unwrap().pill.is_none(),
+            "not the first client just because it is first"
+        );
+        assert_eq!(
+            core.model
+                .client(&second)
+                .and_then(|v| v.pill.as_ref())
+                .map(|p| p.text.as_str()),
+            Some("Created workspace-1")
+        );
+
+        // Both stale, so an expiry that stops after the first leaves one behind.
+        core.set_pill(Some(&first), "Created workspace-2".into(), true);
+        let stale =
+            (core.deps.clock.now() - chrono::Duration::seconds(PILL_SECONDS as i64)).to_rfc3339();
+        for client in [&first, &second] {
+            core.model
+                .client_mut(client)
+                .unwrap()
+                .pill
+                .as_mut()
+                .unwrap()
+                .at = stale.clone();
+        }
+        core.tick();
+        assert!(core.model.client(&first).unwrap().pill.is_none());
+        assert!(
+            core.model.client(&second).unwrap().pill.is_none(),
+            "the second client's pill goes too, or a stale line sits there for the session"
         );
     }
 

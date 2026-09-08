@@ -202,6 +202,128 @@ sideways whatever
     assert!(!slot.join("not-here.env").exists());
 }
 
+/// A `worktree.conf` that asks for nothing summarises as the empty string, which is still a
+/// different answer from a project that has no `worktree.conf` at all.
+///
+/// This is the distinction the whole `Option<Setup>` type exists for (principle 4), and the
+/// first test asserts the absent half. Without this one nothing holds the present-but-empty
+/// half, so collapsing `Some("")` to `None` would pass the suite and quietly undo the fix.
+#[tokio::test]
+async fn a_worktree_conf_that_asks_for_nothing_is_an_empty_summary_and_not_an_absent_one() {
+    let (_tmp, repo) = repo_with_origin("main");
+    std::fs::create_dir_all(repo.join(".domux")).unwrap();
+    std::fs::write(
+        repo.join(".domux/worktree.conf"),
+        "# nothing to do here yet\n\n",
+    )
+    .unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+
+    let made = h
+        .api("workspace.create", json!({"project": "audrey-app"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        made["setup"], "",
+        "the file is there and it did nothing, which is not the same as having no file"
+    );
+    assert!(
+        !made["setup"].is_null(),
+        "and absent is what a project with no worktree.conf answers"
+    );
+}
+
+/// `ran` counts the lines that were really typed, so a pane whose process never started
+/// reports nothing ran rather than a number nobody could have seen (principle 4).
+///
+/// The input is one a reader reaches with a `terminal.shell` that cannot start: `spawn_pane`
+/// logs the failure and carries on, so the workspace and its tab exist and the pane has no
+/// runtime behind it. Every other fixture here has `ran` equal to the number of run lines, so
+/// this is the only one that separates "typed" from "asked for".
+#[tokio::test]
+async fn a_run_line_that_could_not_be_typed_is_not_counted_as_having_run() {
+    let (_tmp, repo) = repo_with_origin("main");
+    std::fs::create_dir_all(repo.join(".domux")).unwrap();
+    std::fs::write(
+        repo.join(".domux/worktree.conf"),
+        "copy setup.cfg\nrun bin/setup --fast\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("setup.cfg"), "x=1").unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    // From here no pane gets a process, which is what a shell that cannot start looks like.
+    h.spawner
+        .as_ref()
+        .expect("the fake spawner")
+        .refuse_spawns();
+
+    let made = h
+        .api("workspace.create", json!({"project": "audrey-app"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        made["setup"], "copied 1",
+        "the copy happened and the run line did not: nothing typed it"
+    );
+    let pane = h.first_pane_of(made["id"].as_str().unwrap()).await;
+    assert!(
+        h.pane_input(&pane).is_empty(),
+        "and nothing reached the pane"
+    );
+    assert!(
+        !h.pane_is_running(&pane),
+        "which is because it has no process, the condition this test is about"
+    );
+}
+
+/// A create that fails says so on the screen too, in a red pill (interface spec 7.3).
+///
+/// The green half is the test above it; this is the half that gives `ok: false` a writer. The
+/// colour is the assertion that matters, because a pill that reported a failure in green would
+/// carry the same words.
+#[tokio::test]
+async fn a_create_that_fails_puts_a_red_pill_in_the_hint_row() {
+    let dir = tempfile::tempdir().unwrap();
+    support::git(dir.path(), &["init", "-q", "-b", "main"]);
+    support::git(dir.path(), &["config", "user.email", "t@example.com"]);
+    support::git(dir.path(), &["config", "user.name", "t"]);
+    support::commit(dir.path(), "README.md", "hi\n");
+    let name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
+        .await
+        .unwrap();
+    h.api("sidebar.show", json!({})).await.unwrap();
+    h.api("workspace.create", json!({"project": name}))
+        .await
+        .unwrap_err();
+
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("git fetch"),
+            Duration::from_secs(5),
+        )
+        .await;
+    // Catppuccin base on red: the refusal pill of interface spec 7.3 and the theme table.
+    assert!(
+        f.contains("bold fg=#1e1e2e bg=#f38ba8"),
+        "and it is red, not the green a result gets:\n{f}"
+    );
+}
+
 /// The two-slot helper builds what it says: two slots the server itself made, in slot order,
 /// with the model and the disk agreeing. Tasks 14, 15, 18, 19 and 20 all start from it, so a
 /// helper that handed back the ids the other way round, or a model a create could not have
@@ -317,6 +439,10 @@ async fn creating_in_a_plain_folder_is_refused_and_makes_no_worktree() {
         err.message
     );
     assert_eq!(handles(&h, folder.path()), ["main"], "no record was made");
+    // Worth asserting and worth not leaning on: this half cannot fail even with the guard
+    // moved into the job, because a folder that is not a repository fails `git fetch` before
+    // `create_dir_all` runs. What carries this test is the code and the first words of the
+    // message, which say which guard refused.
     assert!(
         !folder.path().join(".domux").exists(),
         "and nothing was created on disk"

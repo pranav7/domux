@@ -330,7 +330,12 @@ pub fn branch_of(path: &Path) -> Result<String, GitError> {
 }
 
 /// V1's `workspaceIsDirty`: uncommitted changes, or commits the upstream does not have.
-/// With no upstream it compares against the base's remote branch.
+///
+/// With no upstream it compares against `origin/<default branch>`, which is **not** the base
+/// the slot was made from, and since `worktree_add` is `--no-track` that is the path every slot
+/// takes. With `[worktrees] base` set to anything else, a slot is born with commits that range
+/// holds and reads dirty from the moment it is created. Decision record 0007 has the
+/// measurement and the remedy: give this function the base rather than letting it guess.
 pub fn is_dirty(path: &Path, branch: &str) -> Result<bool, GitError> {
     // `git status` runs first but never sees the branch, and the `rev-parse` below is a probe
     // whose failure is expected and ignored. `git log` is the command a bad branch actually

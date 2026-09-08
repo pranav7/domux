@@ -235,11 +235,22 @@ type WriteLog = Arc<Mutex<Vec<(PaneId, Vec<u8>)>>>;
 pub struct FakeSpawner {
     requests: Mutex<Vec<SpawnRequest>>,
     written: WriteLog,
+    /// Every spawn from now on fails, for a test that needs a pane with no process behind it.
+    refusing: std::sync::atomic::AtomicBool,
 }
 
 impl FakeSpawner {
     pub fn requests(&self) -> Vec<SpawnRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Makes every later spawn fail, which is the state a `terminal.shell` that cannot start
+    /// puts the real spawner in: the pane record exists and no runtime does. `spawn_pane` logs
+    /// such a failure and carries on, so a test can ask what the rest of the system does about
+    /// a pane nothing is running.
+    pub fn refuse_spawns(&self) {
+        self.refusing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn written(&self, pane: &PaneId) -> Vec<u8> {
@@ -262,6 +273,9 @@ impl PtySpawner for FakeSpawner {
     fn spawn(&self, req: SpawnRequest, _tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>> {
         let pane = req.pane.clone();
         self.requests.lock().unwrap().push(req);
+        if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("the fake spawner was told to refuse");
+        }
         Ok(Box::new(FakePty {
             pane,
             written: self.written.clone(),
