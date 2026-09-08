@@ -176,6 +176,13 @@ fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: 
 
 /// Keeps the rows whose `filter_text` contains `filter`, without case, and drops a header
 /// whose rows all went with it. M3's Agents box filters the same way.
+///
+/// The blanks are rebuilt rather than kept, because the blank above a match is usually the
+/// separator that followed the row the filter just dropped. They are rebuilt to the grammar
+/// of interface spec 5.2, which the filter does not change: one blank between rows and one
+/// before the next header. Dropping the first of those would let `/` change the shape of the
+/// list and not only its contents, and a switcher row is three lines, so two matches would
+/// abut with nothing between them.
 pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
     let filter = filter.trim().to_lowercase();
     if filter.is_empty() {
@@ -193,10 +200,10 @@ pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
         if !row.filter_text.contains(&filter) {
             continue;
         }
+        if !out.is_empty() {
+            out.push(ListRow::blank());
+        }
         if let Some(h) = header.take() {
-            if !out.is_empty() {
-                out.push(ListRow::blank());
-            }
             out.push(h);
         }
         out.push(row.clone());

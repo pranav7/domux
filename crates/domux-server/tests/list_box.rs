@@ -587,6 +587,49 @@ fn the_filter_keeps_matching_rows_under_their_own_header() {
 }
 
 #[test]
+fn two_matches_under_one_header_keep_the_blank_row_between_them() {
+    // Interface spec 5.2 puts a blank between rows and one before the next header, and the
+    // filter does not change that grammar. A switcher row is up to three lines, so two
+    // matches drawn adjacent would leave the reader nothing but colour to find the boundary.
+    let groups = vec![
+        ListRow::header(vec![Line::from("AUDREY")]),
+        ListRow::selectable("w_1", "auth cleanup", vec![Line::from("auth cleanup")]),
+        ListRow::blank(),
+        ListRow::selectable("w_2", "auth notes", vec![Line::from("auth notes")]),
+        ListRow::blank(),
+        ListRow::selectable("w_3", "release", vec![Line::from("release")]),
+        ListRow::blank(),
+        ListRow::header(vec![Line::from("DOMUX")]),
+        ListRow::selectable("w_4", "auth docs", vec![Line::from("auth docs")]),
+    ];
+
+    let kept = filter_rows(&groups, "auth");
+    assert_eq!(
+        texts(&kept),
+        vec![
+            "AUDREY",
+            "auth cleanup",
+            "",
+            "auth notes",
+            "",
+            "DOMUX",
+            "auth docs"
+        ],
+        "a blank between the two matches, and one before the next header"
+    );
+    assert!(kept[2].is_blank(), "the row between two matches is a blank");
+    assert!(
+        kept[4].is_blank(),
+        "and so is the row before the next header"
+    );
+    assert_eq!(kept[5].key, None, "which is followed by the header itself");
+    assert!(
+        !kept[0].is_blank(),
+        "and the list never opens on a blank row"
+    );
+}
+
+#[test]
 fn no_filter_returns_the_list_untouched_rather_than_a_list_that_matched_everything() {
     // On a list whose rows are separated by blanks, "keep everything" and "match every row"
     // are different answers: matching drops the blanks and rebuilds its own between groups.
@@ -627,4 +670,6 @@ fn the_branch_and_workspace_colours_are_the_hexes_the_spec_names() {
     // a token against itself would pass for any value.
     assert_eq!(theme::PINK, Color::Rgb(0xe3, 0xb4, 0xd8));
     assert_eq!(theme::TEAL, Color::Rgb(0x93, 0xe2, 0xd5));
+    // 5.3 names this one: the filled row's dim text goes to `text`.
+    assert_eq!(theme::TEXT, Color::Rgb(0xcd, 0xd6, 0xf4));
 }

@@ -46,6 +46,15 @@ impl Extras {
     }
 }
 
+/// The rows and the index of the one that carries the fill.
+pub struct Rows {
+    pub rows: Vec<ListRow>,
+    /// Where the fill goes, worked out from the key that styled the row (interface spec
+    /// 5.3). One answer, so the band and the brightening cannot land on different rows.
+    /// `None` when no key was given, or when the filter dropped the row it named.
+    pub filled: Option<usize>,
+}
+
 /// Every row, in the order drawn: projects alphabetically (interface spec 12.15), `main`
 /// first inside each and then the slots by number, one blank row between workspaces and one
 /// before the next header. `filled` is the key of the row that carries the fill, which is
@@ -62,7 +71,7 @@ pub fn rows(
     filter: &str,
     filled: Option<&str>,
     extras: Extras,
-) -> Vec<ListRow> {
+) -> Rows {
     let mut projects: Vec<&Project> = model.projects.iter().collect();
     projects.sort_by_key(|p| p.name.to_lowercase());
     let mut out: Vec<ListRow> = Vec::new();
@@ -80,7 +89,9 @@ pub fn rows(
     }
     // The box's own filter, not a second one here: `/` keeps the same rows in the sidebar,
     // in the switcher and in M3's Agents box because one function answers for all three.
-    filter_rows(&out, filter)
+    let rows = filter_rows(&out, filter);
+    let filled = filled_index(&rows, filled);
+    Rows { rows, filled }
 }
 
 /// `AUDREY-APP ─────────`: the name in upper case, one space, a rule to the box's edge.
@@ -237,6 +248,8 @@ fn line2(
             pr_style(pr.and_then(|f| f.state.as_ref())),
         ));
     }
+    // The title travels in `Fact.url`: Task 7's `PullRequest::title` records the decision,
+    // and the field is what the fact leads to for a fact that leads somewhere.
     if let Some(title) = pr.and_then(|f| f.url.as_deref()).filter(|_| extras.wide) {
         let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
         let room = extras.width.saturating_sub(used + sep_width);
@@ -291,8 +304,9 @@ pub fn pr_style(state: Option<&FactState>) -> Style {
     Style::default().fg(colour)
 }
 
-/// The index of the row whose key is `key`, for `ListBox::filled`. Pass the key that built
-/// the rows, or the band and the brightening land on different rows.
+/// The index of the row whose key is `key`. `rows` calls it for the fill; the cursor calls
+/// it to find where a remembered key went after a rebuild, which is a second use rather
+/// than a second answer.
 pub fn filled_index(rows: &[ListRow], key: Option<&str>) -> Option<usize> {
     let key = key?;
     rows.iter().position(|r| r.key.as_deref() == Some(key))
