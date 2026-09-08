@@ -10,6 +10,7 @@ pub mod server;
 pub mod sidebar;
 pub mod switcher;
 pub mod tab;
+pub mod workspace;
 
 use crate::client::ClientConn;
 use crate::core::{CoreJob, CoreMsg};
@@ -21,7 +22,7 @@ use domux_core::ids::{ClientId, PaneId, TabId};
 use domux_core::model::{Direction, Model, Rect};
 use domux_term::Size;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -67,6 +68,11 @@ pub struct Ctx<'a> {
     pub release_respawn_blocks: bool,
     /// Work that shells out, for the core to run off its own task (decision record 0006).
     pub jobs: Vec<CoreJob>,
+    /// What the jobs in flight have already chosen, keyed by `CoreJob::claim`. A handler
+    /// that chooses something reads this so it does not choose what another call in flight
+    /// has: see `Core::claims`. Handlers only read it; the core takes and releases the
+    /// claims with the jobs themselves.
+    pub claims: &'a HashSet<String>,
     /// Set beside a queued job by a handler whose answer that job carries: the caller is
     /// told when the job finishes, and the value this handler returns is not the answer.
     /// The first job queued is the one that carries it.
@@ -210,8 +216,9 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ProjectAdd(p) => project::add(ctx, p),
         ProjectRemove(p) => project::remove(ctx, p),
         // --- M2 stubs: placeholders for Tasks 14 to 19, not real handlers. ---
+        WorkspaceCreate(p) => workspace::create(ctx, p),
         WorkspaceList(_)
-        | WorkspaceCreate(_) | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
+        | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
         | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_)
         | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
             Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))

@@ -5,12 +5,15 @@ use crate::client::{ClientConn, Hint, HintKind};
 use crate::facts::FactRegistry;
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::render::{self, RenderInput};
+use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
 use domux_core::facts::{Fact, FactKey, FactState};
-use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
+use domux_core::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
-use domux_core::model::{ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, RegionKind};
+use domux_core::model::{
+    ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, Pill, RegionKind, PILL_SECONDS,
+};
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
 use domux_term::{Emulator, Rgb, Size};
@@ -63,6 +66,9 @@ pub enum CoreMsg {
         outcome: JobOutcome,
         reply: Option<JobReply>,
         client: Option<ClientId>,
+        /// What the job held while it ran, to be released now that it is over. `None` for a
+        /// job that only reads. See `Core::claims`.
+        claim: Option<String>,
     },
     Snapshot {
         reply: oneshot::Sender<Model>,
@@ -72,10 +78,47 @@ pub enum CoreMsg {
 
 /// Work that shells out. It runs on a blocking task; the API reply, when there is one,
 /// travels with it, so the caller waits and the core does not (decision record 0006).
-/// Tasks 17 and 18 add the create, clear and delete variants.
+/// Task 18 adds the clear and delete variants.
 pub enum CoreJob {
     /// Everything `project.add` needs from git and the filesystem, read off the core task.
     ReadProject { path: String },
+    /// The worktree, the branch and the `worktree.conf` setup of one new slot. `base` is
+    /// what the caller or the configuration asked for, not the ref it resolves to: reading
+    /// `origin/HEAD` is a fork, so `git::base_ref` runs here rather than in the handler.
+    CreateWorkspace {
+        project: ProjectId,
+        root: PathBuf,
+        slot: u32,
+        path: PathBuf,
+        branch: String,
+        base: Option<String>,
+    },
+}
+
+impl CoreJob {
+    /// What this job holds for as long as it runs, so a second call cannot choose the same
+    /// thing before this one has recorded it. `None` for a job that only reads the world and
+    /// lets its arm decide, which the core task already serialises (decision record 0006).
+    fn claim(&self) -> Option<String> {
+        match self {
+            CoreJob::ReadProject { .. } => None,
+            CoreJob::CreateWorkspace { project, slot, .. } => Some(slot_claim(project, *slot)),
+        }
+    }
+}
+
+/// The claim one slot number of one project stands for. Written here and read in
+/// `api::workspace::create`, so the two cannot spell it differently.
+pub fn slot_claim(project: &ProjectId, slot: u32) -> String {
+    format!("{project} workspace-{slot}")
+}
+
+/// What `worktree.conf` did for a new slot: the links and copies that were applied, and the
+/// run lines for its first pane. `None` in `Created` means the project has no
+/// `worktree.conf` at all, which is not the same as one that asked for nothing (principle 4).
+pub struct Setup {
+    pub applied: worktree_conf::Applied,
+    pub run: Vec<String>,
 }
 
 /// What a job found. Nothing here has touched the model: the `JobFinished` arm does that.
@@ -87,6 +130,17 @@ pub enum JobOutcome {
         root: PathBuf,
         default_branch: Option<String>,
         slots: Vec<(u32, PathBuf)>,
+    },
+    /// The worktree `CreateWorkspace` made, with everything the record and the answer need.
+    /// `base` is the ref it really branched from, which is why it comes back rather than
+    /// being worked out again here.
+    Created {
+        project: ProjectId,
+        slot: u32,
+        path: PathBuf,
+        branch: String,
+        base: String,
+        setup: Option<Setup>,
     },
     Failed {
         message: String,
@@ -178,6 +232,19 @@ pub struct Core {
     /// What domux observed. The core reads it and records answers; the fetching happens on
     /// blocking tasks.
     pub facts: FactRegistry,
+    /// What the jobs in flight have chosen and not yet written into the model.
+    ///
+    /// A handler that only reads the model is safe without this, because the core task
+    /// serialises the arms that write it. A handler that **chooses** is not: it chooses when
+    /// the call arrives and its job records the choice seconds later, so a second call in
+    /// between reads a model that says the thing is still free (decision record 0006).
+    /// `workspace.create` is that shape, and this is what makes two of them at once pick two
+    /// different slot numbers instead of both picking the lowest.
+    ///
+    /// Keys are strings so the mechanism is not slot-shaped: `CoreJob::claim` names what a
+    /// job holds. `start_job` is the only writer and `job_finished` the only remover, so a
+    /// claim cannot be taken without a job to release it.
+    claims: HashSet<String>,
 }
 
 impl Core {
@@ -284,6 +351,7 @@ impl Core {
             immediate_exits: HashMap::new(),
             respawn_blocked: HashSet::new(),
             facts,
+            claims: HashSet::new(),
         };
         core.ensure_every_workspace_has_a_tab();
         for pane in core.model.all_pane_ids() {
@@ -506,7 +574,8 @@ impl Core {
                 outcome,
                 reply,
                 client,
-            } => self.job_finished(outcome, reply, client),
+                claim,
+            } => self.job_finished(outcome, reply, client, claim),
             CoreMsg::Snapshot { reply } => {
                 let _ = reply.send(self.model.clone());
             }
@@ -855,6 +924,7 @@ impl Core {
             detach_clients: Vec::new(),
             release_respawn_blocks: false,
             jobs: Vec::new(),
+            claims: &self.claims,
             defer_reply: false,
         };
         let result = api::dispatch(method, &mut ctx);
@@ -889,7 +959,17 @@ impl Core {
 
     /// Runs a job on a blocking task and sends what it found back as `JobFinished`. Nothing
     /// that shells out runs on the core task, however fast it is (decision record 0006).
-    fn start_job(&self, job: CoreJob, reply: Option<JobReply>, client: Option<ClientId>) {
+    ///
+    /// The job's claim is taken here rather than in the handler, so that taking one and
+    /// having a job to release it are the same act: a handler that took a claim and then
+    /// failed to queue its job would hold that slot number for the life of the server.
+    /// Taking it here is still early enough, because this runs inside the message that
+    /// dispatched the handler and the next call is a message of its own.
+    fn start_job(&mut self, job: CoreJob, reply: Option<JobReply>, client: Option<ClientId>) {
+        let claim = job.claim();
+        if let Some(claim) = &claim {
+            self.claims.insert(claim.clone());
+        }
         let tx = self.core_tx.clone();
         let running = tokio::task::spawn_blocking(move || run_job(job));
         tokio::spawn(async move {
@@ -905,6 +985,7 @@ impl Core {
                     outcome,
                     reply,
                     client,
+                    claim,
                 })
                 .await;
         });
@@ -917,7 +998,13 @@ impl Core {
         outcome: JobOutcome,
         reply: Option<JobReply>,
         client: Option<ClientId>,
+        claim: Option<String>,
     ) {
+        // Before the arm, and whatever the arm does with it: the job is over either way, and
+        // a claim a failure kept would hold its slot number until the server stopped.
+        if let Some(claim) = claim {
+            self.claims.remove(&claim);
+        }
         let result = match outcome {
             JobOutcome::Failed { message, code } => Err(ApiError {
                 code,
@@ -929,8 +1016,116 @@ impl Core {
                 default_branch,
                 slots,
             } => self.project_read(root, default_branch, slots),
+            JobOutcome::Created {
+                project,
+                slot,
+                path,
+                branch,
+                base,
+                setup,
+            } => self.workspace_created(client.clone(), project, slot, path, branch, base, setup),
         };
         self.answer(result, reply, client);
+    }
+
+    /// `workspace.create`'s model change: the slot record, its first tab, the pane that tab
+    /// runs, and the `worktree.conf` run lines typed into that pane.
+    ///
+    /// The worktree and the branch are already on disk when this runs, so nothing here can
+    /// leave a half-made workspace: every step below is in the model, and the model is only
+    /// touched once the work on disk has all worked.
+    #[allow(clippy::too_many_arguments)]
+    fn workspace_created(
+        &mut self,
+        client: Option<ClientId>,
+        project: ProjectId,
+        slot: u32,
+        path: PathBuf,
+        branch: String,
+        base: String,
+        setup: Option<Setup>,
+    ) -> Result<serde_json::Value, ApiError> {
+        // A failure here leaves the worktree on disk with no record pointing at it, and that
+        // is deliberate: the one way `add_slot` refuses is a slot number the model already
+        // holds, and removing the directory would then delete a workspace that is really
+        // there rather than tidying up after this call.
+        let (workspace, mut events) = self.model.add_slot(&project, slot, path.clone())?;
+        let (_tab, pane, more) = self.model.create_tab(&workspace, path.clone())?;
+        events.extend(more);
+        self.pending_events.extend(events);
+        // The pane goes through the same list every other new pane goes through, so it is
+        // started, sized and drawn the way one from `pane.split` or `tab.create` is.
+        self.apply_side_effects(vec![pane.clone()], Vec::new(), Vec::new());
+        // Typed into the pane, not run behind its back: a slow setup is then watched in the
+        // workspace it belongs to (`worktree_conf`'s own note on `run_lines`). `ran` counts
+        // what was really typed, so a pane whose process did not start reports nothing ran
+        // rather than a number nobody could see (principle 4).
+        let mut ran = 0;
+        if let (Some(setup), Some(runtime)) = (setup.as_ref(), self.panes.get_mut(&pane)) {
+            for line in &setup.run {
+                runtime.write(format!("{line}\n").as_bytes());
+                ran += 1;
+            }
+        }
+        let summary = setup.as_ref().map(|setup| {
+            let mut summary = setup.applied.summary();
+            summary.ran = ran;
+            // A `worktree.conf` that asked for nothing summarises as the empty string. It is
+            // still `Some`: the file is there and it did nothing, which is a different fact
+            // from a project with no `worktree.conf` at all (principle 4).
+            summary.to_string()
+        });
+        let handle = domux_core::model::WorkspaceHandle::Slot(slot).to_string();
+        self.set_pill(client.as_ref(), format!("Created {handle}"), true);
+        let tabs = self
+            .model
+            .workspace(&workspace)
+            .map(|w| w.tabs.len())
+            .unwrap_or_default();
+        api::ok(domux_core::api::WorkspaceCreated {
+            id: workspace,
+            project,
+            handle,
+            path,
+            branch,
+            base,
+            setup: summary,
+            tabs,
+        })
+    }
+
+    /// Puts one line of result in a client's hint row or footer, green when it worked and red
+    /// when it did not (interface spec 7.3 and 12.12). Stamped from the core's clock, which
+    /// is the same clock `tick` measures its age against.
+    ///
+    /// A call with no client draws nothing, and that is the honest outcome: a pill is a place
+    /// on a screen, and a caller with no screen has already been answered by its reply.
+    pub fn set_pill(&mut self, client: Option<&ClientId>, text: String, ok: bool) {
+        let at = self.deps.clock.now().to_rfc3339();
+        let Some(view) = client.and_then(|c| self.model.client_mut(c)) else {
+            return;
+        };
+        view.pill = Some(Pill { text, ok, at });
+        self.view_dirty = true;
+    }
+
+    /// Drops every pill that has been showing for longer than `PILL_SECONDS`, so a result
+    /// does not sit in the hint row for the rest of the session (interface spec 12.12).
+    /// A pill whose stamp will not parse is dropped too, rather than kept for ever.
+    fn expire_pills(&mut self) -> bool {
+        let now = self.deps.clock.now();
+        let mut cleared = false;
+        for view in &mut self.model.clients {
+            let Some(pill) = &view.pill else { continue };
+            let age = chrono::DateTime::parse_from_rfc3339(&pill.at)
+                .map(|at| now.signed_duration_since(at).num_seconds())
+                .unwrap_or(i64::MAX);
+            if age >= PILL_SECONDS as i64 {
+                view.pill = None;
+                cleared = true;
+            }
+        }
+        cleared
     }
 
     /// `project.add`'s model change: register the path and adopt the worktrees the job
@@ -1163,6 +1358,11 @@ impl Core {
         if self.last_minute.as_ref() != Some(&minute) {
             self.last_minute = Some(minute);
             changed = true;
+        }
+        // Not folded into `changed`: an expired pill changes what is drawn but nothing that
+        // is persisted, and `changed` is what asks for a write of the state file too.
+        if self.expire_pills() {
+            self.view_dirty = true;
         }
         if changed {
             self.view_dirty = true;
@@ -1588,6 +1788,100 @@ impl Core {
 fn run_job(job: CoreJob) -> JobOutcome {
     match job {
         CoreJob::ReadProject { path } => read_project(&path),
+        CoreJob::CreateWorkspace {
+            project,
+            root,
+            slot,
+            path,
+            branch,
+            base,
+        } => create_workspace(project, root, slot, path, branch, base),
+    }
+}
+
+/// V1's `provisionWorkspace`, in its order: the worktree on a fresh branch from the base,
+/// then the project's `worktree.conf` read, parsed and applied.
+///
+/// Everything here forks or touches the filesystem, and `git worktree add` fetches from a
+/// remote, which is the whole reason the create is a job rather than a handler.
+///
+/// A failure adds nothing to the model, so there is never a half-made workspace record. What
+/// it could leave is a half-made worktree, and it does not: once `worktree_add` has worked,
+/// every failure below takes the worktree and its branch back out before it reports. The
+/// report is the original failure, because that is the one that says what to fix; a rollback
+/// that fails as well is named beside it, because a directory the server could not remove is
+/// something the author has to know about.
+fn create_workspace(
+    project: ProjectId,
+    root: PathBuf,
+    slot: u32,
+    path: PathBuf,
+    branch: String,
+    base: Option<String>,
+) -> JobOutcome {
+    let base = crate::git::base_ref(&root, base.as_deref());
+    if let Err(e) = crate::git::worktree_add(&root, &path, &branch, &base) {
+        return JobOutcome::Failed {
+            message: e.to_string(),
+            code: ErrorCode::Unavailable,
+        };
+    }
+    let conf = root.join(worktree_conf::CONF_PATH);
+    let text = match std::fs::read_to_string(&conf) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // A setup file that is there and cannot be read is not a project without one:
+        // carrying on would build a slot missing the files its `worktree.conf` names and
+        // report that as a success (principle 4).
+        Err(e) => {
+            return rolled_back(
+                &root,
+                &path,
+                &branch,
+                format!("could not read {}: {e}", conf.display()),
+                ErrorCode::Internal,
+            )
+        }
+    };
+    let setup = text.map(|text| {
+        let (directives, warnings) = worktree_conf::parse(&text);
+        for warning in warnings {
+            tracing::warn!("{}: {warning}", conf.display());
+        }
+        let applied = worktree_conf::apply(&root, &path, &directives);
+        for failure in applied.failures() {
+            tracing::warn!("{}: {failure}", conf.display());
+        }
+        Setup {
+            run: worktree_conf::run_lines(&directives),
+            applied,
+        }
+    });
+    JobOutcome::Created {
+        project,
+        slot,
+        path,
+        branch,
+        base,
+        setup,
+    }
+}
+
+/// Takes a worktree this job made back out and reports `message`, naming the rollback's own
+/// failure beside it when the directory would not go.
+fn rolled_back(
+    root: &Path,
+    path: &Path,
+    branch: &str,
+    message: String,
+    code: ErrorCode,
+) -> JobOutcome {
+    match crate::git::worktree_remove(root, path, branch, true) {
+        Ok(()) => JobOutcome::Failed { message, code },
+        Err(e) => JobOutcome::Failed {
+            message: format!("{message}; and {} is still there: {e}", path.display()),
+            code,
+        },
     }
 }
 
@@ -1748,6 +2042,101 @@ mod tests {
         (core, core_rx)
     }
 
+    /// One attached client, without a socket. `attach` is what builds a `ClientView`, so a
+    /// test that hand-built one would be testing its own copy of the shape.
+    fn attached(core: &mut Core) -> ClientId {
+        let (tx, rx) = mpsc::channel(8);
+        // The receiver outlives the call: `attach` sends `Welcome`, and a closed channel
+        // would make that send fail silently and the test read a state it did not set up.
+        let id = core
+            .attach(
+                domux_core::proto::Hello {
+                    version: domux_core::VERSION.into(),
+                    protocol: domux_core::proto::PROTOCOL_VERSION,
+                    cols: 80,
+                    rows: 24,
+                    caps: Default::default(),
+                },
+                tx,
+            )
+            .expect("attach");
+        drop(rx);
+        id
+    }
+
+    /// A pill stays for `PILL_SECONDS` and then goes, so a result does not sit in the hint
+    /// row for the rest of the session (interface spec 12.12).
+    ///
+    /// The clock is fixed, so the stamp is what moves. Both sides of the boundary are here:
+    /// a pill one second short of the limit is still showing, which is what tells a working
+    /// expiry from one that clears every pill on the first tick, and the second half of the
+    /// test would pass against that.
+    ///
+    /// The screen is asserted at both ends, and `view_dirty` is cleared before each so the
+    /// last thing that set it cannot stand in for the thing under test. The harness cannot
+    /// carry either claim: a create marks the view through `apply_side_effects` as well, and
+    /// the first `tick` of a server marks it because the minute has changed.
+    #[test]
+    fn a_pill_goes_after_six_seconds_and_not_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let client = attached(&mut core);
+        core.view_dirty = false;
+        core.set_pill(Some(&client), "Created workspace-1".into(), true);
+        assert!(
+            core.view_dirty,
+            "a pill nothing drew is a result nobody sees"
+        );
+        let now = core.deps.clock.now();
+        let stamp = |core: &mut Core, seconds: i64| {
+            let at = (now - chrono::Duration::seconds(seconds)).to_rfc3339();
+            core.model
+                .client_mut(&client)
+                .unwrap()
+                .pill
+                .as_mut()
+                .unwrap()
+                .at = at;
+        };
+
+        stamp(&mut core, PILL_SECONDS as i64 - 1);
+        core.tick();
+        assert_eq!(
+            core.model
+                .client(&client)
+                .and_then(|v| v.pill.as_ref())
+                .map(|p| p.text.as_str()),
+            Some("Created workspace-1"),
+            "a pill that has not run out is still showing"
+        );
+
+        stamp(&mut core, PILL_SECONDS as i64);
+        core.view_dirty = false;
+        core.tick();
+        assert!(
+            core.model.client(&client).unwrap().pill.is_none(),
+            "and one that has run out is gone"
+        );
+        assert!(
+            core.view_dirty,
+            "the screen is told, or the row stays drawn"
+        );
+    }
+
+    /// A pill for a caller with no client draws nothing rather than picking a screen. Every
+    /// job outcome goes through `set_pill`, and a `workspace.create` from the command line
+    /// with nothing attached is the call that arrives here with `None`.
+    #[test]
+    fn a_pill_with_no_client_marks_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let client = attached(&mut core);
+        core.view_dirty = false;
+        core.set_pill(None, "Created workspace-1".into(), true);
+        assert!(core.model.client(&client).unwrap().pill.is_none());
+        assert!(!core.view_dirty);
+    }
+
     /// A read-only method must not compose a frame for every attached client. `dispatch`
     /// still runs `apply_side_effects`, which is why that call marks the view only when it
     /// actually killed, spawned, detached or replaced something.
@@ -1822,7 +2211,6 @@ mod tests {
     /// `[("workspace.resume", ..)]`, M2 has closed this class of gap.
     const STILL_UNBUILT: &[(&str, &str)] = &[
         ("workspace.list", "{}"),
-        ("workspace.create", r#"{"project":"p"}"#),
         ("workspace.clear", r#"{"workspace":"w"}"#),
         ("workspace.delete", r#"{"workspace":"w"}"#),
         ("workspace.rename", "{}"),

@@ -9,45 +9,40 @@ use domux_core::ids::WorkspaceId;
 use domux_core::model::Model;
 use domux_core::state_file;
 use domux_server::facts::branch::BranchProvider;
-use domux_server::git;
 use domux_server::testing::{Harness, HarnessOptions};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A real git worktree at slot 1 (branch `workspace-1`), registered in a `state.json` a
-/// harness can load on start. `workspace.create` is not built yet, so this is how a test
-/// gets a project and a workspace onto the model without it. The two temp directories must
-/// outlive the harness; the caller keeps them bound in scope.
-fn seeded_workspace() -> (tempfile::TempDir, tempfile::TempDir, PathBuf, WorkspaceId) {
-    let (repo_tmp, repo) = support::repo_with_origin("main");
-    let path = git::slot_path(&repo, 1);
-    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
-
-    let mut model = Model::new(1);
-    let (pid, _main, _events) = model.add_git_project(repo, "main".into()).unwrap();
-    let (workspace, _events) = model.add_slot(&pid, 1, path).unwrap();
-
-    let state_tmp = tempfile::tempdir().unwrap();
-    let state_dir = state_tmp.path().join("state");
-    std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(
-        state_dir.join("state.json"),
-        state_file::to_json(&state_file::snapshot(&model, "2026-09-04T14:32:00+00:00")),
-    )
-    .unwrap();
-    (repo_tmp, state_tmp, state_dir, workspace)
+/// A harness holding a git project with `workspace-1` in it, made the way the server makes
+/// one. Returns the harness and the new workspace's id.
+///
+/// This used to hand-build a worktree and write a `state.json` for the harness to load,
+/// because `workspace.create` did not exist. It does now, and a fixture the server built is
+/// the fixture these tests want: a provider reads the model and the disk, and the two agree
+/// here because one call made both.
+async fn harness_with_a_slot(
+    providers: Vec<Arc<dyn domux_server::facts::FactProvider>>,
+) -> (Harness, WorkspaceId) {
+    let mut h = Harness::start_with(HarnessOptions {
+        providers,
+        ..HarnessOptions::new(Config::default(), 80, 24)
+    })
+    .await;
+    h.git_project("main").await;
+    let made = h
+        .api(
+            "workspace.create",
+            serde_json::json!({"project": "audrey-app"}),
+        )
+        .await
+        .expect("workspace.create");
+    let workspace = WorkspaceId(made["id"].as_str().expect("an id").to_string());
+    (h, workspace)
 }
 
 #[tokio::test]
 async fn a_harness_test_can_ask_for_the_branch_provider_and_wait_for_its_fact() {
-    let (_repo_tmp, _state_tmp, state_dir, workspace) = seeded_workspace();
-    let h = Harness::start_with(HarnessOptions {
-        state_dir: Some(state_dir),
-        providers: vec![Arc::new(BranchProvider)],
-        ..HarnessOptions::new(Config::default(), 80, 24)
-    })
-    .await;
+    let (h, workspace) = harness_with_a_slot(vec![Arc::new(BranchProvider)]).await;
 
     let key = FactKey::workspace(&workspace, FACT_BRANCH);
     let fact = h
@@ -72,13 +67,7 @@ async fn a_harness_test_can_ask_for_the_branch_provider_and_wait_for_its_fact() 
 /// failed against that code well inside the sleep below.
 #[tokio::test]
 async fn a_branch_fact_stays_fresh_across_several_ticks_under_the_harness_s_fixed_clock() {
-    let (_repo_tmp, _state_tmp, state_dir, workspace) = seeded_workspace();
-    let h = Harness::start_with(HarnessOptions {
-        state_dir: Some(state_dir),
-        providers: vec![Arc::new(BranchProvider)],
-        ..HarnessOptions::new(Config::default(), 80, 24)
-    })
-    .await;
+    let (h, workspace) = harness_with_a_slot(vec![Arc::new(BranchProvider)]).await;
 
     let key = FactKey::workspace(&workspace, FACT_BRANCH);
     h.wait_for_fact(&key, |f| f.is_some(), Duration::from_secs(5))
@@ -100,12 +89,7 @@ async fn a_harness_test_with_no_providers_never_sees_a_branch_fact() {
     // The default (`HarnessOptions::new`'s empty `providers`) is what `ServerOptions.providers`
     // documents: a test that does not ask for a provider never shells out to git, even with a
     // real git project sitting right there on disk.
-    let (_repo_tmp, _state_tmp, state_dir, workspace) = seeded_workspace();
-    let h = Harness::start_with(HarnessOptions {
-        state_dir: Some(state_dir),
-        ..HarnessOptions::new(Config::default(), 80, 24)
-    })
-    .await;
+    let (h, workspace) = harness_with_a_slot(Vec::new()).await;
 
     let key = FactKey::workspace(&workspace, FACT_BRANCH);
     // Long enough to see the provider miss several ticks were one registered; short enough

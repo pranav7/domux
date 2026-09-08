@@ -85,11 +85,29 @@ before `fetch`, `prune` and `create_dir_all`. Both calls pass that check, and th
 later inside `git worktree add` itself, in git's own words rather than domux's.
 
 Whoever adds such a job owns the answer, and the shape to reach for is a set of claims on the
-core, taken in the handler where one runs at a time and released when the job finishes. It is
-deliberately not built here: `project.add` cannot reach the defect it would prevent, and a
-claim on it would answer `busy` to a second call that today gets the right answer. A
-mechanism with nothing in the milestone that can exercise it is one no test can tell from its
-opposite.
+core, taken with the job and released when it finishes. It is deliberately not built here:
+`project.add` cannot reach the defect it would prevent, and a claim on it would answer `busy`
+to a second call that today gets the right answer. A mechanism with nothing in the milestone
+that can exercise it is one no test can tell from its opposite.
+
+**Task 17 built it, and the shape it needed is not a lock.** `Core::claims` is a set of
+strings, one per job that chose something, taken in `Core::start_job` and dropped in
+`Core::job_finished`; `CoreJob::claim` says what a job holds and answers `None` for a job that
+only reads. `Model::lowest_free_slot` takes the numbers already spoken for, so two creates
+arriving together pick `workspace-1` and `workspace-2` and both work. That is better than
+refusing the second with `busy`, and it is why the claim is a value the chooser skips rather
+than a lock it waits on: two people asking for a workspace want two workspaces.
+
+The measurement that settled it, with the claim removed and both calls in flight:
+`git worktree add ... failed: fatal: cannot lock ref 'refs/heads/workspace-1': reference
+already exists`. So the prediction above was right in shape and wrong in the detail - the
+loser fails on the ref rather than on the directory, because both calls got past
+`is_occupied` and one created the branch first.
+
+Taking the claim in `start_job` rather than in the handler is what keeps the set honest:
+taking a claim and having a job that will release it are then the same act, and a handler
+that took one and then failed to queue its job cannot hold a slot number for the life of the
+server.
 
 ## What follows from it
 

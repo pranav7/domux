@@ -9,7 +9,7 @@ use crate::{load_config, CoreDeps, FixedClock, LoadedConfig, Server, ServerHandl
 use domux_core::api::{ApiError, Request, Response};
 use domux_core::config::Config;
 use domux_core::facts::{Fact, FactKey};
-use domux_core::ids::{ClientId, PaneId, TabId};
+use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::{KeyName, Keymap};
 use domux_core::model::Model;
 use domux_core::proto::{
@@ -644,7 +644,7 @@ impl Harness {
     /// in is kept by the harness, so a caller does not have to bind one to keep the
     /// repository alive for the length of the test.
     ///
-    /// `git_project_with_two_slots` is Task 17's: building a slot means `workspace.create`.
+    /// `git_project_with_two_slots` builds slots on top of this one.
     pub async fn git_project(&mut self, default_branch: &str) -> PathBuf {
         let (tmp, repo) = repo_with_origin(default_branch);
         self.kept.push(tmp);
@@ -655,6 +655,72 @@ impl Harness {
         .await
         .expect("project.add");
         repo
+    }
+
+    /// A git project with `workspace-1` and `workspace-2` made through `workspace.create`,
+    /// so the worktrees on disk and the records in the model are the ones the server itself
+    /// would have built. Returns the project root and the two workspace ids, in slot order.
+    ///
+    /// It runs two real creates, so it fetches and adds two worktrees: a test that only needs
+    /// a project should call `git_project`.
+    pub async fn git_project_with_two_slots(&mut self) -> (PathBuf, WorkspaceId, WorkspaceId) {
+        let root = self.git_project("main").await;
+        // By id, not by name: the harness always holds a second project of its own, and a
+        // create that named neither would build its slot in whichever one the first client
+        // happens to be looking at.
+        let canonical = root.canonicalize().expect("the project root is there");
+        let project = self
+            .model()
+            .project_at(&canonical)
+            .map(|p| p.id.to_string())
+            .expect("git_project registered the repository");
+        let mut made = Vec::new();
+        for _ in 0..2 {
+            let created = self
+                .api(
+                    "workspace.create",
+                    serde_json::json!({ "project": project }),
+                )
+                .await;
+            made.push(created);
+        }
+        let ids: Vec<WorkspaceId> = made
+            .into_iter()
+            .map(|created| {
+                let created = created.expect("workspace.create");
+                WorkspaceId(
+                    created["id"]
+                        .as_str()
+                        .expect("a create answers with an id")
+                        .to_string(),
+                )
+            })
+            .collect();
+        (root, ids[0].clone(), ids[1].clone())
+    }
+
+    /// The first pane of a workspace's first tab, for a test that reads what was typed into a
+    /// workspace that is not the client's.
+    ///
+    /// Waits for the tab: a create answers its caller from inside the batch that made the
+    /// workspace, so the snapshot this reads can be one batch behind the answer.
+    pub async fn first_pane_of(&mut self, workspace: &str) -> PaneId {
+        let id = WorkspaceId(workspace.to_string());
+        let deadline = tokio::time::Instant::now() + SETTLE;
+        loop {
+            let found = self
+                .model()
+                .workspace(&id)
+                .and_then(|w| w.tabs.first().map(|t| t.focused.clone()));
+            if let Some(pane) = found {
+                return pane;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "workspace {workspace} had no tab within {SETTLE:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Stops the server (persisting) and drops every client. The state dir stays.

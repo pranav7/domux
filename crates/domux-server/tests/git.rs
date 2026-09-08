@@ -52,6 +52,62 @@ fn worktree_add_creates_the_slot_on_a_fresh_branch_from_the_base() {
     assert_eq!(git::existing_slots(&repo).unwrap(), vec![1]);
 }
 
+/// A slot branch gets no upstream, and two slots can therefore be built at once.
+///
+/// Both halves are the same fact from two sides. Setting an upstream is a write to
+/// `.git/config`, and git guards that with a lock file, so without `--no-track` one of two
+/// concurrent adds fails with "could not lock config file" after it has already made its
+/// branch: the slot is not built and a stray branch is left behind. The configuration
+/// assertion is the deterministic half - the concurrency below is a race and could pass by
+/// scheduling alone - and three rounds is what makes the race unlikely to be won three times.
+///
+/// `workspace.create` reaches this whenever two calls arrive together, which is one press of
+/// the create key twice.
+#[test]
+fn a_slot_branch_has_no_upstream_so_two_slots_can_be_added_at_once() {
+    let (_tmp, repo) = repo_with_origin("main");
+    git::worktree_add(
+        &repo,
+        &git::slot_path(&repo, 1),
+        "workspace-1",
+        "origin/main",
+    )
+    .unwrap();
+    let configured = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["config", "--get", "branch.workspace-1.remote"])
+        .output()
+        .unwrap();
+    assert!(
+        !configured.status.success() && configured.stdout.is_empty(),
+        "a slot branch tracks nothing: {}",
+        String::from_utf8_lossy(&configured.stdout)
+    );
+
+    for round in 0..3 {
+        let (first, second) = (2 + round * 2, 3 + round * 2);
+        let one = {
+            let (repo, path) = (repo.clone(), git::slot_path(&repo, first));
+            std::thread::spawn(move || {
+                git::worktree_add(&repo, &path, &git::slot_branch(first), "origin/main")
+            })
+        };
+        let two = {
+            let (repo, path) = (repo.clone(), git::slot_path(&repo, second));
+            std::thread::spawn(move || {
+                git::worktree_add(&repo, &path, &git::slot_branch(second), "origin/main")
+            })
+        };
+        one.join().unwrap().expect("the first add of the pair");
+        two.join().unwrap().expect("the second add of the pair");
+    }
+    assert_eq!(
+        git::existing_slots(&repo).unwrap(),
+        vec![1, 2, 3, 4, 5, 6, 7]
+    );
+}
+
 #[test]
 fn worktree_add_resets_a_branch_that_already_exists() {
     let (_tmp, repo) = repo_with_origin("main");
@@ -450,18 +506,38 @@ fn worktree_remove_finishes_when_the_directory_is_already_gone() {
 
 #[test]
 fn is_dirty_compares_against_the_default_branch_when_the_slot_has_no_upstream() {
-    // `worktree add -b` sets tracking, so the fallback is hard to reach and no other test
-    // reaches it. It is still the branch `is_dirty` takes for any slot whose upstream was
-    // unset or whose remote branch was deleted, and `is_dirty` is Task 18's safety gate.
+    // The branch `is_dirty` takes for every slot `worktree_add` builds, since the add is
+    // `--no-track`. It is also the branch it takes for a slot whose remote branch was
+    // deleted, and `is_dirty` is Task 18's safety gate.
     let (_tmp, repo) = repo_with_origin("main");
     let path = git::slot_path(&repo, 1);
     git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
-    run_git(&path, &["branch", "--unset-upstream"]);
     assert!(!git::is_dirty(&path, "workspace-1").unwrap());
     commit(&path, "work.md", "a week of work\n");
     assert!(
         git::is_dirty(&path, "workspace-1").unwrap(),
         "an unpushed commit is dirty with no upstream too"
+    );
+}
+
+/// The other branch of `is_dirty`: a slot whose upstream somebody set by hand is measured
+/// against that upstream. Nothing `worktree_add` builds has one, so the fixture sets it.
+#[test]
+fn is_dirty_compares_against_the_upstream_when_the_slot_has_one() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    run_git(&path, &["push", "-q", "-u", "origin", "workspace-1"]);
+    assert!(!git::is_dirty(&path, "workspace-1").unwrap());
+    commit(&path, "work.md", "a week of work\n");
+    assert!(
+        git::is_dirty(&path, "workspace-1").unwrap(),
+        "a commit the upstream does not have is dirty"
+    );
+    run_git(&path, &["push", "-q", "origin", "workspace-1"]);
+    assert!(
+        !git::is_dirty(&path, "workspace-1").unwrap(),
+        "and pushing it makes the slot clean again, which the fallback range would not say"
     );
 }
 

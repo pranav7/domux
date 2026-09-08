@@ -213,6 +213,16 @@ fn is_occupied(path: &Path) -> bool {
 /// exists is force-reset to the base first, which is V1's rule: the slot number is the
 /// identity, and a stale branch from a deleted slot must not decide what the new one holds.
 /// Prunes registrations for directories removed outside git before it starts.
+///
+/// `--no-track`, for two reasons that point the same way. A slot branch that tracks
+/// `origin/main` is a branch whose `git push` either goes to `main` or is refused for a name
+/// that does not match, and neither is what a workspace wants. And setting the upstream is a
+/// write to `.git/config`, which git guards with a lock file: two `workspace.create` calls on
+/// one project at the same time then have one of them fail with "could not lock config file",
+/// after it has already made the branch, so the slot cannot be built and a stray branch is
+/// left behind. Measured, on git 2.50: ten pairs of concurrent adds with `--no-track` all
+/// worked and three of three without it failed that way. The branch that resets an existing
+/// branch never set an upstream either, so this also makes the two halves agree.
 pub fn worktree_add(root: &Path, path: &Path, branch: &str, base: &str) -> Result<(), GitError> {
     if !path.is_absolute() {
         return Err(not_absolute("git worktree add".to_string(), path));
@@ -253,7 +263,10 @@ pub fn worktree_add(root: &Path, path: &Path, branch: &str, base: &str) -> Resul
         run(root, &["branch", "-f", branch, base])?;
         run(root, &["worktree", "add", &path, branch])?;
     } else {
-        run(root, &["worktree", "add", "-b", branch, &path, base])?;
+        run(
+            root,
+            &["worktree", "add", "--no-track", "-b", branch, &path, base],
+        )?;
     }
     Ok(())
 }

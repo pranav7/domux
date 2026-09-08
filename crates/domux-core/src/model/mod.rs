@@ -1071,9 +1071,20 @@ impl Model {
             .find(|p| p.workspaces.iter().any(|w| &w.id == id))
     }
 
-    /// The lowest N at or above 1 that no slot in this project holds. Numbers a delete
-    /// freed come back; a number a live slot holds never moves (architecture spec 2).
-    pub fn lowest_free_slot(&self, project: &ProjectId) -> Result<u32, ApiError> {
+    /// The lowest N at or above 1 that no slot in this project holds and that `spoken_for`
+    /// does not name. Numbers a delete freed come back; a number a live slot holds never
+    /// moves (architecture spec 2).
+    ///
+    /// `spoken_for` is how the server adds the numbers a create has already chosen but not
+    /// yet recorded. The model learns a slot when that create's job finishes, and the choice
+    /// is made when the call arrives, so without it two creates in flight both pick this
+    /// same number and both try to build it (decision record 0006). A caller with nothing in
+    /// flight passes `|_| false`.
+    pub fn lowest_free_slot(
+        &self,
+        project: &ProjectId,
+        spoken_for: impl Fn(u32) -> bool,
+    ) -> Result<u32, ApiError> {
         let p = self
             .project(project)
             .ok_or_else(|| ApiError::not_found(format!("no project with id {project}")))?;
@@ -1086,7 +1097,7 @@ impl Model {
             })
             .collect();
         Ok((1u32..)
-            .find(|n| !taken.contains(n))
+            .find(|n| !taken.contains(n) && !spoken_for(*n))
             .expect("u32 is not exhausted"))
     }
 
@@ -2116,7 +2127,7 @@ mod tests {
     #[test]
     fn slots_take_the_lowest_free_number_and_never_renumber() {
         let (mut m, pid, _) = git_model();
-        assert_eq!(m.lowest_free_slot(&pid).unwrap(), 1);
+        assert_eq!(m.lowest_free_slot(&pid, |_| false).unwrap(), 1);
         let (w1, _) = m
             .add_slot(
                 &pid,
@@ -2131,10 +2142,10 @@ mod tests {
                 PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-2"),
             )
             .unwrap();
-        assert_eq!(m.lowest_free_slot(&pid).unwrap(), 3);
+        assert_eq!(m.lowest_free_slot(&pid, |_| false).unwrap(), 3);
         m.remove_workspace(&w1).unwrap();
         assert_eq!(
-            m.lowest_free_slot(&pid).unwrap(),
+            m.lowest_free_slot(&pid, |_| false).unwrap(),
             1,
             "a freed number comes back"
         );
@@ -2146,6 +2157,30 @@ mod tests {
         assert!(
             m.add_slot(&pid, 2, PathBuf::from("/x")).is_err(),
             "a taken number is refused"
+        );
+    }
+
+    /// A number a create has chosen but not yet recorded is skipped, and the search carries
+    /// on past it rather than stopping at the number after it.
+    ///
+    /// The model holds slot 2 and `spoken_for` names 1, so the three implementations that
+    /// could be here give three different answers: ignoring `spoken_for` says 1, adding one
+    /// to the lowest free number says 2, and looking at both says 3. A fixture where the
+    /// model held nothing could not tell the first two apart from the third.
+    #[test]
+    fn a_slot_number_another_call_has_spoken_for_is_skipped() {
+        let (mut m, pid, _) = git_model();
+        m.add_slot(
+            &pid,
+            2,
+            PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-2"),
+        )
+        .unwrap();
+        assert_eq!(m.lowest_free_slot(&pid, |n| n == 1).unwrap(), 3);
+        assert_eq!(
+            m.lowest_free_slot(&pid, |_| false).unwrap(),
+            1,
+            "and nothing spoken for leaves the number free"
         );
     }
 
@@ -2518,7 +2553,7 @@ mod tests {
         let missing = ProjectId("pr_0000".into());
         assert_eq!(m.workspaces_of(&missing).count(), 0);
         assert_eq!(
-            m.lowest_free_slot(&missing).unwrap_err().code,
+            m.lowest_free_slot(&missing, |_| false).unwrap_err().code,
             ErrorCode::NotFound
         );
         assert_eq!(

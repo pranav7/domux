@@ -12,7 +12,7 @@ use domux_server::testing::{Harness, HarnessOptions};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use support::repo_with_origin;
+use support::{api_at, next_event, repo_with_origin, subscribe};
 
 /// Past the 100 ms persist debounce, the same bound `sidebar.rs` uses for the same reason:
 /// a regression is a failure in a quarter of a second rather than a test that hangs.
@@ -838,38 +838,6 @@ async fn two_project_add_calls_in_flight_at_once_register_one_project() {
     );
 }
 
-/// `Harness::api` over a socket path rather than a borrow of the harness, so two calls can
-/// be in flight at the same time.
-async fn api_at(
-    socket: &std::path::Path,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value, domux_core::api::ApiError> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .expect("connect");
-    let (r, mut w) = stream.into_split();
-    let request = json!({"id": 1, "method": method, "params": params});
-    w.write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-    let mut line = String::new();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        BufReader::new(r).read_line(&mut line),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("{method} was not answered"))
-    .unwrap();
-    let response: domux_core::api::Response = serde_json::from_str(&line).unwrap();
-    match (response.result, response.error) {
-        (Some(v), None) => Ok(v),
-        (None, Some(e)) => Err(e),
-        other => panic!("malformed response {other:?}"),
-    }
-}
-
 /// `project.add` reports `project.added` once and `workspace.created` for every worktree it
 /// adopts, and `project.remove` reports `project.removed`.
 ///
@@ -1031,44 +999,4 @@ async fn the_confirmation_names_the_project_s_root_so_two_of_one_name_are_told_a
         !f.contains(second_root.to_str().unwrap()),
         "and not the other one:\n{f}"
     );
-}
-
-/// An `events.subscribe` stream over its own connection, and the lines it produces.
-async fn subscribe(
-    socket: &std::path::Path,
-    filter: &[&str],
-) -> tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let stream = tokio::net::UnixStream::connect(socket)
-        .await
-        .expect("connect");
-    let (r, mut w) = stream.into_split();
-    let request = json!({"id": 1, "method": "events.subscribe", "params": {"filter": filter}});
-    w.write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-    let mut lines = BufReader::new(r).lines();
-    let ack = next_line(&mut lines).await;
-    let ack: serde_json::Value = serde_json::from_str(&ack).unwrap();
-    assert!(
-        ack["result"].is_object() || ack["result"].is_boolean(),
-        "{ack}"
-    );
-    lines
-}
-
-async fn next_event(
-    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>,
-) -> serde_json::Value {
-    serde_json::from_str(&next_line(lines).await).unwrap()
-}
-
-async fn next_line(
-    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>,
-) -> String {
-    tokio::time::timeout(Duration::from_secs(5), lines.next_line())
-        .await
-        .expect("the stream said nothing within 5s")
-        .expect("read")
-        .expect("the stream closed")
 }
