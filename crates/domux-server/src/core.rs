@@ -1330,7 +1330,7 @@ mod tests {
     }
 
     /// The register `only_the_expected_m2_methods_still_answer_unavailable` and
-    /// `the_stub_block_and_the_unbuilt_list_name_the_same_methods` both check against:
+    /// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt` both check against:
     /// every method Task 4 declared but no task has given a handler yet. `workspace.resume`
     /// is the one deliberate exception, left for M3: when this reads exactly
     /// `[("workspace.resume", ..)]`, M2 has closed this class of gap.
@@ -1381,19 +1381,32 @@ mod tests {
         }
     }
 
-    /// Direction B of the register: every method the stub block in `api::dispatch` answers
-    /// `unavailable` for must be listed in `STILL_UNBUILT` too, so a milestone cannot add a
-    /// stub without declaring it - the half that dispatching each `STILL_UNBUILT` entry and
-    /// checking the answer can never catch, because it only ever looks at the names already
-    /// on that list. Reads both source files as text and cross-checks the identifiers
-    /// against the wire names the `methods!` table gives them, rather than dispatching every
-    /// method in `Method::NAMES` to see which answer `unavailable`: most of the other 28
-    /// have side effects (`server.stop` stops the server), so calling them just to observe
-    /// an error code is not an option. This is the same move as
+    /// Direction B of the register: every arm in `api::dispatch` whose body answers
+    /// `unavailable` with "is not built yet" must be listed in `STILL_UNBUILT` too, so a
+    /// milestone cannot add a stub without declaring it - the half that dispatching each
+    /// `STILL_UNBUILT` entry and checking the answer can never catch, because it only ever
+    /// looks at the names already on that list.
+    ///
+    /// Scans the whole `match` in `dispatch`, not a marked-off block: an earlier version of
+    /// this test looked only between a `// --- M2 stubs` comment and the first `=>` after
+    /// it, which is exactly the shape of the *one* arm that block held at the time and
+    /// nothing else. A stub written as its own arm anywhere else in the function - joined
+    /// into no one's or-pattern, sitting next to `ServerInfo` rather than after the
+    /// comment - was invisible to it. Proven by doing: adding such an arm and leaving it out
+    /// of `STILL_UNBUILT` passed the old version clean. This one finds every arm regardless
+    /// of where it sits or whether it stands alone or joins an or-pattern, because it is not
+    /// looking for a comment - it is looking for the words the stub actually answers with,
+    /// which is the property that actually matters.
+    ///
+    /// Reads both source files as text and cross-checks the identifiers against the wire
+    /// names the `methods!` table gives them, rather than dispatching every method in
+    /// `Method::NAMES` to see which answer `unavailable`: most of the other 28 have side
+    /// effects (`server.stop` stops the server), so calling them just to observe an error
+    /// code is not an option. This is the same move as
     /// `names::tests::nothing_outside_this_file_spells_the_binary_name`: pin the source text
     /// that has to stay in sync, not the behavior it happens to produce today.
     #[test]
-    fn the_stub_block_and_the_unbuilt_list_name_the_same_methods() {
+    fn every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt() {
         let root = workspace_root();
 
         let table_src =
@@ -1402,30 +1415,39 @@ mod tests {
 
         let dispatch_src =
             std::fs::read_to_string(root.join("crates/domux-server/src/api/mod.rs")).expect("read");
-        let stub_idents = parse_stub_block(&dispatch_src);
-        assert!(
-            !stub_idents.is_empty(),
-            "the M2 stub block parsed to nothing"
-        );
+        let signature =
+            "pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {";
+        let body = function_body(&dispatch_src, signature);
 
-        let mut from_stub_block: Vec<&str> = stub_idents
-            .iter()
-            .map(|ident| {
-                ident_to_wire
-                    .get(ident.as_str())
-                    .unwrap_or_else(|| panic!("{ident} is not a method in the methods! table"))
-                    .as_str()
-            })
-            .collect();
-        from_stub_block.sort_unstable();
+        let mut from_dispatch: Vec<&str> = Vec::new();
+        for (pattern, arm_body) in split_match_arms(body) {
+            if !arm_body.contains("is not built yet") {
+                continue;
+            }
+            for ident in pattern_identifiers(&pattern) {
+                from_dispatch.push(
+                    ident_to_wire
+                        .get(&ident)
+                        .unwrap_or_else(|| panic!("{ident} is not a method in the methods! table"))
+                        .as_str(),
+                );
+            }
+        }
+        assert!(
+            !from_dispatch.is_empty(),
+            "no arm in dispatch answered \"is not built yet\"; the scan is broken"
+        );
+        from_dispatch.sort_unstable();
+        from_dispatch.dedup();
 
         let mut from_still_unbuilt: Vec<&str> =
             STILL_UNBUILT.iter().map(|(name, _)| *name).collect();
         from_still_unbuilt.sort_unstable();
 
         assert_eq!(
-            from_stub_block, from_still_unbuilt,
-            "the stub block in api::dispatch and STILL_UNBUILT must name exactly the same methods"
+            from_dispatch, from_still_unbuilt,
+            "every arm in dispatch that answers \"is not built yet\" must be listed in \
+             STILL_UNBUILT, and STILL_UNBUILT must list nothing else"
         );
     }
 
@@ -1475,19 +1497,145 @@ mod tests {
         map
     }
 
-    /// The `Method` variant identifiers named in the M2 stub block's or-pattern, in
-    /// `crates/domux-server/src/api/mod.rs`: everything between the `// --- M2 stubs`
-    /// marker and the arm's `=>`, split on `|` with each alternative's `(_)` stripped.
-    fn parse_stub_block(src: &str) -> Vec<String> {
-        let marker = "// --- M2 stubs";
-        let after_marker = src.find(marker).expect("the M2 stub marker in dispatch") + marker.len();
-        let after_marker_line = src[after_marker..]
-            .find('\n')
-            .map(|i| after_marker + i + 1)
-            .unwrap_or(after_marker);
-        let rest = &src[after_marker_line..];
-        let arrow = rest.find("=>").expect("the stub arm's `=>`");
-        rest[..arrow]
+    /// The text between the `{` that opens `signature`'s block and its matching `}`,
+    /// brace-depth aware so a nested block never ends the scan early.
+    fn function_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let sig_pos = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("{signature:?} not found in source"));
+        let open = sig_pos + signature.len() - 1;
+        assert_eq!(
+            src.as_bytes()[open],
+            b'{',
+            "signature must end in its opening brace"
+        );
+        let close = matching_brace(src, open);
+        &src[open + 1..close]
+    }
+
+    /// The index of the `}` that closes the `{` at byte offset `open`, skipping over string
+    /// contents so a literal brace inside a message - `"{unbuilt} is not built yet"` has one
+    /// of each - is never mistaken for real nesting.
+    fn matching_brace(src: &str, open: usize) -> usize {
+        let bytes = src.as_bytes();
+        assert_eq!(bytes[open], b'{');
+        let mut depth = 0i32;
+        let mut i = open;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => i = skip_string(bytes, i),
+                b'{' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i;
+                    }
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        panic!("unbalanced braces from offset {open}");
+    }
+
+    /// The index just past the closing `"` of the string starting at `at`, honoring `\"`.
+    fn skip_string(bytes: &[u8], at: usize) -> usize {
+        assert_eq!(bytes[at], b'"');
+        let mut i = at + 1;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'"' => return i + 1,
+                _ => i += 1,
+            }
+        }
+        bytes.len()
+    }
+
+    /// The index of the first `,` at bracket depth 0 from `start`, skipping string contents,
+    /// or `None` when nothing remains but the match's last arm, which needs no trailing
+    /// comma.
+    fn find_top_level_comma(body: &str, start: usize) -> Option<usize> {
+        let bytes = body.as_bytes();
+        let mut depth = 0i32;
+        let mut i = start;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => i = skip_string(bytes, i),
+                b'(' | b'{' | b'[' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b')' | b'}' | b']' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                b',' if depth == 0 => return Some(i),
+                _ => i += 1,
+            }
+        }
+        None
+    }
+
+    /// Splits a `match { ... }` body's raw text into `(pattern, body)` pairs, one per arm,
+    /// regardless of whether an arm stands alone or joins an or-pattern, and regardless of
+    /// whether its body is a bare expression ending in `,` or a `{ ... }` block that may
+    /// have no trailing comma at all (the shape every arm above the M2 stubs uses, and the
+    /// shape the stubs themselves used until this test's blind spot was found). Finding the
+    /// next arm's `=>` with a plain substring search is safe here because `dispatch`'s
+    /// patterns never contain match guards or a literal `=>`; if that ever changes, this
+    /// test starts failing loudly (a pattern's text bleeding into what looks like a body)
+    /// rather than silently.
+    fn split_match_arms(body: &str) -> Vec<(String, String)> {
+        let mut arms = Vec::new();
+        let mut pos = 0usize;
+        while let Some(rel_arrow) = body[pos..].find("=>") {
+            let arrow = pos + rel_arrow;
+            let pattern = body[pos..arrow].to_string();
+            let mut body_start = arrow + 2;
+            while body_start < body.len() && (body.as_bytes()[body_start] as char).is_whitespace() {
+                body_start += 1;
+            }
+            let (body_end, next_pos) = if body.as_bytes().get(body_start) == Some(&b'{') {
+                let close = matching_brace(body, body_start);
+                let mut next = close + 1;
+                while next < body.len() && (body.as_bytes()[next] as char).is_whitespace() {
+                    next += 1;
+                }
+                if body.as_bytes().get(next) == Some(&b',') {
+                    next += 1;
+                }
+                (close + 1, next)
+            } else {
+                match find_top_level_comma(body, body_start) {
+                    Some(c) => (c, c + 1),
+                    None => (body.len(), body.len()),
+                }
+            };
+            arms.push((pattern, body[body_start..body_end].to_string()));
+            if next_pos <= pos {
+                break;
+            }
+            pos = next_pos;
+        }
+        arms
+    }
+
+    /// The `Method` variant identifiers a match arm's pattern text names: line comments
+    /// stripped (a pattern's text runs from the end of the previous arm, so it carries
+    /// whatever comment sits between them, such as `// --- M2 stubs ... ---`), then split on
+    /// `|` with each alternative's `(_)` or `(p)` stripped, so `A(_) | B(p)` gives
+    /// `["A", "B"]` and a lone `A(_)` gives `["A"]`.
+    fn pattern_identifiers(pattern: &str) -> Vec<String> {
+        let uncommented: String = pattern
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        uncommented
             .split('|')
             .map(|alt| alt.trim())
             .filter(|alt| !alt.is_empty())

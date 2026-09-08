@@ -139,11 +139,14 @@ impl Ctx<'_> {
 /// comment used to describe): the M2 stub block below restores that catch-all's exact
 /// wording for the 19 methods Task 4 declares, because the M2 plan assumed the removed
 /// catch-all was still here and predicted these methods would answer `unavailable` at run
-/// time rather than fail to build. Tasks 12 to 19 give each of these a real arm above this
-/// comment and delete its own line from the block and from `STILL_UNBUILT` in
-/// `core::tests::only_the_expected_m2_methods_still_answer_unavailable`, which is what
-/// forces the removal rather than relying on someone remembering it. `workspace.resume` is
-/// the one deliberate exception, left for M3; when `STILL_UNBUILT` reads exactly
+/// time rather than fail to build. Tasks 12 to 19 give each of these a real arm and delete
+/// that method's line from `STILL_UNBUILT` in `crate::core::tests`, which two tests there
+/// enforce from both directions: implementing one without removing it fails
+/// `only_the_expected_m2_methods_still_answer_unavailable`, and a stub added anywhere in
+/// this function - joined into the block below or written as its own arm, here or
+/// elsewhere - without a matching `STILL_UNBUILT` line fails
+/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. `workspace.resume` is the
+/// one deliberate exception, left for M3; when `STILL_UNBUILT` reads exactly
 /// `["workspace.resume"]`, this class of M2 gap is closed.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
