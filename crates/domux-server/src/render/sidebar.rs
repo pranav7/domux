@@ -408,9 +408,11 @@ mod tests {
     /// it.
     #[test]
     fn the_projects_box_covers_what_was_under_it() {
-        // `@` because nothing the box draws can produce it. The first version of this test
-        // filled with `X` and the project at `/x` drew its header as `X`, so a correct box
-        // read as a box that had left the fill behind.
+        // `@` because nothing the box draws can produce it. **A canary has to be a value the
+        // system under test cannot produce**, or it cannot tell "left behind" from "drawn".
+        // The first version of this test filled with `X`, and the project at `/x` drew its
+        // header as `X`, so a correct box read as one that had left the fill behind. Do not
+        // tidy this back to a letter.
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
         for y in 0..24 {
             for x in 0..120 {

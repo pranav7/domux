@@ -84,6 +84,13 @@ pub struct ListBox<'a> {
 }
 
 impl ListBox<'_> {
+    /// Draws the box into `area` and answers with the scroll it used.
+    ///
+    /// It does not clear `area` first. The border is painted, and each row's own text, and
+    /// the cells a row's text does not reach are left as they were found. **The caller owns
+    /// whatever was under the box**: `overlay::frame` clears its rectangle before drawing
+    /// one, and `sidebar::draw` clears `projects_area` for the same reason. Both happen to
+    /// do it, which is not the same as it being written down, so it is written down here.
     pub fn render(&self, area: Rect, buf: &mut Buffer) -> u16 {
         let inner = Boxed {
             title: self.title,
