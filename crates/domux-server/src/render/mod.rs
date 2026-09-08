@@ -4,6 +4,7 @@ pub mod boxed;
 pub mod list_box;
 pub mod overlay;
 pub mod pane_box;
+pub mod projects_box;
 pub mod tab_row;
 pub mod theme;
 pub mod top_bar;
