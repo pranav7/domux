@@ -36,11 +36,11 @@ pub fn repo_with_origin(branch: &str) -> (tempfile::TempDir, PathBuf) {
     let work = tmp.path().join("audrey-app");
     std::fs::create_dir_all(&origin).unwrap();
     std::fs::create_dir_all(&work).unwrap();
-    // A bare init that failed here would surface later as a confusing push error, so read
-    // its status rather than dropping it.
     // Every other git call in these tests names its directory with `-C`. This one takes the
     // repository as an argument instead, so it is given an explicit working directory as well:
-    // without one it would run in the test binary's own directory, inside a real checkout.
+    // without one it would run in the test binary's own directory, inside a real checkout. A
+    // bare init that failed would surface later as a confusing push error, so read its status
+    // rather than dropping it.
     let status = Command::new("git")
         .current_dir(tmp.path())
         .args(["init", "-q", "--bare", "-b", branch])
@@ -51,6 +51,22 @@ pub fn repo_with_origin(branch: &str) -> (tempfile::TempDir, PathBuf) {
     git(&work, &["init", "-q", "-b", branch]);
     git(&work, &["config", "user.email", "test@example.com"]);
     git(&work, &["config", "user.name", "domux test"]);
+    // The author's own git configuration reaches these repositories otherwise, and a global
+    // `commit.gpgsign` would have these tests try to sign, a global `core.hooksPath` would run
+    // that machine's hooks inside them. Repository configuration wins over global for every
+    // command against this repository, including the ones that go through `git::run` and the
+    // ones that run in its worktrees, so the isolation belongs here and not in production code.
+    let no_hooks = tmp.path().join("no-hooks");
+    git(
+        &work,
+        &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
+    );
+    git(&work, &["config", "commit.gpgsign", "false"]);
+    // The push below runs origin's receive hooks, so origin needs the same.
+    git(
+        &origin,
+        &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
+    );
     commit(&work, "README.md", "hello\n");
     git(
         &work,

@@ -337,7 +337,7 @@ fn fetch_takes_the_remote_from_the_base_and_names_a_remote_that_is_not_there() {
     let err = git::fetch(&repo, "upstream/main").unwrap_err();
     assert!(
         err.to_string()
-            .starts_with("git fetch -q upstream main failed: "),
+            .starts_with("git fetch -q -- upstream main failed: "),
         "{err}"
     );
 }
@@ -462,5 +462,64 @@ fn is_dirty_compares_against_the_default_branch_when_the_slot_has_no_upstream() 
     assert!(
         git::is_dirty(&path, "workspace-1").unwrap(),
         "an unpushed commit is dirty with no upstream too"
+    );
+}
+
+#[test]
+fn a_base_or_branch_that_git_would_read_as_an_option_is_refused() {
+    // `git fetch --upload-pack=<command> <remote> <branch>` runs that command. I confirmed it
+    // against git 2.50 before writing this: the base reaches git positionally, and it comes
+    // from `[worktrees] base` in the author's own configuration, so it is refused by name
+    // rather than escaped.
+    let (_tmp, repo) = repo_with_origin("main");
+    let marker = repo.join("executed");
+    let hostile = format!("--upload-pack=touch {}; git-upload-pack", marker.display());
+    // Each call below has to fail for the right reason, not merely fail. Every one of these
+    // arguments makes git itself error out a step or two later, so `is_err()` alone passes
+    // with the guard deleted. The command the refusal names is what tells the guards apart,
+    // and `fetch` guarding the base is not `worktree_add` guarding it.
+    let refused = |err: git::GitError, command: &str| {
+        let text = err.to_string();
+        assert!(
+            text.starts_with(&format!("{command} failed: ")),
+            "expected {command} to refuse it: {text}"
+        );
+        assert!(text.contains("git reads as an option"), "{text}");
+    };
+    let err = git::fetch(&repo, &hostile).unwrap_err();
+    assert!(err.to_string().contains("[worktrees] base"), "{err}");
+    refused(err, "git fetch");
+    assert!(!marker.exists(), "and nothing ran");
+    // The halves of the base are checked, not only the whole string.
+    refused(git::fetch(&repo, "origin/-x").unwrap_err(), "git fetch");
+    refused(git::fetch(&repo, "-r/main").unwrap_err(), "git fetch");
+    // Every operation that takes a base or a branch refuses one itself, rather than leaving it
+    // to whichever command happens to run first.
+    let path = git::slot_path(&repo, 1);
+    let add = git::worktree_add(&repo, &path, "workspace-1", &hostile).unwrap_err();
+    refused(add, "git worktree add");
+    let add = git::worktree_add(&repo, &path, "-b", "origin/main").unwrap_err();
+    refused(add, "git worktree add");
+    let remove = git::worktree_remove(&repo, &path, "-D", false).unwrap_err();
+    refused(remove, "git worktree remove");
+    refused(git::is_dirty(&repo, "--help").unwrap_err(), "git rev-parse");
+    let reset = git::reset_to_base(&repo, "-x", "origin/main").unwrap_err();
+    refused(reset, "git checkout");
+    let reset = git::reset_to_base(&repo, "workspace-1", "-x").unwrap_err();
+    refused(reset, "git reset");
+    assert!(!path.exists(), "and none of them made a slot");
+}
+
+#[test]
+fn the_test_repositories_ignore_the_machines_own_git_configuration() {
+    // A global `core.hooksPath` would run this machine's hooks inside these repositories and a
+    // global `commit.gpgsign` would have them try to sign. Repository configuration wins, so
+    // the isolation is checked here rather than assumed.
+    let (_tmp, repo) = repo_with_origin("main");
+    assert_eq!(run_git(&repo, &["config", "commit.gpgsign"]), "false");
+    assert!(run_git(&repo, &["config", "core.hooksPath"]).ends_with("no-hooks"));
+    assert!(
+        !std::path::Path::new(&run_git(&repo, &["config", "core.hooksPath"])).exists(),
+        "the hooks directory is deliberately not there"
     );
 }

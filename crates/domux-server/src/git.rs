@@ -31,6 +31,34 @@ fn not_absolute(command: String, dir: &Path) -> GitError {
     }
 }
 
+/// git reads a positional argument that begins with `-` as an option, and an option like
+/// `--upload-pack` names a command for git to run. Every base and branch this file hands to
+/// git positionally goes through here first. Refuse the name rather than escape it: a ref
+/// whose name starts with `-` is not one git itself would create.
+fn refuse_option_like(
+    command: &str,
+    kind: &str,
+    value: &str,
+    advice: &str,
+) -> Result<(), GitError> {
+    if !value.starts_with('-') {
+        return Ok(());
+    }
+    Err(GitError {
+        command: command.to_string(),
+        message: format!(
+            "the {kind} \"{value}\" starts with \"-\", which git reads as an option rather than \
+             a name; {advice}"
+        ),
+    })
+}
+
+/// The base comes from `[worktrees] base` in the author's configuration, so that is what a
+/// refusal sends them to. A slot branch comes from `slot_branch`, so a bad one is a caller's
+/// mistake rather than a setting.
+const BASE_ADVICE: &str = "set [worktrees] base to a branch or ref name";
+const BRANCH_ADVICE: &str = "a slot branch is named workspace-<number>";
+
 /// Runs git in `dir` and returns its trimmed stdout. stderr and stdout are joined in the
 /// error so git's own words reach the engineer (principle 9). Refuses a `dir` that is not
 /// absolute, which includes the empty path: the check lives here, at the one place every
@@ -156,10 +184,18 @@ pub fn existing_slots(root: &Path) -> Result<Vec<u32>, GitError> {
     Ok(slots)
 }
 
+/// Fetches the base's branch from its remote. Guarding the two halves covers the whole base:
+/// a base beginning with `-` puts it in the remote when it has a slash and in the branch when
+/// it does not. `--` is a second belt, verified against git 2.50: `git fetch -- <remote>
+/// <refspec>` works and git blocks a strange pathname after it on its own. It is only a belt
+/// here, because `git reset --hard --`, `git checkout --` and `git log --` all mean "paths
+/// follow", so the separator cannot be added to those and the refusal is what covers them.
 pub fn fetch(root: &Path, base: &str) -> Result<(), GitError> {
     let remote = base.split_once('/').map(|(r, _)| r).unwrap_or("origin");
     let branch = base.split_once('/').map(|(_, b)| b).unwrap_or(base);
-    run(root, &["fetch", "-q", remote, branch]).map(|_| ())
+    refuse_option_like("git fetch", "remote", remote, BASE_ADVICE)?;
+    refuse_option_like("git fetch", "branch", branch, BASE_ADVICE)?;
+    run(root, &["fetch", "-q", "--", remote, branch]).map(|_| ())
 }
 
 /// Anything at `path` that `git worktree add` would refuse: a file, or a directory with
@@ -181,6 +217,8 @@ pub fn worktree_add(root: &Path, path: &Path, branch: &str, base: &str) -> Resul
     if !path.is_absolute() {
         return Err(not_absolute("git worktree add".to_string(), path));
     }
+    refuse_option_like("git worktree add", "branch", branch, BRANCH_ADVICE)?;
+    refuse_option_like("git worktree add", "base", base, BASE_ADVICE)?;
     // git refuses an occupied path too, but only after `git branch -f` has moved the branch
     // off the commit it held, which leaves that commit reachable from the reflog and nowhere
     // else. Ask first. An empty directory is not occupied: git accepts one, and refusing it
@@ -237,6 +275,7 @@ pub fn worktree_remove(
     if !path.is_absolute() {
         return Err(not_absolute("git worktree remove".to_string(), path));
     }
+    refuse_option_like("git worktree remove", "branch", branch, BRANCH_ADVICE)?;
     let path = path.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove"];
     if force {
@@ -277,6 +316,7 @@ pub fn branch_of(path: &Path) -> Result<String, GitError> {
 /// V1's `workspaceIsDirty`: uncommitted changes, or commits the upstream does not have.
 /// With no upstream it compares against the base's remote branch.
 pub fn is_dirty(path: &Path, branch: &str) -> Result<bool, GitError> {
+    refuse_option_like("git rev-parse", "branch", branch, BRANCH_ADVICE)?;
     if !run(path, &["status", "--porcelain"])?.is_empty() {
         return Ok(true);
     }
@@ -292,6 +332,8 @@ pub fn is_dirty(path: &Path, branch: &str) -> Result<bool, GitError> {
 /// Checks the slot's own branch out, fetches, and resets it hard to the base. V1's
 /// `resetGitWorkspace`.
 pub fn reset_to_base(path: &Path, branch: &str, base: &str) -> Result<(), GitError> {
+    refuse_option_like("git checkout", "branch", branch, BRANCH_ADVICE)?;
+    refuse_option_like("git reset", "base", base, BASE_ADVICE)?;
     run(path, &["checkout", "-q", branch])?;
     fetch(path, base)?;
     run(path, &["reset", "--hard", base]).map(|_| ())
