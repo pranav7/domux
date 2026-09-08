@@ -2,11 +2,14 @@
 //! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
 pub mod boxed;
+pub mod confirm;
 pub mod list_box;
+pub mod name_box;
 pub mod overlay;
 pub mod pane_box;
 pub mod projects_box;
 pub mod sidebar;
+pub mod switcher;
 pub mod tab_row;
 pub mod theme;
 pub mod top_bar;
@@ -39,6 +42,10 @@ pub const MIN_ROWS: u16 = 10;
 
 pub struct RenderInput<'a> {
     pub model: &'a Model,
+    /// What domux observed about each workspace. The Projects box reads a branch and a pull
+    /// request from here; a fact that did not arrive draws as absent, never as a guess
+    /// (principle 4).
+    pub facts: &'a crate::facts::FactRegistry,
     pub panes: &'a HashMap<PaneId, PaneRuntime>,
     pub view: &'a ClientView,
     pub keymap: &'a Keymap,

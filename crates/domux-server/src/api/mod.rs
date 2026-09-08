@@ -7,6 +7,7 @@ pub mod focus;
 pub mod pane;
 pub mod server;
 pub mod sidebar;
+pub mod switcher;
 pub mod tab;
 
 use crate::client::ClientConn;
@@ -192,11 +193,13 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         SidebarToggle(p) => sidebar::toggle(ctx, p),
         SidebarShow(p) => sidebar::show(ctx, p),
         SidebarHide(p) => sidebar::hide(ctx, p),
-        // --- M2 stubs: placeholders for Tasks 12 to 19, not real handlers. ---
+        SwitcherOpen(p) => switcher::open(ctx, p),
+        SwitcherClose(p) => switcher::close(ctx, p),
+        // --- M2 stubs: placeholders for Tasks 13 to 19, not real handlers. ---
         ProjectList(_) | ProjectAdd(_) | ProjectRemove(_) | WorkspaceList(_)
         | WorkspaceCreate(_) | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
-        | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_) | SwitcherOpen(_)
-        | SwitcherClose(_) | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
+        | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_)
+        | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
             Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
         }
     }

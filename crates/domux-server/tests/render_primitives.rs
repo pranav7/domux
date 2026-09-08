@@ -340,6 +340,7 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
     let panes = HashMap::new();
     let (buffer, _) = compose(&RenderInput {
         model: &model,
+        facts: &domux_server::facts::FactRegistry::new(),
         panes: &panes,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
@@ -378,6 +379,7 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
     let panes = HashMap::new();
     let (buffer, _) = compose(&RenderInput {
         model: &model,
+        facts: &domux_server::facts::FactRegistry::new(),
         panes: &panes,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),

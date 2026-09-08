@@ -120,10 +120,12 @@ mod tests {
     /// The hint row drawn into `area` of a buffer the caller has already prepared.
     fn hint_into(view: &ClientView, area: Rect, buf: &mut Buffer) {
         let model = Model::new(1);
+        let facts = crate::facts::FactRegistry::new();
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
         let input = RenderInput {
             model: &model,
+            facts: &facts,
             panes: &panes,
             view,
             keymap: &keymap,

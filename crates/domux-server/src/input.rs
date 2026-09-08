@@ -205,12 +205,23 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                 let _ = core.dispatch(method, Some(client.clone()));
             }
         }
-        Overlay::Switcher
-        | Overlay::Agents
+        // Task 14 replaces this with the whole of `[keys.list]`, the routing the sidebar's
+        // box and M3's agents overlay share. Until then only the key bound to `focus.pane`
+        // is read, so the switcher has a way out and it is the configured one (principle 3).
+        Overlay::Switcher => {
+            let action = core.config.keymap.list_for(&key).cloned();
+            if action.is_some_and(|a| a.method == "focus.pane") {
+                let method = Method::SwitcherClose(domux_core::api::ClientParams {
+                    client: Some(client.clone()),
+                });
+                let _ = core.dispatch(method, Some(client.clone()));
+            }
+        }
+        Overlay::Agents
         | Overlay::NameWorkspace(_)
         | Overlay::Confirm(ConfirmKind::DeleteWorkspace(_) | ConfirmKind::RemoveProject(_))
         | Overlay::Usage => {
-            // M1 never opens these. M2 to M4 add their key handling here.
+            // M1 never opens these. M3 and M4 add their key handling here.
         }
     }
 }
