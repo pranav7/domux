@@ -123,6 +123,11 @@ fn workspace_row(
         .map(|f| f.text.as_str());
     let pr = facts.get(&FactKey::workspace(&w.id, FACT_PR));
     let key = w.id.to_string();
+    // The five fields `/` searches. What matters is that each one can carry a match on its
+    // own and that they do not run together; the character between them is not a contract,
+    // and neither is the order they are written in. So a filter that spans two adjacent
+    // fields, such as a handle typed after a project name, matches by accident of this line
+    // rather than by design, and nothing should be built on it.
     let filter_text = format!(
         "{} {} {} {} {}",
         project.name,
