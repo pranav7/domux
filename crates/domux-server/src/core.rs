@@ -2,10 +2,12 @@
 
 use crate::api::{self, Ctx};
 use crate::client::{ClientConn, Hint, HintKind};
+use crate::facts::FactRegistry;
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::render::{self, RenderInput};
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, Event, Method, Request, Response};
+use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
 use domux_core::model::{ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, RegionKind};
@@ -47,6 +49,12 @@ pub enum CoreMsg {
         filter: Vec<String>,
         tx: mpsc::Sender<Event>,
     },
+    /// One provider's answer, from the blocking task that ran it. `None` is an absence:
+    /// the provider failed, or it looked and there was nothing to report.
+    FactFetched {
+        key: FactKey,
+        fact: Option<Fact>,
+    },
     /// Once a second: the process inspector, the clock, exited-pane cleanup.
     Tick,
     Snapshot {
@@ -76,6 +84,14 @@ const DRAIN_LIMIT: usize = 64;
 // the workspace stops replacing it.
 const IMMEDIATE_EXIT: Duration = Duration::from_secs(2);
 const MAX_IMMEDIATE_RESPAWNS: u8 = 3;
+
+/// What a frame shows of a fact, which is what decides whether an answer is news. The stamp
+/// and the time to live are not part of it: a provider that looks again every five seconds
+/// and finds the same branch must not redraw the screen five times a minute, and a pull
+/// request that changed state without changing its number must.
+fn shown(fact: Option<&Fact>) -> Option<(&str, Option<&FactState>, Option<&str>)> {
+    fact.map(|f| (f.text.as_str(), f.state.as_ref(), f.url.as_deref()))
+}
 
 pub struct Core {
     pub model: Model,
@@ -107,6 +123,9 @@ pub struct Core {
     immediate_exits: HashMap<WorkspaceId, u8>,
     /// Workspaces whose exited pane is kept rather than replaced.
     respawn_blocked: HashSet<WorkspaceId>,
+    /// What domux observed. The core reads it and records answers; the fetching happens on
+    /// blocking tasks.
+    pub facts: FactRegistry,
 }
 
 impl Core {
@@ -177,6 +196,18 @@ impl Core {
                 .add_folder_project(opts.project_root.clone())
                 .expect("a fresh model cannot exhaust the id space");
         }
+        let mut facts = FactRegistry::new();
+        for provider in opts.providers {
+            facts.register(provider);
+        }
+        // The pull request survives a restart, so the switcher opens with the last known
+        // number instead of a blank line. Anything past its time to live, and anything about
+        // a workspace or a project this model no longer holds, is dropped rather than shown.
+        facts.load_cache(
+            &crate::facts::pr_cache_path(&opts.state_dir),
+            opts.deps.clock.now(),
+        );
+        facts.forget_deleted(&model);
         let mut core = Core {
             model,
             panes: HashMap::new(),
@@ -198,6 +229,7 @@ impl Core {
             pane_started_at: HashMap::new(),
             immediate_exits: HashMap::new(),
             respawn_blocked: HashSet::new(),
+            facts,
         };
         core.ensure_every_workspace_has_a_tab();
         for pane in core.model.all_pane_ids() {
@@ -389,6 +421,20 @@ impl Core {
             CoreMsg::Api { request, reply } => {
                 let response = self.api(request);
                 let _ = reply.send(response);
+            }
+            CoreMsg::FactFetched { key, fact } => {
+                let present = fact.is_some();
+                let changed = shown(self.facts.get(&key)) != shown(fact.as_ref());
+                self.facts.set(key.clone(), fact);
+                if changed {
+                    self.pending_events
+                        .push(Event::FactUpdated { key, present });
+                    self.view_dirty = true;
+                    self.facts.save_cache(
+                        &crate::facts::pr_cache_path(&self.state_dir),
+                        &[domux_core::facts::FACT_PR],
+                    );
+                }
             }
             CoreMsg::Subscribe { filter, tx } => self.subscribers.push((filter, tx)),
             CoreMsg::Tick => self.tick(),
@@ -650,6 +696,7 @@ impl Core {
             clients: &mut self.clients,
             config: &mut self.config,
             deps: &self.deps,
+            facts: &self.facts,
             core_tx: &self.core_tx,
             socket_path: &self.socket_path,
             state_dir: &self.state_dir,
@@ -823,6 +870,32 @@ impl Core {
         if changed {
             self.view_dirty = true;
             self.persist();
+        }
+        self.start_due_fetches();
+    }
+
+    /// Starts every provider whose interval has passed, each on its own blocking task. A
+    /// provider shells out to git or to `gh` and the core cannot wait on either: one slow
+    /// `gh` inside the core task stops every frame in every pane. The answer comes back as
+    /// `FactFetched` like any other message.
+    fn start_due_fetches(&mut self) {
+        self.facts.forget_deleted(&self.model);
+        let now = self.deps.clock.now();
+        for (provider, target) in self.facts.due(&self.model, now) {
+            let tx = self.core_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let key = target.key.clone();
+                let fact = match provider.fetch(&target) {
+                    Ok(fact) => fact,
+                    // An error and an absence render the same, so only the log tells them
+                    // apart. Nothing is guessed in either case.
+                    Err(reason) => {
+                        tracing::debug!("{key} is absent: {reason}");
+                        None
+                    }
+                };
+                let _ = tx.blocking_send(CoreMsg::FactFetched { key, fact });
+            });
         }
     }
 
@@ -1235,15 +1308,24 @@ mod tests {
     use domux_core::api::NoParams;
 
     fn core(dir: &Path) -> Core {
+        core_with_providers(dir, Vec::new()).0
+    }
+
+    /// The core and the receiving end of its own channel, which the fact scheduler sends to.
+    fn core_with_providers(
+        dir: &Path,
+        providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+    ) -> (Core, mpsc::Receiver<CoreMsg>) {
         let project = dir.join("proj");
         std::fs::create_dir_all(&project).unwrap();
-        let (core_tx, _core_rx) = mpsc::channel(8);
+        let (core_tx, core_rx) = mpsc::channel(8);
         let (persist_tx, _persist_rx) = mpsc::channel(8);
         let opts = ServerOptions {
             socket_path: dir.join("s.sock"),
             state_dir: dir.join("state"),
             config: load_config(&dir.join("none.toml")),
             project_root: project,
+            providers,
             deps: CoreDeps {
                 spawner: Arc::new(FakeSpawner::default()),
                 inspector: Arc::new(FakeInspector::default()),
@@ -1251,7 +1333,7 @@ mod tests {
                 id_seed: 7,
             },
         };
-        Core::new(
+        let core = Core::new(
             opts,
             core_tx,
             persist_tx,
@@ -1259,7 +1341,8 @@ mod tests {
             Arc::new(Mutex::new(Model::new(7))),
             Arc::new(Mutex::new(HashMap::new())),
         )
-        .unwrap()
+        .unwrap();
+        (core, core_rx)
     }
 
     /// A read-only method must not compose a frame for every attached client. `dispatch`
@@ -1661,5 +1744,347 @@ mod tests {
         )
         .unwrap();
         assert!(core.view_dirty);
+    }
+
+    fn a_fact(text: &str, state: Option<FactState>) -> Fact {
+        Fact::new(
+            text,
+            state,
+            "2026-09-05T10:00:00+01:00",
+            Duration::from_secs(600),
+        )
+    }
+
+    /// The first workspace of the core's implicit project.
+    fn first_workspace(core: &Core) -> WorkspaceId {
+        core.model.first_workspace().expect("one workspace")
+    }
+
+    fn fact_events(core: &Core) -> Vec<Event> {
+        core.pending_events
+            .iter()
+            .filter(|e| matches!(e, Event::FactUpdated { .. }))
+            .cloned()
+            .collect()
+    }
+
+    fn pr_cache(core: &Core) -> String {
+        std::fs::read_to_string(crate::facts::pr_cache_path(&core.state_dir))
+            .unwrap_or_else(|_| String::new())
+    }
+
+    #[test]
+    fn a_fact_that_arrives_reaches_the_registry_the_cache_and_the_event_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        core.pending_events.clear();
+        core.view_dirty = false;
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        assert_eq!(
+            core.facts.get(&key).map(|f| f.text.as_str()),
+            Some("PR#212")
+        );
+        assert_eq!(
+            fact_events(&core),
+            vec![Event::FactUpdated {
+                key: key.clone(),
+                present: true
+            }]
+        );
+        assert!(core.view_dirty, "the switcher shows the number");
+        assert!(
+            pr_cache(&core).contains("PR#212"),
+            "the pull request survives a restart: {}",
+            pr_cache(&core)
+        );
+    }
+
+    #[test]
+    fn an_answer_that_repeats_what_the_screen_shows_announces_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        core.pending_events.clear();
+        core.view_dirty = false;
+        // The same answer, looked up a minute later.
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(Fact::new(
+                "PR#212",
+                Some(FactState::Open),
+                "2026-09-05T10:01:00+01:00",
+                Duration::from_secs(600),
+            )),
+        });
+        assert_eq!(
+            fact_events(&core),
+            Vec::new(),
+            "a provider that looks again every few seconds must not redraw the screen every few seconds"
+        );
+        assert!(!core.view_dirty);
+    }
+
+    #[test]
+    fn a_pull_request_that_changed_state_announces_itself_with_the_same_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        core.pending_events.clear();
+        core.view_dirty = false;
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Merged))),
+        });
+        assert_eq!(
+            fact_events(&core),
+            vec![Event::FactUpdated {
+                key: key.clone(),
+                present: true
+            }],
+            "the number is the same and the colour is not, so the screen has to change"
+        );
+        assert!(core.view_dirty);
+    }
+
+    #[test]
+    fn a_fetch_that_failed_removes_the_fact_and_announces_its_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        core.pending_events.clear();
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: None,
+        });
+        assert_eq!(
+            core.facts.get(&key),
+            None,
+            "a failed fetch leaves nothing behind, never the last number it saw"
+        );
+        assert_eq!(
+            fact_events(&core),
+            vec![Event::FactUpdated {
+                key: key.clone(),
+                present: false
+            }]
+        );
+        assert!(
+            !pr_cache(&core).contains("PR#212"),
+            "and the cache does not keep it either: {}",
+            pr_cache(&core)
+        );
+    }
+
+    #[test]
+    fn only_the_pull_request_reaches_the_cache_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let w = first_workspace(&core);
+        core.handle(CoreMsg::FactFetched {
+            key: FactKey::workspace(&w, domux_core::facts::FACT_PR),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        core.handle(CoreMsg::FactFetched {
+            key: FactKey::workspace(&w, domux_core::facts::FACT_BRANCH),
+            fact: Some(a_fact("feat/auth-cleanup", None)),
+        });
+        let cache = pr_cache(&core);
+        assert!(cache.contains("PR#212"), "{cache}");
+        assert!(
+            !cache.contains("feat/auth-cleanup"),
+            "the branch is cheap to look up again and is never cached: {cache}"
+        );
+    }
+
+    #[test]
+    fn the_core_starts_with_the_cached_pull_request_and_forgets_one_about_a_workspace_it_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        // The same seed and the same first steps as `Core::new`, so this is the id the core
+        // below draws for its own workspace.
+        let mut model = Model::new(7);
+        model.add_folder_project(dir.path().join("proj")).unwrap();
+        let w = model.first_workspace().unwrap();
+        let gone = WorkspaceId("w_ffff".into());
+        assert_ne!(w, gone);
+        let mut cache = FactRegistry::new();
+        let fetched_at = FixedClock::at("2026-09-04T14:32:00").0.to_rfc3339();
+        for id in [&w, &gone] {
+            cache.set(
+                FactKey::workspace(id, domux_core::facts::FACT_PR),
+                Some(Fact::new(
+                    "PR#212",
+                    Some(FactState::Open),
+                    fetched_at.clone(),
+                    Duration::from_secs(600),
+                )),
+            );
+        }
+        cache.save_cache(
+            &crate::facts::pr_cache_path(&dir.path().join("state")),
+            &[domux_core::facts::FACT_PR],
+        );
+        let core = core(dir.path());
+        assert_eq!(
+            core.facts
+                .get(&FactKey::workspace(&w, domux_core::facts::FACT_PR))
+                .map(|f| f.text.as_str()),
+            Some("PR#212"),
+            "the switcher opens with the last known number instead of a blank line"
+        );
+        assert_eq!(
+            core.facts.len(),
+            1,
+            "and without the pull request of a workspace this server no longer has, whose id another workspace may draw"
+        );
+    }
+
+    #[test]
+    fn a_tick_forgets_the_facts_of_a_workspace_that_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let w = first_workspace(&core);
+        let project = core.model.projects[0].id.clone();
+        core.handle(CoreMsg::FactFetched {
+            key: FactKey::workspace(&w, domux_core::facts::FACT_PR),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        assert_eq!(core.facts.len(), 1);
+        core.model.remove_project(&project).unwrap();
+        core.tick();
+        assert!(
+            core.facts.is_empty(),
+            "the workspace is gone, so what was observed about it is gone with it"
+        );
+    }
+
+    /// A provider that fails.
+    struct Failing;
+
+    impl crate::facts::FactProvider for Failing {
+        fn name(&self) -> &str {
+            domux_core::facts::FACT_BRANCH
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(5)
+        }
+        fn scope(&self) -> crate::facts::ProviderScope {
+            crate::facts::ProviderScope::Workspace
+        }
+        fn fetch(&self, _t: &crate::facts::FactTarget) -> Result<Option<Fact>, String> {
+            Err("git: not a worktree".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_that_failed_sends_back_an_absence_and_never_a_guess() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, mut rx) = core_with_providers(dir.path(), vec![Arc::new(Failing)]);
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        core.model.add_git_project(repo, "main".into()).unwrap();
+        core.tick();
+        let fact = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let CoreMsg::FactFetched { fact, .. } =
+                    rx.recv().await.expect("the core channel stays open")
+                {
+                    return fact;
+                }
+            }
+        })
+        .await
+        .expect("the answer comes back");
+        assert_eq!(
+            fact, None,
+            "a provider that failed reports nothing, never a branch it did not read"
+        );
+    }
+
+    /// A provider that will not answer until the test lets it.
+    struct Gated {
+        gate: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::facts::FactProvider for Gated {
+        fn name(&self) -> &str {
+            domux_core::facts::FACT_BRANCH
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(5)
+        }
+        fn scope(&self) -> crate::facts::ProviderScope {
+            crate::facts::ProviderScope::Workspace
+        }
+        fn fetch(&self, _t: &crate::facts::FactTarget) -> Result<Option<Fact>, String> {
+            // Bounded, so a fetch that wrongly ran on the core task fails the assertions
+            // below rather than hanging the suite. Five seconds is far longer than the test
+            // needs to reach `send` on the next line but one.
+            let _ = self
+                .gate
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            Ok(Some(a_fact("feat/x", None)))
+        }
+    }
+
+    /// Nothing that shells out runs inside the core task: one slow `gh` there would stop
+    /// every frame in every pane.
+    #[tokio::test]
+    async fn a_provider_runs_off_the_core_task_and_its_answer_comes_back_as_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (mut core, mut rx) = core_with_providers(
+            dir.path(),
+            vec![Arc::new(Gated {
+                gate: Mutex::new(gate_rx),
+            })],
+        );
+        // The implicit project is a plain folder, which has no branch to look up.
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        core.model.add_git_project(repo, "main".into()).unwrap();
+        core.tick();
+        // The gate is still shut, so the provider has not returned. If `tick` had run it
+        // inline, it could not have got here, and its answer would already be queued.
+        while let Ok(msg) = rx.try_recv() {
+            assert!(
+                !matches!(msg, CoreMsg::FactFetched { .. }),
+                "the fetch is still running on a blocking task"
+            );
+        }
+        gate_tx.send(()).unwrap();
+        let answer = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await.expect("the core channel stays open") {
+                    CoreMsg::FactFetched { key, fact } => return (key, fact),
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .expect("the answer comes back");
+        assert_eq!(answer.0.name, domux_core::facts::FACT_BRANCH);
+        assert_eq!(
+            answer.1.map(|f| f.text),
+            Some("feat/x".to_string()),
+            "what the provider found, carried back to the core as a message"
+        );
     }
 }

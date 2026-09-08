@@ -4,6 +4,7 @@ pub mod api;
 pub mod client;
 pub mod copy_mode;
 pub mod core;
+pub mod facts;
 pub mod git;
 pub mod input;
 pub mod log;
@@ -16,6 +17,7 @@ pub mod testing;
 pub mod worktree_conf;
 
 use crate::core::{Core, CoreMsg};
+use crate::facts::FactProvider;
 use crate::pane::PtySpawner;
 use crate::process::ProcessInspector;
 use anyhow::Context;
@@ -147,6 +149,9 @@ pub struct ServerOptions {
     /// The implicit plain-folder project (M1). Ignored when `state.json` already has one.
     pub project_root: PathBuf,
     pub deps: CoreDeps,
+    /// Who observes the facts. A real server passes `facts::default_providers()`; a test
+    /// passes its own list, so no test shells out to git or `gh`.
+    pub providers: Vec<Arc<dyn FactProvider>>,
 }
 
 pub struct ServerHandle {

@@ -10,6 +10,7 @@ pub mod tab;
 
 use crate::client::ClientConn;
 use crate::core::CoreMsg;
+use crate::facts::FactRegistry;
 use crate::pane::PaneRuntime;
 use crate::{CoreDeps, LoadedConfig};
 use domux_core::api::{ApiError, Event, Method, PaneInfo};
@@ -32,6 +33,9 @@ pub struct Ctx<'a> {
     pub clients: &'a mut HashMap<ClientId, ClientConn>,
     pub config: &'a mut LoadedConfig,
     pub deps: &'a CoreDeps,
+    /// What domux observed. A handler reads a fact; it never fetches one, because a fetch
+    /// shells out and a handler runs on the core task.
+    pub facts: &'a FactRegistry,
     pub core_tx: &'a mpsc::Sender<CoreMsg>,
     pub socket_path: &'a PathBuf,
     pub state_dir: &'a PathBuf,

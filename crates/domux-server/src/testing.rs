@@ -160,6 +160,7 @@ impl Harness {
             state_dir: self.state_dir.clone(),
             config: loaded,
             project_root: self.project_root.clone(),
+            providers: Vec::new(),
             deps: CoreDeps {
                 spawner,
                 inspector,
