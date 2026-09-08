@@ -1,4 +1,7 @@
-//! Catppuccin Mocha tokens plus the accent, as interface spec section 9.1 lists them.
+//! The colours of interface spec section 9.1: Catppuccin Mocha, the palette V1 ships, plus
+//! the accent, the branch pink and the workspace teal. The last two are the spec's own
+//! values and not Mocha's, so read the hexes from the spec's table rather than from a
+//! Mocha palette.
 
 use ratatui::style::Color;
 
@@ -18,3 +21,7 @@ pub const MAUVE: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
 /// The focused region's border and bold title, and the current tab's fill. Nothing else.
 /// The domux logo's mauve, the same value as MAUVE (ruled 2026-09-06).
 pub const ACCENT: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
+/// Branch names.
+pub const PINK: Color = Color::Rgb(0xe3, 0xb4, 0xd8);
+/// Workspace names.
+pub const TEAL: Color = Color::Rgb(0x93, 0xe2, 0xd5);

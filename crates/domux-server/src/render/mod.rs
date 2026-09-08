@@ -2,8 +2,10 @@
 //! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
 pub mod boxed;
+pub mod list_box;
 pub mod overlay;
 pub mod pane_box;
+pub mod projects_box;
 pub mod sidebar;
 pub mod tab_row;
 pub mod theme;
