@@ -62,6 +62,33 @@ The reply travelling with the job gets the same non-blocking core with none of t
 knows how to be told things; another owner would be another place to reason about ordering.
 `tokio::task::spawn_blocking` plus a `CoreMsg` is the smaller mechanism.
 
+## What the lane does and does not serialise
+
+Every `JobFinished` arm runs on the core task, one after another, like every other message.
+So a job that only **reads** the world and lets its arm decide is safe against a second call
+arriving while it runs: two `project.add` calls for one unregistered path both queue a job,
+both jobs find no project, and then the first arm registers it and the second arm's
+`project_at` sees what the first one wrote. One project, and both callers get it back.
+`two_project_add_calls_in_flight_at_once_register_one_project` pins this, with both requests
+on their own sockets so neither waits on the other; it was checked against a `read_project`
+slowed by 300 ms, which guarantees both jobs are genuinely in flight, and against the
+idempotence check being removed, which turns it red.
+
+**A job that chooses something does not get that for free.** The decision is made inside the
+job, off the core task, so two jobs can choose the same thing before either arm runs.
+Task 17's `workspace.create` is exactly that shape: the slot number is the lowest free one,
+two concurrent creates would both choose it, and both would run `git worktree add` for
+`workspace-1`. Today the second one fails on `worktree_add`'s occupied-directory refusal
+rather than corrupting anything, which is a loud failure and not a wrong one, but it is a
+refusal with the wrong words.
+
+Whoever adds such a job owns the answer, and the shape to reach for is a set of claims on the
+core, taken in the handler where one runs at a time and released when the job finishes. It is
+deliberately not built here: `project.add` cannot reach the defect it would prevent, and a
+claim on it would answer `busy` to a second call that today gets the right answer. A
+mechanism with nothing in the milestone that can exercise it is one no test can tell from its
+opposite.
+
 ## What follows from it
 
 - Task 17's `workspace.create` and Task 18's `workspace.clear` and `workspace.delete` add

@@ -701,3 +701,83 @@ async fn a_job_a_key_started_reports_its_failure_in_the_hint_row() {
         "and the screen is otherwise itself:\n{f}"
     );
 }
+
+/// Two `project.add` calls for one unregistered path, both in flight, register one project
+/// and both get the same one back.
+///
+/// The window this looks for is real in shape: the check that makes `project.add`
+/// idempotent runs when the job finishes, not when the handler queues it, so two handlers
+/// can both queue a job for a path no project holds yet. What closes it is that the two
+/// `JobFinished` arms run on the core task, one after the other, so the second arm sees the
+/// project the first one registered.
+///
+/// Both requests go over their own sockets through `tokio::join!`, so neither is waiting on
+/// the other: `Harness::api` takes `&mut self` and would serialise them into two calls that
+/// never overlap, which is a test that proves nothing.
+#[tokio::test]
+async fn two_project_add_calls_in_flight_at_once_register_one_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let h = Harness::start(Config::default(), 120, 24).await;
+    let socket = h.socket_path().to_path_buf();
+    let params = json!({"path": dir.path().to_str().unwrap()});
+    let (one, two) = tokio::join!(
+        api_at(&socket, "project.add", params.clone()),
+        api_at(&socket, "project.add", params.clone()),
+    );
+    let one = one.expect("the first add");
+    let two = two.expect("the second add");
+    assert_eq!(
+        one["project"], two["project"],
+        "both calls name one project"
+    );
+    let registered: Vec<_> = h
+        .model()
+        .projects
+        .iter()
+        .filter(|p| p.name == name)
+        .map(|p| p.id.clone())
+        .collect();
+    assert_eq!(
+        registered.len(),
+        1,
+        "and the model holds one: {registered:?}"
+    );
+}
+
+/// `Harness::api` over a socket path rather than a borrow of the harness, so two calls can
+/// be in flight at the same time.
+async fn api_at(
+    socket: &std::path::Path,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, domux_core::api::ApiError> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .expect("connect");
+    let (r, mut w) = stream.into_split();
+    let request = json!({"id": 1, "method": method, "params": params});
+    w.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        BufReader::new(r).read_line(&mut line),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{method} was not answered"))
+    .unwrap();
+    let response: domux_core::api::Response = serde_json::from_str(&line).unwrap();
+    match (response.result, response.error) {
+        (Some(v), None) => Ok(v),
+        (None, Some(e)) => Err(e),
+        other => panic!("malformed response {other:?}"),
+    }
+}
