@@ -3,7 +3,6 @@
 //! `git rev-parse` away.
 
 use super::{FactProvider, FactTarget, ProviderScope};
-use chrono::Local;
 use domux_core::facts::{Fact, FACT_BRANCH};
 use std::time::Duration;
 
@@ -44,7 +43,10 @@ impl FactProvider for BranchProvider {
             Ok(branch) if branch != "HEAD" && !branch.is_empty() => Ok(Some(Fact::new(
                 branch,
                 None,
-                Local::now().to_rfc3339(),
+                // The core's clock, not this thread's: it is what the registry's freshness
+                // check is measured against, and a provider that reads its own clock can
+                // disagree with it (a fixed clock in a test is the case that bites).
+                target.now.to_rfc3339(),
                 BRANCH_TTL,
             ))),
             Ok(_) => Ok(None),

@@ -78,7 +78,11 @@ pub enum ProviderScope {
     Server,
 }
 
-/// One thing to look at, with everything a provider needs so it never reads the model.
+/// One thing to look at, with everything a provider needs so it never reads the model, and
+/// never reads a clock of its own either. A fact's `fetched_at` and the freshness check that
+/// later judges it must agree on what time it is; the only way to guarantee that is for both
+/// to come from the one clock the core owns, so `due` stamps every target with the same
+/// `now` it used to decide the target was due.
 #[derive(Debug, Clone)]
 pub struct FactTarget {
     pub key: FactKey,
@@ -91,6 +95,11 @@ pub struct FactTarget {
     /// The branch fact if one has arrived, so the pull request provider does not shell out
     /// to git a second time.
     pub branch: Option<String>,
+    /// The core's clock, for a provider to stamp `Fact::fetched_at` with. Never `Local::now()`:
+    /// a provider that reads its own clock can disagree with the registry's freshness check,
+    /// which is measured against this same value (see `is_fresh_at`), and the two silently
+    /// agree only when nothing has replaced the wall clock, which a test does on purpose.
+    pub now: DateTime<Local>,
 }
 
 /// A command or a built-in that produces one fact about one target on an interval
@@ -221,7 +230,7 @@ impl FactRegistry {
     ) -> Vec<(Arc<dyn FactProvider>, FactTarget)> {
         let mut out = Vec::new();
         for provider in &self.providers {
-            for target in targets(model, provider.as_ref(), &self.facts) {
+            for target in targets(model, provider.as_ref(), &self.facts, now) {
                 if self.inflight.contains(&target.key) {
                     continue;
                 }
@@ -317,6 +326,7 @@ fn targets(
     model: &Model,
     provider: &dyn FactProvider,
     facts: &HashMap<FactKey, Fact>,
+    now: DateTime<Local>,
 ) -> Vec<FactTarget> {
     if provider.scope() == ProviderScope::Server {
         return vec![FactTarget {
@@ -325,6 +335,7 @@ fn targets(
             root: PathBuf::new(),
             default_branch: None,
             branch: None,
+            now,
         }];
     }
     let mut out = Vec::new();
@@ -341,6 +352,7 @@ fn targets(
                 root: project.root.clone(),
                 default_branch: default_branch.clone(),
                 branch: None,
+                now,
             }),
             ProviderScope::Workspace => {
                 for w in &project.workspaces {
@@ -353,6 +365,7 @@ fn targets(
                         root: project.root.clone(),
                         default_branch: default_branch.clone(),
                         branch,
+                        now,
                     });
                 }
             }
@@ -624,6 +637,12 @@ mod tests {
             t.branch.as_deref(),
             Some("feat/x"),
             "the branch fact rides along, so the pull request provider does not run git again"
+        );
+        assert_eq!(
+            t.now,
+            at(0),
+            "the target carries the same clock reading due used to decide it was due, so a \
+             provider's stamp agrees with the freshness check that later judges it"
         );
         assert_eq!(
             target(&main).branch,

@@ -5,8 +5,16 @@ use domux_core::ids::WorkspaceId;
 use domux_server::facts::branch::{BranchProvider, BRANCH_INTERVAL, BRANCH_TTL};
 use domux_server::facts::{FactProvider, FactTarget, ProviderScope};
 use domux_server::git;
+use domux_server::FixedClock;
 use std::path::PathBuf;
+use std::time::Duration;
 use support::repo_with_origin;
+
+/// The one clock every target in this file is stamped with, so `fetch`'s answer can be
+/// checked against it exactly rather than merely "parses as some time".
+fn now() -> chrono::DateTime<chrono::Local> {
+    FixedClock::at("2026-09-04T14:32:00").0
+}
 
 fn target(path: PathBuf, root: PathBuf) -> FactTarget {
     FactTarget {
@@ -15,6 +23,7 @@ fn target(path: PathBuf, root: PathBuf) -> FactTarget {
         root,
         default_branch: Some("main".into()),
         branch: None,
+        now: now(),
     }
 }
 
@@ -37,12 +46,28 @@ fn the_branch_provider_reports_the_workspace_s_branch() {
         fact.ttl, BRANCH_TTL,
         "the registry expires a branch fact on this time to live, so the constant must be what it reads"
     );
+    assert_eq!(
+        fact.fetched_at,
+        now().to_rfc3339(),
+        "the provider stamps the target's own clock, not one it read itself, so it agrees \
+         with whatever the registry's freshness check is measured against"
+    );
+}
+
+/// `p.interval() == BRANCH_INTERVAL` and `fact.ttl == BRANCH_TTL` above pin the wiring (the
+/// getter and the fact both read the constant), but not the value: changing what the
+/// constant *is* leaves both of those green, because they compare it to itself. This test
+/// names the literals on purpose - do not fold them back into `BRANCH_INTERVAL`/`BRANCH_TTL`,
+/// that would make it the same tautology again - and checks the relationship the doc comments
+/// promise: a fact must outlive the interval it is refetched on, or a row blinks absent
+/// between one fetch and the next.
+#[test]
+fn the_branch_time_to_live_outlasts_its_interval_so_a_row_never_blinks() {
+    assert_eq!(BRANCH_INTERVAL, Duration::from_secs(5));
+    assert_eq!(BRANCH_TTL, Duration::from_secs(30));
     assert!(
-        fact.fetched_at
-            .parse::<chrono::DateTime<chrono::FixedOffset>>()
-            .is_ok(),
-        "the registry's freshness sweep parses this exact stamp as RFC 3339: {}",
-        fact.fetched_at
+        BRANCH_TTL > BRANCH_INTERVAL,
+        "a fact must survive from one fetch to the next, or the row appears and disappears"
     );
 }
 

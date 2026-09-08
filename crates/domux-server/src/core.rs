@@ -950,9 +950,12 @@ impl Core {
         // that frame. The other order leaves a window in which a test waits for a frame,
         // asks for the model and gets the one from before the batch.
         //
-        // Sizes and facts before the model, for the same reason one step smaller: a reader
-        // holding a model from this batch then finds a size for every pane and a fact for
-        // every target in it, rather than one that has not been published yet.
+        // Sizes and facts before the model, for the same reason one step smaller: whatever
+        // this batch changed about a pane's size or a target's fact is already published by
+        // the time a reader sees the model, rather than a reader seeing this batch's model
+        // and a size or a fact still one batch behind. This is not "a fact for every target":
+        // a fact is present or it is absent (`facts/mod.rs`'s `FactRegistry` doc comment), and
+        // a target with no answer yet, or whose answer expired, has no entry here either.
         *self.pane_sizes.lock().unwrap() = self
             .panes
             .iter()

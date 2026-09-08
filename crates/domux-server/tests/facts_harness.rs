@@ -61,6 +61,40 @@ async fn a_harness_test_can_ask_for_the_branch_provider_and_wait_for_its_fact() 
     assert_eq!(h.fact(&key), Some(fact));
 }
 
+/// The harness runs on `FixedClock`, which never advances. `BranchProvider` stamps
+/// `fact.fetched_at` with the target's `now`, which is the same clock reading the registry
+/// measures freshness against (`facts::FactTarget::now`, `is_fresh_at`), so the two can never
+/// disagree about how much time has passed: under a clock that has not moved, the answer is
+/// always zero, and the fact must still be there. Before that field existed the provider read
+/// its own wall clock instead, which was always chronologically ahead of the frozen one, so
+/// the very first tick judged the fact "stamped in the future" and dropped it, and it never
+/// came back because the interval math used the same frozen clock too. This test would have
+/// failed against that code well inside the sleep below.
+#[tokio::test]
+async fn a_branch_fact_stays_fresh_across_several_ticks_under_the_harness_s_fixed_clock() {
+    let (_repo_tmp, _state_tmp, state_dir, workspace) = seeded_workspace();
+    let h = Harness::start_with(HarnessOptions {
+        state_dir: Some(state_dir),
+        providers: vec![Arc::new(BranchProvider)],
+        ..HarnessOptions::new(Config::default(), 80, 24)
+    })
+    .await;
+
+    let key = FactKey::workspace(&workspace, FACT_BRANCH);
+    h.wait_for_fact(&key, |f| f.is_some(), Duration::from_secs(5))
+        .await
+        .expect("the branch provider answered");
+    // The server ticks once a second; three and a half real seconds spans several of them,
+    // which is exactly when the old behaviour had already dropped the fact for good.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let fact = h.fact(&key);
+    assert_eq!(
+        fact.as_ref().map(|f| f.text.as_str()),
+        Some("workspace-1"),
+        "the fact must not expire under a clock that has not moved: {fact:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_harness_test_with_no_providers_never_sees_a_branch_fact() {
     // The default (`HarnessOptions::new`'s empty `providers`) is what `ServerOptions.providers`
@@ -80,6 +114,15 @@ async fn a_harness_test_with_no_providers_never_sees_a_branch_fact() {
     assert_eq!(h.fact(&key), None);
 }
 
+/// A bare `#[should_panic]` around this call is not enough: if the deadline check itself is
+/// ever lost, `wait_for_fact` does not return the wrong thing, it never returns, and that
+/// failure mode does not fail this test, it hangs the binary (the review measured this: the
+/// sibling test alone printed `FAILED` at 2s under the mutation and the run then never
+/// finished). The outer `tokio::time::timeout` bounds it from the outside: the correct
+/// implementation panics with "not met within" well inside the two seconds, which satisfies
+/// `should_panic` before the outer timeout ever matters; a lost deadline check instead trips
+/// the outer timeout, whose own panic message does not contain "not met within", so
+/// `should_panic` reports a normal, fast failure instead of a hang.
 #[tokio::test]
 #[should_panic(expected = "not met within")]
 async fn wait_for_fact_panics_when_the_condition_never_holds_within_the_timeout() {
@@ -87,31 +130,10 @@ async fn wait_for_fact_panics_when_the_condition_never_holds_within_the_timeout(
     let key = FactKey::workspace(&WorkspaceId("w_9999".into()), FACT_BRANCH);
     // No provider is registered (the default), so this key can never become present: the
     // deadline, not the predicate, is what ends the wait.
-    h.wait_for_fact(&key, |f| f.is_some(), Duration::from_millis(50))
-        .await;
-}
-
-/// The panic above only proves `wait_for_fact` gives up correctly; it does not prove what
-/// happens if the deadline check itself is ever lost, because that failure mode is not a
-/// wrong answer but a wait that never returns. A bug there would not fail this suite, it
-/// would hang whatever CI job ran it. `tokio::spawn` catches the awaited call's panic as an
-/// `Err` instead of unwinding this test, and the outer `tokio::time::timeout` turns "the
-/// spawned call never finished" into a normal, fast test failure rather than a stuck job.
-#[tokio::test]
-async fn wait_for_fact_gives_up_on_its_own_rather_than_hanging_the_test_that_calls_it() {
-    let h = Harness::start(Config::default(), 80, 24).await;
-    let key = FactKey::workspace(&WorkspaceId("w_9999".into()), FACT_BRANCH);
-    let called = tokio::spawn(async move {
-        h.wait_for_fact(&key, |f| f.is_some(), Duration::from_millis(50))
-            .await;
-    });
-    match tokio::time::timeout(Duration::from_secs(2), called).await {
-        Ok(join) => assert!(
-            join.is_err(),
-            "wait_for_fact returned instead of panicking on a condition that never held"
-        ),
-        Err(_) => panic!(
-            "wait_for_fact did not give up within its own timeout; it hung well past it instead"
-        ),
-    }
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        h.wait_for_fact(&key, |f| f.is_some(), Duration::from_millis(50)),
+    )
+    .await
+    .expect("wait_for_fact hung past its own timeout");
 }
