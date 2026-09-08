@@ -1348,6 +1348,45 @@ impl Model {
         self.resolve_workspace_with(target, &|_| None)
     }
 
+    /// The project an id or a name names. Ids first, then names without case, which is the
+    /// order `resolve_workspace_with` uses and for the same reason: an id is exact, so a
+    /// project someone named `pr_8f2a` cannot shadow the project with that id.
+    ///
+    /// Two projects can share a name - the name is the folder's last component, and two
+    /// checkouts of the same repository in different parents have the same one - so a name
+    /// that matches twice answers `ambiguous` with the ids rather than picking the first.
+    pub fn resolve_project(&self, target: &str) -> Result<ProjectId, ApiError> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err(ApiError::invalid_params("name a project: an id or a name"));
+        }
+        if let Some(p) = self.projects.iter().find(|p| p.id.as_str() == target) {
+            return Ok(p.id.clone());
+        }
+        let hits: Vec<&Project> = self
+            .projects
+            .iter()
+            .filter(|p| p.name.eq_ignore_ascii_case(target))
+            .collect();
+        match hits.len() {
+            1 => Ok(hits[0].id.clone()),
+            0 => Err(ApiError::not_found(format!(
+                "no project called {target}; run {BIN_NAME} project list to see them"
+            ))),
+            _ => Err(ApiError::ambiguous(
+                format!(
+                    "{} projects are called {target}: {}; use an id",
+                    hits.len(),
+                    hits.iter()
+                        .map(|p| p.root.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                hits.iter().map(|p| p.id.to_string()).collect(),
+            )),
+        }
+    }
+
     /// Sets the remembered sidebar state and answers with it.
     pub fn set_sidebar_open(&mut self, open: bool) -> bool {
         self.sidebar_open = open;
@@ -2532,6 +2571,59 @@ mod tests {
                 "name a workspace: an id, a handle such as workspace-1, a name, or a branch"
             );
         }
+    }
+
+    #[test]
+    fn resolve_project_takes_an_id_before_a_name_and_ignores_case() {
+        let mut m = Model::new(3);
+        let (one, _, _) = m
+            .add_git_project(PathBuf::from("/code/audrey-app"), "main".into())
+            .unwrap();
+        let (two, _, _) = m.add_folder_project(PathBuf::from("/code/notes")).unwrap();
+        assert_eq!(m.resolve_project(one.as_str()).unwrap(), one);
+        assert_eq!(m.resolve_project("  AUDREY-app ").unwrap(), one);
+        assert_eq!(m.resolve_project("notes").unwrap(), two);
+        // An id is exact, so a project someone named after another project's id is not what
+        // that id resolves to.
+        m.project_mut(&two).unwrap().name = one.to_string();
+        assert_eq!(
+            m.resolve_project(one.as_str()).unwrap(),
+            one,
+            "the id wins over a name that spells it"
+        );
+    }
+
+    #[test]
+    fn resolve_project_refuses_an_empty_target_a_missing_one_and_a_shared_name() {
+        let mut m = Model::new(3);
+        let empty = m.resolve_project("  ").unwrap_err();
+        assert_eq!(empty.code, ErrorCode::InvalidParams);
+        assert_eq!(empty.message, "name a project: an id or a name");
+        let missing = m.resolve_project("audrey-app").unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
+        assert_eq!(
+            missing.message,
+            "no project called audrey-app; run domux2 project list to see them"
+        );
+        // Two checkouts of one repository under different parents have the same name, which
+        // is the folder's last component.
+        let (one, _, _) = m
+            .add_git_project(PathBuf::from("/work/audrey-app"), "main".into())
+            .unwrap();
+        let (two, _, _) = m
+            .add_git_project(PathBuf::from("/spike/audrey-app"), "main".into())
+            .unwrap();
+        let shared = m.resolve_project("audrey-app").unwrap_err();
+        assert_eq!(shared.code, ErrorCode::Ambiguous);
+        assert_eq!(
+            shared.message,
+            "2 projects are called audrey-app: /work/audrey-app, /spike/audrey-app; use an id"
+        );
+        assert_eq!(
+            shared.data,
+            Some(serde_json::json!([one.to_string(), two.to_string()])),
+            "the candidates are the ids, so the caller can name one"
+        );
     }
 
     #[test]

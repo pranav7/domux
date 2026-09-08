@@ -25,6 +25,7 @@ use ratatui::style::{Color as RColor, Modifier};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -113,6 +114,10 @@ pub struct Harness {
     pub spawner: Option<Arc<FakeSpawner>>,
     pub inspector: Arc<FakeInspector>,
     _tmp: tempfile::TempDir,
+    /// Temp directories the harness made on a caller's behalf, kept alive until it drops:
+    /// `git_project` hands back a path inside one, and a caller that had to bind the temp
+    /// directory itself would be one `let _` away from a repository deleted mid-test.
+    kept: Vec<tempfile::TempDir>,
     state_dir: PathBuf,
     project_root: PathBuf,
     socket: PathBuf,
@@ -163,6 +168,7 @@ impl Harness {
             spawner,
             inspector,
             _tmp: tmp,
+            kept: Vec::new(),
             state_dir,
             project_root,
             socket,
@@ -528,6 +534,20 @@ impl Harness {
             .unwrap_or_else(|| panic!("no pane {pane}"))
     }
 
+    /// Whether the server still holds a runtime for `pane`: its PTY and its emulator.
+    /// Published beside the model, so call `frame` first when the change you want to see
+    /// was only just requested. A pane whose record has gone but whose runtime has not is a
+    /// process nothing will ever close.
+    pub fn pane_is_running(&self, pane: &PaneId) -> bool {
+        self.server
+            .as_ref()
+            .expect("server")
+            .pane_sizes
+            .lock()
+            .unwrap()
+            .contains_key(pane)
+    }
+
     pub fn current_tab(&self, client: ClientId) -> TabId {
         self.model()
             .client(&client)
@@ -615,6 +635,26 @@ impl Harness {
 
     fn core_tx(&self) -> mpsc::Sender<CoreMsg> {
         self.server.as_ref().expect("server").core_tx.clone()
+    }
+
+    /// Registers a temporary git repository as a project and returns its root.
+    ///
+    /// The repository has an origin, one commit and `origin/HEAD` set, so
+    /// `git::default_branch` resolves rather than falling back. The temp directory it lives
+    /// in is kept by the harness, so a caller does not have to bind one to keep the
+    /// repository alive for the length of the test.
+    ///
+    /// `git_project_with_two_slots` is Task 17's: building a slot means `workspace.create`.
+    pub async fn git_project(&mut self, default_branch: &str) -> PathBuf {
+        let (tmp, repo) = repo_with_origin(default_branch);
+        self.kept.push(tmp);
+        self.api(
+            "project.add",
+            serde_json::json!({ "path": repo.to_str().expect("a temp path is utf-8") }),
+        )
+        .await
+        .expect("project.add");
+        repo
     }
 
     /// Stops the server (persisting) and drops every client. The state dir stays.
@@ -727,4 +767,80 @@ pub fn shape_name(shape: CursorShape) -> &'static str {
         CursorShape::Underline => "underline",
         CursorShape::Bar => "bar",
     }
+}
+
+/// Temporary git repositories for tests. Here rather than in `tests/support` so the harness
+/// and the tests that drive it build repositories the same way; `tests/support/mod.rs`
+/// re-exports these.
+/// Runs git and returns its trimmed stdout, panicking with stderr on failure.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A commit with one file, so a repository has history to branch from.
+pub fn commit(dir: &Path, name: &str, body: &str) {
+    std::fs::write(dir.join(name), body).unwrap();
+    git(dir, &["add", name]);
+    git(dir, &["commit", "-q", "-m", &format!("Add {name}")]);
+}
+
+/// A bare origin and a clone of it with one commit on `branch` and `origin/HEAD` set, which
+/// is what `git::default_branch` reads. Returns the temp dir (keep it alive) and the clone.
+pub fn repo_with_origin(branch: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = tmp.path().join("origin.git");
+    let work = tmp.path().join("audrey-app");
+    std::fs::create_dir_all(&origin).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    // Every other git call in these tests names its directory with `-C`. This one takes the
+    // repository as an argument instead, so it is given an explicit working directory as well:
+    // without one it would run in the test binary's own directory, inside a real checkout. A
+    // bare init that failed would surface later as a confusing push error, so read its status
+    // rather than dropping it.
+    let status = Command::new("git")
+        .current_dir(tmp.path())
+        .args(["init", "-q", "--bare", "-b", branch])
+        .arg(&origin)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git init --bare in {}", origin.display());
+    git(&work, &["init", "-q", "-b", branch]);
+    git(&work, &["config", "user.email", "test@example.com"]);
+    git(&work, &["config", "user.name", "domux test"]);
+    // The author's own git configuration reaches these repositories otherwise, and a global
+    // `commit.gpgsign` would have these tests try to sign, a global `core.hooksPath` would run
+    // that machine's hooks inside them. Repository configuration wins over global for every
+    // command against this repository, including the ones that go through `git::run` and the
+    // ones that run in its worktrees, so the isolation belongs here and not in production code.
+    let no_hooks = tmp.path().join("no-hooks");
+    git(
+        &work,
+        &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
+    );
+    git(&work, &["config", "commit.gpgsign", "false"]);
+    // The push below runs origin's receive hooks, so origin needs the same.
+    git(
+        &origin,
+        &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
+    );
+    commit(&work, "README.md", "hello\n");
+    git(
+        &work,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&work, &["push", "-q", "-u", "origin", branch]);
+    git(&work, &["remote", "set-head", "origin", branch]);
+    (tmp, work)
 }

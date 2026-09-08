@@ -137,3 +137,60 @@ async fn wait_for_fact_panics_when_the_condition_never_holds_within_the_timeout(
     .await
     .expect("wait_for_fact hung past its own timeout");
 }
+
+/// A fact a provider found reaches a drawn frame, so the renderer is handed the core's own
+/// registry rather than any registry of the right type.
+///
+/// The claim needs its own test because "some `FactRegistry` was present" and "the one the
+/// core fills" are different claims, and the whole suite was satisfied by the first: with
+/// `RenderInput.facts` replaced by a fresh empty registry, every render test still passed,
+/// because none of them had a provider running behind the frame they asserted on. This one
+/// registers the branch provider, waits for its answer to be published, and then waits for
+/// that same text to appear on the screen.
+///
+/// `develop` is the value to look for because nothing else this fixture draws can produce
+/// it: the project's name is `audrey-app` and the workspace is `main`, the project's
+/// default branch is not drawn anywhere, and no path is. It is not that a branch line could
+/// never say something a frame says elsewhere.
+#[tokio::test]
+async fn a_branch_fact_a_provider_found_reaches_the_drawn_frame() {
+    let (_repo_tmp, repo) = support::repo_with_origin("develop");
+    let mut model = Model::new(1);
+    let (_pid, main, _events) = model.add_git_project(repo, "develop".into()).unwrap();
+
+    let state_tmp = tempfile::tempdir().unwrap();
+    let state_dir = state_tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join("state.json"),
+        state_file::to_json(&state_file::snapshot(&model, "2026-09-04T14:32:00+00:00")),
+    )
+    .unwrap();
+
+    // 120 columns: the width at which the sidebar draws itself (interface spec 12.1).
+    let mut h = Harness::start_with(HarnessOptions {
+        state_dir: Some(state_dir),
+        providers: vec![Arc::new(BranchProvider)],
+        ..HarnessOptions::new(Config::default(), 120, 24)
+    })
+    .await;
+    let key = FactKey::workspace(&main, FACT_BRANCH);
+    let fact = h
+        .wait_for_fact(&key, |f| f.is_some(), Duration::from_secs(5))
+        .await
+        .expect("the branch provider answered");
+    assert_eq!(fact.text, "develop", "the fact the frame should carry");
+
+    h.api("sidebar.show", serde_json::json!({})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("develop"),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(
+        f.contains("AUDREY-APP"),
+        "and it is the Projects box it reached:\n{f}"
+    );
+}

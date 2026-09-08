@@ -6,7 +6,7 @@ use crate::facts::FactRegistry;
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::render::{self, RenderInput};
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
-use domux_core::api::{ApiError, Event, Method, Request, Response};
+use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
 use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
@@ -57,10 +57,60 @@ pub enum CoreMsg {
     },
     /// Once a second: the process inspector, the clock, exited-pane cleanup.
     Tick,
+    /// A job that shelled out has finished. The model changes here, on the core task, and
+    /// the caller waiting on `reply` is answered (decision record 0006).
+    JobFinished {
+        outcome: JobOutcome,
+        reply: Option<JobReply>,
+        client: Option<ClientId>,
+    },
     Snapshot {
         reply: oneshot::Sender<Model>,
     },
     Shutdown,
+}
+
+/// Work that shells out. It runs on a blocking task; the API reply, when there is one,
+/// travels with it, so the caller waits and the core does not (decision record 0006).
+/// Tasks 17 and 18 add the create, clear and delete variants.
+pub enum CoreJob {
+    /// Everything `project.add` needs from git and the filesystem, read off the core task.
+    ReadProject { path: String },
+}
+
+/// What a job found. Nothing here has touched the model: the `JobFinished` arm does that.
+pub enum JobOutcome {
+    /// What `ReadProject` found. `default_branch` is `None` for a plain folder, and `slots`
+    /// is empty for one. Each slot carries the directory that is really on disk, which is
+    /// not always `git::slot_path`: V1 wrote some of them under `.baag/worktrees`.
+    ProjectRead {
+        root: PathBuf,
+        default_branch: Option<String>,
+        slots: Vec<(u32, PathBuf)>,
+    },
+    Failed {
+        message: String,
+        code: ErrorCode,
+    },
+}
+
+/// What one dispatched method produced besides its answer.
+struct Dispatched {
+    result: Result<serde_json::Value, ApiError>,
+    /// What the handler queued to be run off the core task.
+    jobs: Vec<CoreJob>,
+    /// The handler queued a job that carries the answer, so `result` is not the answer.
+    deferred: bool,
+}
+
+/// The waiting caller's answer, carried with the job that will produce it.
+///
+/// The request id travels too. A `Response` cannot be built without one, and by the time
+/// the job finishes the `Request` it came from is gone, so the id has to be captured when
+/// the reply is deferred rather than looked up later.
+pub struct JobReply {
+    pub id: serde_json::Value,
+    pub tx: oneshot::Sender<Response>,
 }
 
 /// Catppuccin Mocha text and base: the emulator's default colours until a client reports its own.
@@ -422,10 +472,7 @@ impl Core {
             }
             CoreMsg::ClientInput { client, msg } => self.client_input(client, msg),
             CoreMsg::ClientGone { client } => self.detach(&client, None),
-            CoreMsg::Api { request, reply } => {
-                let response = self.api(request);
-                let _ = reply.send(response);
-            }
+            CoreMsg::Api { request, reply } => self.api(request, reply),
             CoreMsg::FactFetched { key, fact } => {
                 // A workspace removed while its provider was still running: the answer is
                 // about nothing the model holds, so it is dropped rather than put back.
@@ -455,6 +502,11 @@ impl Core {
             }
             CoreMsg::Subscribe { filter, tx } => self.subscribers.push((filter, tx)),
             CoreMsg::Tick => self.tick(),
+            CoreMsg::JobFinished {
+                outcome,
+                reply,
+                client,
+            } => self.job_finished(outcome, reply, client),
             CoreMsg::Snapshot { reply } => {
                 let _ = reply.send(self.model.clone());
             }
@@ -628,7 +680,7 @@ impl Core {
                     self.view_dirty = true;
                     return;
                 }
-                if let Err(e) = self.dispatch(method, Some(client.clone())) {
+                if let Err(e) = self.dispatch_from_key(method, Some(client.clone())) {
                     tracing::info!(client = %client, action = %action, "{}", e.message);
                     if let Some(conn) = self.clients.get_mut(client) {
                         conn.hint = Some(Hint::action(e.message));
@@ -691,16 +743,49 @@ impl Core {
         }
     }
 
-    fn api(&mut self, request: Request) -> Response {
+    /// One API request. The answer goes to `reply` here, unless the handler deferred it:
+    /// a handler that has to shell out queues a job and the job carries the answer, so the
+    /// caller waits and the core does not (decision record 0006).
+    fn api(&mut self, request: Request, reply: oneshot::Sender<Response>) {
         let id = request.id.clone();
         let method = match Method::from_request(&request.method, request.params) {
             Ok(m) => m,
-            Err(e) => return Response::err(id, e),
+            Err(e) => {
+                let _ = reply.send(Response::err(id, e));
+                return;
+            }
         };
         let client = param_client(&method).or_else(|| self.model.most_recent_client());
-        match self.dispatch(method, client) {
-            Ok(v) => Response::ok(id, v),
-            Err(e) => Response::err(id, e),
+        let done = self.dispatch_inner(method, client.clone(), false);
+        let mut reply = Some(reply);
+        if !done.deferred {
+            if let Some(tx) = reply.take() {
+                let _ = tx.send(match done.result {
+                    Ok(v) => Response::ok(id.clone(), v),
+                    Err(e) => Response::err(id.clone(), e),
+                });
+            }
+        }
+        for (i, job) in done.jobs.into_iter().enumerate() {
+            // The first job carries the deferred answer, which is all `defer_reply` can
+            // mean while a handler that defers queues one job. A second job would be work
+            // nobody is waiting on, and it still runs.
+            let carried = match i {
+                0 => reply.take().map(|tx| JobReply { id: id.clone(), tx }),
+                _ => None,
+            };
+            self.start_job(job, carried, client.clone());
+        }
+        // A handler that deferred and queued nothing would leave the caller waiting for
+        // ever. No handler does that today - `project.add` is the only one that defers and
+        // it always queues - so nothing reaches this and no test pins it. It is here
+        // because the cost of the state it guards against is a hung caller rather than a
+        // wrong answer, and a hung caller is invisible in a suite.
+        if let Some(tx) = reply {
+            let _ = tx.send(Response::err(
+                id,
+                ApiError::internal("the handler deferred its answer and queued no job"),
+            ));
         }
     }
 
@@ -710,6 +795,45 @@ impl Core {
         method: Method,
         client: Option<ClientId>,
     ) -> Result<serde_json::Value, ApiError> {
+        self.dispatch_from(method, client, false)
+    }
+
+    /// `dispatch` for a key press. The handler is told where the call came from, so an
+    /// operation that asks before it acts can put its question on the screen instead of
+    /// answering "run it again with --yes" to a reader who has no command line to add it to
+    /// (interface spec 7.3).
+    pub fn dispatch_from_key(
+        &mut self,
+        method: Method,
+        client: Option<ClientId>,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.dispatch_from(method, client, true)
+    }
+
+    fn dispatch_from(
+        &mut self,
+        method: Method,
+        client: Option<ClientId>,
+        from_key: bool,
+    ) -> Result<serde_json::Value, ApiError> {
+        let done = self.dispatch_inner(method, client.clone(), from_key);
+        // No reply travels with a key's job: nobody is waiting on a keystroke, and a
+        // failure reaches that client's hint row instead (`Core::answer`).
+        for job in done.jobs {
+            self.start_job(job, None, client.clone());
+        }
+        done.result
+    }
+
+    /// Runs one method and reads everything the handler recorded back out of its `Ctx`.
+    /// The jobs it queued are started by the caller, which is the half that knows whether
+    /// anyone is waiting for their answer.
+    fn dispatch_inner(
+        &mut self,
+        method: Method,
+        client: Option<ClientId>,
+        from_key: bool,
+    ) -> Dispatched {
         let mut ctx = Ctx {
             model: &mut self.model,
             panes: &mut self.panes,
@@ -722,6 +846,7 @@ impl Core {
             state_dir: &self.state_dir,
             started_at: &self.started_at,
             client,
+            from_key,
             events: Vec::new(),
             stop_requested: false,
             view_dirty: false,
@@ -729,16 +854,20 @@ impl Core {
             pending_kills: Vec::new(),
             detach_clients: Vec::new(),
             release_respawn_blocks: false,
+            jobs: Vec::new(),
+            defer_reply: false,
         };
         let result = api::dispatch(method, &mut ctx);
         let events = std::mem::take(&mut ctx.events);
         let spawns = std::mem::take(&mut ctx.pending_spawns);
         let kills = std::mem::take(&mut ctx.pending_kills);
         let detaches = std::mem::take(&mut ctx.detach_clients);
+        let jobs = std::mem::take(&mut ctx.jobs);
         let stop = ctx.stop_requested;
         // Read out of `ctx` before it is dropped: the borrow of `self` ends with it.
         let view_dirty = ctx.view_dirty;
         let release_blocks = ctx.release_respawn_blocks;
+        let deferred = ctx.defer_reply;
         drop(ctx);
         if stop {
             self.stopping = true;
@@ -751,7 +880,151 @@ impl Core {
             self.release_respawn_blocks();
         }
         self.apply_side_effects(spawns, kills, detaches);
-        result
+        Dispatched {
+            result,
+            jobs,
+            deferred,
+        }
+    }
+
+    /// Runs a job on a blocking task and sends what it found back as `JobFinished`. Nothing
+    /// that shells out runs on the core task, however fast it is (decision record 0006).
+    fn start_job(&self, job: CoreJob, reply: Option<JobReply>, client: Option<ClientId>) {
+        let tx = self.core_tx.clone();
+        let running = tokio::task::spawn_blocking(move || run_job(job));
+        tokio::spawn(async move {
+            // One message however the job ended. A job that panicked would otherwise leave
+            // the caller waiting for ever, which is the one failure a deferred reply must
+            // not have: the same reasoning as the fetch wrapper in `start_due_fetches`.
+            let outcome = running.await.unwrap_or_else(|e| JobOutcome::Failed {
+                message: format!("the job did not finish: {e}"),
+                code: ErrorCode::Internal,
+            });
+            let _ = tx
+                .send(CoreMsg::JobFinished {
+                    outcome,
+                    reply,
+                    client,
+                })
+                .await;
+        });
+    }
+
+    /// A finished job, back on the core task: the model changes here and the caller is
+    /// answered here. One writer, as everywhere else.
+    fn job_finished(
+        &mut self,
+        outcome: JobOutcome,
+        reply: Option<JobReply>,
+        client: Option<ClientId>,
+    ) {
+        let result = match outcome {
+            JobOutcome::Failed { message, code } => Err(ApiError {
+                code,
+                message,
+                data: None,
+            }),
+            JobOutcome::ProjectRead {
+                root,
+                default_branch,
+                slots,
+            } => self.project_read(root, default_branch, slots),
+        };
+        self.answer(result, reply, client);
+    }
+
+    /// `project.add`'s model change: register the path and adopt the worktrees the job
+    /// found beside it.
+    fn project_read(
+        &mut self,
+        root: PathBuf,
+        default_branch: Option<String>,
+        slots: Vec<(u32, PathBuf)>,
+    ) -> Result<serde_json::Value, ApiError> {
+        // Idempotence is decided here rather than in the handler, because the canonical
+        // path is only known once the job has resolved it. A path that is already a project
+        // is answered for as it stands, and nothing new is adopted: `project.add` is how a
+        // path is registered, and `workspace.create` is how a slot is made.
+        if let Some(existing) = self.model.project_at(&root) {
+            return api::project::added(existing, Vec::new());
+        }
+        let added = match &default_branch {
+            Some(branch) => self.model.add_git_project(root.clone(), branch.clone()),
+            None => self.model.add_folder_project(root.clone()),
+        };
+        // `Core::handle` returns nothing, so a failure here is answered rather than
+        // propagated with `?` to a caller that is not there: the one who is waiting is on
+        // the other end of `reply`.
+        let (project, _main, mut events) = added?;
+        // `add_folder_project` is M1's and reports no events, because `project.added` is an
+        // M2 event. `add_git_project` is M2's and reports it itself, so only the folder
+        // branch pushes one.
+        if default_branch.is_none() {
+            let name = self
+                .model
+                .project(&project)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            events.push(Event::ProjectAdded {
+                project: project.clone(),
+                name,
+                root: root.clone(),
+            });
+        }
+        let mut adopted = Vec::new();
+        for (slot, slot_path) in slots {
+            match self.model.add_slot(&project, slot, slot_path) {
+                Ok((_, more)) => {
+                    adopted.push(format!("workspace-{slot}"));
+                    events.extend(more);
+                }
+                // A slot the model would not take is left out of `adopted` rather than
+                // named in it: the answer says what is registered, not what was on disk.
+                Err(e) => tracing::warn!(
+                    "could not adopt workspace-{slot} in {}: {}",
+                    root.display(),
+                    e.message
+                ),
+            }
+        }
+        self.pending_events.extend(events);
+        // Every new workspace gets its tab and its shell, the same invariant
+        // `apply_side_effects` keeps for every other path that makes one.
+        self.apply_side_effects(Vec::new(), Vec::new(), Vec::new());
+        self.view_dirty = true;
+        let registered = self.model.project(&project).ok_or_else(|| {
+            ApiError::internal("the project was registered and is not there any more")
+        })?;
+        api::project::added(registered, adopted)
+    }
+
+    /// Sends a job's answer where it belongs: to the caller waiting on it, or, for a job a
+    /// key started, to that client's hint row, which is where a failed key's message goes
+    /// (principle 8).
+    fn answer(
+        &mut self,
+        result: Result<serde_json::Value, ApiError>,
+        reply: Option<JobReply>,
+        client: Option<ClientId>,
+    ) {
+        match reply {
+            Some(JobReply { id, tx }) => {
+                let _ = tx.send(match result {
+                    Ok(v) => Response::ok(id, v),
+                    Err(e) => Response::err(id, e),
+                });
+            }
+            None => {
+                let Err(e) = result else { return };
+                tracing::info!("{}", e.message);
+                let mut told = false;
+                if let Some(conn) = client.and_then(|c| self.clients.get_mut(&c)) {
+                    conn.hint = Some(Hint::action(e.message));
+                    told = true;
+                }
+                self.view_dirty |= told;
+            }
+        }
     }
 
     /// Does what a handler recorded but could not do itself: kill the PTYs of the panes it
@@ -1306,6 +1579,85 @@ impl Core {
     }
 }
 
+/// One job, on a blocking task. Every arm here shells out or touches the filesystem, which
+/// is the whole reason the lane exists (decision record 0006).
+fn run_job(job: CoreJob) -> JobOutcome {
+    match job {
+        CoreJob::ReadProject { path } => read_project(&path),
+    }
+}
+
+/// What `project.add` needs to know about a path: whether it is there, whether it is a
+/// repository, what `origin/HEAD` points at, and which slot directories exist beside it.
+///
+/// Three forks (`git rev-parse`, `git symbolic-ref`, `git worktree list`) and a handful of
+/// syscalls. The syscalls could run on the core task; they are here so one place owns the
+/// whole answer and the handler has one thing to queue.
+fn read_project(path: &str) -> JobOutcome {
+    let root = match std::fs::canonicalize(path) {
+        Ok(root) => root,
+        Err(_) => {
+            return JobOutcome::Failed {
+                message: format!("{path} does not exist"),
+                code: ErrorCode::NotFound,
+            }
+        }
+    };
+    if !root.is_dir() {
+        return JobOutcome::Failed {
+            message: format!(
+                "{} is a file; name the folder that holds the project",
+                root.display()
+            ),
+            code: ErrorCode::InvalidParams,
+        };
+    }
+    // A plain folder is a project with `main` and nothing else. `default_branch` answers
+    // `main` for a directory that is not a repository at all, so the question has to be
+    // asked separately rather than read out of its answer.
+    if !crate::git::is_repo(&root) {
+        return JobOutcome::ProjectRead {
+            root,
+            default_branch: None,
+            slots: Vec::new(),
+        };
+    }
+    let default_branch = crate::git::default_branch(&root);
+    let slots = match crate::git::existing_slots(&root) {
+        Ok(slots) => slots,
+        // A worktree directory that is there and cannot be read is an error, not "no
+        // slots": adopting nothing would hand out a slot number that is already taken.
+        Err(e) => {
+            return JobOutcome::Failed {
+                message: e.to_string(),
+                code: ErrorCode::Internal,
+            }
+        }
+    };
+    let slots = slots
+        .into_iter()
+        .map(|slot| (slot, slot_directory(&root, slot)))
+        .collect();
+    JobOutcome::ProjectRead {
+        root,
+        default_branch: Some(default_branch),
+        slots,
+    }
+}
+
+/// Where a slot really is: under `.domux/worktrees` when that directory is there, and under
+/// the name V1 used before the rename when it is not. `existing_slots` reads both, so a
+/// project the author has been using with V1 adopts its worktrees at the paths they are at
+/// rather than at the paths V2 would have made.
+fn slot_directory(root: &Path, slot: u32) -> PathBuf {
+    let current = crate::git::slot_path(root, slot);
+    if current.is_dir() {
+        return current;
+    }
+    root.join(crate::git::LEGACY_WORKTREE_DIR)
+        .join(crate::git::slot_branch(slot))
+}
+
 /// The `client` parameter of a view method, when the request carried one.
 fn param_client(method: &Method) -> Option<ClientId> {
     use Method::*;
@@ -1465,9 +1817,6 @@ mod tests {
     /// is the one deliberate exception, left for M3: when this reads exactly
     /// `[("workspace.resume", ..)]`, M2 has closed this class of gap.
     const STILL_UNBUILT: &[(&str, &str)] = &[
-        ("project.list", "{}"),
-        ("project.add", r#"{"path":"/x"}"#),
-        ("project.remove", r#"{"project":"p"}"#),
         ("workspace.list", "{}"),
         ("workspace.create", r#"{"project":"p"}"#),
         ("workspace.clear", r#"{"workspace":"w"}"#),
@@ -1487,7 +1836,6 @@ mod tests {
     /// `api::dispatch`, so removal is forced rather than remembered.
     #[test]
     fn only_the_expected_m2_methods_still_answer_unavailable() {
-        use domux_core::api::ErrorCode;
         let dir = tempfile::tempdir().unwrap();
         for (name, params) in STILL_UNBUILT {
             assert!(

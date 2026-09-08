@@ -5,13 +5,14 @@ pub mod client;
 pub mod config;
 pub mod focus;
 pub mod pane;
+pub mod project;
 pub mod server;
 pub mod sidebar;
 pub mod switcher;
 pub mod tab;
 
 use crate::client::ClientConn;
-use crate::core::CoreMsg;
+use crate::core::{CoreJob, CoreMsg};
 use crate::facts::FactRegistry;
 use crate::pane::PaneRuntime;
 use crate::{CoreDeps, LoadedConfig};
@@ -45,6 +46,10 @@ pub struct Ctx<'a> {
     /// The view the call acts on: the pressing client for a keybinding, the `client` param
     /// or the most recent client for an API call.
     pub client: Option<ClientId>,
+    /// True when a key press reached this handler rather than the control API. A
+    /// destructive operation asks its question on the screen for a key and answers
+    /// "Answer with --yes" for a caller that has a command line (interface spec 7.3).
+    pub from_key: bool,
     pub events: Vec<Event>,
     pub stop_requested: bool,
     /// Set by a handler when it changes something a frame shows. A read-only method leaves
@@ -60,6 +65,12 @@ pub struct Ctx<'a> {
     /// Set by a config reload that loaded: the respawn guard's blocks are the core's, and a
     /// new config is the signal that the shell it tripped on may be fixed.
     pub release_respawn_blocks: bool,
+    /// Work that shells out, for the core to run off its own task (decision record 0006).
+    pub jobs: Vec<CoreJob>,
+    /// Set beside a queued job by a handler whose answer that job carries: the caller is
+    /// told when the job finishes, and the value this handler returns is not the answer.
+    /// The first job queued is the one that carries it.
+    pub defer_reply: bool,
 }
 
 impl Ctx<'_> {
@@ -195,8 +206,11 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         SidebarHide(p) => sidebar::hide(ctx, p),
         SwitcherOpen(p) => switcher::open(ctx, p),
         SwitcherClose(p) => switcher::close(ctx, p),
-        // --- M2 stubs: placeholders for Tasks 13 to 19, not real handlers. ---
-        ProjectList(_) | ProjectAdd(_) | ProjectRemove(_) | WorkspaceList(_)
+        ProjectList(p) => project::list(ctx, p),
+        ProjectAdd(p) => project::add(ctx, p),
+        ProjectRemove(p) => project::remove(ctx, p),
+        // --- M2 stubs: placeholders for Tasks 14 to 19, not real handlers. ---
+        WorkspaceList(_)
         | WorkspaceCreate(_) | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
         | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_)
         | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {

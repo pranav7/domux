@@ -229,6 +229,19 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
 /// edge panics rather than clips, and a workpanel smaller than the smallest box gets no box at
 /// all rather than one drawn outside itself.
 pub fn frame(title: &str, width: u16, height: u16, buf: &mut Buffer) -> Rect {
+    let area = centred_area(width, height, buf);
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
+    frame_at(title, area, buf)
+}
+
+/// Where `frame` puts a `width` by `height` box, without drawing anything. Answered on its
+/// own for the confirmation, which asks its question in the border in red (interface spec
+/// 7.3): `Boxed` draws a title in the accent or in `overlay1` and in nothing else, so the
+/// confirmation frames an empty title and writes the question into the border row itself,
+/// which needs the outer rectangle rather than the inner one.
+pub fn centred_area(width: u16, height: u16, buf: &Buffer) -> Rect {
     let screen = buf.area;
     // The whole width, sidebar or no sidebar: an overlay is the one thing on the screen the
     // keys go to, so it is centred on the screen and covers the sidebar like anything else.
@@ -256,13 +269,12 @@ pub fn frame(title: &str, width: u16, height: u16, buf: &mut Buffer) -> Rect {
     if width == 0 || height == 0 {
         return Rect::new(panel.x, panel.y, 0, 0);
     }
-    let area = Rect::new(
+    Rect::new(
         panel.x + (panel.width - width) / 2,
         panel.y + (panel.height - height) / 2,
         width,
         height,
-    );
-    frame_at(title, area, buf)
+    )
 }
 
 /// `┌ Keys ┐`: the leader, every `[keys.bindings]` line as `C-a |    pane.split right`,

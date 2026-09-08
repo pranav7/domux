@@ -176,7 +176,7 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                         name: Some(input.text),
                         client: Some(client.clone()),
                     });
-                    let _ = core.dispatch(method, Some(client.clone()));
+                    let _ = core.dispatch_from_key(method, Some(client.clone()));
                     return;
                 }
                 Key::Backspace => input.backspace(),
@@ -202,7 +202,7 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                     tab: Some(tab.to_string()),
                     client: Some(client.clone()),
                 });
-                let _ = core.dispatch(method, Some(client.clone()));
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
             }
         }
         // Task 14 replaces this with the whole of `[keys.list]`, the routing the sidebar's
@@ -214,12 +214,32 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                 let method = Method::SwitcherClose(domux_core::api::ClientParams {
                     client: Some(client.clone()),
                 });
-                let _ = core.dispatch(method, Some(client.clone()));
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
+            }
+        }
+        // The same rule as the tab above, and the keys the box itself offers:
+        // `y remove project    esc keep project` (interface spec 7.3).
+        //
+        // `api::project::remove` opened this with `push_overlay` and this closes it with
+        // `close_overlay`, which clears the top overlay without restoring the one under it.
+        // The two agree while nothing opens the confirmation over another overlay, which
+        // nothing in M2 does: the only way here is a key bound to `project.remove`, and a
+        // key bound to anything reaches `run_action` only when no overlay is open. Task 18,
+        // which adds `X` inside the Projects box, opens it over the switcher and has to
+        // come back to this.
+        Overlay::Confirm(ConfirmKind::RemoveProject(project)) => {
+            close_overlay(core, client);
+            if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
+                let method = Method::ProjectRemove(domux_core::api::ProjectRemoveParams {
+                    project: project.to_string(),
+                    yes: true,
+                });
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
             }
         }
         Overlay::Agents
         | Overlay::NameWorkspace(_)
-        | Overlay::Confirm(ConfirmKind::DeleteWorkspace(_) | ConfirmKind::RemoveProject(_))
+        | Overlay::Confirm(ConfirmKind::DeleteWorkspace(_))
         | Overlay::Usage => {
             // M1 never opens these. M3 and M4 add their key handling here.
         }
