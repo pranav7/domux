@@ -9,6 +9,7 @@ use chrono::{DateTime, Local};
 use domux_core::facts::{Fact, FactKey, FactScope};
 use domux_core::ids::WorkspaceId;
 use domux_core::model::Model;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +20,45 @@ use std::time::Duration;
 /// `domux_core::paths` reads.
 pub fn pr_cache_path(state_dir: &Path) -> PathBuf {
     state_dir.join("pr-cache.json")
+}
+
+/// The pull request cache as it sits on disk (architecture spec section 5).
+///
+/// The values stay as json until each one is read, so one unreadable entry drops itself
+/// rather than the whole file, and one hand-edited character does not cost the switcher
+/// every number it knows.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct CachedFacts {
+    pub schema_version: u32,
+    #[serde(default)]
+    pub facts: BTreeMap<String, serde_json::Value>,
+}
+
+impl CachedFacts {
+    /// The shape above. A file that says anything else was written by another version of
+    /// domux and is not read: the numbers in it come back in one interval anyway.
+    pub const SCHEMA_VERSION: u32 = 1;
+}
+
+/// True while `fact` is inside its time to live at `now`. A stamp that will not parse, and
+/// one that lies ahead of `now`, both leave the age unknown, and an unknown age is not a
+/// fresh one: the fact is stale rather than trusted.
+fn is_fresh_at(fact: &Fact, now: DateTime<Local>) -> bool {
+    fact.fetched_at
+        .parse::<DateTime<chrono::FixedOffset>>()
+        .ok()
+        .and_then(|t| now.signed_duration_since(t).to_std().ok())
+        .is_some_and(|age| fact.is_fresh(age))
+}
+
+/// Whether the object a key is about is still in the model. One rule for the sweep and for
+/// the answer of a fetch that was already running when its workspace went away.
+pub fn scope_lives(key: &FactKey, model: &Model) -> bool {
+    match &key.scope {
+        FactScope::Workspace(id) => model.workspace(id).is_some(),
+        FactScope::Project(id) => model.project(id).is_some(),
+        FactScope::Server => true,
+    }
 }
 
 /// The providers a real server runs. One list, in one file, so adding a provider is one
@@ -132,19 +172,36 @@ impl FactRegistry {
 
     /// Drops everything about a workspace or a project the model no longer holds.
     ///
-    /// Ids are drawn from a 16 bit space and `retire` only remembers the closed ones for as
-    /// long as the server runs, so a workspace deleted in one session can have its id
-    /// redrawn in the next. Without this, the cache would hand the new workspace the deleted
-    /// one's pull request, which is the one thing facts must never do.
+    /// Ids are drawn from a 16 bit space and `retire` only remembers the closed ones while
+    /// the server runs, so a workspace deleted in one run can have its id redrawn in the
+    /// next. Without this, the cache would hand the new workspace the deleted one's pull
+    /// request, which is the one thing facts must never do.
     pub fn forget_deleted(&mut self, model: &Model) {
-        let lives = |key: &FactKey| match &key.scope {
-            FactScope::Workspace(id) => model.workspace(id).is_some(),
-            FactScope::Project(id) => model.project(id).is_some(),
-            FactScope::Server => true,
-        };
+        let lives = |key: &FactKey| scope_lives(key, model);
         self.facts.retain(|k, _| lives(k));
         self.started.retain(|k, _| lives(k));
         self.inflight.retain(lives);
+    }
+
+    /// Drops every fact that is past its time to live and returns what it dropped, so the
+    /// caller can say the value is gone.
+    ///
+    /// A fact is what domux observed, and an observation has an age. Without this sweep the
+    /// time to live would only ever be read when the cache file is loaded, and a pull
+    /// request seen an hour ago would be drawn exactly like one seen a second ago (principle
+    /// 4). The provider whose answer stopped arriving is the case this covers: one that
+    /// answers, even with an error, clears or replaces its fact by itself.
+    pub fn expire(&mut self, now: DateTime<Local>) -> Vec<FactKey> {
+        let stale: Vec<FactKey> = self
+            .facts
+            .iter()
+            .filter(|(_, f)| !is_fresh_at(f, now))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in &stale {
+            self.facts.remove(key);
+        }
+        stale
     }
 
     /// Which provider and target pairs to start now. A target already in flight is skipped,
@@ -184,15 +241,23 @@ impl FactRegistry {
     /// architecture spec section 5). Atomic, through the same writer the state file uses.
     pub fn save_cache(&self, path: &Path, names: &[&str]) {
         // Ordered, so the file only changes when a fact does.
-        let kept: BTreeMap<String, &Fact> = self
+        let mut facts = BTreeMap::new();
+        for (key, fact) in self
             .facts
             .iter()
             .filter(|(k, _)| names.contains(&k.name.as_str()))
-            .map(|(k, f)| (k.to_string(), f))
-            .collect();
-        let text = serde_json::to_string_pretty(
-            &serde_json::json!({ "schema_version": 1, "facts": kept }),
-        )
+        {
+            match serde_json::to_value(fact) {
+                Ok(value) => {
+                    facts.insert(key.to_string(), value);
+                }
+                Err(e) => tracing::warn!("{key} could not be cached: {e}"),
+            }
+        }
+        let text = serde_json::to_string_pretty(&CachedFacts {
+            schema_version: CachedFacts::SCHEMA_VERSION,
+            facts,
+        })
         .unwrap_or_else(|_| "{}".into());
         if let Err(e) = crate::persist::write_atomic(path, &text) {
             tracing::warn!(
@@ -209,31 +274,29 @@ impl FactRegistry {
         let Ok(text) = std::fs::read_to_string(path) else {
             return;
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Ok(cache) = serde_json::from_str::<CachedFacts>(&text) else {
             tracing::warn!(
                 "the pull request cache at {} is not readable; starting without it",
                 path.display()
             );
             return;
         };
-        let Some(map) = value.get("facts").and_then(|f| f.as_object()) else {
+        if cache.schema_version != CachedFacts::SCHEMA_VERSION {
+            tracing::warn!(
+                "the pull request cache at {} is version {} and this server writes version {}; starting without it",
+                path.display(),
+                cache.schema_version,
+                CachedFacts::SCHEMA_VERSION
+            );
             return;
-        };
-        for (key, fact) in map {
-            let (Ok(key), Ok(fact)) = (
-                key.parse::<FactKey>(),
-                serde_json::from_value::<Fact>(fact.clone()),
-            ) else {
+        }
+        for (key, fact) in cache.facts {
+            let (Ok(key), Ok(fact)) =
+                (key.parse::<FactKey>(), serde_json::from_value::<Fact>(fact))
+            else {
                 continue;
             };
-            // A stamp that will not parse, and one from the future, both leave the age
-            // unknown. An unknown age is not a fresh one: the entry is dropped.
-            let age = fact
-                .fetched_at
-                .parse::<DateTime<chrono::FixedOffset>>()
-                .ok()
-                .and_then(|t| now.signed_duration_since(t).to_std().ok());
-            if age.is_some_and(|age| fact.is_fresh(age)) {
+            if is_fresh_at(&fact, now) {
                 self.facts.insert(key, fact);
             }
         }
@@ -650,7 +713,7 @@ mod tests {
         assert_eq!(
             r.get(&FactKey::workspace(&slot, FACT_PR)),
             None,
-            "a deleted workspace's id can be redrawn in a later session, and the workspace that draws it must not inherit this pull request"
+            "a deleted workspace's id can be redrawn once the server restarts, and the workspace that draws it must not inherit this pull request"
         );
         assert!(r.get(&FactKey::workspace(&main, FACT_PR)).is_some());
         m.remove_project(&pid).unwrap();
@@ -706,6 +769,74 @@ mod tests {
             r.all_for(&slot).len(),
             1,
             "another workspace's facts are not this workspace's"
+        );
+    }
+
+    /// A fact is an observation and an observation has an age. Nothing on the read path
+    /// takes a clock, so the sweep is what keeps an old value off the screen.
+    #[test]
+    fn a_fact_past_its_time_to_live_is_dropped_and_named() {
+        let m = model_with_two_workspaces();
+        let w = m.projects[0].workspaces[0].id.clone();
+        let key = FactKey::workspace(&w, FACT_PR);
+        let mut r = FactRegistry::new();
+        r.set(key.clone(), Some(a_pull_request()));
+        assert!(r.expire(at(5)).is_empty(), "inside its ten minutes");
+        assert!(r.get(&key).is_some());
+        assert_eq!(
+            r.expire(at(20)),
+            vec![key.clone()],
+            "the sweep says what it dropped, so the screen can be told"
+        );
+        assert_eq!(
+            r.get(&key),
+            None,
+            "an hour old open pull request is not handed back as if it had just arrived"
+        );
+    }
+
+    #[test]
+    fn a_fact_whose_stamp_cannot_be_read_or_lies_ahead_of_now_is_not_fresh() {
+        let m = model_with_two_workspaces();
+        let w = m.projects[0].workspaces[0].id.clone();
+        let mut r = FactRegistry::new();
+        r.set(
+            FactKey::workspace(&w, "unreadable"),
+            Some(Fact::new("x", None, "not a time", Duration::from_secs(600))),
+        );
+        r.set(
+            FactKey::workspace(&w, "ahead"),
+            Some(Fact::new(
+                "y",
+                None,
+                "2026-09-05T10:30:00+01:00",
+                Duration::from_secs(600),
+            )),
+        );
+        assert_eq!(
+            r.expire(at(5)).len(),
+            2,
+            "an unknown age is not a fresh one, on the read path as on the load path"
+        );
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn a_cache_written_by_another_schema_version_is_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pr-cache.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":2,"facts":{
+                "w_0001/pr":{"text":"PR#1","fetched_at":"2026-09-05T10:00:00+01:00","ttl":600}
+            }}"#,
+        )
+        .unwrap();
+        let mut r = FactRegistry::new();
+        r.load_cache(&path, at(5));
+        assert!(
+            r.is_empty(),
+            "a file in a shape this server does not know is not guessed at"
         );
     }
 

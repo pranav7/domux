@@ -423,6 +423,9 @@ impl Core {
                 let _ = reply.send(response);
             }
             CoreMsg::FactFetched { key, fact } => {
+                // A workspace removed while its provider was still running: the answer is
+                // about nothing the model holds, so it is dropped rather than put back.
+                let fact = fact.filter(|_| crate::facts::scope_lives(&key, &self.model));
                 let present = fact.is_some();
                 let changed = shown(self.facts.get(&key)) != shown(fact.as_ref());
                 self.facts.set(key.clone(), fact);
@@ -881,20 +884,41 @@ impl Core {
     fn start_due_fetches(&mut self) {
         self.facts.forget_deleted(&self.model);
         let now = self.deps.clock.now();
+        // What domux observed an hour ago is not what is true now. A fact past its time to
+        // live goes, and the screen is told, rather than an old pull request state being
+        // drawn like a current one.
+        for key in self.facts.expire(now) {
+            self.pending_events.push(Event::FactUpdated {
+                key,
+                present: false,
+            });
+            self.view_dirty = true;
+        }
         for (provider, target) in self.facts.due(&self.model, now) {
             let tx = self.core_tx.clone();
-            tokio::task::spawn_blocking(move || {
-                let key = target.key.clone();
-                let fact = match provider.fetch(&target) {
+            let key = target.key.clone();
+            let named = key.clone();
+            let fetch = tokio::task::spawn_blocking(move || match provider.fetch(&target) {
+                Ok(fact) => fact,
+                // An error and an absence render the same, so only the log tells them
+                // apart. Nothing is guessed in either case.
+                Err(reason) => {
+                    tracing::debug!("{named} is absent: {reason}");
+                    None
+                }
+            });
+            // One message for every fetch, whatever happened inside it. A provider that
+            // panics would otherwise leave its key in flight for the life of the server,
+            // and its last value on the screen with nothing left to replace it.
+            tokio::spawn(async move {
+                let fact = match fetch.await {
                     Ok(fact) => fact,
-                    // An error and an absence render the same, so only the log tells them
-                    // apart. Nothing is guessed in either case.
-                    Err(reason) => {
-                        tracing::debug!("{key} is absent: {reason}");
+                    Err(e) => {
+                        tracing::warn!("the provider for {key} did not finish: {e}");
                         None
                     }
                 };
-                let _ = tx.blocking_send(CoreMsg::FactFetched { key, fact });
+                let _ = tx.send(CoreMsg::FactFetched { key, fact }).await;
             });
         }
     }
@@ -1306,6 +1330,7 @@ mod tests {
     use crate::process::FakeInspector;
     use crate::{load_config, FixedClock};
     use domux_core::api::NoParams;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn core(dir: &Path) -> Core {
         core_with_providers(dir, Vec::new()).0
@@ -1746,13 +1771,35 @@ mod tests {
         assert!(core.view_dirty);
     }
 
+    /// Fetched at the instant every test core's clock reads, so it is inside its time to
+    /// live for as long as the test runs.
     fn a_fact(text: &str, state: Option<FactState>) -> Fact {
+        stamped(text, state, "2026-09-04T14:32:00")
+    }
+
+    fn stamped(text: &str, state: Option<FactState>, at: &str) -> Fact {
         Fact::new(
             text,
             state,
-            "2026-09-05T10:00:00+01:00",
+            FixedClock::at(at).0.to_rfc3339(),
             Duration::from_secs(600),
         )
+    }
+
+    /// The next fact answer on the core's own channel. A bound on failure, not a wait: it
+    /// returns the moment the message lands.
+    async fn next_answer(rx: &mut mpsc::Receiver<CoreMsg>) -> (FactKey, Option<Fact>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let CoreMsg::FactFetched { key, fact } =
+                    rx.recv().await.expect("the core channel stays open")
+                {
+                    return (key, fact);
+                }
+            }
+        })
+        .await
+        .expect("the answer comes back")
     }
 
     /// The first workspace of the core's implicit project.
@@ -1817,11 +1864,10 @@ mod tests {
         // The same answer, looked up a minute later.
         core.handle(CoreMsg::FactFetched {
             key: key.clone(),
-            fact: Some(Fact::new(
+            fact: Some(stamped(
                 "PR#212",
                 Some(FactState::Open),
-                "2026-09-05T10:01:00+01:00",
-                Duration::from_secs(600),
+                "2026-09-04T14:33:00",
             )),
         });
         assert_eq!(
@@ -2044,10 +2090,9 @@ mod tests {
         }
     }
 
-    /// Nothing that shells out runs inside the core task: one slow `gh` there would stop
-    /// every frame in every pane.
+    /// What a provider found comes back to the core as a message and nothing else.
     #[tokio::test]
-    async fn a_provider_runs_off_the_core_task_and_its_answer_comes_back_as_a_message() {
+    async fn a_providers_answer_comes_back_to_the_core_as_a_message() {
         let dir = tempfile::tempdir().unwrap();
         let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
         let (mut core, mut rx) = core_with_providers(
@@ -2061,30 +2106,221 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         core.model.add_git_project(repo, "main".into()).unwrap();
         core.tick();
-        // The gate is still shut, so the provider has not returned. If `tick` had run it
-        // inline, it could not have got here, and its answer would already be queued.
-        while let Ok(msg) = rx.try_recv() {
-            assert!(
-                !matches!(msg, CoreMsg::FactFetched { .. }),
-                "the fetch is still running on a blocking task"
-            );
-        }
         gate_tx.send(()).unwrap();
-        let answer = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match rx.recv().await.expect("the core channel stays open") {
-                    CoreMsg::FactFetched { key, fact } => return (key, fact),
-                    _ => continue,
-                }
-            }
-        })
-        .await
-        .expect("the answer comes back");
-        assert_eq!(answer.0.name, domux_core::facts::FACT_BRANCH);
+        let (key, fact) = next_answer(&mut rx).await;
+        assert_eq!(key.name, domux_core::facts::FACT_BRANCH);
         assert_eq!(
-            answer.1.map(|f| f.text),
+            fact.map(|f| f.text),
             Some("feat/x".to_string()),
             "what the provider found, carried back to the core as a message"
+        );
+    }
+
+    /// A provider that has entered `fetch` and not left it.
+    struct Blocking {
+        entered: Arc<AtomicBool>,
+        finished: Arc<AtomicBool>,
+        gate: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl crate::facts::FactProvider for Blocking {
+        fn name(&self) -> &str {
+            domux_core::facts::FACT_BRANCH
+        }
+        fn interval(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn scope(&self) -> crate::facts::ProviderScope {
+            crate::facts::ProviderScope::Workspace
+        }
+        fn fetch(&self, _t: &crate::facts::FactTarget) -> Result<Option<Fact>, String> {
+            self.entered.store(true, Ordering::SeqCst);
+            // The test drops the sender rather than waiting this out, so the pass path never
+            // reaches five seconds. The bound is there so a fetch that ran on the core task
+            // fails the assertion below instead of hanging the suite.
+            let _ = self
+                .gate
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5));
+            self.finished.store(true, Ordering::SeqCst);
+            Ok(None)
+        }
+    }
+
+    /// The milestone's central constraint: nothing that shells out runs inside the core
+    /// task, because one slow `gh` there stops every frame in every pane. The ordering is
+    /// what proves it. `tick` returned, and the provider it started has not come out of
+    /// `fetch`; running the fetch on the core task cannot produce that state, because `tick`
+    /// could only have returned after `fetch` did.
+    #[tokio::test]
+    async fn tick_returns_while_a_provider_is_still_inside_fetch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let entered = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let (mut core, _rx) = core_with_providers(
+            dir.path(),
+            vec![Arc::new(Blocking {
+                entered: entered.clone(),
+                finished: finished.clone(),
+                gate: Mutex::new(gate_rx),
+            })],
+        );
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        core.model.add_git_project(repo, "main".into()).unwrap();
+        core.tick();
+        // Wait for the condition rather than a duration: the fetch has started somewhere.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !entered.load(Ordering::SeqCst) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(
+            entered.load(Ordering::SeqCst),
+            "the provider was started at all"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "tick returned while the provider was still inside fetch, so fetch did not run on the core task"
+        );
+        // Let the blocking thread go, so the runtime can shut down at once.
+        drop(gate_tx);
+    }
+
+    /// A provider that panics.
+    struct Panicky {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::facts::FactProvider for Panicky {
+        fn name(&self) -> &str {
+            domux_core::facts::FACT_BRANCH
+        }
+        fn interval(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn scope(&self) -> crate::facts::ProviderScope {
+            crate::facts::ProviderScope::Workspace
+        }
+        fn fetch(&self, _t: &crate::facts::FactTarget) -> Result<Option<Fact>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("this provider panics on purpose");
+        }
+    }
+
+    /// Task 9 parses what `gh` printed, so a panic inside a fetch is not hypothetical. The
+    /// answer that never arrives is the one failure that leaves a value on the screen with
+    /// nothing left to replace it, so every fetch reports one way or the other.
+    ///
+    /// The panic message this prints on stderr is this test's own.
+    #[tokio::test]
+    async fn a_provider_that_panics_leaves_the_fact_absent_and_is_tried_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (mut core, mut rx) = core_with_providers(
+            dir.path(),
+            vec![Arc::new(Panicky {
+                calls: calls.clone(),
+            })],
+        );
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let (_, w, _) = core.model.add_git_project(repo, "main".into()).unwrap();
+        let key = FactKey::workspace(&w, domux_core::facts::FACT_BRANCH);
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("feat/x", None)),
+        });
+        core.tick();
+        let (answered, fact) = next_answer(&mut rx).await;
+        assert_eq!(answered, key);
+        assert_eq!(
+            fact, None,
+            "a provider that did not finish reports an absence, not the value it had before"
+        );
+        core.handle(CoreMsg::FactFetched {
+            key: answered,
+            fact,
+        });
+        assert_eq!(core.facts.get(&key), None, "and the fact is not frozen");
+        core.tick();
+        assert_eq!(next_answer(&mut rx).await.0, key);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "the target is looked at again rather than left in flight for the life of the server"
+        );
+    }
+
+    /// What domux observed an hour ago is not what is true now.
+    #[test]
+    fn a_tick_drops_a_fact_past_its_time_to_live_and_says_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        core.pending_events.clear();
+        core.view_dirty = false;
+        core.tick();
+        assert_eq!(
+            core.facts.get(&key).map(|f| f.text.as_str()),
+            Some("PR#212"),
+            "inside its ten minutes it stands"
+        );
+        assert_eq!(fact_events(&core), Vec::new());
+        // The same number, fetched an hour before this server's clock reads.
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(stamped(
+                "PR#212",
+                Some(FactState::Open),
+                "2026-09-04T13:32:00",
+            )),
+        });
+        core.pending_events.clear();
+        core.view_dirty = false;
+        core.tick();
+        assert_eq!(
+            core.facts.get(&key),
+            None,
+            "an hour old open pull request is not drawn like one seen a second ago"
+        );
+        assert_eq!(
+            fact_events(&core),
+            vec![Event::FactUpdated {
+                key,
+                present: false
+            }],
+            "and the screen is told, or the number stays up until something else redraws"
+        );
+        assert!(core.view_dirty);
+    }
+
+    #[test]
+    fn an_answer_about_a_workspace_that_is_gone_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let key = FactKey::workspace(&first_workspace(&core), domux_core::facts::FACT_PR);
+        let project = core.model.projects[0].id.clone();
+        core.model.remove_project(&project).unwrap();
+        core.pending_events.clear();
+        core.handle(CoreMsg::FactFetched {
+            key: key.clone(),
+            fact: Some(a_fact("PR#212", Some(FactState::Open))),
+        });
+        assert_eq!(
+            core.facts.get(&key),
+            None,
+            "the workspace went away while its provider was running, so its answer is about nothing"
+        );
+        assert_eq!(
+            fact_events(&core),
+            Vec::new(),
+            "and nothing announces a fact that was never recorded"
         );
     }
 }
