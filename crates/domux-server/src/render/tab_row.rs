@@ -7,11 +7,11 @@
 //! nothing to say it did (principle 6).
 
 use crate::render::boxed::put_within;
-use crate::render::theme;
-use domux_core::model::{PromptKind, Tab, TextInput};
+use crate::render::{theme, RenderInput};
+use domux_core::model::{Focus, Overlay, PromptKind, Tab, TextInput};
 use domux_core::text::{display_width, sanitize_for_display};
 use ratatui::buffer::Buffer;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 /// The cells an elided end takes: `…` and the separator after it.
 const ELISION: usize = 2;
@@ -97,11 +97,23 @@ impl TabRow {
         self.natural().min(anchor)
     }
 
-    /// Draws the row from `x` on row `y` into `budget` cells, and returns the x after the last
-    /// cell it drew.
-    pub fn draw(&self, x: u16, y: u16, budget: usize, buf: &mut Buffer) -> u16 {
-        let sep = Style::default().fg(theme::SURFACE0).bg(theme::MANTLE);
-        let plus_style = Style::default().fg(theme::SURFACE2).bg(theme::MANTLE);
+    /// Draws the row from `x` on row `y` into `budget` cells over a background of `bg`, and
+    /// returns the x after the last cell it drew.
+    ///
+    /// `bg` is the row's own background, not the cells': the full-width top bar sits on
+    /// mantle and the row on the panes sits on nothing (`Color::Reset`). It is applied here
+    /// rather than baked into the cells so that a cell with a background of its own - the
+    /// accent fill on the tab that owns the keys - keeps it either way.
+    pub fn draw(&self, x: u16, y: u16, budget: usize, bg: Color, buf: &mut Buffer) -> u16 {
+        // Explicit rather than left to `put_within`, which patches: a wide grapheme blanks
+        // the cell under its second half, and a style with no background would leave that
+        // cell showing through the bar.
+        let on_row = |style: Style| match style.bg {
+            Some(_) => style,
+            None => style.bg(bg),
+        };
+        let sep = on_row(Style::default().fg(theme::SURFACE0));
+        let plus_style = on_row(Style::default().fg(theme::SURFACE2));
         if budget == 0 {
             return x;
         }
@@ -163,7 +175,7 @@ impl TabRow {
             // instead of ending wherever the clip fell.
             let mut cx = x;
             for (text, style) in &self.cells[anchor].runs {
-                cx = put_within(buf, cx, y, last_x.saturating_sub(1), text, *style);
+                cx = put_within(buf, cx, y, last_x.saturating_sub(1), text, on_row(*style));
             }
             return put_within(buf, cx, y, last_x, "…", sep);
         }
@@ -174,7 +186,7 @@ impl TabRow {
         }
         for cell in &self.cells[lo..hi] {
             for (text, style) in &cell.runs {
-                cx = put_within(buf, cx, y, last_x, text, *style);
+                cx = put_within(buf, cx, y, last_x, text, on_row(*style));
             }
             cx = put_within(buf, cx, y, last_x, "│", sep);
         }
@@ -224,6 +236,8 @@ fn cell_for(
         Some(name) => format!(" {} {} ", i + 1, name),
         None => format!(" {} ", i + 1),
     };
+    // Only the accent fill names a background. The other two take the row's, whatever the
+    // row this cell is drawn into turns out to be: see `TabRow::draw`.
     let style = match (i == current, pane_focus) {
         (true, true) => Style::default()
             .fg(theme::BASE)
@@ -231,9 +245,8 @@ fn cell_for(
             .add_modifier(Modifier::BOLD),
         (true, false) => Style::default()
             .fg(theme::TEXT)
-            .bg(theme::MANTLE)
             .add_modifier(Modifier::BOLD),
-        (false, _) => Style::default().fg(theme::OVERLAY1).bg(theme::MANTLE),
+        (false, _) => Style::default().fg(theme::OVERLAY1),
     };
     TabCell::new(vec![(label, style)])
 }
@@ -262,4 +275,41 @@ fn prompt_cell(number: usize, input: &TextInput) -> TabCell {
         (rest, fill),
         (" ".to_string(), fill),
     ])
+}
+
+/// The tab row at the top of the workpanel, with the right end's pieces at its end.
+///
+/// It sits on the panes: no background of its own and no rule under it, so the sidebar's
+/// column and the workpanel read as two things rather than one banded screen (interface
+/// spec 4.2). The cells it shares with the right end are shared by the same rule the
+/// full-width bar uses, so the clock gives way to the tabs in one place, not two.
+pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
+    let area = crate::render::workpanel_area(input.view);
+    let Some(ws) = input.model.workspace(&input.view.workspace) else {
+        return;
+    };
+    let current = ws
+        .tabs
+        .iter()
+        .position(|t| t.id == input.view.tab)
+        .unwrap_or(0);
+    let prompt = match &input.view.overlay {
+        Some(Overlay::Prompt(p)) => Some(p),
+        _ => None,
+    };
+    let row = TabRow::new(
+        &ws.tabs,
+        current,
+        prompt,
+        matches!(input.view.focus, Focus::Pane(_)),
+    );
+    crate::render::top_bar::draw_tabs_and_right(
+        input,
+        &row,
+        area.x,
+        0,
+        area.x + area.width,
+        Color::Reset,
+        buf,
+    );
 }

@@ -34,10 +34,15 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
 /// all rather than one drawn outside itself.
 pub fn frame(title: &str, width: u16, height: u16, buf: &mut Buffer) -> Rect {
     let screen = buf.area;
-    let workpanel = crate::render::workpanel_area(Size {
-        cols: screen.width,
-        rows: screen.height,
-    });
+    // The whole width, sidebar or no sidebar: an overlay is the one thing on the screen the
+    // keys go to, so it is centred on the screen and covers the sidebar like anything else.
+    let workpanel = crate::render::workpanel_of(
+        Size {
+            cols: screen.width,
+            rows: screen.height,
+        },
+        false,
+    );
     let panel = Rect::new(
         screen.x + workpanel.x,
         screen.y + workpanel.y,

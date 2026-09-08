@@ -10,7 +10,7 @@ use domux_core::ids::TabId;
 use domux_core::model::{ConfirmKind, Focus, Overlay};
 use domux_core::text::{display_width, truncate_to_width};
 use ratatui::buffer::Buffer;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 /// A run of text with one style, for the right end.
 pub struct Piece {
@@ -105,25 +105,41 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         Some(Overlay::Prompt(p)) => Some(p),
         _ => None,
     };
-    // The room the tab row and the right end share, and how they share it.
-    //
-    // The last column is not part of it. An empty cell there keeps the bar reading as a bar
-    // rather than as text pressed against the screen edge, so it comes off the top whichever of
-    // the two would otherwise have reached it.
-    //
-    // Of what is left, the tab row keeps enough for the current tab, which has to be visible on
-    // every frame (principle 2), and one more cell is the gap that keeps the right end off the
-    // tab row - taken out of the tab row's drawing budget below, so it is a blank cell whichever
-    // of the two wins the arithmetic here.
-    // The right end takes what it wants from the rest and elides into it rather than running
-    // off the edge (principle 6) - and unless what it shows is the clock, it keeps a floor of
-    // its own even when that leaves the tab row less than its own: a message the reader has to
-    // act on gives way to a mark, never to nothing (principle 9).
-    let room = right_edge.saturating_sub(x).saturating_sub(1) as usize;
     // Whether the keys go to a pane rather than to a prompt or an overlay. It decides which run
     // of cells is accent-filled: see `tab_row::cell_for`.
     let pane_focus = matches!(input.view.focus, Focus::Pane(_));
     let tabs = TabRow::new(&ws.tabs, current, prompt, pane_focus);
+    draw_tabs_and_right(input, &tabs, x, y, right_edge, bg, buf);
+}
+
+/// Shares the cells from `x` up to `x_max` between the tab row and the right end, and draws
+/// both. The full-width top bar and the tab row on the panes call this, so the two place the
+/// same pieces by the same rule rather than by two rules that can drift apart.
+///
+/// How they share it:
+///
+/// The last column is not part of it. An empty cell there keeps the row reading as a row
+/// rather than as text pressed against the screen edge, so it comes off the top whichever of
+/// the two would otherwise have reached it.
+///
+/// Of what is left, the tab row keeps enough for the current tab, which has to be visible on
+/// every frame (principle 2), and one more cell is the gap that keeps the right end off the
+/// tab row - taken out of the tab row's drawing budget below, so it is a blank cell whichever
+/// of the two wins the arithmetic here.
+/// The right end takes what it wants from the rest and elides into it rather than running
+/// off the edge (principle 6) - and unless what it shows is the clock, it keeps a floor of
+/// its own even when that leaves the tab row less than its own: a message the reader has to
+/// act on gives way to a mark, never to nothing (principle 9).
+pub fn draw_tabs_and_right(
+    input: &RenderInput,
+    tabs: &TabRow,
+    x: u16,
+    y: u16,
+    x_max: u16,
+    bg: Color,
+    buf: &mut Buffer,
+) {
+    let room = x_max.saturating_sub(x).saturating_sub(1) as usize;
     let end = right_end(input);
     let wanted: usize = end.pieces.iter().map(|p| display_width(&p.text)).sum();
     let floor = if end.actionable { RIGHT_FLOOR } else { 0 };
@@ -136,15 +152,37 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // abuts the right end and the two read as one run of text - at the narrowest widths, two
     // elision marks running together (`indeed…… domux…`).
     let gap = usize::from(right > 0);
-    tabs.draw(x, y, tabs_budget.saturating_sub(gap), buf);
-    let last_x = right_edge.saturating_sub(2);
-    let drawn = fit(squeeze(end.pieces, right), right);
+    tabs.draw(x, y, tabs_budget.saturating_sub(gap), bg, buf);
+    draw_pieces(end, x + (room - right) as u16, y, x_max, bg, buf);
+}
+
+/// The right end alone, flushed to `x_max` and never starting left of `x_min`. `top_bar::draw`
+/// reaches it through `draw_tabs_and_right`, which works out `x_min` from what the tab row
+/// needs; a caller that has already settled the room calls this directly.
+pub fn draw_right(
+    input: &RenderInput,
+    x_min: u16,
+    y: u16,
+    x_max: u16,
+    bg: Color,
+    buf: &mut Buffer,
+) {
+    draw_pieces(right_end(input), x_min, y, x_max, bg, buf);
+}
+
+fn draw_pieces(end: RightEnd, x_min: u16, y: u16, x_max: u16, bg: Color, buf: &mut Buffer) {
+    let room = x_max.saturating_sub(x_min).saturating_sub(1) as usize;
+    let drawn = fit(squeeze(end.pieces, room), room);
     // Flush to the right, on the width the pieces actually came back with rather than on the
     // cells reserved for them: an elastic piece can shrink below its reservation, and a notice
     // that floats short of the edge reads as a label dropped mid-bar rather than as the end of
     // the bar.
     let width: usize = drawn.iter().map(|p| display_width(&p.text)).sum();
-    let mut cx = x + room.saturating_sub(width) as u16;
+    let last_x = x_max.saturating_sub(2);
+    let mut cx = x_max
+        .saturating_sub(1)
+        .saturating_sub(width.min(u16::MAX as usize) as u16)
+        .max(x_min);
     for p in drawn {
         cx = put_within(buf, cx, y, last_x, &p.text, p.style.bg(bg));
     }

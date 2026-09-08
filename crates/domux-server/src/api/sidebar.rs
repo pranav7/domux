@@ -1,0 +1,86 @@
+//! `sidebar.toggle`, `show` and `hide`: view methods that also set the remembered state.
+
+use super::{ok, Ctx};
+use domux_core::api::{ApiError, ClientParams, Event, SidebarResult};
+use domux_core::ids::{ClientId, PaneId};
+use domux_core::model::{Focus, RegionKind};
+use serde_json::Value;
+
+/// Shows the sidebar when it is hidden and hides it when it is shown.
+///
+/// The remembered state decides, not what is on the screen. A sidebar that hid itself
+/// because the screen is narrow is still open, so the key that follows hides it rather than
+/// showing a sidebar the screen has no room for (interface spec 12.1).
+pub fn toggle(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
+    let open = !ctx.model.sidebar_open;
+    set(ctx, open)
+}
+
+pub fn show(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
+    set(ctx, true)
+}
+
+pub fn hide(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
+    set(ctx, false)
+}
+
+/// Sets the one remembered sidebar state and puts it on every attached client.
+///
+/// The state is the server's, not the asking client's: `Model::sidebar_open` is a single
+/// value, it is what the state file keeps, and it is what a client attaching later starts
+/// in (roadmap decision 4). So a client that toggled it does not end up disagreeing with a
+/// client that did not, and the model and the views cannot drift apart. What stays each
+/// client's own is whether its screen is wide enough to draw the sidebar it has open:
+/// `ClientView::sidebar_visible` answers that per client (interface spec 12.1).
+///
+/// `open` is what the reader asked for; `visible` is what the asking screen has room to
+/// draw.
+fn set(ctx: &mut Ctx, open: bool) -> Result<Value, ApiError> {
+    let client = ctx.view()?;
+    // Before anything is set, so a call naming a client that is not attached changes
+    // nothing rather than half of it.
+    if ctx.model.client(&client).is_none() {
+        return Err(ApiError::not_found(format!(
+            "client {client} is not attached"
+        )));
+    }
+    ctx.model.set_sidebar_open(open);
+    // Each client hands the keys back to its own tab's pane, so the pane the keys land in
+    // is the one that client is looking at.
+    let handoff: Vec<(ClientId, Option<PaneId>)> = ctx
+        .model
+        .clients
+        .iter()
+        .map(|view| {
+            (
+                view.id.clone(),
+                ctx.model
+                    .client_tab(&view.id)
+                    .map(|tab| tab.focused.clone()),
+            )
+        })
+        .collect();
+    for (id, pane) in handoff {
+        let Some(view) = ctx.model.client_mut(&id) else {
+            continue;
+        };
+        view.sidebar_open = open;
+        if !open && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects)) {
+            // Hiding the box the keys were in gives them back to the pane, so no frame is
+            // drawn with the keys in a region nothing on the screen marks (principle 2).
+            if let Some(pane) = pane {
+                view.focus = Focus::Pane(pane);
+            }
+        }
+    }
+    let visible = ctx
+        .model
+        .client(&client)
+        .map(|view| view.sidebar_visible())
+        .unwrap_or(false);
+    // `SidebarToggled` is a structural event, so publishing it is what writes the new value
+    // out to the state file.
+    ctx.events.push(Event::SidebarToggled { client, open });
+    ctx.view_dirty = true;
+    ok(SidebarResult { open, visible })
+}

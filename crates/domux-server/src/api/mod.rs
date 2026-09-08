@@ -6,6 +6,7 @@ pub mod config;
 pub mod focus;
 pub mod pane;
 pub mod server;
+pub mod sidebar;
 pub mod tab;
 
 use crate::client::ClientConn;
@@ -105,7 +106,7 @@ impl Ctx<'_> {
     /// The workpanel area of the smallest client on `tab`, or 80x24 when none shows it.
     /// The same rectangle `render::draw_panes` draws and `Core::sync_pane_sizes` sizes for.
     pub fn smallest_area(&self, tab: &TabId) -> Rect {
-        crate::render::workpanel_area(crate::render::smallest_size(self.model, tab, UNVIEWED_SIZE))
+        crate::render::tab_workpanel(self.model, tab, UNVIEWED_SIZE)
     }
 
     /// A pane as the API reports it. `cols` and `rows` are its emulator's, which is the
@@ -188,12 +189,14 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         FocusLast(p) => focus::last(ctx, p),
         FocusRegion(p) => focus::region(ctx, p),
         FocusPane(p) => focus::pane(ctx, p),
+        SidebarToggle(p) => sidebar::toggle(ctx, p),
+        SidebarShow(p) => sidebar::show(ctx, p),
+        SidebarHide(p) => sidebar::hide(ctx, p),
         // --- M2 stubs: placeholders for Tasks 12 to 19, not real handlers. ---
         ProjectList(_) | ProjectAdd(_) | ProjectRemove(_) | WorkspaceList(_)
         | WorkspaceCreate(_) | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
         | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_) | SwitcherOpen(_)
-        | SwitcherClose(_) | SidebarToggle(_) | SidebarShow(_) | SidebarHide(_)
-        | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
+        | SwitcherClose(_) | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
             Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
         }
     }

@@ -511,7 +511,9 @@ impl Core {
             workspace: workspace.clone(),
             tab,
             focus: Focus::Pane(focused),
-            sidebar_open: false,
+            // The remembered state, so a new client opens the screen the last one left
+            // (roadmap decision 4).
+            sidebar_open: self.model.sidebar_open,
             overlay: None,
             chord: None,
             filter: String::new(),
@@ -837,7 +839,7 @@ impl Core {
         let Some(tab) = self.model.tab(&loc.tab) else {
             return fallback;
         };
-        let area = render::workpanel_area(render::smallest_size(&self.model, &loc.tab, fallback));
+        let area = render::tab_workpanel(&self.model, &loc.tab, fallback);
         domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
             .into_iter()
             .find(|(p, _)| p == pane)
@@ -1213,7 +1215,7 @@ impl Core {
         // nobody can see. When every client is below the minimum, leave the existing pane size
         // alone: a resize would churn its program for no visible result. `smallest_size` still
         // raises an absent current size to the minimum, rather than adopting a tiny screen.
-        // rectangle itself comes from `render::smallest_size`, the same function the
+        // rectangle itself comes from `render::tab_workpanel`, the same function the
         // renderer lays the boxes out with, so a pane's program and every client agree on
         // its size. The recorded size is only the fallback for a tab without another drawing
         // client, which cannot happen here: each entry was made from a drawing client.
@@ -1229,11 +1231,10 @@ impl Core {
         }
         let mut events = Vec::new();
         for (tab_id, fallback) in viewed {
-            let size = render::smallest_size(&self.model, &tab_id, fallback);
+            let area = render::tab_workpanel(&self.model, &tab_id, fallback);
             let Some(tab) = self.model.tab(&tab_id) else {
                 continue;
             };
-            let area = render::workpanel_area(size);
             for (pane, rect) in
                 domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
             {
@@ -1475,9 +1476,6 @@ mod tests {
         ("workspace.resume", r#"{"workspace":"w"}"#),
         ("switcher.open", "{}"),
         ("switcher.close", "{}"),
-        ("sidebar.toggle", "{}"),
-        ("sidebar.show", "{}"),
-        ("sidebar.hide", "{}"),
         ("list.down", "{}"),
         ("list.up", "{}"),
         ("list.activate", "{}"),
