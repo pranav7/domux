@@ -5,6 +5,8 @@
 //! they name, in those tasks: a `pub mod branch;` here with no `branch.rs` beside it is a
 //! compile error, and this task has to end with a green workspace build.
 
+pub mod branch;
+
 use chrono::{DateTime, Local};
 use domux_core::facts::{Fact, FactKey, FactScope};
 use domux_core::ids::WorkspaceId;
@@ -62,10 +64,10 @@ pub fn scope_lives(key: &FactKey, model: &Model) -> bool {
 }
 
 /// The providers a real server runs. One list, in one file, so adding a provider is one
-/// edit and no call site changes. Task 8 puts the branch provider in it and Task 9 the
-/// pull request provider; it is empty until then, because their modules do not exist yet.
+/// edit and no call site changes. The branch provider goes first because the pull request
+/// provider (Task 9) reads its answer off the target rather than running git again.
 pub fn default_providers() -> Vec<Arc<dyn FactProvider>> {
-    Vec::new()
+    vec![Arc::new(branch::BranchProvider)]
 }
 
 /// What a provider watches. The registry walks the model and builds one target per object.

@@ -46,6 +46,9 @@ pub struct HarnessOptions {
     pub project_root: Option<PathBuf>,
     /// What the fake inspector reports as every pane's foreground command. Default `sh`.
     pub foreground: Option<String>,
+    /// Who observes the facts. Default empty, matching `ServerOptions.providers`: a test
+    /// asks for a provider by name here rather than shelling out to git or `gh` by default.
+    pub providers: Vec<Arc<dyn crate::facts::FactProvider>>,
 }
 
 impl HarnessOptions {
@@ -58,6 +61,7 @@ impl HarnessOptions {
             state_dir: None,
             project_root: None,
             foreground: None,
+            providers: Vec::new(),
         }
     }
 }
@@ -86,6 +90,7 @@ pub struct Harness {
     config: Config,
     cols: u16,
     rows: u16,
+    providers: Vec<Arc<dyn crate::facts::FactProvider>>,
 }
 
 impl Harness {
@@ -135,6 +140,7 @@ impl Harness {
             config,
             cols: opts.cols,
             rows: opts.rows,
+            providers: opts.providers,
         };
         h.start_server().await;
         h.client = h.attach(opts.cols, opts.rows).await;
@@ -160,7 +166,7 @@ impl Harness {
             state_dir: self.state_dir.clone(),
             config: loaded,
             project_root: self.project_root.clone(),
-            providers: Vec::new(),
+            providers: self.providers.clone(),
             deps: CoreDeps {
                 spawner,
                 inspector,
