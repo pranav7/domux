@@ -134,8 +134,21 @@ impl Ctx<'_> {
 
 /// Every method, one arm each. No catch-all: a method added to the table in
 /// `domux_core::api` fails to compile here until it has a handler.
+///
+/// Deviation from the M2 task 4 plan (see `fed6573`, which removed the catch-all this
+/// comment used to describe): the M2 stub block below restores that catch-all's exact
+/// wording for the 19 methods Task 4 declares, because the M2 plan assumed the removed
+/// catch-all was still here and predicted these methods would answer `unavailable` at run
+/// time rather than fail to build. Tasks 12 to 19 give each of these a real arm above this
+/// comment and delete its own line from the block and from `STILL_UNBUILT` in
+/// `core::tests::only_the_expected_m2_methods_still_answer_unavailable`, which is what
+/// forces the removal rather than relying on someone remembering it. `workspace.resume` is
+/// the one deliberate exception, left for M3; when `STILL_UNBUILT` reads exactly
+/// `["workspace.resume"]`, this class of M2 gap is closed.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
+    // `method.name()` before the match, since the match below moves `method`.
+    let unbuilt = method.name();
     match method {
         ServerInfo(_) => server::info(ctx),
         ServerStop(_) => server::stop(ctx),
@@ -168,6 +181,14 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         FocusLast(p) => focus::last(ctx, p),
         FocusRegion(p) => focus::region(ctx, p),
         FocusPane(p) => focus::pane(ctx, p),
+        // --- M2 stubs: placeholders for Tasks 12 to 19, not real handlers. ---
+        ProjectList(_) | ProjectAdd(_) | ProjectRemove(_) | WorkspaceList(_)
+        | WorkspaceCreate(_) | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
+        | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_) | SwitcherOpen(_)
+        | SwitcherClose(_) | SidebarToggle(_) | SidebarShow(_) | SidebarHide(_)
+        | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
+            Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
+        }
     }
 }
 

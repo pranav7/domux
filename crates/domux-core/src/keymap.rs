@@ -151,6 +151,9 @@ pub struct Keymap {
     pub leader: KeyName,
     pub bindings: Vec<Binding>,
     pub global: Vec<Binding>,
+    /// Keys inside a box with no leader: the Projects box in M2, the Agents box in M3
+    /// (interface spec section 10).
+    pub list: Vec<Binding>,
     pub passthrough_commands: Vec<String>,
     pub passthrough_keys: Vec<KeyName>,
 }
@@ -191,10 +194,24 @@ impl Keymap {
                     }
                 }
             }
+            // The map iterates in key order, which has nothing to do with which key a
+            // config file declared first: a `BTreeMap` does not remember that. When two
+            // keys bind the same action - `j` and `Down` both to `list.down` in the
+            // defaults - a lookup by action (`key_for`, `list_key_for`, `hint_for`) answers
+            // with the first match, so this order is what decides which key a hint shows.
+            // Shortest key first, alphabetically among equal lengths: the plain letter wins
+            // over the named key it duplicates, since a hint reads faster as `j` than
+            // `Down`.
+            out.sort_by(|a, b| {
+                let ak = a.key.to_string();
+                let bk = b.key.to_string();
+                (ak.len(), ak).cmp(&(bk.len(), bk))
+            });
             out
         };
         let bindings = table("keys.bindings", &cfg.bindings);
         let global = table("keys.global", &cfg.global);
+        let list = table("keys.list", &cfg.list);
         let mut passthrough_keys = Vec::new();
         for k in &cfg.passthrough.keys {
             match KeyName::parse(k) {
@@ -209,6 +226,7 @@ impl Keymap {
                 leader,
                 bindings,
                 global,
+                list,
                 passthrough_commands: cfg.passthrough.commands.clone(),
                 passthrough_keys,
             },
@@ -253,6 +271,49 @@ impl Keymap {
             .iter()
             .find(|b| b.action.to_string() == action)
             .map(|b| b.key.to_string())
+    }
+
+    /// The action for a key pressed while a box has focus.
+    pub fn list_for(&self, ev: &KeyEvent) -> Option<&Action> {
+        self.list
+            .iter()
+            .find(|b| b.key.matches(ev))
+            .map(|b| &b.action)
+    }
+
+    /// The configured key for a list action, as hint text: `⏎`, `esc`, `/`, `n`.
+    pub fn list_key_for(&self, action: &str) -> Option<String> {
+        self.list
+            .iter()
+            .find(|b| b.action.to_string() == action)
+            .map(|b| hint_key(&b.key))
+    }
+
+    /// The configured key for an action, as hint text on a surface outside a box:
+    /// `leader b` for a chord, the key itself for a global binding. The word `leader`
+    /// names whatever the leader is; the help overlay prints the leader's own key name.
+    pub fn hint_for(&self, action: &str) -> Option<String> {
+        if let Some(b) = self
+            .bindings
+            .iter()
+            .find(|b| b.action.to_string() == action)
+        {
+            return Some(format!("leader {}", b.key));
+        }
+        self.global
+            .iter()
+            .find(|b| b.action.to_string() == action)
+            .map(|b| b.key.to_string())
+    }
+}
+
+/// How a key reads in a hint: `Enter` is the glyph, `Esc` is the lower-case word, and
+/// everything else prints as it is configured (principle 3).
+pub fn hint_key(key: &KeyName) -> String {
+    match key.to_string().as_str() {
+        "Enter" => "⏎".to_string(),
+        "Esc" => "esc".to_string(),
+        other => other.to_string(),
     }
 }
 
@@ -406,6 +467,65 @@ mod tests {
             let (_, warnings) = Keymap::from_config(&cfg).unwrap();
             assert_eq!(warnings.len(), 1, "{action:?}: {warnings:?}");
         }
+    }
+
+    #[test]
+    fn the_default_keymap_binds_the_m2_actions_and_the_list_table() {
+        let km = Keymap::defaults();
+        let by_action = |a: &str| {
+            km.bindings
+                .iter()
+                .find(|b| b.action.to_string() == a)
+                .map(|b| b.key.to_string())
+        };
+        assert_eq!(by_action("switcher.open").as_deref(), Some("s"));
+        assert_eq!(by_action("sidebar.toggle").as_deref(), Some("b"));
+        assert_eq!(by_action("workspace.rename").as_deref(), Some("N"));
+        assert_eq!(by_action("workspace.clear_name").as_deref(), Some("n"));
+        assert_eq!(
+            km.bindings
+                .iter()
+                .find(|b| b.action.to_string() == "agents.open"),
+            None,
+            "leader a is unbound until M3"
+        );
+        let list = |a: &str| {
+            km.list
+                .iter()
+                .find(|b| b.action.to_string() == a)
+                .map(|b| b.key.to_string())
+        };
+        assert_eq!(list("list.down").as_deref(), Some("j"));
+        assert_eq!(list("list.activate").as_deref(), Some("Enter"));
+        assert_eq!(list("focus.pane").as_deref(), Some("Esc"));
+        assert_eq!(list("workspace.rename").as_deref(), Some("n"));
+        assert_eq!(
+            km.list
+                .iter()
+                .find(|b| b.action.to_string() == "focus.next_region"),
+            None,
+            "Tab crosses nothing until M3 adds the Agents box"
+        );
+    }
+
+    #[test]
+    fn hints_render_the_configured_key_and_not_the_default() {
+        let mut cfg = KeysConfig::default();
+        cfg.bindings.insert("B".into(), "sidebar.toggle".into());
+        cfg.bindings.remove("b");
+        cfg.list.insert("o".into(), "list.activate".into());
+        cfg.list.remove("Enter");
+        let (km, warnings) = Keymap::from_config(&cfg).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(km.hint_for("sidebar.toggle").as_deref(), Some("leader B"));
+        assert_eq!(km.list_key_for("list.activate").as_deref(), Some("o"));
+        let km = Keymap::defaults();
+        assert_eq!(
+            km.list_key_for("list.activate").as_deref(),
+            Some("⏎"),
+            "Enter renders as its glyph"
+        );
+        assert_eq!(km.list_key_for("focus.pane").as_deref(), Some("esc"));
     }
 
     #[test]

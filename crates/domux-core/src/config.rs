@@ -94,6 +94,10 @@ impl Default for KeysConfig {
                 (",", "tab.rename"),
                 ("d", "client.detach"),
                 ("?", "help"),
+                ("s", "switcher.open"),
+                ("b", "sidebar.toggle"),
+                ("N", "workspace.rename"),
+                ("n", "workspace.clear_name"),
             ]),
             global: map(&[
                 ("C-h", "focus.left"),
@@ -105,9 +109,19 @@ impl Default for KeysConfig {
                 ("S-Right", "pane.resize right 2"),
             ]),
             passthrough: PassthroughConfig::default(),
-            // Keys inside the Projects and Agents boxes. Empty in M1: M2 and M3 add the
-            // actions they implement (roadmap section 5.5).
-            list: BTreeMap::new(),
+            // Keys inside the Projects box, with no leader (interface spec section 10).
+            // M3 adds "Tab" = "focus.next_region" with the Agents box it crosses to.
+            list: map(&[
+                ("j", "list.down"),
+                ("k", "list.up"),
+                ("Down", "list.down"),
+                ("Up", "list.up"),
+                ("Enter", "list.activate"),
+                ("Esc", "focus.pane"),
+                ("/", "list.filter"),
+                ("?", "help"),
+                ("n", "workspace.rename"),
+            ]),
         }
     }
 }
@@ -426,12 +440,39 @@ mod tests {
         assert_eq!(c.terminal.scrollback, 10000);
         assert!(!c.terminal.remain_on_exit);
         assert_eq!(c.terminal.shell, None);
-        assert!(c.keys.list.is_empty(), "the list table arrives with M2");
+        // M2 adds the switcher, sidebar and workspace name keys; the agents overlay stays
+        // unbound until M3.
+        assert_eq!(
+            c.keys.bindings.get("s").map(String::as_str),
+            Some("switcher.open")
+        );
+        assert_eq!(
+            c.keys.bindings.get("b").map(String::as_str),
+            Some("sidebar.toggle")
+        );
+        assert_eq!(
+            c.keys.bindings.get("N").map(String::as_str),
+            Some("workspace.rename")
+        );
+        assert_eq!(
+            c.keys.bindings.get("n").map(String::as_str),
+            Some("workspace.clear_name")
+        );
         assert!(
-            !c.keys.bindings.contains_key("s")
-                && !c.keys.bindings.contains_key("b")
-                && !c.keys.bindings.contains_key("a"),
-            "switcher, sidebar and agents overlay keys arrive with their milestones"
+            !c.keys.bindings.contains_key("a"),
+            "agents overlay arrives with M3"
+        );
+        assert_eq!(
+            c.keys.list.get("Enter").map(String::as_str),
+            Some("list.activate")
+        );
+        assert_eq!(
+            c.keys.list.get("Esc").map(String::as_str),
+            Some("focus.pane")
+        );
+        assert!(
+            !c.keys.list.contains_key("Tab"),
+            "Tab crosses nothing until M3 adds the Agents box"
         );
     }
 

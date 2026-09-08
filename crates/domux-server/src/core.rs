@@ -1205,7 +1205,24 @@ fn param_client(method: &Method) -> Option<ClientId> {
         PaneSendText(p) => p.client.clone(),
         PaneSendKey(p) => p.client.clone(),
         PaneRead(p) => p.client.clone(),
-        ServerInfo(_) | ServerStop(_) | EventsSubscribe(_) | ConfigReload(_) | TabList(_) => None,
+        ProjectAdd(p) => p.client.clone(),
+        WorkspaceCreate(p) => p.client.clone(),
+        WorkspaceRename(p) => p.client.clone(),
+        WorkspaceFocus(p) => p.client.clone(),
+        SwitcherOpen(p) | SwitcherClose(p) | SidebarToggle(p) | SidebarShow(p) | SidebarHide(p)
+        | ListDown(p) | ListUp(p) | ListActivate(p) | ListFilter(p) => p.client.clone(),
+        ServerInfo(_)
+        | ServerStop(_)
+        | EventsSubscribe(_)
+        | ConfigReload(_)
+        | TabList(_)
+        | ProjectList(_)
+        | ProjectRemove(_)
+        | WorkspaceList(_)
+        | WorkspaceClear(_)
+        | WorkspaceDelete(_)
+        | WorkspaceClearName(_)
+        | WorkspaceResume(_) => None,
     }
 }
 
@@ -1310,6 +1327,56 @@ mod tests {
             Some(Hint::shell_failure(shell)),
             "a key cleared a notice whose text the config had moved under it"
         );
+    }
+
+    /// Pins the exact set of methods that still answer `unavailable` because Task 4 declared
+    /// them but no task has given them a handler yet. This is deliberately an explicit list,
+    /// not a scan: a task that implements one of these methods makes its assertion fail
+    /// (dispatch stops answering `unavailable` for it) until the task removes that method's
+    /// line here and from the stub block in `api::dispatch`, so removal is forced rather than
+    /// remembered. `workspace.resume` is the one deliberate exception, left for M3: when this
+    /// list reads exactly `["workspace.resume"]`, M2 has closed this class of gap.
+    #[test]
+    fn only_the_expected_m2_methods_still_answer_unavailable() {
+        use domux_core::api::ErrorCode;
+        const STILL_UNBUILT: &[(&str, &str)] = &[
+            ("project.list", "{}"),
+            ("project.add", r#"{"path":"/x"}"#),
+            ("project.remove", r#"{"project":"p"}"#),
+            ("workspace.list", "{}"),
+            ("workspace.create", r#"{"project":"p"}"#),
+            ("workspace.clear", r#"{"workspace":"w"}"#),
+            ("workspace.delete", r#"{"workspace":"w"}"#),
+            ("workspace.rename", "{}"),
+            ("workspace.clear_name", r#"{"workspace":"w"}"#),
+            ("workspace.focus", r#"{"workspace":"w"}"#),
+            ("workspace.resume", r#"{"workspace":"w"}"#),
+            ("switcher.open", "{}"),
+            ("switcher.close", "{}"),
+            ("sidebar.toggle", "{}"),
+            ("sidebar.show", "{}"),
+            ("sidebar.hide", "{}"),
+            ("list.down", "{}"),
+            ("list.up", "{}"),
+            ("list.activate", "{}"),
+            ("list.filter", "{}"),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (name, params) in STILL_UNBUILT {
+            assert!(
+                Method::NAMES.contains(name),
+                "{name} is not a real method; fix STILL_UNBUILT"
+            );
+            let mut core = core(dir.path());
+            let params = serde_json::from_str(params).unwrap();
+            let method =
+                Method::from_request(name, params).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let err = core
+                .dispatch(method, None)
+                .expect_err(&format!("{name} has a real handler now; remove it from STILL_UNBUILT and from the stub block in api::dispatch"));
+            assert_eq!(err.code, ErrorCode::Unavailable, "{name}: {err}");
+            assert!(err.message.ends_with("is not built yet"), "{name}: {err}");
+        }
     }
 
     /// The other side of the same flag, and the flag itself rather than the side-effect
