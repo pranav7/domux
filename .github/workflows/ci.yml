@@ -46,6 +46,9 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --locked
+        # Also bounded at the step, so a hang is reported as "the tests did not finish"
+        # rather than as a job cancelled with no step named.
+        timeout-minutes: 10
 
   cross-macos-x86_64:
     runs-on: macos-latest
