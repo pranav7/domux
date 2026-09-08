@@ -284,8 +284,8 @@ fn remove_entry(path: &Path) -> Result<(), String> {
 /// after it would remove the main checkout's own file and leave a loop where it was. So the
 /// walk starts at the resolved slot and takes one component at a time, descending only into a
 /// folder that is a folder, creating the ones that are not there yet, and refusing anything
-/// else. The finished folder is resolved once more, which costs one syscall and closes the
-/// window where a component is swapped between the walk and the write.
+/// else. The finished folder is then resolved once more, and the check on that is described
+/// where it sits.
 ///
 /// The last component is not resolved, and must not be: `remove_entry`, `symlink` and `rename`
 /// all act on the name rather than on what it points at, which is what lets a link already in
@@ -329,6 +329,24 @@ fn dst_in_slot(slot: &Path, rel: &Path) -> Result<PathBuf, String> {
             }
         }
     }
+    // The walk above descends only into folders it has just seen to be folders, so this second
+    // resolve says nothing new about the state the walk read. What it catches is the state
+    // changing after the walk read it, and that is one danger in two halves.
+    //
+    // The half it removes is in-process, and it is not hypothetical: the defect this guard was
+    // added with was one directive creating a link that a later directive in the same file
+    // walked through. A refactor that hoists this walk out of the loop, or caches its answer
+    // across directives, brings that back, and this line is what refuses the write instead of
+    // following it out of the slot.
+    //
+    // The half it cannot remove is another process swapping a component between this resolve
+    // and the write below. Resolving and then writing is a race by construction, and no amount
+    // of re-resolving closes it; only holding the folder open and writing relative to that
+    // handle does, which needs a crate this milestone cannot add.
+    //
+    // So this check is deliberately untested: nothing a single-threaded test can build reaches
+    // it, because the walk that runs first refuses every state that would make it fire. It is
+    // kept for the in-process half, which is the one this file has already got wrong once.
     let folder = std::fs::canonicalize(&folder)
         .map_err(|e| format!("could not read the slot's \"{}\": {e}", walked.display()))?;
     if !folder.starts_with(&root) {
