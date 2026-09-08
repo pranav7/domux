@@ -87,6 +87,43 @@ fn the_box_draws_its_title_its_rows_and_one_filled_row() {
 }
 
 #[test]
+fn the_box_draws_at_the_area_it_is_given_and_touches_nothing_outside_it() {
+    // Every other render test here passes an area at the origin into a buffer of exactly
+    // that size, so a `render` that ignored `area.x` and `area.y` would pass all of them.
+    // The sidebar draws at x = 0; the switcher overlay draws the same box centred.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 26, 12));
+    ListBox {
+        title: "Projects",
+        rows: &rows(),
+        filled: Some(3),
+        focused: true,
+        scroll: 0,
+        empty_text: "",
+    }
+    .render(Rect::new(3, 2, 20, 9), &mut buf);
+    assert_eq!(
+        row(&buf, 1),
+        " ".repeat(26),
+        "the row above the box is untouched"
+    );
+    assert_eq!(row(&buf, 2), "   ┌ Projects ────────┐   ");
+    assert_eq!(row(&buf, 3), "   │PROJ ─────────    │   ");
+    assert_eq!(row(&buf, 6), "   │auth cleanup      │   ");
+    assert_eq!(row(&buf, 10), "   └──────────────────┘   ");
+    assert_eq!(row(&buf, 11), " ".repeat(26), "and the row below it");
+    assert_eq!(
+        buf[(4, 6)].bg,
+        theme::SURFACE0,
+        "the fill lands at the offset too"
+    );
+    assert_eq!(
+        buf[(2, 6)].bg,
+        Color::Reset,
+        "and stops at the box's own left edge"
+    );
+}
+
+#[test]
 fn a_box_that_is_not_focused_keeps_the_plain_border_and_still_fills_the_current_row() {
     let mut buf = Buffer::empty(Rect::new(0, 0, 20, 9));
     ListBox {
