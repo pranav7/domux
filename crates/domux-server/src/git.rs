@@ -275,7 +275,10 @@ pub fn worktree_remove(
     if !path.is_absolute() {
         return Err(not_absolute("git worktree remove".to_string(), path));
     }
-    refuse_option_like("git worktree remove", "branch", branch, BRANCH_ADVICE)?;
+    // `git worktree remove` takes the path, not the branch. The branch reaches `git branch -D`
+    // and nothing else, so naming this one after the function would name a command that never
+    // sees the value.
+    refuse_option_like("git branch -D", "branch", branch, BRANCH_ADVICE)?;
     let path = path.to_string_lossy().into_owned();
     let mut args = vec!["worktree", "remove"];
     if force {
@@ -316,7 +319,10 @@ pub fn branch_of(path: &Path) -> Result<String, GitError> {
 /// V1's `workspaceIsDirty`: uncommitted changes, or commits the upstream does not have.
 /// With no upstream it compares against the base's remote branch.
 pub fn is_dirty(path: &Path, branch: &str) -> Result<bool, GitError> {
-    refuse_option_like("git rev-parse", "branch", branch, BRANCH_ADVICE)?;
+    // `git status` runs first but never sees the branch, and the `rev-parse` below is a probe
+    // whose failure is expected and ignored. `git log` is the command a bad branch actually
+    // breaks, so that is the one to name.
+    refuse_option_like("git log", "branch", branch, BRANCH_ADVICE)?;
     if !run(path, &["status", "--porcelain"])?.is_empty() {
         return Ok(true);
     }

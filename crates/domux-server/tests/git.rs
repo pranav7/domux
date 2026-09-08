@@ -494,15 +494,18 @@ fn a_base_or_branch_that_git_would_read_as_an_option_is_refused() {
     refused(git::fetch(&repo, "origin/-x").unwrap_err(), "git fetch");
     refused(git::fetch(&repo, "-r/main").unwrap_err(), "git fetch");
     // Every operation that takes a base or a branch refuses one itself, rather than leaving it
-    // to whichever command happens to run first.
+    // to whichever command happens to run first. Each label names a command that actually runs
+    // with the value it guards: `git worktree remove` takes the path and never the branch, so
+    // that refusal is named after `git branch -D`, and `is_dirty` is named after `git log`
+    // rather than the `rev-parse` probe whose failure it ignores.
     let path = git::slot_path(&repo, 1);
     let add = git::worktree_add(&repo, &path, "workspace-1", &hostile).unwrap_err();
     refused(add, "git worktree add");
     let add = git::worktree_add(&repo, &path, "-b", "origin/main").unwrap_err();
     refused(add, "git worktree add");
     let remove = git::worktree_remove(&repo, &path, "-D", false).unwrap_err();
-    refused(remove, "git worktree remove");
-    refused(git::is_dirty(&repo, "--help").unwrap_err(), "git rev-parse");
+    refused(remove, "git branch -D");
+    refused(git::is_dirty(&repo, "--help").unwrap_err(), "git log");
     let reset = git::reset_to_base(&repo, "-x", "origin/main").unwrap_err();
     refused(reset, "git checkout");
     let reset = git::reset_to_base(&repo, "workspace-1", "-x").unwrap_err();
