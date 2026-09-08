@@ -329,18 +329,26 @@ pub fn branch_of(path: &Path) -> Result<String, GitError> {
     run(path, &["rev-parse", "--abbrev-ref", "HEAD"])
 }
 
-/// V1's `workspaceIsDirty`: uncommitted changes, or commits the upstream does not have.
+/// V1's `workspaceIsDirty`: uncommitted changes, or commits that exist only here.
 ///
-/// With no upstream it compares against `origin/<default branch>`, which is **not** the base
-/// the slot was made from, and since `worktree_add` is `--no-track` that is the path every slot
-/// takes. With `[worktrees] base` set to anything else, a slot is born with commits that range
-/// holds and reads dirty from the moment it is created. Decision record 0007 has the
-/// measurement and the remedy: give this function the base rather than letting it guess.
-pub fn is_dirty(path: &Path, branch: &str) -> Result<bool, GitError> {
-    // `git status` runs first but never sees the branch, and the `rev-parse` below is a probe
-    // whose failure is expected and ignored. `git log` is the command a bad branch actually
-    // breaks, so that is the one to name.
+/// "Only here" needs something to compare against. An upstream is the better answer when the
+/// slot has one, because work the reader pushed is not work a delete would lose. With no
+/// upstream - which is every slot `worktree_add` builds, since it is `--no-track` - the
+/// comparison is against `base`, the ref the slot was branched from.
+///
+/// **`base` is passed, not guessed.** This function used to fall back to
+/// `origin/<default branch>`, and while `worktree add -b` set an upstream pointing at the base,
+/// the two were the same range whenever the base *was* the default branch, so the guess was
+/// invisible. Dropping the upstream separated them: a slot from `origin/release` compared
+/// against `origin/main` counts release's own commits as the slot's work and reads dirty the
+/// moment it is created. The caller knows the base - `git::base_ref` is what produced it - so it
+/// hands it over rather than letting this guess (decision record 0007).
+pub fn is_dirty(path: &Path, branch: &str, base: &str) -> Result<bool, GitError> {
+    // `git status` runs first but never sees either name, and the `rev-parse` below is a probe
+    // whose failure is expected and ignored. `git log` is the command a bad branch or a bad
+    // base actually breaks, so that is the one both refusals name.
     refuse_option_like("git log", "branch", branch, BRANCH_ADVICE)?;
+    refuse_option_like("git log", "base", base, BASE_ADVICE)?;
     if !run(path, &["status", "--porcelain"])?.is_empty() {
         return Ok(true);
     }
@@ -348,7 +356,7 @@ pub fn is_dirty(path: &Path, branch: &str) -> Result<bool, GitError> {
     let range = if run(path, &["rev-parse", &upstream]).is_ok() {
         format!("{upstream}..{branch}")
     } else {
-        format!("origin/{}..{branch}", default_branch(path))
+        format!("{base}..{branch}")
     };
     Ok(!run(path, &["log", "--oneline", &range])?.is_empty())
 }
