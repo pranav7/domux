@@ -182,6 +182,15 @@ mod tests {
         buf: &mut Buffer,
         tweak: impl FnOnce(&mut ClientView, &domux_core::ids::WorkspaceId),
     ) {
+        draw_sized(buf, 24, tweak)
+    }
+
+    /// `draw_two` on a screen `rows` tall, so the box can be made shorter than its rows.
+    fn draw_sized(
+        buf: &mut Buffer,
+        rows: u16,
+        tweak: impl FnOnce(&mut ClientView, &domux_core::ids::WorkspaceId),
+    ) {
         let mut model = Model::new(7);
         let (pid, ws, _) = model
             .add_git_project(PathBuf::from("/repo/audrey-app"), "main".into())
@@ -196,11 +205,31 @@ mod tests {
         let (tab, pane, _) = model
             .create_tab(&ws, PathBuf::from("/repo/audrey-app"))
             .unwrap();
-        let mut v = view(120, 24);
+        let mut v = view(120, rows);
         v.workspace = ws;
         v.tab = tab;
         v.focus = Focus::Pane(pane);
         tweak(&mut v, &slot);
+        let panes = HashMap::new();
+        let keymap = Keymap::defaults();
+        let facts = crate::facts::FactRegistry::new();
+        let input = RenderInput {
+            model: &model,
+            panes: &panes,
+            view: &v,
+            keymap: &keymap,
+            facts: &facts,
+            now: chrono::Local::now(),
+            config_error: None,
+            hint: None,
+        };
+        draw(&input, buf);
+    }
+
+    /// The sidebar drawn over a model with no projects at all.
+    fn draw_empty(buf: &mut Buffer) {
+        let model = Model::new(7);
+        let v = view(120, 24);
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
         let facts = crate::facts::FactRegistry::new();
@@ -408,8 +437,11 @@ mod tests {
     /// it.
     #[test]
     fn the_projects_box_covers_what_was_under_it() {
-        // `@` because nothing the box draws can produce it. **A canary has to be a value the
-        // system under test cannot produce**, or it cannot tell "left behind" from "drawn".
+        // `@` because nothing *this fixture* draws can produce it: the project is
+        // `audrey-app`, its workspaces are `main` and `workspace-1`, and there are no facts.
+        // Not "nothing the box can draw" - a project path or a branch name containing `@`
+        // would put one on the screen. The narrow claim is the one the test rests on, and
+        // the one to keep true if the fixture changes.
         // The first version of this test filled with `X`, and the project at `/x` drew its
         // header as `X`, so a correct box read as one that had left the fill behind. Do not
         // tidy this back to a letter.
@@ -504,6 +536,77 @@ mod tests {
         assert_eq!(
             lines, 3,
             "a project header and its two workspaces, one line each: {drawn:?}"
+        );
+    }
+
+    /// The box is marked focused only while the keys are in it.
+    ///
+    /// `focused` is the third field `draw` reads that nothing in M2 writes: focus reaches
+    /// `RegionKind::SidebarProjects` only through `api::focus::region`, which refuses that
+    /// region today, so every test through the harness leaves it false and a box that
+    /// hard-coded either answer would look right.
+    #[test]
+    fn the_box_is_marked_focused_only_while_the_keys_are_in_it() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
+        draw_two(&mut buf, |_, _| {});
+        assert_eq!(
+            buf[(0u16, 0u16)].fg,
+            ratatui::style::Color::Rgb(0x58, 0x5b, 0x70),
+            "the keys are in a pane, so the box takes the unfocused border"
+        );
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
+        draw_two(&mut buf, |v, _| {
+            v.focus = Focus::Region(RegionKind::SidebarProjects)
+        });
+        assert_eq!(
+            buf[(0u16, 0u16)].fg,
+            ratatui::style::Color::Rgb(0xcb, 0xa6, 0xf7),
+            "with the keys in the box it is the focused region, so the border is the accent"
+        );
+    }
+
+    /// The scroll the client remembers moves the view.
+    ///
+    /// The fourth no-writer field: `projects_scroll` is only ever set by list navigation,
+    /// which M2 has not built. The screen here is short enough that the box cannot show
+    /// every row, which is the only condition under which the field can matter at all.
+    #[test]
+    fn the_scroll_the_client_remembers_moves_the_view() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 6));
+        draw_sized(&mut buf, 6, |_, _| {});
+        let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
+        assert!(
+            top.starts_with("AUDREY-APP"),
+            "unscrolled, the box starts at the project header: {top:?}"
+        );
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 6));
+        draw_sized(&mut buf, 6, |v, _| v.projects_scroll = 1);
+        let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
+        assert_eq!(
+            top.trim_end(),
+            "main",
+            "scrolled by one, the header has moved off the top"
+        );
+    }
+
+    /// With no projects the box names the state and the next action (principle 9).
+    ///
+    /// The fifth no-writer field: `empty_text` is unreachable through the harness, which
+    /// always starts with a project, so a box that dropped it entirely would pass.
+    #[test]
+    fn an_empty_projects_box_names_the_command_that_fills_it() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
+        draw_empty(&mut buf);
+        let text = box_rows(&buf).join(" ");
+        assert!(
+            text.contains("No projects yet"),
+            "it says there are none: {text:?}"
+        );
+        assert!(
+            text.contains("domux2 open"),
+            "and names the command that adds one: {text:?}"
         );
     }
 }
