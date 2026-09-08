@@ -135,6 +135,11 @@ pub fn dim(buf: &mut Buffer, keep: &[Rect]) {
 ///
 /// It lives here rather than in one overlay because it is the overlay frame's row: the
 /// switcher draws it and M3's agents overlay draws the same one (roadmap 5.9).
+///
+/// No input reaches the degenerate-area guard below, so no test pins it and removing it
+/// breaks nothing today: the only caller derives the row from `list_overlay_area`, and
+/// `a_list_overlay_and_its_footer_row_stay_inside_any_screen` sweeps that function for
+/// exactly this promise. It is defence for the rectangles Tasks 15, 16 and 18 will pass.
 pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut Buffer) {
     if area.height == 0 || area.width == 0 || area.y >= buf.area.bottom() {
         return;
@@ -400,6 +405,16 @@ mod tests {
 
     /// Draws the footer for `view` into `area` of `buf`, leaving whatever else is in `buf`.
     fn footer_into(view: &ClientView, area: Rect, buf: &mut Buffer) {
+        hints_into(
+            view,
+            &[("list.activate", "open"), ("focus.pane", "close")],
+            area,
+            buf,
+        );
+    }
+
+    /// The same, for a test that needs hints of its own.
+    fn hints_into(view: &ClientView, hints: &[(&str, &str)], area: Rect, buf: &mut Buffer) {
         let model = Model::new(1);
         let facts = FactRegistry::new();
         let panes = HashMap::new();
@@ -414,12 +429,7 @@ mod tests {
             config_error: None,
             hint: None,
         };
-        footer(
-            &input,
-            &[("list.activate", "open"), ("focus.pane", "close")],
-            area,
-            buf,
-        );
+        footer(&input, hints, area, buf);
     }
 
     fn line_of(buf: &Buffer, y: u16) -> String {
@@ -512,6 +522,20 @@ mod tests {
         }
     }
 
+    /// The screen is a rectangle and not a size, so the box lands inside it wherever it
+    /// starts. `compose` builds its buffer at the origin and is the only caller today, so
+    /// this is the one fixture that can tell an area measured from the screen from one
+    /// measured from 0,0. Tasks 15, 16 and 18 are the next callers.
+    #[test]
+    fn a_list_overlay_sits_inside_the_screen_it_was_given_wherever_that_starts() {
+        let moved = list_overlay_area(Rect::new(7, 2, 80, 24), 3);
+        let at_origin = list_overlay_area(screen(80, 24), 3);
+        assert_eq!(moved.width, at_origin.width);
+        assert_eq!(moved.height, at_origin.height);
+        assert_eq!(moved.x, at_origin.x + 7);
+        assert_eq!(moved.y, at_origin.y + 2);
+    }
+
     /// The height follows the rows until the screen runs out, and then stops.
     #[test]
     fn a_list_overlay_grows_with_its_rows_up_to_the_screen_less_six() {
@@ -563,6 +587,9 @@ mod tests {
             (2, 1, false),
             (3, 1, false),
             (4, 1, true),
+            // The screen's last column, which is the one a sweep stopping one short of the
+            // right edge would leave bright under the overlay.
+            (5, 1, true),
             (2, 2, true),
         ] {
             assert_eq!(
@@ -583,6 +610,38 @@ mod tests {
         assert_eq!(line_of(&buf, 0), "X".repeat(30));
         assert_eq!(line_of(&buf, 1), "XXXX ⏎ open · esc close XXXXXX");
         assert_eq!(line_of(&buf, 2), "X".repeat(30));
+        // The separator is the row's quietest colour, under both the key and the word, so a
+        // reader's eye lands on the keys. Nothing else here reads a style off the footer.
+        assert_eq!(buf[(12, 1)].symbol(), "·");
+        assert_eq!(buf[(12, 1)].fg, theme::SURFACE1);
+        assert_eq!(buf[(11, 1)].fg, theme::SURFACE1, "and its spaces with it");
+    }
+
+    /// A hint the row has no room for ends the row: the hints are in the order the reader
+    /// should see them, so a later one that would fit is dropped with it rather than moving
+    /// up into the gap.
+    ///
+    /// The middle hint is the widest, which is what separates the two. `HINTS` in the
+    /// switcher happens to end with its widest, `esc close`, so its own footer draws the
+    /// same row either way; `footer` is public and takes whatever hints it is given, and
+    /// `[keys.list]` decides how wide each one is.
+    ///
+    /// 15 cells of room: `⏎ open` is 6, ` · esc close` is 12 and does not fit, ` · ? help`
+    /// is 9 and would.
+    #[test]
+    fn the_footer_stops_at_the_first_hint_that_does_not_fit_rather_than_keeping_a_later_one() {
+        let mut buf = filled(20, 1);
+        hints_into(
+            &view(),
+            &[
+                ("list.activate", "open"),
+                ("focus.pane", "close"),
+                ("help", "help"),
+            ],
+            Rect::new(0, 0, 17, 1),
+            &mut buf,
+        );
+        assert_eq!(line_of(&buf, 0), " ⏎ open          XXX");
     }
 
     /// A hint that does not fit the row is dropped whole, with its separator, rather than

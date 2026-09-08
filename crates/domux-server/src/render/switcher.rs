@@ -85,6 +85,7 @@ fn empty_text(input: &RenderInput) -> String {
 mod tests {
     use super::*;
     use crate::facts::FactRegistry;
+    use domux_core::facts::{Fact, FactKey, FACT_BRANCH};
     use domux_core::ids::ProjectId;
     use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
     use domux_core::keymap::Keymap;
@@ -146,12 +147,21 @@ mod tests {
     }
 
     fn draw_into(model: &Model, view: &ClientView, cols: u16, rows: u16) -> Buffer {
-        let facts = FactRegistry::new();
+        draw_with_facts(model, &FactRegistry::new(), view, cols, rows)
+    }
+
+    fn draw_with_facts(
+        model: &Model,
+        facts: &FactRegistry,
+        view: &ClientView,
+        cols: u16,
+        rows: u16,
+    ) -> Buffer {
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
         let input = RenderInput {
             model,
-            facts: &facts,
+            facts,
             panes: &panes,
             view,
             keymap: &keymap,
@@ -193,6 +203,102 @@ mod tests {
             buf[(11, 5)].bg,
             crate::render::theme::SURFACE0,
             "and the workspace this client is in does not also carry one"
+        );
+    }
+
+    /// With no cursor the fill falls back to the workspace this client is in (domain model,
+    /// section 3.3), which is the branch `switcher.open` never takes: it always sets the
+    /// cursor, so only a fixture that clears the cursor by hand reaches the fallback. The
+    /// other four workspaces are there so the fill has somewhere else it could have landed.
+    #[test]
+    fn the_fill_falls_back_to_the_workspace_this_client_is_in_when_there_is_no_cursor() {
+        let model = model_with_slots();
+        let mut v = view("");
+        v.workspace = WorkspaceId("w_2".into());
+        v.projects_cursor = None;
+        let buf = draw_into(&model, &v, 80, 24);
+        assert_eq!(inner_line(&buf, 9), "workspace-2");
+        assert_eq!(buf[(11, 9)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(inner_line(&buf, 5), "main");
+        assert_ne!(
+            buf[(11, 5)].bg,
+            crate::render::theme::SURFACE0,
+            "and no other row carries one"
+        );
+    }
+
+    /// `/` narrows the box to the workspaces that match, so a filter reaches the rows
+    /// through the switcher and not only through the box's own tests.
+    ///
+    /// The fixture needs both halves: a filter that matches something and a model holding
+    /// rows it does not match. Every other fixture in this file has an empty filter over a
+    /// full model or a filter over an empty one, and both of those pass just as well when
+    /// the switcher hands the rows an empty filter.
+    #[test]
+    fn the_box_shows_only_the_workspaces_the_filter_matches() {
+        let model = model_with_slots();
+        let mut v = view("workspace-2");
+        v.workspace = WorkspaceId("w_main".into());
+        let buf = draw_into(&model, &v, 80, 24);
+        assert!(
+            inner_line(&buf, 4).starts_with("PROJ "),
+            "the header of the project the match is in stays: {:?}",
+            inner_line(&buf, 4)
+        );
+        assert_eq!(inner_line(&buf, 5), "workspace-2");
+        assert_eq!(
+            inner_line(&buf, 6),
+            "─".repeat(58),
+            "and the box is two lines tall, so main and the other three slots are gone"
+        );
+    }
+
+    /// The rows carry the facts the core holds: a branch reaches line 2, and a branch equal
+    /// to the handle leaves the slot untouched and hollow (interface spec 12.23).
+    ///
+    /// This is the field `RenderInput` gained for this task. Every other fixture here, and
+    /// every harness test, renders against an empty registry - `HarnessOptions.providers`
+    /// is empty by default - so handing `rows` a fresh registry instead of the core's would
+    /// draw the same screen everywhere else.
+    #[test]
+    fn the_rows_read_the_fact_registry_the_core_passed_in() {
+        let model = model_with_slots();
+        let mut facts = FactRegistry::new();
+        let fact = |text: &str| {
+            Fact::new(
+                text,
+                None,
+                "2026-09-05T10:00:00+01:00",
+                std::time::Duration::from_secs(600),
+            )
+        };
+        facts.set(
+            FactKey::workspace(&WorkspaceId("w_1".into()), FACT_BRANCH),
+            Some(fact("workspace-1")),
+        );
+        facts.set(
+            FactKey::workspace(&WorkspaceId("w_2".into()), FACT_BRANCH),
+            Some(fact("feat/auth")),
+        );
+        let mut v = view("");
+        v.workspace = WorkspaceId("w_main".into());
+        v.projects_cursor = Some(WorkspaceId("w_main".into()));
+        let buf = draw_with_facts(&model, &facts, &v, 80, 24);
+        assert_eq!(
+            inner_line(&buf, 7),
+            "◌ workspace-1",
+            "a slot on its own branch is untouched"
+        );
+        assert_eq!(inner_line(&buf, 9), "workspace-2");
+        assert_eq!(
+            inner_line(&buf, 10),
+            "feat/auth",
+            "and a branch of its own gets line 2, which is a second line the row did not have"
+        );
+        assert_eq!(
+            inner_line(&buf, 12),
+            "workspace-3",
+            "so everything under it moved down a row"
         );
     }
 

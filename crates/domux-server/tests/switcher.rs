@@ -129,6 +129,22 @@ async fn the_cursor_starts_on_the_current_workspace_and_the_fill_marks_it() {
     assert_eq!(view.projects_cursor.as_ref(), Some(&view.workspace));
 }
 
+/// `leader s` opens the switcher with the keys in its box (interface spec 12.32).
+///
+/// Read off the model, because the screen cannot say: `switcher::draw` draws the box focused
+/// whatever the region is, since the switcher is the only thing the keys can be in while it
+/// is open. That makes the frame a second cause for every assertion about focus here, and it
+/// is why this field is invisible until Task 14, whose key routing branches on it.
+#[tokio::test]
+async fn opening_the_switcher_puts_the_keys_in_its_box() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    open_switcher(&mut h).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        domux_core::model::Focus::Region(domux_core::model::RegionKind::Switcher)
+    );
+}
+
 #[tokio::test]
 async fn the_screen_under_the_switcher_dims_and_comes_back_when_it_closes() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
@@ -162,6 +178,12 @@ async fn the_screen_under_the_switcher_dims_and_comes_back_when_it_closes() {
 ///
 /// The pane is filled with text first. Every other render test in this milestone starts
 /// from an empty buffer, where a draw that clears nothing looks exactly like one that does.
+///
+/// `X` is the canary because nothing this fixture draws can emit one: `Harness::start` roots
+/// the project at `<tmp>/proj`, so the header reads `PROJ`, the rows read `main` and `1`, and
+/// the footer reads `⏎ open · / filter · ? help · esc close`. The claim is about the fixture
+/// and not about the box: a project path, a workspace name or a branch fact holding an `X`
+/// would draw one, so a fixture that renames the project has to pick a new canary with it.
 #[tokio::test]
 async fn the_switcher_covers_the_panes_text_and_leaves_the_rest_of_the_screen_where_it_was() {
     let mut h = Harness::start(Config::default(), 80, 24).await;

@@ -15,6 +15,11 @@ use serde_json::Value;
 /// Nothing in the tree writes `filter` yet - `list.filter` is Task 14 - so that reset is not
 /// observable and no test here establishes it. It is written now because this is the method
 /// the field's comment points at, and Task 14 should keep it and test it once `/` can type.
+///
+/// `filtering` is cleared beside it for the same reason and with the same standing: nothing
+/// here opens the filter, so deleting the line changes no frame this milestone can draw, and
+/// Task 14 owns its test too. Only the open path needs it, because `pop_overlay` already
+/// clears `filtering` on the way out.
 pub fn open(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     let client = ctx.view()?;
     let workspace = ctx.model.client(&client).map(|c| c.workspace.clone());
