@@ -340,26 +340,40 @@ fn a_line_wider_than_the_box_is_cut_by_grapheme_with_an_ellipsis() {
 #[test]
 fn nothing_is_drawn_after_the_span_that_was_cut() {
     // "漢字漢字" is 8 cells in 6 of room, so the cut keeps two of them and the ellipsis, 5
-    // cells, and leaves one spare. A second span drawn into that spare cell would read as
-    // text that survived the cut.
-    let rows = vec![ListRow::selectable(
-        "w_1",
-        "x",
-        vec![Line::from(vec![Span::raw("漢字漢字"), Span::raw("TAIL")])],
-    )];
-    let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
-    ListBox {
-        title: "T",
-        rows: &rows,
-        filled: None,
-        focused: true,
-        scroll: 0,
-        empty_text: "",
-    }
-    .render(Rect::new(0, 0, 8, 3), &mut buf);
-    assert_eq!(row(&buf, 1), "│漢 字 … │");
-    assert_eq!(buf[(6, 1)].symbol(), " ", "the spare cell stays empty");
-    assert!(!row(&buf, 1).contains('T'), "the tail span is not drawn");
+    // cells, and leaves one spare. A later span drawn into that spare cell reads as text that
+    // survived the cut when it fits there, and as a second ellipsis when it does not.
+    let draw = |tail: &'static str| {
+        let rows = vec![ListRow::selectable(
+            "w_1",
+            "x",
+            vec![Line::from(vec![Span::raw("漢字漢字"), Span::raw(tail)])],
+        )];
+        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
+        ListBox {
+            title: "T",
+            rows: &rows,
+            filled: None,
+            focused: true,
+            scroll: 0,
+            empty_text: "",
+        }
+        .render(Rect::new(0, 0, 8, 3), &mut buf);
+        (row(&buf, 1), buf[(6, 1)].symbol().to_string())
+    };
+
+    let (line, spare) = draw("TAIL");
+    assert_eq!(
+        line, "│漢 字 … │",
+        "a tail too wide for the spare cell would read ……"
+    );
+    assert_eq!(spare, " ", "the spare cell stays empty");
+
+    let (line, spare) = draw("T");
+    assert_eq!(
+        line, "│漢 字 … │",
+        "a tail that fits the spare cell would read …T"
+    );
+    assert_eq!(spare, " ", "the spare cell stays empty");
 }
 
 #[test]
@@ -510,6 +524,24 @@ fn the_row_constructors_say_which_rows_take_the_cursor() {
     );
     assert_eq!(row.height(), 2);
     assert!(!row.is_blank());
+
+    assert!(
+        ListRow::header(vec![Line::from("   ")]).is_blank(),
+        "a row of spaces has nothing to read, so it is a separator and not a header"
+    );
+    assert!(
+        !ListRow::selectable("w_1", "", vec![Line::from("   ")]).is_blank(),
+        "a row the cursor rests on is never a separator, whatever it draws"
+    );
+
+    // A row is measured in `u16` because that is what a screen is measured in. `as u16` would
+    // wrap 65_537 lines back to 1 and scroll to the wrong line, so the conversion saturates.
+    let huge = ListRow::header(vec![Line::from(""); 65_537]);
+    assert_eq!(
+        huge.height(),
+        u16::MAX,
+        "a row taller than u16 saturates rather than wrapping to 1"
+    );
 }
 
 #[test]

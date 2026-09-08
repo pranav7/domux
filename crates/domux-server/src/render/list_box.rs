@@ -167,7 +167,8 @@ fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: 
         cx = put_within(buf, cx, y, end - 1, &text, style);
         if cut {
             // The ellipsis ends the line. A wide grapheme dropped whole leaves a spare cell,
-            // and the next span drawn into it would read as text that survived the cut.
+            // and a later span drawn into it reads as text that survived the cut when it fits,
+            // and as a second ellipsis when it does not.
             break;
         }
     }
