@@ -482,6 +482,10 @@ impl Core {
                 self.clear_action_hint(&client);
                 self.key(&client, key);
             }
+            ClientMsg::Scroll { column, row, lines } => {
+                self.clear_action_hint(&client);
+                self.scroll(&client, column, row, lines);
+            }
             ClientMsg::Paste(text) => {
                 if let Some(pane) = self.focused_pane(&client) {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -524,6 +528,47 @@ impl Core {
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
         let _ = crate::input::route_key(self, client, key);
         self.view_dirty = true;
+    }
+
+    /// Scrolls the pane whose box contains the outer terminal cell. A scroll over chrome,
+    /// unused space, a size notice or an overlay belongs to none. The gesture focuses its pane
+    /// only once there is history to move through.
+    fn scroll(&mut self, client: &ClientId, column: u16, row: u16, lines: i16) {
+        let Some(pane) = self.pane_at(client, column, row) else {
+            return;
+        };
+        let handled = self
+            .panes
+            .get_mut(&pane)
+            .is_some_and(|rt| crate::copy_mode::scroll(rt, lines));
+        if !handled {
+            return;
+        }
+        if let Ok(events) = self.model.focus_pane(&pane) {
+            self.pending_events.extend(events);
+        }
+        self.model.set_pane_copy_mode(&pane, true);
+        self.view_dirty = true;
+    }
+
+    fn pane_at(&self, client: &ClientId, column: u16, row: u16) -> Option<PaneId> {
+        let view = self.model.client(client)?;
+        if view.overlay.is_some()
+            || !matches!(view.focus, Focus::Pane(_))
+            || view.size.cols < render::MIN_COLS
+            || view.size.rows < render::MIN_ROWS
+        {
+            return None;
+        }
+        let tab = self.model.tab(&view.tab)?;
+        let size = render::smallest_size(&self.model, &tab.id, view.size);
+        let area = render::workpanel_area(size);
+        domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
+            .into_iter()
+            .find(|(_, rect)| {
+                column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
+            })
+            .map(|(pane, _)| pane)
     }
 
     /// Runs a keymap action through the same dispatcher the API uses.

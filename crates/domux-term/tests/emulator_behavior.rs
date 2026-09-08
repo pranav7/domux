@@ -1,8 +1,8 @@
 //! Behaviour the pane depends on, checked against libghostty-vt.
 
 use domux_term::{
-    CursorShape, Emulator, EmulatorConfig, GhosttyEmulator, Grid, Key, KeyEvent, Mode, Mods, Rgb,
-    ScrollbackPos, Size,
+    Color, CursorShape, Emulator, EmulatorConfig, GhosttyEmulator, Grid, Key, KeyEvent, Mode, Mods,
+    Rgb, ScrollbackPos, Size,
 };
 
 fn make(cols: u16, rows: u16) -> GhosttyEmulator {
@@ -65,6 +65,26 @@ fn plain_text_lands_in_the_first_row() {
     e.feed(b"hello");
     assert_eq!(text_of_row(&mut e, 0), "hello");
     assert_eq!(e.cursor().col, 5);
+}
+
+#[test]
+fn erased_cells_keep_the_active_background() {
+    let mut e = make(20, 4);
+    e.feed(b"\x1b[48;2;10;20;30m\x1b[2K\x1b[2;1H\x1b[48;5;42m\x1b[2K");
+    let mut g = Grid::new(e.size());
+    e.snapshot_grid(&mut g);
+
+    for col in 0..20 {
+        assert_eq!(
+            g.cell(0, col).bg,
+            Color::Rgb(Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })
+        );
+        assert_eq!(g.cell(1, col).bg, Color::Indexed(42));
+    }
 }
 
 #[test]

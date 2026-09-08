@@ -301,6 +301,11 @@ impl Harness {
         self.send(&client, ClientMsg::Paste(text.to_string())).await;
     }
 
+    pub async fn scroll(&mut self, client: ClientId, column: u16, row: u16, lines: i16) {
+        self.send(&client, ClientMsg::Scroll { column, row, lines })
+            .await;
+    }
+
     pub async fn resize(&mut self, client: ClientId, cols: u16, rows: u16) {
         self.clients.get_mut(&client).unwrap().buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.send(&client, ClientMsg::Resize { cols, rows }).await;

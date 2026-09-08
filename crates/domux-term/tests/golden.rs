@@ -1,8 +1,8 @@
 //! Golden fixtures, one per fixture, produced by libghostty-vt and reviewed by hand.
 //!
-//! M0 compared these against alacritty_terminal and found five emulator differences, two of
-//! them visible in daily programs. That comparison chose the engine and is recorded in
-//! docs/decisions/0001-terminal-emulator.md; the second implementation is gone.
+//! M0 compared these against alacritty_terminal and found four emulator differences after a
+//! background-only cell extraction error was corrected. That comparison chose the engine and
+//! is recorded in docs/decisions/0001-terminal-emulator.md; the second implementation is gone.
 
 use domux_term::golden::{check, check_chunking, list_fixtures};
 use domux_term::{EmulatorConfig, GhosttyEmulator, Rgb};

@@ -132,6 +132,32 @@ impl CopyMode {
     }
 }
 
+/// Moves the copy viewport by a wheel step. Positive lines move into history and open copy
+/// mode when needed. Negative lines move towards the live screen and do nothing unless copy
+/// mode is already open. Unlike cursor movement, a wheel step changes the viewport at once.
+/// Returns whether the gesture belongs to this pane.
+pub fn scroll(rt: &mut PaneRuntime, lines: i16) -> bool {
+    if lines == 0 {
+        return false;
+    }
+    let history = history(rt);
+    if history == 0 || (lines < 0 && rt.copy.is_none()) {
+        return false;
+    }
+    if rt.copy.is_none() {
+        let cursor = rt.emulator.cursor();
+        rt.copy = Some(CopyMode::new(rt.emulator.size(), (cursor.row, cursor.col)));
+    }
+    let copy = rt.copy.as_mut().expect("copy mode was opened");
+    copy.offset = if lines > 0 {
+        copy.offset.saturating_add(lines as usize).min(history)
+    } else {
+        copy.offset.saturating_sub(lines.unsigned_abs() as usize)
+    };
+    rt.dirty = true;
+    true
+}
+
 fn clamp_cursor(cursor: (u16, u16), size: Size) -> (u16, u16) {
     (
         cursor.0.min(size.rows.saturating_sub(1)),

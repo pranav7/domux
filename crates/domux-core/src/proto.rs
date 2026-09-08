@@ -19,7 +19,7 @@ pub struct Capabilities {
 }
 
 /// Bumped when a message shape changes. The server refuses a client with another value.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// A frame larger than this is a bug or an attack, never a screen. The value is also what
 /// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.
 pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
@@ -49,6 +49,13 @@ pub struct Hello {
 pub enum ClientMsg {
     Hello(Hello),
     Key(KeyEvent),
+    /// A vertical scroll gesture at an outer-terminal cell. Positive lines move away from
+    /// the live screen; negative lines move back towards it.
+    Scroll {
+        column: u16,
+        row: u16,
+        lines: i16,
+    },
     Paste(String),
     Resize {
         cols: u16,
@@ -229,8 +236,14 @@ mod tests {
             mods: Mods::SHIFT,
             action: KeyAction::Press,
         });
+        let scroll = ClientMsg::Scroll {
+            column: 20,
+            row: 8,
+            lines: 3,
+        };
         let mut bytes = encode(&hello).unwrap();
         bytes.extend(encode(&key).unwrap());
+        bytes.extend(encode(&scroll).unwrap());
         let mut d = Decoder::default();
         // Feed one byte at a time to prove partial frames are buffered.
         let mut out: Vec<ClientMsg> = Vec::new();
@@ -240,7 +253,7 @@ mod tests {
                 out.push(m);
             }
         }
-        assert_eq!(out, vec![hello, key]);
+        assert_eq!(out, vec![hello, key, scroll]);
     }
 
     #[test]
@@ -304,10 +317,10 @@ mod tests {
     /// green through a change to the byte order or to whether the length counts itself.
     #[test]
     fn a_frame_is_a_big_endian_length_then_the_bincode_body() {
-        // `Detach` is variant 5, which bincode writes as a 4-byte body.
+        // `Detach` is variant 6, which bincode writes as a 4-byte body.
         assert_eq!(
             encode(&ClientMsg::Detach).unwrap(),
-            vec![0, 0, 0, 4, 5, 0, 0, 0]
+            vec![0, 0, 0, 4, 6, 0, 0, 0]
         );
     }
 

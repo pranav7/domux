@@ -74,6 +74,25 @@ async fn pane_output_appears_inside_the_box_and_moves_the_cursor() {
 }
 
 #[tokio::test]
+async fn erased_pane_row_keeps_its_background_through_the_right_edge() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(pane, b"\x1b[48;2;10;20;30m\x1b[2K").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("r2 c1-38 bg=#0a141e"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 2),
+        "|│                                      │|",
+        "{f}"
+    );
+}
+
+#[tokio::test]
 async fn a_second_client_sees_the_same_tab_and_the_smaller_client_sizes_the_pane() {
     let mut h = Harness::start(Config::default(), 60, 20).await;
     let second = h.attach(40, 10).await;

@@ -20,3 +20,9 @@ colour (principle 2). Enter with no selection leaves without copying, as in tmux
 - The keys are not configurable in M1. If a `[keys.copy]` table is wanted, it is one
   more table in `KeysConfig` and one lookup in `copy_mode::handle_key`.
 - Mouse selection (V2.x) ends in the same Enter-to-copy path.
+
+## Extension, 2026-09-08
+
+A vertical wheel gesture over a pane enters copy mode and moves its viewport immediately.
+The client enables only the terminal modes needed to learn the wheel's screen position. It
+ignores clicks, drag, motion and horizontal scroll. Mouse selection remains V2.x work.

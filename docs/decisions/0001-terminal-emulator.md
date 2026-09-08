@@ -8,6 +8,20 @@
 
 The M0 spike criteria (architecture spec, Technology section): a pane must render Claude Code, neovim with a colorscheme, htop, and a wide-character and emoji torture file with no visible difference from Ghostty; frames must stay under 16 ms with eight panes running `yes`; idle CPU must be near zero. Both implementations of the `Emulator` trait were built and measured.
 
+## Correction: background-only cells
+
+**Date:** 2026-09-08. The original comparison misclassified background colour erase as an
+emulator difference. libghostty-vt stores an erased blank cell's background in the raw cell's
+compact content field, not in its style table. The domux wrapper read only the style table, so
+it reported those backgrounds as default even though libghostty-vt retained them. The C API's
+background accessor and raw cell content API both expose the retained colour.
+
+The corrected wrapper reads that compact field. `nvim-habamax` and `htop` now include their
+trailing background runs, matching Ghostty and alacritty_terminal. This correction changes the
+alacritty golden result from 4 of 10 to 6 of 10 and reduces the known emulator differences from
+five to four. It does not change the decision: alacritty_terminal still has four fidelity gaps,
+including the Shift+Enter gap that breaks Claude Code.
+
 ## Environment
 
 | Item | Value |
@@ -39,16 +53,16 @@ The interactive rows need a person at a Ghostty window comparing two tabs; they 
 | Claude Code: typing, Ctrl-C, paste of three lines | not measured | not measured | Needs a person |
 | Claude Code: Shift+Enter inserts a newline | P (by encoding) | E | Automated: with the kitty disambiguate flag pushed, libghostty-vt encodes shift+enter as `CSI 13;2u`; termwiz encodes a plain CR, so the program cannot tell it from enter. `tests/emulator_behavior.rs` pins both |
 | Claude Code: resize window while running | not measured | not measured | Needs a person |
-| neovim habamax: colors, line numbers, statusline | P | E | Automated as the `nvim-habamax` golden. Text identical; alacritty adds a background run on every erased line (see the background colour erase finding) |
+| neovim habamax: colors, line numbers, statusline | P | P | Automated as the corrected `nvim-habamax` golden. Both retain the background on erased cells |
 | neovim: cursor block in normal, bar in insert | P | P | Automated: `cursor_shape_follows_decscusr` passes for both |
 | neovim: undercurl under a misspelled word | R | R | ratatui has one underline style; every underline variant renders as a plain underline. Shared by both emulators |
 | neovim: `:checkhealth` truecolor and key detection | not measured | not measured | Needs a person |
-| htop: bars, colors, box drawing | P | E | Automated as the `htop` golden. Same difference as neovim: trailing background runs |
+| htop: bars, colors, box drawing | P | P | Automated as the corrected `htop` golden. Both retain the trailing background runs |
 | htop: F-keys F1 to F10 work | P | P | Automated: `control_and_function_keys_use_legacy_encoding_by_default` covers F5; the encoders map F1-F12 |
 | torture file: every row identical to Ghostty | P | E | Automated as the `torture-cat` golden: flag width and tab handling differ |
 | torture file: wide char at the edge wraps whole | P | P | Automated: the "Wide at edge" line puts a wide grapheme at column 100 of a 100-column pane and both wrap it whole |
 | `yes` in eight panes: output looks identical | not measured | not measured | Needs a person; the timing run below is automated |
-| Golden suite: fixtures passing / total | 10 / 10 | 4 / 10 | Six fixtures differ; every difference is listed below |
+| Golden suite: fixtures passing / total | 10 / 10 | 6 / 10 | Four fixtures differ after the 2026-09-08 correction; every difference is listed below |
 | Behavior tests passing / total | 11 / 11 | 11 / 11 | The shift+enter expectation is per implementation and records the gap |
 
 ### Emulator differences found (all E)
@@ -56,10 +70,9 @@ The interactive rows need a person at a Ghostty window comparing two tabs; they 
 Every one of these is a real difference in the emulator, confirmed by a focused test, not a golden that drifted.
 
 1. **SGR attributes dropped.** alacritty_terminal ignores SGR 21 (double underline), SGR 53 (overline), and SGR 5 (blink). Its cell flags have no blink or overline bit. libghostty-vt keeps all three. Fixture: `sgr-attributes`.
-2. **Background colour erase.** After an erase with a non-default background set, alacritty_terminal keeps that background on the erased cells; libghostty-vt reports them as the default background. Confirmed directly by feeding `ESC [ 48;2;28;28;28 m ESC [ K` and reading a trailing cell. Explicitly painted cells agree. This shows up as a trailing background run on every erased line of a full-screen program. Fixtures: `nvim-habamax`, `htop`.
-3. **Regional indicator flags.** A flag such as the Japan flag is two wide cells (four columns) in libghostty-vt and two narrow cells (two columns) in alacritty_terminal, so a row of flags ends two columns apart. Every other grapheme tested agrees: ZWJ sequences, skin tones, variation selectors, CJK, combining marks, zero-width joiners. Fixtures: `wide-and-emoji`, `torture-cat`.
-4. **Horizontal tab.** A tab leaves a literal TAB character in an alacritty_terminal cell; libghostty-vt advances the cursor and leaves spaces, which is what a grid should hold. Fixtures: `cursor-and-erase`, `torture-cat`.
-5. **Shift+enter under the kitty protocol.** With the disambiguate flag pushed, libghostty-vt sends `CSI 13;2u` (what kitty specifies, and what makes shift+enter work in Claude Code); termwiz sends a plain CR.
+2. **Regional indicator flags.** A flag such as the Japan flag is two wide cells (four columns) in libghostty-vt and two narrow cells (two columns) in alacritty_terminal, so a row of flags ends two columns apart. Every other grapheme tested agrees: ZWJ sequences, skin tones, variation selectors, CJK, combining marks, zero-width joiners. Fixtures: `wide-and-emoji`, `torture-cat`.
+3. **Horizontal tab.** A tab leaves a literal TAB character in an alacritty_terminal cell; libghostty-vt advances the cursor and leaves spaces, which is what a grid should hold. Fixtures: `cursor-and-erase`, `torture-cat`.
+4. **Shift+enter under the kitty protocol.** With the disambiguate flag pushed, libghostty-vt sends `CSI 13;2u` (what kitty specifies, and what makes shift+enter work in Claude Code); termwiz sends a plain CR.
 
 ## Performance (spike criteria 2 and 3)
 
@@ -99,24 +112,22 @@ Both emulators clear the 16 ms frame mark by a factor of about 45. The loop has 
 | CI: macOS arm64, Linux x86_64, Linux aarch64 | pass | pass |
 | Network needed at build time | Zig tarball once, Ghostty Zig packages once, both cached | none |
 | Key encoder | built in (`ghostty_key_encoder`) | termwiz, an extra dependency |
-| Gaps found | none | blink, overline, double underline, background colour erase, flag width, tab in cell, kitty shift+enter |
+| Gaps found | none | blink, overline, double underline, flag width, tab in cell, kitty shift+enter |
 
 Two build facts worth keeping. Zig fetches Ghostty's package dependencies in parallel and the parallel TLS handshakes fail on this machine with `TlsInitializationFailed`; `build.rs` runs `zig build --fetch -j1` first so a serialized pass fills the cache, then builds. Ghostty also enables its xcframework step whenever `xcodebuild` is on PATH, and the Command Line Tools stub fails without full Xcode, so `build.rs` passes `-Demit-xcframework=false`. Both are one line each and are the kind of breakage the plan's risk table anticipated.
 
 ## Decision and reasons
 
-domux panes use libghostty-vt. Criterion 1 decided it: alacritty_terminal has five distinct emulator-attributable differences from Ghostty, and two of them are visible in the author's daily programs. The background colour erase difference changes the trailing background of every erased line in neovim and htop, and the kitty shift+enter difference breaks Shift+Enter in Claude Code, which is the tool this multiplexer exists to drive. libghostty-vt has none of these because it is the engine Ghostty itself renders with, and it needs no separate key encoder.
+domux panes use libghostty-vt. Criterion 1 decided it: after the correction above, alacritty_terminal has four distinct emulator-attributable differences from Ghostty. The kitty Shift+Enter difference breaks multiline input in Claude Code, which is the tool this multiplexer exists to drive. libghostty-vt has none of these because it is the engine Ghostty itself renders with, and it needs no separate key encoder.
 
 One honesty note about criterion 1. The criterion is "no visible difference from Ghostty",
 and libghostty-vt is the engine Ghostty renders with, so it satisfies that criterion close to
 by construction. The comparison is therefore not neutral between the two candidates: it
 measures how far alacritty_terminal sits from Ghostty, not how far each sits from some
-independent standard. Two of the five differences are worth knowing anyway because they are
-about the inner program's behaviour rather than taste: shift+enter under the kitty protocol
-either reaches the program or does not, and the background colour erase difference decides
-whether an erased line shows the program's background or the pane's. The remaining risk this
-leaves is the version gap in the environment table, which only a person comparing on screen
-can close.
+independent standard. Shift+Enter is worth knowing in particular because it changes the inner
+program's behaviour rather than only its appearance: under the kitty protocol it either reaches
+the program distinctly or it does not. The remaining risk this leaves is the version gap in the
+environment table, which only a person comparing on screen can close.
 
 Performance did not decide it: both clear the 16 ms frame mark by roughly 45x and both idle at effectively zero CPU. alacritty_terminal is faster at raw `yes` throughput and at snapshotting; libghostty-vt is faster on styled and real-program input, uses about an eighth of the memory at eight panes with scrollback, and fed 2.6x more bytes in the same 30 seconds.
 
@@ -134,7 +145,7 @@ The Zig build cost is real but bounded: 42 s cold with a warm Zig cache, 0.20 s 
 
 **Date:** 2026-09-05. M0 kept `alacritty_terminal` behind a feature as a measured fallback, built and tested in CI. It was removed before M1 started building on the seam. Three reasons, in order of weight:
 
-1. **It was not an escape hatch for fidelity.** It fails 6 of the 10 goldens, so its golden test shipped `#[ignore]`d. If an interactive comparison had found a Ghostty problem, the fix would have been re-pinning Ghostty or fixing the wrapper, never switching to the engine with five known differences. Gating the removal on the interactive rows was therefore gating it on something that could not change the answer.
+1. **It was not an escape hatch for fidelity.** After the correction above, it fails 4 of the 10 goldens, so its golden test still could not ship as a passing gate. If an interactive comparison found a Ghostty problem, the fix would be re-pinning Ghostty or fixing the wrapper, not switching to the engine with four known differences. Gating the removal on the interactive rows was therefore gating it on something that could not change the answer.
 2. **It was not an escape hatch for build availability either.** It was never shipped in release binaries, so a user on a platform where the Zig build fails had nothing to fall back to. Making it a real build fallback would have meant shipping and selecting it at runtime: more machinery, not less.
 3. **Its one live use was a differential oracle that could not produce actionable findings.** The 12 behaviour tests ran against both implementations, parameterised on the single known key-encoding difference. But this record already notes that criterion 1 favours libghostty-vt by construction, so a disagreement between them means "alacritty differs", which is a catalogued finding rather than a signal. An oracle whose disagreements you will not act on is not an oracle.
 

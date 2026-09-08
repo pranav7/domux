@@ -138,6 +138,7 @@ r8 c7-7 fg=idx2 bg=idx2
 r9 c0-39 fg=idx0 bg=idx2
 r9 c40-45 fg=idx0 bg=idx6
 r9 c46-66 fg=idx0 bg=idx2
+r9 c67-119 bg=idx2
 r10 c0-119 fg=idx0 bg=idx6
 r11 c22-25 bold fg=idx8
 r11 c26-31 fg=idx2
@@ -268,3 +269,4 @@ r39 c50-55 fg=idx0 bg=idx6
 r39 c58-63 fg=idx0 bg=idx6
 r39 c66-71 fg=idx0 bg=idx6
 r39 c75-80 fg=idx0 bg=idx6
+r39 c81-119 bg=idx6

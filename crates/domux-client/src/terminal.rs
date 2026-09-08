@@ -1,9 +1,10 @@
-//! Raw mode, the alternate screen, keyboard enhancement, bracketed paste and focus reports,
-//! restored on drop and before a panic message prints (principle 11).
+//! Raw mode, the alternate screen, wheel, keyboard enhancement, bracketed paste and focus
+//! reports, restored on drop and before a panic message prints (principle 11).
 //!
-//! V2 never enables mouse reporting (the roadmap rules mouse out of V2.0), so there is
-//! nothing of that kind to turn off here. Everything this module turns on has its pair in
-//! `write_restore`, and the test holds the two together.
+//! V2 enables normal mouse tracking only so the outer terminal reports wheel position. The
+//! client ignores clicks and all motion. Alternate scroll stays disabled so an unreported
+//! gesture cannot turn into Up or Down keys for the focused pane. Everything this module
+//! changes has its pair in `write_restore`, and the test holds the two together.
 
 use anyhow::Result;
 use crossterm::cursor::{SetCursorStyle, Show};
@@ -28,6 +29,17 @@ static KEYBOARD_FLAGS_PUSHED: AtomicBool = AtomicBool::new(false);
 /// each install wraps the hook before it, so without this a single panic would restore once
 /// per attach.
 static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// XTSAVE mode 1007, then reset it. Ghostty otherwise translates scrolling on the alternate
+/// screen into cursor keys, which the focused pane would receive as ordinary input.
+const SAVE_AND_DISABLE_ALTERNATE_SCROLL: &[u8] = b"\x1b[?1007s\x1b[?1007l";
+const RESTORE_ALTERNATE_SCROLL: &[u8] = b"\x1b[?1007r";
+
+/// Save normal and SGR mouse modes, then enable them. Normal tracking is the narrow terminal
+/// mode that includes wheel position; unlike crossterm's broad mouse command, it does not ask
+/// the terminal for drag or pointer-motion events. Non-wheel events are ignored by the client.
+const SAVE_AND_ENABLE_WHEEL_REPORTING: &[u8] = b"\x1b[?1000s\x1b[?1006s\x1b[?1000h\x1b[?1006h";
+const RESTORE_WHEEL_REPORTING: &[u8] = b"\x1b[?1006r\x1b[?1000r";
 
 /// Holds the terminal settings the client changed. Dropping it puts them back, whether the
 /// client detached, lost the server, was signalled or panicked.
@@ -84,12 +96,10 @@ impl Drop for TerminalGuard {
 
 /// Everything the client turns on, in the order it is turned on.
 fn write_enter(out: &mut impl Write, keyboard_enhancement: bool) -> std::io::Result<()> {
-    queue!(
-        out,
-        EnterAlternateScreen,
-        EnableBracketedPaste,
-        EnableFocusChange
-    )?;
+    queue!(out, EnterAlternateScreen)?;
+    out.write_all(SAVE_AND_DISABLE_ALTERNATE_SCROLL)?;
+    out.write_all(SAVE_AND_ENABLE_WHEEL_REPORTING)?;
+    queue!(out, EnableBracketedPaste, EnableFocusChange)?;
     if keyboard_enhancement {
         queue!(
             out,
@@ -105,14 +115,16 @@ fn write_restore(out: &mut impl Write, keyboard_enhancement: bool) -> std::io::R
     if keyboard_enhancement {
         queue!(out, PopKeyboardEnhancementFlags)?;
     }
-    execute!(
+    queue!(
         out,
         DisableFocusChange,
         DisableBracketedPaste,
         SetCursorStyle::DefaultUserShape,
-        Show,
-        LeaveAlternateScreen
-    )
+        Show
+    )?;
+    out.write_all(RESTORE_WHEEL_REPORTING)?;
+    out.write_all(RESTORE_ALTERNATE_SCROLL)?;
+    execute!(out, LeaveAlternateScreen)
 }
 
 /// Whether this restore owns the pop: true once per push, for whichever restore is first.
@@ -156,7 +168,7 @@ mod tests {
         write_restore(&mut out, true).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "\x1b[<1u\x1b[?1004l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l"
+            "\x1b[<1u\x1b[?1004l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1006r\x1b[?1000r\x1b[?1007r\x1b[?1049l"
         );
     }
 
@@ -182,6 +194,11 @@ mod tests {
             ("\x1b[?1049h", "\x1b[?1049l"),
             ("\x1b[?2004h", "\x1b[?2004l"),
             ("\x1b[?1004h", "\x1b[?1004l"),
+            ("\x1b[?1007s\x1b[?1007l", "\x1b[?1007r"),
+            (
+                "\x1b[?1000s\x1b[?1006s\x1b[?1000h\x1b[?1006h",
+                "\x1b[?1006r\x1b[?1000r",
+            ),
             ("\x1b[>1u", "\x1b[<1u"),
         ] {
             assert!(on.contains(set), "enter must set {set:?}");

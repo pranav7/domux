@@ -124,6 +124,52 @@ async fn moving_above_the_top_scrolls_into_the_scrollback_and_the_flag_counts() 
 }
 
 #[tokio::test]
+async fn wheel_scroll_moves_the_pane_under_the_pointer_immediately() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let left = pane_with_lines(&mut h, 20).await;
+    let right = h
+        .api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .map(|id| domux_core::ids::PaneId(id.into()))
+        .expect("the split returns its pane");
+    h.frame(h.client.clone()).await;
+
+    // The right pane has keyboard focus, but column 5 is inside the left pane's box.
+    // A wheel step scrolls the pointed-at pane at once rather than walking its copy cursor
+    // through the visible rows first.
+    h.scroll(h.client.clone(), 5, 5, 3).await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("copy 3/14"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(h.focused_pane(h.client.clone()), left);
+    assert!(h.model().pane(&left).unwrap().copy_mode);
+    assert!(!h.model().pane(&right).unwrap().copy_mode);
+    assert!(
+        f.contains("line 11"),
+        "the viewport moved into history:\n{f}"
+    );
+
+    h.scroll(h.client.clone(), 5, 5, -2).await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("copy 1/14"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("line 13"),
+        "the viewport moved towards live:\n{f}"
+    );
+}
+
+#[tokio::test]
 async fn v_enter_copies_the_selection_to_the_client_and_leaves() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     pane_with_lines(&mut h, 20).await;

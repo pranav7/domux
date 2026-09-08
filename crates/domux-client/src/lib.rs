@@ -10,7 +10,7 @@ pub mod terminal;
 use crate::frame::Screen;
 use crate::terminal::TerminalGuard;
 use anyhow::Context;
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, MouseEventKind};
 // `SERVER_STOPPED` is the reason the server sends when the whole server is going away, rather
 // than one view. It is defined beside the message that carries it, so the server writing it and
 // this crate reading it are one string rather than two literals a reword could part.
@@ -39,6 +39,10 @@ pub enum AttachOutcome {
 
 /// The client's own reason when the terminal it draws on has gone.
 const TERMINAL_ENDED: &str = "the terminal ended";
+
+/// One discrete terminal wheel report moves this many rows. Terminals do not carry the
+/// physical gesture's magnitude in the mouse protocol, so every report needs one stable step.
+const WHEEL_LINES: i16 = 3;
 
 fn detach_outcome(reason: String) -> AttachOutcome {
     if reason == SERVER_STOPPED {
@@ -212,6 +216,21 @@ where
     fn on_event(&mut self, event: Event) -> Option<ClientMsg> {
         match event {
             Event::Key(key) => input::to_key_event(&key).map(ClientMsg::Key),
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => Some(ClientMsg::Scroll {
+                    column: mouse.column,
+                    row: mouse.row,
+                    lines: WHEEL_LINES,
+                }),
+                MouseEventKind::ScrollDown => Some(ClientMsg::Scroll {
+                    column: mouse.column,
+                    row: mouse.row,
+                    lines: -WHEEL_LINES,
+                }),
+                // Normal tracking also reports button presses and releases. V2 uses only
+                // wheel position, so clicks, horizontal scroll and motion do nothing.
+                _ => None,
+            },
             Event::Paste(text) => Some(ClientMsg::Paste(text)),
             // The server answers a resize with a full frame, so the screen starts empty at
             // the new size rather than diffing against a size that is gone.
@@ -221,7 +240,6 @@ where
             }
             Event::FocusGained => Some(ClientMsg::Focus(true)),
             Event::FocusLost => Some(ClientMsg::Focus(false)),
-            _ => None,
         }
     }
 }
@@ -340,7 +358,10 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyEventKind, KeyEventState, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent as CtKey, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
+        MouseEvent,
+    };
     use domux_core::proto::{CellUpdate, FrameDiff, WireColor, MAX_FRAME};
     use domux_term::{Key, KeyEvent, Mods};
     use futures::channel::mpsc::{unbounded, UnboundedSender};
@@ -414,6 +435,15 @@ mod tests {
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
+        })
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
         })
     }
 
@@ -493,6 +523,49 @@ mod tests {
         drop(server);
         let (outcome, _) = task.await.unwrap();
         assert_eq!(outcome.unwrap(), AttachOutcome::ConnectionLost);
+    }
+
+    #[tokio::test]
+    async fn vertical_wheel_events_carry_their_cell_and_horizontal_scroll_is_ignored() {
+        let (events, mut server, task) = running(40, 10, clipboard_works);
+        events
+            .unbounded_send(Ok(mouse(MouseEventKind::ScrollUp, 7, 4)))
+            .unwrap();
+        expect_frame(
+            &mut server,
+            &ClientMsg::Scroll {
+                column: 7,
+                row: 4,
+                lines: WHEEL_LINES,
+            },
+        )
+        .await;
+        events
+            .unbounded_send(Ok(mouse(MouseEventKind::ScrollLeft, 7, 4)))
+            .unwrap();
+        events
+            .unbounded_send(Ok(mouse(MouseEventKind::Down(MouseButton::Left), 7, 4)))
+            .unwrap();
+        events.unbounded_send(Ok(key('a'))).unwrap();
+        expect_frame(
+            &mut server,
+            &ClientMsg::Key(KeyEvent::press(Key::Char('a'), Mods::empty())),
+        )
+        .await;
+        events
+            .unbounded_send(Ok(mouse(MouseEventKind::ScrollDown, 9, 6)))
+            .unwrap();
+        expect_frame(
+            &mut server,
+            &ClientMsg::Scroll {
+                column: 9,
+                row: 6,
+                lines: -WHEEL_LINES,
+            },
+        )
+        .await;
+        drop(server);
+        task.await.unwrap().0.unwrap();
     }
 
     #[tokio::test]

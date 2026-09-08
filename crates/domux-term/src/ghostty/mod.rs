@@ -762,9 +762,11 @@ mod viewport {
 ///
 /// Safety: `cells` must be a live iterator positioned on a cell.
 unsafe fn fill_cell(cells: ffi::GhosttyRenderStateRowCells, out: &mut Cell) {
-    // The wide state lives on the raw cell, not the render-state view.
+    // The wide state and the compact background-only representation live on the raw cell,
+    // not the render-state style.
     let mut raw: ffi::GhosttyCell = 0;
     let mut wide = ffi::GhosttyCellWide_GHOSTTY_CELL_WIDE_NARROW;
+    let mut content_bg = None;
     if unsafe {
         ffi::ghostty_render_state_row_cells_get(
             cells,
@@ -780,6 +782,7 @@ unsafe fn fill_cell(cells: ffi::GhosttyRenderStateRowCells, out: &mut Cell) {
                 &mut wide as *mut _ as *mut c_void,
             )
         };
+        content_bg = background_from_content(raw);
     }
     out.width = match wide {
         ffi::GhosttyCellWide_GHOSTTY_CELL_WIDE_WIDE => 2,
@@ -855,6 +858,54 @@ unsafe fn fill_cell(cells: ffi::GhosttyRenderStateRowCells, out: &mut Cell) {
         out.bg = Color::Default;
         out.underline_color = None;
         out.attrs = Attrs::empty();
+    }
+    if let Some(bg) = content_bg {
+        out.bg = bg;
+    }
+}
+
+/// Reads the background Ghostty stores directly in a blank cell after an erase. Text cells
+/// keep their background in the style table, but background-only cells use this compact form.
+fn background_from_content(cell: ffi::GhosttyCell) -> Option<Color> {
+    let mut tag = ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_CODEPOINT;
+    if unsafe {
+        ffi::ghostty_cell_get(
+            cell,
+            ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CONTENT_TAG,
+            &mut tag as *mut _ as *mut c_void,
+        )
+    } != ffi::GhosttyResult_GHOSTTY_SUCCESS
+    {
+        return None;
+    }
+    match tag {
+        ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
+            let mut index: ffi::GhosttyColorPaletteIndex = 0;
+            (unsafe {
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_PALETTE,
+                    &mut index as *mut _ as *mut c_void,
+                )
+            } == ffi::GhosttyResult_GHOSTTY_SUCCESS)
+                .then_some(Color::Indexed(index))
+        }
+        ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
+            let mut rgb = ffi::GhosttyColorRgb { r: 0, g: 0, b: 0 };
+            (unsafe {
+                ffi::ghostty_cell_get(
+                    cell,
+                    ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_RGB,
+                    &mut rgb as *mut _ as *mut c_void,
+                )
+            } == ffi::GhosttyResult_GHOSTTY_SUCCESS)
+                .then_some(Color::Rgb(Rgb {
+                    r: rgb.r,
+                    g: rgb.g,
+                    b: rgb.b,
+                }))
+        }
+        _ => None,
     }
 }
 
