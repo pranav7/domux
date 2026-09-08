@@ -1,9 +1,8 @@
 //! The sidebar's geometry and API, the tab row on the panes, and the remembered state.
 //!
-//! Task 13a. Nothing draws the Projects box yet - its rows are `render::projects_box`, which
-//! task 11 builds - so the sidebar's own 38 columns are blank here and every test below waits
-//! on the top bar going away rather than on the box arriving. Task 13b adds
-//! `render::sidebar::draw` and the test that reads the box.
+//! The waits below are on the full-width top bar going away rather than on the box arriving,
+//! because `on_the_panes` states the layout positively: a client that has drawn nothing
+//! satisfies "no top bar" and would pass a wait written the other way round.
 
 use domux_core::config::Config;
 use domux_server::testing::{row, Harness};
@@ -25,10 +24,11 @@ fn on_the_panes(f: &str) -> bool {
         && cols(row(f, 1), 38, 40) == " ┌ "
 }
 
-/// `leader b` reaches `sidebar.toggle`, the full-width top bar goes, and the tab row moves
-/// onto the panes with the right end's pieces at its end (interface spec 4.2).
+/// `leader b` reaches `sidebar.toggle`, the full-width top bar goes, the sidebar takes the
+/// left 38 columns, and the tab row moves onto the panes with the right end's pieces at its
+/// end (interface spec 4.2).
 #[tokio::test]
-async fn leader_b_takes_the_top_bar_away_and_moves_the_tab_row_onto_the_panes() {
+async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_the_panes() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     h.key(h.client.clone(), "C-a").await;
     h.key(h.client.clone(), "b").await;
@@ -54,12 +54,43 @@ async fn leader_b_takes_the_top_bar_away_and_moves_the_tab_row_onto_the_panes() 
         cols(row(&f, 23), 38, 119),
         " └───────────────────────────────────────────────────────────────────────────────┘"
     );
-    // The seam. Task 13b draws the Projects box into these columns and replaces this
-    // assertion with the brief's own `┌ Projects ─…─┐` literals.
+    // `cols(line, 0, 37)` takes 38 cells, the sidebar's whole width.
     assert_eq!(
         cols(row(&f, 0), 0, 37),
-        " ".repeat(38),
-        "task 13a leaves the sidebar's own columns blank:\n{f}"
+        "┌ Projects ──────────────────────────┐",
+        "{f}"
+    );
+    assert_eq!(
+        cols(row(&f, 1), 0, 37),
+        "│PROJ ───────────────────────────────│"
+    );
+    assert_eq!(
+        cols(row(&f, 2), 0, 37),
+        "│main                                │"
+    );
+    assert_eq!(
+        cols(row(&f, 22), 0, 37),
+        "└────────────────────────────────────┘"
+    );
+    assert_eq!(
+        cols(row(&f, 23), 0, 37),
+        " leader b hide · leader s search      "
+    );
+    // The fill marks the row the keys act on, which with focus in a pane is the workspace
+    // this client is in (domain model, section 3.3). `rows` is given the key and hands back
+    // where it put the fill, so the band and the brightening are one answer: the band runs
+    // the row's whole inner width and the text on it is brightened to `text`.
+    assert!(
+        f.contains("r2 c1-4 fg=#cdd6f4 bg=#313244"),
+        "`main` is the current workspace, so its row carries the fill:\n{f}"
+    );
+    assert!(
+        f.contains("r2 c5-36 bg=#313244"),
+        "and the band runs to the border rather than stopping at the text:\n{f}"
+    );
+    assert!(
+        f.contains("r1 c1-5 bold fg=#7f849c\n"),
+        "the project header is not a row the keys can act on, so it takes no fill:\n{f}"
     );
 }
 
@@ -120,12 +151,20 @@ async fn a_screen_narrower_than_the_sidebar_plus_a_pane_hides_it_without_forgett
         h.model().sidebar_open,
         "auto-hide never changes the remembered state (interface spec 12.1)"
     );
-    // Open but not visible: the two answers are different questions, and on this screen
-    // they have different answers.
+    // Asking for it at this width gets it: `leader b` shows the sidebar at any width, and
+    // the auto-hide is an override the reader can override in turn (interface spec 12.1).
     let result = h.api("sidebar.show", serde_json::json!({})).await.unwrap();
     assert_eq!(
         (result["open"].clone(), result["visible"].clone()),
-        (serde_json::json!(true), serde_json::json!(false))
+        (serde_json::json!(true), serde_json::json!(true))
+    );
+    let f = h
+        .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
+        .await;
+    assert_eq!(
+        cols(row(&f, 0), 0, 37),
+        "┌ Projects ──────────────────────────┐",
+        "the sidebar the reader asked for, on a screen that would not show it alone:\n{f}"
     );
     let result = h
         .api("sidebar.toggle", serde_json::json!({}))
@@ -316,13 +355,16 @@ async fn a_tab_that_does_not_own_the_keys_carries_no_background_on_the_panes() {
 async fn hiding_the_sidebar_redraws_a_client_whose_panes_do_not_change_size() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let _second = h.attach(81, 24).await;
-    h.api("sidebar.show", serde_json::json!({})).await.unwrap();
+    // Named, not left to `most_recent_client`: an explicit ask from the 81-column client
+    // would force the sidebar onto it, which resizes the panes and destroys the premise.
+    let me = serde_json::json!({ "client": h.client.to_string() });
+    h.api("sidebar.show", me.clone()).await.unwrap();
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     let pane = h.focused_pane(h.client.clone());
     let before = h.pane_size(&pane);
     assert_eq!((before.cols, before.rows), (79, 21));
-    h.api("sidebar.hide", serde_json::json!({})).await.unwrap();
+    h.api("sidebar.hide", me).await.unwrap();
     let f = h
         .wait_for(
             h.client.clone(),
@@ -348,14 +390,21 @@ async fn hiding_the_sidebar_redraws_a_client_whose_panes_do_not_change_size() {
 /// raised an event of its own. The second client below is exactly as wide as the first one's
 /// workpanel beside the sidebar, so showing the sidebar resizes nothing and the toggle's own
 /// event is the only writer left. The harness has already written the file at startup, so a
-/// missing mid-session write leaves a stale `false` here rather than no file at all.
+/// missing mid-run write leaves a stale `false` here rather than no file at all.
 #[tokio::test]
 async fn the_sidebar_reaches_the_state_file_while_the_server_is_still_running() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let _second = h.attach(81, 24).await;
     let pane = h.focused_pane(h.client.clone());
     let before = h.pane_size(&pane);
-    h.api("sidebar.show", serde_json::json!({})).await.unwrap();
+    // Named for the same reason as the redraw test above: an ask from the narrow client
+    // would force the sidebar onto it and resize the panes.
+    h.api(
+        "sidebar.show",
+        serde_json::json!({ "client": h.client.to_string() }),
+    )
+    .await
+    .unwrap();
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     // Past the 100 ms persist debounce. Bounded, as `resume.rs` does it, so a regression is
@@ -392,5 +441,166 @@ async fn a_call_naming_a_client_that_is_not_attached_changes_nothing() {
     assert!(
         f.contains("proj › main"),
         "and the attached client keeps its top bar:\n{f}"
+    );
+}
+
+/// The narrow-screen override is this client's own.
+///
+/// The remembered state is the server's, so both clients below want the sidebar. The
+/// auto-hide is each client's own, so the one that asked for it at this width gets it and
+/// the one that did not stays hidden (interface spec 12.1). One bit could not do this: it
+/// would either show the sidebar on both or on neither.
+#[tokio::test]
+async fn asking_for_the_sidebar_on_a_narrow_screen_leaves_another_narrow_client_hidden() {
+    let mut h = Harness::start(Config::default(), 119, 24).await;
+    let other = h.attach(119, 24).await;
+    h.api(
+        "sidebar.show",
+        serde_json::json!({ "client": h.client.to_string() }),
+    )
+    .await
+    .unwrap();
+    let f = h
+        .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
+        .await;
+    assert!(
+        f.contains("┌ Projects"),
+        "the client that asked gets it at 119 columns:\n{f}"
+    );
+    let g = h.frame(other).await;
+    assert!(
+        g.contains("proj › main"),
+        "the client that did not ask is still auto-hidden:\n{g}"
+    );
+    assert!(
+        h.model().sidebar_open,
+        "and the remembered state is open for both of them"
+    );
+}
+
+/// Hiding the sidebar clears the override. With the intent closed there is nothing left to
+/// override, so showing it again from a screen wide enough on its own leaves the narrow
+/// client auto-hidden as it was, rather than still forced from before.
+#[tokio::test]
+async fn hiding_the_sidebar_clears_the_narrow_screen_override() {
+    let mut h = Harness::start(Config::default(), 119, 24).await;
+    let me = serde_json::json!({ "client": h.client.to_string() });
+    h.api("sidebar.show", me.clone()).await.unwrap();
+    h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
+        .await;
+    h.api("sidebar.hide", me).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("proj › main"),
+        Duration::from_secs(2),
+    )
+    .await;
+    let wide = h.attach(120, 24).await;
+    h.api(
+        "sidebar.show",
+        serde_json::json!({ "client": wide.to_string() }),
+    )
+    .await
+    .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("proj › main"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("proj › main"),
+        "the narrow client is auto-hidden again, not still forced from before:\n{f}"
+    );
+    let g = h.wait_for(wide, on_the_panes, Duration::from_secs(2)).await;
+    assert!(
+        g.contains("┌ Projects"),
+        "while the wide client that asked has it:\n{g}"
+    );
+}
+
+/// The event says which client and which way it went.
+///
+/// Persistence keys off the event's class, not its contents, so every other test here passes
+/// with the payload inverted: they observe that an event was raised, never that it said the
+/// right thing. A subscriber to `sidebar.*` - `domux2 api events`, and every later task that
+/// watches for structural changes - would be told the sidebar closed when it opened, which is
+/// a fabricated fact rather than a missing one (principle 4).
+#[tokio::test]
+async fn the_sidebar_event_carries_the_client_and_the_state_it_moved_to() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let stream = UnixStream::connect(h.socket_path()).await.unwrap();
+    let (r, mut w) = stream.into_split();
+    w.write_all(
+        b"{\"id\":1,\"method\":\"events.subscribe\",\"params\":{\"filter\":[\"sidebar.*\"]}}\n",
+    )
+    .await
+    .unwrap();
+    let mut lines = BufReader::new(r).lines();
+    // Every read is bounded: a subscription that never answers must fail this test in
+    // seconds rather than stall the suite, which a test binary cannot report.
+    let ack = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+        .await
+        .expect("events.subscribe was acknowledged")
+        .unwrap()
+        .unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&ack).unwrap()["error"].is_null(),
+        "{ack}"
+    );
+    let asked = h.client.to_string();
+    h.api(
+        "sidebar.show",
+        serde_json::json!({ "client": asked.clone() }),
+    )
+    .await
+    .unwrap();
+    let line = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+        .await
+        .expect("the sidebar event arrived")
+        .unwrap()
+        .unwrap();
+    let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["event"], "sidebar.toggled", "{event}");
+    assert_eq!(
+        event["open"],
+        serde_json::json!(true),
+        "it opened, so the event says so: {event}"
+    );
+    assert_eq!(
+        event["client"],
+        serde_json::json!(asked),
+        "and names the client that asked: {event}"
+    );
+}
+
+/// The current tab's cell while an overlay owns the keys: bold text, no accent fill, and no
+/// background of its own on the row over the panes.
+///
+/// `cell_for` has three arms and each needs its own fixture. Keys in a pane gives the accent
+/// fill, a tab that is not the current one gives the dim arm, and only an open overlay gives
+/// this one. `overlay::frame` starts at row 1, so the tab row stays visible under it and a
+/// mantle band here would draw across the top of the panes.
+#[tokio::test]
+async fn the_current_tab_carries_no_background_while_an_overlay_owns_the_keys() {
+    let mut h = Harness::start(Config::default(), 120, 34).await;
+    h.api("sidebar.show", serde_json::json!({})).await.unwrap();
+    h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
+        .await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("r0 c39-41 bold fg=#cdd6f4\n"),
+        "the current tab is bold text on nothing: not the accent fill, and not a mantle band:\n{f}"
     );
 }

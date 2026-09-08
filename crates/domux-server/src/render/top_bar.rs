@@ -156,20 +156,6 @@ pub fn draw_tabs_and_right(
     draw_pieces(end, x + (room - right) as u16, y, x_max, bg, buf);
 }
 
-/// The right end alone, flushed to `x_max` and never starting left of `x_min`. `top_bar::draw`
-/// reaches it through `draw_tabs_and_right`, which works out `x_min` from what the tab row
-/// needs; a caller that has already settled the room calls this directly.
-pub fn draw_right(
-    input: &RenderInput,
-    x_min: u16,
-    y: u16,
-    x_max: u16,
-    bg: Color,
-    buf: &mut Buffer,
-) {
-    draw_pieces(right_end(input), x_min, y, x_max, bg, buf);
-}
-
 fn draw_pieces(end: RightEnd, x_min: u16, y: u16, x_max: u16, bg: Color, buf: &mut Buffer) {
     let room = x_max.saturating_sub(x_min).saturating_sub(1) as usize;
     let drawn = fit(squeeze(end.pieces, room), room);

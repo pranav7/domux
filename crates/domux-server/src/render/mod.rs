@@ -18,6 +18,7 @@ pub fn to_rect(r: domux_core::model::Rect) -> Rect {
 }
 
 use crate::client::Hint;
+use crate::facts::FactRegistry;
 use crate::pane::PaneRuntime;
 use crate::render::boxed::Boxed;
 use crate::render::pane_box::{cursor_position, render_grid};
@@ -42,6 +43,9 @@ pub struct RenderInput<'a> {
     pub panes: &'a HashMap<PaneId, PaneRuntime>,
     pub view: &'a ClientView,
     pub keymap: &'a Keymap,
+    /// What domux observed about each workspace. The Projects box reads it; nothing here
+    /// fetches, because a fetch shells out and rendering runs on the core task.
+    pub facts: &'a FactRegistry,
     pub now: DateTime<Local>,
     pub config_error: Option<&'a ConfigError>,
     /// One line for the clock's place. Its kind is what decides where it sits in the right
@@ -112,9 +116,9 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
         return (buf, None);
     }
     // With the sidebar shown there is no full-width top bar: the tab row sits on the panes
-    // with the right end's pieces at its end (interface spec 4.2). The sidebar's own 38
-    // columns stay blank until task 13b draws the Projects box into them.
+    // with the right end's pieces at its end (interface spec 4.2).
     if input.view.sidebar_visible() {
+        sidebar::draw(input, &mut buf);
         tab_row::draw_workpanel_row(input, &mut buf);
     } else {
         top_bar::draw(input, &mut buf);
@@ -304,6 +308,7 @@ mod tests {
             tab: TabId(tab.to_string()),
             focus: Focus::Pane(PaneId("p_0001".into())),
             sidebar_open,
+            sidebar_forced: false,
             overlay: None,
             chord: None,
             filter: String::new(),

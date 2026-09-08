@@ -514,6 +514,7 @@ impl Core {
             // The remembered state, so a new client opens the screen the last one left
             // (roadmap decision 4).
             sidebar_open: self.model.sidebar_open,
+            sidebar_forced: false,
             overlay: None,
             chord: None,
             filter: String::new(),
@@ -1213,8 +1214,8 @@ impl Core {
         // One entry per tab with a client that draws panes, carrying the first such client's
         // size. A below-minimum client draws only the size notice, so it must not resize a PTY
         // nobody can see. When every client is below the minimum, leave the existing pane size
-        // alone: a resize would churn its program for no visible result. `smallest_size` still
-        // raises an absent current size to the minimum, rather than adopting a tiny screen.
+        // alone: a resize would churn its program for no visible result. `tab_workpanel` still
+        // raises an absent current size to the minimum, rather than adopting a tiny screen. The
         // rectangle itself comes from `render::tab_workpanel`, the same function the
         // renderer lays the boxes out with, so a pane's program and every client agree on
         // its size. The recorded size is only the fallback for a tab without another drawing
@@ -1279,6 +1280,7 @@ impl Core {
                 panes: &self.panes,
                 view: &view,
                 keymap: &self.config.keymap,
+                facts: &self.facts,
                 now: self.deps.clock.now(),
                 config_error: self.config.error.as_ref(),
                 hint: conn.hint.as_ref(),

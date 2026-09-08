@@ -142,8 +142,14 @@ mod tests {
     /// drain would stall the whole suite silently instead of failing this test.
     #[test]
     fn a_command_that_writes_more_than_a_pipe_holds_still_finishes_and_keeps_every_byte() {
+        // 60 and 30 rather than 15 and 5. The inner limit is `output_within`'s own deadline,
+        // and two 200KB `dd | tr` pipelines can lose a 5 second race on a machine running a
+        // mutation sweep beside them; the call then returns `TimedOut` and the `unwrap`
+        // below panics, which reads as a real failure. Both properties survive the widening:
+        // the drain still has to deliver every byte, and a lost deadline check still fails
+        // in bounded time rather than stalling the suite.
         let out = finishes_within(
-            Duration::from_secs(15),
+            Duration::from_secs(60),
             "output_within on a command that writes 200KB",
             || {
                 output_within(
@@ -151,7 +157,7 @@ mod tests {
                         r#"dd if=/dev/zero bs=1000 count=200 2>/dev/null | tr '\0' 'o'
                           dd if=/dev/zero bs=1000 count=200 2>/dev/null | tr '\0' 'e' >&2"#,
                     ),
-                    Duration::from_secs(5),
+                    Duration::from_secs(30),
                 )
             },
         )

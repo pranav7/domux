@@ -225,6 +225,11 @@ pub struct ClientView {
     pub tab: TabId,
     pub focus: Focus,
     pub sidebar_open: bool,
+    /// This client asked for the sidebar on a screen too narrow to show it on its own, so the
+    /// width rule does not apply here: `leader b` shows it at any width (interface spec 12.1).
+    /// Cleared when the sidebar is hidden, because there is then nothing left to override.
+    #[serde(default)]
+    pub sidebar_forced: bool,
     pub overlay: Option<Overlay>,
     pub chord: Option<Chord>,
     /// The filter text of a list overlay: the switcher in M2, the agents overlay in M3.
@@ -258,10 +263,18 @@ pub struct ClientView {
 }
 
 impl ClientView {
-    /// Whether this client draws the sidebar now. The remembered state says yes and the
-    /// screen is wide enough (interface spec 12.1).
+    /// Whether this client draws the sidebar now.
+    ///
+    /// Two bits, not one (interface spec 12.1). `sidebar_open` is the remembered intent, and
+    /// it is the server's: `leader b` flips it and every client follows. The auto-hide is
+    /// this client's own, and it is an override rather than part of the intent, so a screen
+    /// that grew wide again shows the sidebar the reader never closed. `sidebar_forced` is
+    /// the reader overriding the override: they asked for it on a narrow screen and got it.
+    ///
+    /// One bit cannot carry this, because it cannot tell "hidden because the screen is
+    /// narrow" from "hidden because you said so", and those come back differently.
     pub fn sidebar_visible(&self) -> bool {
-        self.sidebar_open && self.size.cols >= SIDEBAR_MIN_COLS
+        self.sidebar_open && (self.size.cols >= SIDEBAR_MIN_COLS || self.sidebar_forced)
     }
 
     /// Opens `overlay` over whatever is open, keeping one level underneath.
@@ -1386,6 +1399,7 @@ mod tests {
             tab: tab.clone(),
             focus: Focus::Pane(pane.clone()),
             sidebar_open: false,
+            sidebar_forced: false,
             overlay: None,
             chord: None,
             filter: String::new(),

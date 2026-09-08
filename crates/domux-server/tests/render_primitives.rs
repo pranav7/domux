@@ -290,6 +290,7 @@ fn model_with_clients(
             tab: tab.clone(),
             focus: Focus::Pane(pane.clone()),
             sidebar_open: false,
+            sidebar_forced: false,
             overlay: None,
             chord: None,
             filter: String::new(),
@@ -343,6 +344,7 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
         panes: &panes,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
+        facts: &domux_server::facts::FactRegistry::new(),
         now: chrono::Local::now(),
         config_error: None,
         hint: None,
@@ -381,6 +383,7 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
         panes: &panes,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
+        facts: &domux_server::facts::FactRegistry::new(),
         now: chrono::Local::now(),
         config_error: None,
         hint: None,
@@ -392,5 +395,80 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
             .chars()
             .all(|c| c == ' '),
         "everything past the smallest client's width is blank: {top:?}"
+    );
+}
+
+/// The tab row's background reaches the cell under a wide grapheme's second half.
+///
+/// `boxed::put_within` patches a cell's style, so a run with no background of its own keeps
+/// whatever the row was filled with - except for a wide grapheme, where it calls
+/// `Cell::reset()` on the trailing cell first and clears the fill. That is why the row's
+/// background is a parameter of `TabRow::draw` rather than left to the patch.
+///
+/// Asserted on the composed buffer rather than on a client's frame, deliberately. Whether a
+/// client ever *sees* the hole depends on `ratatui-core`'s diff, which skips the trailing
+/// cell of an unchanged wide grapheme and emits it explicitly when the cell changes
+/// (`buffer/diff.rs`). That is transport, and it has changed between ratatui versions; the
+/// renderer's contract is that the row it drew has one background all the way across, and
+/// this is the level that contract lives at.
+#[test]
+fn a_wide_grapheme_in_a_tab_name_leaves_no_hole_in_the_top_bar() {
+    use domux_core::model::ClientView;
+    use domux_server::render::{compose, RenderInput};
+    use std::collections::HashMap;
+
+    // Wide enough that the tab row keeps both cells: at 40 columns the clock takes most of
+    // the row and the tab that is not current is elided away, taking the wide name with it.
+    let (mut model, tab) = model_with_clients(&[(
+        "c_one",
+        Size {
+            cols: 120,
+            rows: 24,
+        },
+    )]);
+    // A second tab, so tab 1 is not the current one and its cell takes the row's background
+    // rather than the accent fill, which sets its own and would cover the hole.
+    let ws = model
+        .client(&domux_core::ids::ClientId("c_one".into()))
+        .unwrap()
+        .workspace
+        .clone();
+    model
+        .rename_tab(&tab, Some("日".into()))
+        .expect("tab 1 takes a wide name");
+    let (second, _, _) = model
+        .create_tab(&ws, std::path::PathBuf::from("/tmp/proj"))
+        .unwrap();
+    let view = ClientView {
+        tab: second,
+        ..model
+            .client(&domux_core::ids::ClientId("c_one".into()))
+            .unwrap()
+            .clone()
+    };
+    let panes = HashMap::new();
+    let (buffer, _) = compose(&RenderInput {
+        model: &model,
+        panes: &panes,
+        view: &view,
+        keymap: &domux_core::keymap::Keymap::defaults(),
+        facts: &domux_server::facts::FactRegistry::new(),
+        now: chrono::Local::now(),
+        config_error: None,
+        hint: None,
+    });
+    let mantle = ratatui::style::Color::Rgb(0x18, 0x18, 0x25);
+    let wide = (0..120u16)
+        .find(|x| buffer[(*x, 0u16)].symbol() == "日")
+        .expect("the wide tab name is on the bar");
+    assert_eq!(
+        buffer[(wide, 0u16)].bg,
+        mantle,
+        "the cell the glyph starts in"
+    );
+    assert_eq!(
+        buffer[(wide + 1, 0u16)].bg,
+        mantle,
+        "and the cell under its second half, which `put_within` had reset"
     );
 }
