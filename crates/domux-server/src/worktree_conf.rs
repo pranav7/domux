@@ -152,7 +152,7 @@ pub fn parse(text: &str) -> (Vec<Directive>, Vec<String>) {
 /// set is refused, not the whole of `Cf`: a zero-width joiner has innocent uses in text and
 /// drives nothing.
 fn is_direction_control(c: char) -> bool {
-    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Applies every `link` and `copy` in order. `run` is skipped here: `run_lines` gives it to
@@ -284,7 +284,7 @@ fn remove_entry(path: &Path) -> Result<(), String> {
 /// after it would remove the main checkout's own file and leave a loop where it was. So the
 /// walk starts at the resolved slot and takes one component at a time, descending only into a
 /// folder that is a folder, creating the ones that are not there yet, and refusing anything
-/// else. The finished folder is then resolved once more, and the check on that is described
+/// else, a link included whatever it leads to. The finished folder is then resolved once more, and the check on that is described
 /// where it sits.
 ///
 /// The last component is not resolved, and must not be: `remove_entry`, `symlink` and `rename`
@@ -303,11 +303,17 @@ fn dst_in_slot(slot: &Path, rel: &Path) -> Result<PathBuf, String> {
         match std::fs::symlink_metadata(&folder) {
             Ok(meta) if meta.is_dir() => {}
             Ok(meta) if meta.is_symlink() => {
+                // Where the link leads is not the point and is deliberately not looked at: the
+                // walk refuses a link because following one is what carried the write out of
+                // the slot, and a link that leads inside the slot today leads wherever it is
+                // pointed tomorrow. So the refusal says the link is there, not that the path
+                // escapes, which for a repository that tracks a symlinked folder would be
+                // false.
                 return Err(format!(
-                    "the slot's \"{}\" is a link, so this would land outside the slot; link \
-                     either a folder or what is inside it, not both",
+                    "the slot's \"{}\" is a link, and the setup does not walk through a link; \
+                     name a path whose folders the slot holds",
                     walked.display()
-                ))
+                ));
             }
             Ok(_) => {
                 return Err(format!(

@@ -496,14 +496,11 @@ fn link_refuses_a_destination_reached_through_a_symlink_out_of_the_slot() {
     assert_eq!(
         applied.failures(),
         vec![
-            "link vendor/lib.txt: the slot's \"vendor\" is a link, so this would land outside \
-             the slot; link either a folder or what is inside it, not both"
+            "link vendor/lib.txt: the slot's \"vendor\" is a link, and the setup does not walk through a link; name a path whose folders the slot holds"
                 .to_string(),
-            "link target/debug: the slot's \"target\" is a link, so this would land outside the \
-             slot; link either a folder or what is inside it, not both"
+            "link target/debug: the slot's \"target\" is a link, and the setup does not walk through a link; name a path whose folders the slot holds"
                 .to_string(),
-            "copy vendor/lib.txt: the slot's \"vendor\" is a link, so this would land outside \
-             the slot; link either a folder or what is inside it, not both"
+            "copy vendor/lib.txt: the slot's \"vendor\" is a link, and the setup does not walk through a link; name a path whose folders the slot holds"
                 .to_string(),
         ]
     );
@@ -543,8 +540,7 @@ fn link_and_copy_refuse_a_slot_folder_that_leads_out_of_the_slot() {
     for failure in applied.failures() {
         assert!(
             failure.ends_with(
-                "the slot's \"vendor\" is a link, so this would land outside the slot; link \
-                 either a folder or what is inside it, not both"
+                "the slot's \"vendor\" is a link, and the setup does not walk through a link; name a path whose folders the slot holds"
             ),
             "unexpected failure: {failure}"
         );
@@ -689,7 +685,7 @@ fn parse_drops_an_argument_that_reorders_how_it_reads() {
         "a zero-width joiner drives nothing and is left alone"
     );
     for c in [
-        '\u{200e}', '\u{200f}', '\u{202a}', '\u{202d}', '\u{2066}', '\u{2069}',
+        '\u{61c}', '\u{200e}', '\u{200f}', '\u{202a}', '\u{202d}', '\u{2066}', '\u{2069}',
     ] {
         let (directives, warnings) = parse(&format!("link a{c}b\n"));
         assert!(directives.is_empty(), "{c:?} was accepted");
