@@ -111,6 +111,10 @@ pub fn removal_copy(name: &str, workspaces: usize, root: &Path) -> RemovalCopy {
 /// `--yes`. Both refusals leave the model exactly as they found it.
 pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> {
     let project = ctx.resolve_project_param(&p.project)?;
+    // Unreachable: `resolve_project_param` has already answered with the id of a project
+    // the model holds, and nothing runs between the two. Kept because the alternative is an
+    // `expect` in a destructive handler, and written out rather than left silent so the next
+    // reader can tell a considered choice from an oversight.
     let target = ctx
         .model
         .project(&project)
@@ -160,6 +164,12 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
     ctx.events.extend(ctx.model.remove_project(&project)?);
     ctx.pending_kills.extend(doomed);
     reseat_stranded_clients(ctx);
+    // Belt, and deliberately unpinned: `apply_side_effects` marks the view whenever it
+    // killed anything, and a project always has at least one pane to kill, so no test can
+    // tell this line from its absence. It stays because the day a project has no pane -
+    // a workspace restored without a tab, a future kind that spawns nothing - the removal
+    // must still redraw, and the cost of being wrong is a screen still showing a project
+    // that is gone.
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

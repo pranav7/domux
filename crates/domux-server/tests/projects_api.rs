@@ -5,6 +5,7 @@ mod support;
 
 use domux_core::api::ErrorCode;
 use domux_core::config::Config;
+use domux_core::model::{Focus, RegionKind};
 use domux_server::facts::branch::BranchProvider;
 use domux_server::git;
 use domux_server::testing::{Harness, HarnessOptions};
@@ -86,6 +87,43 @@ async fn adding_a_repository_registers_main_and_adopts_the_worktrees_on_disk() {
     );
     assert_eq!(p["workspaces"], 3);
     assert_eq!(p["root"], canonical.to_str().unwrap());
+    // The answer names `main`, not whichever workspace happens to be last. On this fixture
+    // the two differ: the last one is `workspace-3`.
+    let main = h
+        .model()
+        .projects
+        .iter()
+        .find(|p| p.name == "audrey-app")
+        .and_then(|p| p.workspaces.iter().find(|w| w.handle.to_string() == "main"))
+        .map(|w| w.id.to_string())
+        .expect("audrey-app has a main workspace");
+    assert_eq!(added["workspace"], main);
+    // Adding a registered path again adopts nothing: `project.add` registers a path and
+    // `workspace.create` makes a slot. The worktrees are still on disk, so an
+    // implementation reporting what it found rather than what it registered would answer
+    // `["workspace-1", "workspace-3"]` here.
+    let again = h
+        .api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(again["project"], added["project"]);
+    assert_eq!(
+        again["adopted"],
+        json!([]),
+        "the second add adopted nothing"
+    );
+    let listed = h.api("project.list", json!({})).await.unwrap();
+    let after = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "audrey-app")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        after["workspaces"], 3,
+        "and registered no second copy of them"
+    );
     // Nothing draws the Projects box until a surface holding it is open, and a fresh model
     // starts with the top bar (Task 2).
     h.api("sidebar.show", json!({})).await.unwrap();
@@ -314,12 +352,7 @@ async fn refusing_a_removal_without_yes_leaves_the_model_the_frame_and_the_file_
     h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
         .await
         .unwrap();
-    let name = dir
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let name = folder_name(dir.path());
     // Let the add's own writes finish, so what is on disk below is a settled file rather
     // than one the previous call was still writing.
     tokio::time::sleep(PAST_THE_DEBOUNCE).await;
@@ -380,12 +413,7 @@ async fn removing_a_project_that_is_not_registered_says_so() {
 #[tokio::test]
 async fn removing_a_project_reaches_the_state_file_while_the_server_is_still_running() {
     let dir = tempfile::tempdir().unwrap();
-    let name = dir
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let name = folder_name(dir.path());
     let mut h = Harness::start(Config::default(), 120, 24).await;
     h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
         .await
@@ -424,14 +452,31 @@ async fn removing_a_project_reaches_the_state_file_while_the_server_is_still_run
 }
 
 /// Removing the project a client is in seats that client somewhere it can draw, rather than
-/// leaving it pointing at a tab the model no longer holds.
+/// leaving it pointing at a tab the model no longer holds - and it lands on the first
+/// surviving workspace's first tab, not on the last one.
+///
+/// Two projects survive, so "the first" and "the last" are different answers. With one, the
+/// landing tab is the only tab and every rule for choosing it is the same rule.
 #[tokio::test]
-async fn removing_the_project_a_client_is_in_moves_it_to_one_that_is_left() {
-    let dir = tempfile::tempdir().unwrap();
+async fn removing_the_project_a_client_is_in_seats_it_on_the_first_project_that_is_left() {
+    let first = tempfile::tempdir().unwrap();
+    let last = tempfile::tempdir().unwrap();
+    let first_name = folder_name(first.path());
+    let last_name = folder_name(last.path());
     let mut h = Harness::start(Config::default(), 120, 24).await;
-    h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
-        .await
-        .unwrap();
+    // Registered in this order, which is the order the model holds them in.
+    h.api(
+        "project.add",
+        json!({"path": first.path().to_str().unwrap()}),
+    )
+    .await
+    .unwrap();
+    h.api(
+        "project.add",
+        json!({"path": last.path().to_str().unwrap()}),
+    )
+    .await
+    .unwrap();
     // The harness's own project, which is the one the client is seated in.
     let f = h.frame(h.client.clone()).await;
     assert!(f.contains("proj › main"), "the client starts in proj:\n{f}");
@@ -440,19 +485,17 @@ async fn removing_the_project_a_client_is_in_moves_it_to_one_that_is_left() {
     h.api("project.remove", json!({"project": "proj", "yes": true}))
         .await
         .unwrap();
-    let name = dir
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains(&format!("{name} › main")),
+            |f| f.contains(&format!("{first_name} › main")),
             Duration::from_secs(5),
         )
         .await;
+    assert!(
+        !f.contains(&format!("{last_name} › main")),
+        "it landed in the first project that was left, not the last:\n{f}"
+    );
     let view = h
         .model()
         .client(&h.client)
@@ -465,17 +508,67 @@ async fn removing_the_project_a_client_is_in_moves_it_to_one_that_is_left() {
     );
 }
 
+/// Removing a project a client is **not** in leaves that client exactly where it was.
+///
+/// The reseat picks the clients whose workspace has gone. Without that filter it would take
+/// every attached client and drag it to the landing tab, and a reader watching a pane in an
+/// untouched project would have the screen pulled out from under them. One client is enough
+/// to see it, but only if it is somewhere the landing tab is not, so the client gets a
+/// second tab first: "left alone" and "moved to the first tab" are then different answers.
+#[tokio::test]
+async fn removing_a_project_a_client_is_not_in_leaves_that_client_where_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = folder_name(dir.path());
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
+        .await
+        .unwrap();
+    h.api("tab.create", json!({})).await.unwrap();
+    let before = h.model().client(&h.client).cloned().expect("attached");
+    let landing = h
+        .model()
+        .projects
+        .iter()
+        .find(|p| p.name == "proj")
+        .and_then(|p| p.workspaces.first())
+        .and_then(|w| w.tabs.first())
+        .map(|t| t.id.clone())
+        .expect("proj has a tab");
+    assert_ne!(
+        before.tab, landing,
+        "the client is on a tab the reseat would move it off"
+    );
+
+    h.api("project.remove", json!({"project": name, "yes": true}))
+        .await
+        .unwrap();
+    let f = h.frame(h.client.clone()).await;
+    let after = h
+        .model()
+        .client(&h.client)
+        .cloned()
+        .expect("still attached");
+    assert_eq!(
+        (after.tab, after.workspace),
+        (before.tab, before.workspace),
+        "a client in a project that was not removed does not move:\n{f}"
+    );
+}
+
+/// The last component of a temp directory's path, which is the name the project takes.
+fn folder_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .expect("a temp directory has a name")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// A key bound to `project.remove` asks on the screen rather than answering "add --yes" to
 /// somebody who has no command line to add it to, and `y` is what removes the project.
 #[tokio::test]
 async fn a_key_bound_to_project_remove_asks_in_an_overlay_and_y_removes_the_project() {
     let dir = tempfile::tempdir().unwrap();
-    let name = dir
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let name = folder_name(dir.path());
     let mut config = Config::default();
     config
         .keys
@@ -509,6 +602,11 @@ async fn a_key_bound_to_project_remove_asks_in_an_overlay_and_y_removes_the_proj
         f.contains("y remove project    esc keep project"),
         "and how to answer:\n{f}"
     );
+    assert_eq!(
+        h.model().client(&h.client).map(|v| v.focus.clone()),
+        Some(Focus::Region(RegionKind::Overlay)),
+        "and the keys are in the box, not in the pane behind it"
+    );
     assert!(
         f.contains("bold fg=#f38ba8 bg=#1e1e2e"),
         "the question is in the border in red (interface spec 7.3):\n{f}"
@@ -540,12 +638,7 @@ async fn a_key_bound_to_project_remove_asks_in_an_overlay_and_y_removes_the_proj
 #[tokio::test]
 async fn a_key_other_than_y_closes_the_question_and_keeps_the_project() {
     let dir = tempfile::tempdir().unwrap();
-    let name = dir
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let name = folder_name(dir.path());
     let mut config = Config::default();
     config
         .keys
@@ -717,12 +810,7 @@ async fn a_job_a_key_started_reports_its_failure_in_the_hint_row() {
 #[tokio::test]
 async fn two_project_add_calls_in_flight_at_once_register_one_project() {
     let dir = tempfile::tempdir().unwrap();
-    let name = dir
-        .path()
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
+    let name = folder_name(dir.path());
     let h = Harness::start(Config::default(), 120, 24).await;
     let socket = h.socket_path().to_path_buf();
     let params = json!({"path": dir.path().to_str().unwrap()});
@@ -780,4 +868,207 @@ async fn api_at(
         (None, Some(e)) => Err(e),
         other => panic!("malformed response {other:?}"),
     }
+}
+
+/// `project.add` reports `project.added` once and `workspace.created` for every worktree it
+/// adopts, and `project.remove` reports `project.removed`.
+///
+/// Nothing else in the suite reads the event stream, and the state file cannot stand in for
+/// it: `publish_events` treats every event outside a four-name list as structural, and
+/// registering a project raises `tab.created` in the same batch, so the file would be
+/// written with the right contents whether or not these events were ever published.
+#[tokio::test]
+async fn adding_and_removing_a_project_report_what_they_did() {
+    let (_tmp, repo) = repo_with_origin("main");
+    git::worktree_add(
+        &repo,
+        &git::slot_path(&repo, 1),
+        "workspace-1",
+        "origin/main",
+    )
+    .unwrap();
+    git::worktree_add(
+        &repo,
+        &git::slot_path(&repo, 2),
+        "workspace-2",
+        "origin/main",
+    )
+    .unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let mut events = subscribe(h.socket_path(), &["project.*", "workspace.*"]).await;
+
+    h.api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    let added = next_event(&mut events).await;
+    assert_eq!(added["event"], "project.added");
+    assert_eq!(added["name"], "audrey-app");
+    assert_eq!(
+        added["root"],
+        repo.canonicalize().unwrap().to_str().unwrap()
+    );
+    // One `workspace.created` per adopted slot, in slot order. `main` is not one: it is the
+    // checkout the project already is, and `add_git_project` reports the project, not it.
+    let mut adopted = Vec::new();
+    for _ in 0..2 {
+        let created = next_event(&mut events).await;
+        assert_eq!(created["event"], "workspace.created");
+        assert_eq!(created["project"], added["project"]);
+        adopted.push(created["handle"].as_str().unwrap().to_string());
+    }
+    assert_eq!(adopted, ["workspace-1", "workspace-2"]);
+
+    h.api(
+        "project.remove",
+        json!({"project": "audrey-app", "yes": true}),
+    )
+    .await
+    .unwrap();
+    let removed = next_event(&mut events).await;
+    assert_eq!(removed["event"], "project.removed");
+    assert_eq!(removed["project"], added["project"]);
+    assert_eq!(removed["name"], "audrey-app");
+}
+
+/// A plain folder reports `project.added` too. `Model::add_folder_project` is M1's and
+/// reports nothing, so this is the branch that raises the event by hand; the repository
+/// above goes through `add_git_project`, which raises its own.
+#[tokio::test]
+async fn adding_a_plain_folder_reports_project_added() {
+    let dir = tempfile::tempdir().unwrap();
+    let name = folder_name(dir.path());
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let mut events = subscribe(h.socket_path(), &["project.*"]).await;
+    h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
+        .await
+        .unwrap();
+    let added = next_event(&mut events).await;
+    assert_eq!(added["event"], "project.added");
+    assert_eq!(added["name"], name);
+    assert_eq!(
+        added["root"],
+        dir.path().canonicalize().unwrap().to_str().unwrap()
+    );
+}
+
+/// A worktree directory that is there and cannot be read refuses the whole add, rather than
+/// answering "no slots".
+///
+/// `git::existing_slots`'s own doc comment is about this: answering "no slots" hands out a
+/// slot number that is already taken, and `workspace.create` then runs `git branch -f`,
+/// which moves that branch off the author's commit before `git worktree add` finds the
+/// directory in the way. The commit is then in the reflog and nowhere else. A file where
+/// the directory should be is the input this test uses, because it fails the same way a
+/// directory nobody can read does and it needs no permission bits to arrange.
+#[tokio::test]
+async fn a_worktree_directory_that_cannot_be_read_refuses_the_add() {
+    let (_tmp, repo) = repo_with_origin("main");
+    std::fs::create_dir_all(repo.join(".domux")).unwrap();
+    std::fs::write(repo.join(".domux/worktrees"), "not a directory\n").unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    let err = h
+        .api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Internal, "{err}");
+    assert!(
+        err.message.contains(".domux/worktrees"),
+        "the refusal names the directory it could not read: {err}"
+    );
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before,
+        "and nothing was registered"
+    );
+}
+
+/// The confirmation names where the project is, which is the only line that tells two
+/// projects of the same name apart - a state this task made real, since `resolve_project`
+/// now answers `ambiguous` for it.
+#[tokio::test]
+async fn the_confirmation_names_the_project_s_root_so_two_of_one_name_are_told_apart() {
+    let one = tempfile::tempdir().unwrap();
+    let two = tempfile::tempdir().unwrap();
+    let first = one.path().join("audrey-app");
+    let second = two.path().join("audrey-app");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let added = h
+        .api("project.add", json!({"path": first.to_str().unwrap()}))
+        .await
+        .unwrap();
+    h.api("project.add", json!({"path": second.to_str().unwrap()}))
+        .await
+        .unwrap();
+    // The name is ambiguous, so the key has to name the id - which is only known now, after
+    // the add. `config.reload` is how a binding is written after the server has started.
+    let id = added["project"].as_str().unwrap().to_string();
+    std::fs::write(
+        h.config_path(),
+        format!("[keys.bindings]\nX = \"project.remove {id}\"\n"),
+    )
+    .unwrap();
+    h.api("config.reload", json!({})).await.unwrap();
+
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "X").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Remove audrey-app?"),
+            Duration::from_secs(5),
+        )
+        .await;
+    let first_root = first.canonicalize().unwrap();
+    let second_root = second.canonicalize().unwrap();
+    assert!(
+        f.contains(first_root.to_str().unwrap()),
+        "the box says which audrey-app:\n{f}"
+    );
+    assert!(
+        !f.contains(second_root.to_str().unwrap()),
+        "and not the other one:\n{f}"
+    );
+}
+
+/// An `events.subscribe` stream over its own connection, and the lines it produces.
+async fn subscribe(
+    socket: &std::path::Path,
+    filter: &[&str],
+) -> tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .expect("connect");
+    let (r, mut w) = stream.into_split();
+    let request = json!({"id": 1, "method": "events.subscribe", "params": {"filter": filter}});
+    w.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(r).lines();
+    let ack = next_line(&mut lines).await;
+    let ack: serde_json::Value = serde_json::from_str(&ack).unwrap();
+    assert!(
+        ack["result"].is_object() || ack["result"].is_boolean(),
+        "{ack}"
+    );
+    lines
+}
+
+async fn next_event(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>,
+) -> serde_json::Value {
+    serde_json::from_str(&next_line(lines).await).unwrap()
+}
+
+async fn next_line(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>>,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+        .await
+        .expect("the stream said nothing within 5s")
+        .expect("read")
+        .expect("the stream closed")
 }

@@ -991,6 +991,10 @@ impl Core {
         // Every new workspace gets its tab and its shell, the same invariant
         // `apply_side_effects` keeps for every other path that makes one.
         self.apply_side_effects(Vec::new(), Vec::new(), Vec::new());
+        // Belt, and deliberately unpinned, for the reason `api::project::remove`'s copy of
+        // this line gives: `apply_side_effects` has just spawned a pane for every workspace
+        // this registered, so it has already marked the view and no test can tell this line
+        // from its absence.
         self.view_dirty = true;
         let registered = self.model.project(&project).ok_or_else(|| {
             ApiError::internal("the project was registered and is not there any more")

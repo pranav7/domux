@@ -78,9 +78,11 @@ idempotence check being removed, which turns it red.
 job, off the core task, so two jobs can choose the same thing before either arm runs.
 Task 17's `workspace.create` is exactly that shape: the slot number is the lowest free one,
 two concurrent creates would both choose it, and both would run `git worktree add` for
-`workspace-1`. Today the second one fails on `worktree_add`'s occupied-directory refusal
-rather than corrupting anything, which is a loud failure and not a wrong one, but it is a
-refusal with the wrong words.
+`workspace-1`. The second one fails, loudly and without corrupting anything, but not where a
+reader would expect: `git::worktree_add`'s occupied-directory check does **not** catch it,
+because `is_occupied` answers false for a directory that is missing or empty and it runs
+before `fetch`, `prune` and `create_dir_all`. Both calls pass that check, and the loser fails
+later inside `git worktree add` itself, in git's own words rather than domux's.
 
 Whoever adds such a job owns the answer, and the shape to reach for is a set of claims on the
 core, taken in the handler where one runs at a time and released when the job finishes. It is

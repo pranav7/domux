@@ -67,6 +67,12 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
         // One budget for the whole line, spent span by span: giving each span the line's
         // full width would let three short spans measure as fitting and draw past the
         // border, which `put_within` would then clip without an ellipsis to say so.
+        //
+        // Unpinned, and it cannot be pinned by any fixture here: the box is sized from its
+        // widest line, so no line reaches the boundary until `centred_area` clamps the box
+        // to a screen narrower than its content. Only the keys line has several spans, and
+        // the two versions then differ by one cell - the ellipsis - because `put_within`
+        // clips both at the same column. Said here rather than left silent.
         let mut budget = width;
         for span in &line.spans {
             if budget == 0 {

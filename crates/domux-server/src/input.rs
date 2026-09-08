@@ -221,12 +221,13 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         // `y remove project    esc keep project` (interface spec 7.3).
         //
         // `api::project::remove` opened this with `push_overlay` and this closes it with
-        // `close_overlay`, which clears the top overlay without restoring the one under it.
+        // `close_overlay`, which clears the top overlay and leaves `overlay_under` where it
+        // is - so it does not merely fail to restore what was underneath, it strands it.
         // The two agree while nothing opens the confirmation over another overlay, which
         // nothing in M2 does: the only way here is a key bound to `project.remove`, and a
         // key bound to anything reaches `run_action` only when no overlay is open. Task 18,
         // which adds `X` inside the Projects box, opens it over the switcher and has to
-        // come back to this.
+        // come back to this: `pop_overlay` is the call that does the right thing there.
         Overlay::Confirm(ConfirmKind::RemoveProject(project)) => {
             close_overlay(core, client);
             if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
