@@ -136,6 +136,12 @@ impl FactRegistry {
         self.facts.get(key)
     }
 
+    /// Every fact currently held, cloned for a reader outside the core: `ServerHandle::facts`
+    /// publishes this beside `snapshot` and `pane_sizes`, the same way, for the same reason.
+    pub fn all(&self) -> HashMap<FactKey, Fact> {
+        self.facts.clone()
+    }
+
     /// Every fact about one workspace, for the Projects box and `workspace.list`. By name,
     /// so two calls with the same facts give the same order and a frame does not depend on
     /// how a hash map happened to lay out.

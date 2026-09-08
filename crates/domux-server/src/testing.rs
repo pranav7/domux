@@ -8,6 +8,7 @@ use crate::process::{FakeInspector, ForegroundProcess, ProcessInspector};
 use crate::{load_config, CoreDeps, FixedClock, LoadedConfig, Server, ServerHandle, ServerOptions};
 use domux_core::api::{ApiError, Request, Response};
 use domux_core::config::Config;
+use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::{ClientId, PaneId, TabId};
 use domux_core::keymap::{KeyName, Keymap};
 use domux_core::model::Model;
@@ -438,6 +439,43 @@ impl Harness {
             .lock()
             .unwrap()
             .clone()
+    }
+
+    /// The fact at `key` as of the last batch the core finished, published beside the model
+    /// (see `ServerHandle::facts`). `None` when the fact is absent, whether because no
+    /// provider has answered yet or because the last answer was absence.
+    pub fn fact(&self, key: &FactKey) -> Option<Fact> {
+        self.server
+            .as_ref()
+            .expect("server")
+            .facts
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+    }
+
+    /// Polls the published fact at `key` until `pred` holds, or panics after `timeout` with
+    /// the last value seen. A fact takes at least one tick to arrive (Task 8's providers run
+    /// off the core, on an interval), so a test that wants one waits for it here rather than
+    /// sleeping a guessed-at duration and hoping the provider was faster.
+    pub async fn wait_for_fact(
+        &self,
+        key: &FactKey,
+        pred: impl Fn(Option<&Fact>) -> bool,
+        timeout: Duration,
+    ) -> Option<Fact> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let fact = self.fact(key);
+            if pred(fact.as_ref()) {
+                return fact;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("condition on {key} not met within {timeout:?}; last fact: {fact:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     pub fn focused_pane(&self, client: ClientId) -> PaneId {

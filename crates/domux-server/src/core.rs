@@ -112,6 +112,8 @@ pub struct Core {
     snapshot: Arc<Mutex<Model>>,
     /// Published beside `snapshot`: see `ServerHandle::pane_sizes`.
     pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
+    /// Published beside `snapshot`: see `ServerHandle::facts`.
+    published_facts: Arc<Mutex<HashMap<FactKey, Fact>>>,
     /// Set whenever something a frame shows may have changed.
     view_dirty: bool,
     last_minute: Option<String>,
@@ -136,6 +138,7 @@ impl Core {
         state_file: &Path,
         snapshot: Arc<Mutex<Model>>,
         pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
+        published_facts: Arc<Mutex<HashMap<FactKey, Fact>>>,
     ) -> anyhow::Result<Core> {
         let started_at = opts.deps.clock.now().to_rfc3339();
         let mut model = match std::fs::read_to_string(state_file) {
@@ -223,6 +226,7 @@ impl Core {
             pending_events: Vec::new(),
             snapshot,
             pane_sizes,
+            published_facts,
             view_dirty: true,
             last_minute: None,
             stopping: false,
@@ -946,14 +950,15 @@ impl Core {
         // that frame. The other order leaves a window in which a test waits for a frame,
         // asks for the model and gets the one from before the batch.
         //
-        // Sizes before the model, for the same reason one step smaller: a reader holding a
-        // model from this batch then finds a size for every pane in it, rather than a pane
-        // whose size has not been published yet.
+        // Sizes and facts before the model, for the same reason one step smaller: a reader
+        // holding a model from this batch then finds a size for every pane and a fact for
+        // every target in it, rather than one that has not been published yet.
         *self.pane_sizes.lock().unwrap() = self
             .panes
             .iter()
             .map(|(id, p)| (id.clone(), p.size()))
             .collect();
+        *self.published_facts.lock().unwrap() = self.facts.all();
         *self.snapshot.lock().unwrap() = self.model.clone();
         self.render();
     }
@@ -1364,6 +1369,7 @@ mod tests {
             persist_tx,
             &dir.join("missing.json"),
             Arc::new(Mutex::new(Model::new(7))),
+            Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
         )
         .unwrap();
