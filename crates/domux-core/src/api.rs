@@ -1068,7 +1068,12 @@ mod tests {
     #[test]
     fn every_default_keymap_action_resolves_to_a_method() {
         let km = crate::keymap::Keymap::defaults();
-        for b in km.bindings.iter().chain(km.global.iter()) {
+        for b in km
+            .bindings
+            .iter()
+            .chain(km.global.iter())
+            .chain(km.list.iter())
+        {
             Method::from_action(&b.action)
                 .unwrap_or_else(|e| panic!("{} -> {}: {e}", b.key, b.action));
         }
@@ -1573,6 +1578,82 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&pane).unwrap(),
             r#"{"id":"p_1234","tab":"t_5678","cwd":"/tmp","command":"sh","title":null,"pid":42,"focused":true,"zoomed":false,"copy_mode":true,"cols":80,"rows":24}"#
+        );
+    }
+
+    /// The M2 results, the same way `result_fields_match_the_wire_contract` pins M1's: one
+    /// full literal string per struct. Params are pinned elsewhere by `deny_unknown_fields`
+    /// seeing real request JSON; a result is never sent back through it, so nothing else in
+    /// this file would notice a renamed, reordered, dropped or newly added field. `setup`
+    /// and `name` are asserted as `null` on purpose, not omitted: an absent key and a `null`
+    /// key are different wire shapes, and `WorkspaceCreated.setup` in particular exists to
+    /// say "no worktree.conf at all" (principle 4), which only holds if the key is there.
+    #[test]
+    fn every_m2_result_serializes_with_the_field_names_the_contract_names() {
+        let project = ProjectInfo {
+            id: ProjectId("pr_1".into()),
+            name: "audrey-app".into(),
+            root: PathBuf::from("/x"),
+            kind: "git".into(),
+            default_branch: Some("main".into()),
+            workspaces: 2,
+        };
+        assert_eq!(
+            serde_json::to_string(&project).unwrap(),
+            r#"{"id":"pr_1","name":"audrey-app","root":"/x","kind":"git","default_branch":"main","workspaces":2}"#
+        );
+
+        let added = ProjectAdded {
+            project: ProjectId("pr_1".into()),
+            workspace: WorkspaceId("w_1".into()),
+            name: "audrey-app".into(),
+            root: PathBuf::from("/x"),
+            kind: "git".into(),
+            adopted: vec!["workspace-1".into()],
+        };
+        assert_eq!(
+            serde_json::to_string(&added).unwrap(),
+            r#"{"project":"pr_1","workspace":"w_1","name":"audrey-app","root":"/x","kind":"git","adopted":["workspace-1"]}"#
+        );
+
+        let workspace = WorkspaceInfo {
+            id: WorkspaceId("w_1".into()),
+            project: ProjectId("pr_1".into()),
+            handle: "workspace-1".into(),
+            name: None,
+            path: PathBuf::from("/x"),
+            branch: Some("workspace-1".into()),
+            pr: Some("PR#212".into()),
+            pr_state: Some("OPEN".into()),
+            tabs: 1,
+        };
+        assert_eq!(
+            serde_json::to_string(&workspace).unwrap(),
+            r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","name":null,"path":"/x","branch":"workspace-1","pr":"PR#212","pr_state":"OPEN","tabs":1}"#
+        );
+
+        let created = WorkspaceCreated {
+            id: WorkspaceId("w_1".into()),
+            project: ProjectId("pr_1".into()),
+            handle: "workspace-1".into(),
+            path: PathBuf::from("/x"),
+            branch: "workspace-1".into(),
+            base: "origin/main".into(),
+            setup: None,
+            tabs: 1,
+        };
+        assert_eq!(
+            serde_json::to_string(&created).unwrap(),
+            r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","path":"/x","branch":"workspace-1","base":"origin/main","setup":null,"tabs":1}"#
+        );
+
+        let sidebar = SidebarResult {
+            open: true,
+            visible: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&sidebar).unwrap(),
+            r#"{"open":true,"visible":false}"#
         );
     }
 

@@ -1329,38 +1329,40 @@ mod tests {
         );
     }
 
-    /// Pins the exact set of methods that still answer `unavailable` because Task 4 declared
-    /// them but no task has given them a handler yet. This is deliberately an explicit list,
-    /// not a scan: a task that implements one of these methods makes its assertion fail
-    /// (dispatch stops answering `unavailable` for it) until the task removes that method's
-    /// line here and from the stub block in `api::dispatch`, so removal is forced rather than
-    /// remembered. `workspace.resume` is the one deliberate exception, left for M3: when this
-    /// list reads exactly `["workspace.resume"]`, M2 has closed this class of gap.
+    /// The register `only_the_expected_m2_methods_still_answer_unavailable` and
+    /// `the_stub_block_and_the_unbuilt_list_name_the_same_methods` both check against:
+    /// every method Task 4 declared but no task has given a handler yet. `workspace.resume`
+    /// is the one deliberate exception, left for M3: when this reads exactly
+    /// `[("workspace.resume", ..)]`, M2 has closed this class of gap.
+    const STILL_UNBUILT: &[(&str, &str)] = &[
+        ("project.list", "{}"),
+        ("project.add", r#"{"path":"/x"}"#),
+        ("project.remove", r#"{"project":"p"}"#),
+        ("workspace.list", "{}"),
+        ("workspace.create", r#"{"project":"p"}"#),
+        ("workspace.clear", r#"{"workspace":"w"}"#),
+        ("workspace.delete", r#"{"workspace":"w"}"#),
+        ("workspace.rename", "{}"),
+        ("workspace.clear_name", r#"{"workspace":"w"}"#),
+        ("workspace.focus", r#"{"workspace":"w"}"#),
+        ("workspace.resume", r#"{"workspace":"w"}"#),
+        ("switcher.open", "{}"),
+        ("switcher.close", "{}"),
+        ("sidebar.toggle", "{}"),
+        ("sidebar.show", "{}"),
+        ("sidebar.hide", "{}"),
+        ("list.down", "{}"),
+        ("list.up", "{}"),
+        ("list.activate", "{}"),
+        ("list.filter", "{}"),
+    ];
+
+    /// Direction A of the register: implementing one of `STILL_UNBUILT` must fail this test
+    /// until the implementer removes that method's line here and from the stub block in
+    /// `api::dispatch`, so removal is forced rather than remembered.
     #[test]
     fn only_the_expected_m2_methods_still_answer_unavailable() {
         use domux_core::api::ErrorCode;
-        const STILL_UNBUILT: &[(&str, &str)] = &[
-            ("project.list", "{}"),
-            ("project.add", r#"{"path":"/x"}"#),
-            ("project.remove", r#"{"project":"p"}"#),
-            ("workspace.list", "{}"),
-            ("workspace.create", r#"{"project":"p"}"#),
-            ("workspace.clear", r#"{"workspace":"w"}"#),
-            ("workspace.delete", r#"{"workspace":"w"}"#),
-            ("workspace.rename", "{}"),
-            ("workspace.clear_name", r#"{"workspace":"w"}"#),
-            ("workspace.focus", r#"{"workspace":"w"}"#),
-            ("workspace.resume", r#"{"workspace":"w"}"#),
-            ("switcher.open", "{}"),
-            ("switcher.close", "{}"),
-            ("sidebar.toggle", "{}"),
-            ("sidebar.show", "{}"),
-            ("sidebar.hide", "{}"),
-            ("list.down", "{}"),
-            ("list.up", "{}"),
-            ("list.activate", "{}"),
-            ("list.filter", "{}"),
-        ];
         let dir = tempfile::tempdir().unwrap();
         for (name, params) in STILL_UNBUILT {
             assert!(
@@ -1377,6 +1379,120 @@ mod tests {
             assert_eq!(err.code, ErrorCode::Unavailable, "{name}: {err}");
             assert!(err.message.ends_with("is not built yet"), "{name}: {err}");
         }
+    }
+
+    /// Direction B of the register: every method the stub block in `api::dispatch` answers
+    /// `unavailable` for must be listed in `STILL_UNBUILT` too, so a milestone cannot add a
+    /// stub without declaring it - the half that dispatching each `STILL_UNBUILT` entry and
+    /// checking the answer can never catch, because it only ever looks at the names already
+    /// on that list. Reads both source files as text and cross-checks the identifiers
+    /// against the wire names the `methods!` table gives them, rather than dispatching every
+    /// method in `Method::NAMES` to see which answer `unavailable`: most of the other 28
+    /// have side effects (`server.stop` stops the server), so calling them just to observe
+    /// an error code is not an option. This is the same move as
+    /// `names::tests::nothing_outside_this_file_spells_the_binary_name`: pin the source text
+    /// that has to stay in sync, not the behavior it happens to produce today.
+    #[test]
+    fn the_stub_block_and_the_unbuilt_list_name_the_same_methods() {
+        let root = workspace_root();
+
+        let table_src =
+            std::fs::read_to_string(root.join("crates/domux-core/src/api.rs")).expect("read");
+        let ident_to_wire = parse_methods_table(&table_src);
+
+        let dispatch_src =
+            std::fs::read_to_string(root.join("crates/domux-server/src/api/mod.rs")).expect("read");
+        let stub_idents = parse_stub_block(&dispatch_src);
+        assert!(
+            !stub_idents.is_empty(),
+            "the M2 stub block parsed to nothing"
+        );
+
+        let mut from_stub_block: Vec<&str> = stub_idents
+            .iter()
+            .map(|ident| {
+                ident_to_wire
+                    .get(ident.as_str())
+                    .unwrap_or_else(|| panic!("{ident} is not a method in the methods! table"))
+                    .as_str()
+            })
+            .collect();
+        from_stub_block.sort_unstable();
+
+        let mut from_still_unbuilt: Vec<&str> =
+            STILL_UNBUILT.iter().map(|(name, _)| *name).collect();
+        from_still_unbuilt.sort_unstable();
+
+        assert_eq!(
+            from_stub_block, from_still_unbuilt,
+            "the stub block in api::dispatch and STILL_UNBUILT must name exactly the same methods"
+        );
+    }
+
+    /// Two levels above `crates/domux-server` is the workspace root, the same distance
+    /// `names.rs`'s own version of this helper climbs from `crates/domux-core`.
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("two levels above crates/domux-server is the workspace root")
+            .to_path_buf()
+    }
+
+    /// The `Ident = "wire.name": Params => Result` lines of the `methods!` table in
+    /// `domux-core::api`, as an identifier to wire name map. The single source both
+    /// `Method` and its `NAMES` are generated from, read as text so this test does not need
+    /// its own copy of the mapping to drift against.
+    fn parse_methods_table(src: &str) -> HashMap<String, String> {
+        let marker = "methods! {";
+        let after_marker = src.find(marker).expect("the methods! table") + marker.len();
+        let body_start = src[after_marker..]
+            .find('\n')
+            .map(|i| after_marker + i + 1)
+            .unwrap_or(after_marker);
+        let rest = &src[body_start..];
+        let body_end = rest
+            .find("\n}\n")
+            .expect("the methods! table's closing brace");
+        let mut map = HashMap::new();
+        for line in rest[..body_end].lines() {
+            let line = line.trim();
+            let Some((ident, remainder)) = line.split_once('=') else {
+                continue;
+            };
+            let Some(name_start) = remainder.find('"') else {
+                continue;
+            };
+            let after_quote = &remainder[name_start + 1..];
+            let Some(name_end) = after_quote.find('"') else {
+                continue;
+            };
+            map.insert(
+                ident.trim().to_string(),
+                after_quote[..name_end].to_string(),
+            );
+        }
+        map
+    }
+
+    /// The `Method` variant identifiers named in the M2 stub block's or-pattern, in
+    /// `crates/domux-server/src/api/mod.rs`: everything between the `// --- M2 stubs`
+    /// marker and the arm's `=>`, split on `|` with each alternative's `(_)` stripped.
+    fn parse_stub_block(src: &str) -> Vec<String> {
+        let marker = "// --- M2 stubs";
+        let after_marker = src.find(marker).expect("the M2 stub marker in dispatch") + marker.len();
+        let after_marker_line = src[after_marker..]
+            .find('\n')
+            .map(|i| after_marker + i + 1)
+            .unwrap_or(after_marker);
+        let rest = &src[after_marker_line..];
+        let arrow = rest.find("=>").expect("the stub arm's `=>`");
+        rest[..arrow]
+            .split('|')
+            .map(|alt| alt.trim())
+            .filter(|alt| !alt.is_empty())
+            .map(|alt| alt.split('(').next().unwrap_or(alt).trim().to_string())
+            .collect()
     }
 
     /// The other side of the same flag, and the flag itself rather than the side-effect

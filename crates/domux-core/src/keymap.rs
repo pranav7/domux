@@ -528,6 +528,31 @@ mod tests {
         assert_eq!(km.list_key_for("focus.pane").as_deref(), Some("esc"));
     }
 
+    /// Names the rule `table()` sorts by, rather than leaving it provable only by deleting
+    /// the sort and reading an opaque `left: Some("Down") right: Some("j")`. Two keys bind
+    /// `list.down` by default (`j` and `Down`); a third, longer one added here must not win.
+    #[test]
+    fn the_shorter_key_wins_when_one_action_has_two_keys() {
+        let mut cfg = KeysConfig::default();
+        cfg.list.insert("PageDown".into(), "list.down".into());
+        let (km, warnings) = Keymap::from_config(&cfg).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            km.list_key_for("list.down").as_deref(),
+            Some("j"),
+            "a hint names the shortest key bound to the action, not the first in map order"
+        );
+        // Equal lengths break alphabetically, so the answer never depends on map order:
+        // `f` and `g` are both one character, and `f` must win every time this runs.
+        let mut cfg = KeysConfig::default();
+        cfg.list.remove("/");
+        cfg.list.insert("g".into(), "list.filter".into());
+        cfg.list.insert("f".into(), "list.filter".into());
+        let (km, warnings) = Keymap::from_config(&cfg).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(km.list_key_for("list.filter").as_deref(), Some("f"));
+    }
+
     #[test]
     fn a_bad_key_name_is_a_warning_and_the_binding_is_skipped() {
         let mut cfg = crate::config::KeysConfig::default();
