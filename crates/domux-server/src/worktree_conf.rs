@@ -3,8 +3,11 @@
 //!
 //! The file lives in the project's repository, so its lines are as trusted as the project's
 //! build is and no more. Two rules follow, and both are enforced at one place each:
-//! `checked_relative` keeps a `link` or a `copy` inside the two directories the caller named,
-//! and `parse` drops an argument carrying a control character. Nothing here spawns a process:
+//! `checked_relative` and `dst_in_slot` between them keep a `link` or a `copy` inside the slot,
+//! and `parse` drops an argument carrying a control character or a text direction control.
+//! What is left after those: a `link` or `copy` source is resolved through the main checkout's
+//! own links, so a link there that leads outside is followed, and an argument can still hold a
+//! zero-width character, which changes nothing about what the line runs. Nothing here spawns a process:
 //! `run_lines` hands the run lines back and the caller types them into the workspace's first
 //! pane, so slow setup is watched rather than waited on.
 
@@ -132,9 +135,24 @@ pub fn parse(text: &str) -> (Vec<Directive>, Vec<String>) {
             warnings.push(format!("{word}: the argument contains a control character"));
             continue;
         }
+        if arg.chars().any(is_direction_control) {
+            warnings.push(format!(
+                "{word}: the argument contains a text direction control"
+            ));
+            continue;
+        }
         directives.push(Directive { verb, arg });
     }
     (directives, warnings)
+}
+
+/// The characters that reorder how the rest of a line reads without changing what it says, so
+/// `run make<U+202E>...` shows the reader one command and hands the pane another. They are not
+/// control characters in Unicode's sense, so `char::is_control` does not cover them. Only this
+/// set is refused, not the whole of `Cf`: a zero-width joiner has innocent uses in text and
+/// drives nothing.
+fn is_direction_control(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Applies every `link` and `copy` in order. `run` is skipped here: `run_lines` gives it to
@@ -256,12 +274,80 @@ fn remove_entry(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Creates the slot's parent folders for `rel`. The slot itself is already there:
-/// `refuse_roots` said so.
-fn create_parent(dst: &Path) -> Result<(), String> {
-    match dst.parent() {
-        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| e.to_string()),
-        None => Ok(()),
+/// The path in the slot to write `rel` at, with the folders above it created, and the one
+/// guarantee that both verbs rest on: it is inside the slot.
+///
+/// `checked_relative` reads the directive's own text, and text is not enough. `Path::join` is
+/// textual, and every syscall under it follows the links in the path, so a folder the slot
+/// holds that is a link out of the slot carries the write out with it. It takes no attack:
+/// `link vendor` puts a link to the main checkout at `slot/vendor`, and `link vendor/lib.txt`
+/// after it would remove the main checkout's own file and leave a loop where it was. So the
+/// walk starts at the resolved slot and takes one component at a time, descending only into a
+/// folder that is a folder, creating the ones that are not there yet, and refusing anything
+/// else. The finished folder is resolved once more, which costs one syscall and closes the
+/// window where a component is swapped between the walk and the write.
+///
+/// The last component is not resolved, and must not be: `remove_entry`, `symlink` and `rename`
+/// all act on the name rather than on what it points at, which is what lets a link already in
+/// the slot be replaced rather than written through.
+fn dst_in_slot(slot: &Path, rel: &Path) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(slot).map_err(|e| format!("could not read the slot: {e}"))?;
+    let name = rel
+        .file_name()
+        .ok_or_else(|| format!("the path \"{}\" names no file", rel.display()))?;
+    let mut folder = root.clone();
+    let mut walked = PathBuf::new();
+    for part in rel.parent().unwrap_or(Path::new("")).components() {
+        walked.push(part);
+        folder.push(part);
+        match std::fs::symlink_metadata(&folder) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(meta) if meta.is_symlink() => {
+                return Err(format!(
+                    "the slot's \"{}\" is a link, so this would land outside the slot; link \
+                     either a folder or what is inside it, not both",
+                    walked.display()
+                ))
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "the slot's \"{}\" is a file, not a folder; name a path that does not go \
+                     through it",
+                    walked.display()
+                ))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(&folder).map_err(|e| {
+                    format!("could not create the slot's \"{}\": {e}", walked.display())
+                })?;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "could not read the slot's \"{}\": {e}",
+                    walked.display()
+                ))
+            }
+        }
+    }
+    let folder = std::fs::canonicalize(&folder)
+        .map_err(|e| format!("could not read the slot's \"{}\": {e}", walked.display()))?;
+    if !folder.starts_with(&root) {
+        return Err(format!(
+            "the slot's \"{}\" resolves outside the slot; name a path the slot holds",
+            walked.display()
+        ));
+    }
+    Ok(folder.join(name))
+}
+
+/// What a lookup in the main checkout says. A file that is there but cannot be read is not a
+/// file that is missing, and reporting it as missing sends the author looking for something
+/// they can see (never fabricate).
+fn source_error(rel: &str, e: &std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        format!("source missing: {rel}")
+    } else {
+        format!("could not read {rel} in the main checkout: {e}")
     }
 }
 
@@ -271,11 +357,10 @@ fn create_parent(dst: &Path) -> Result<(), String> {
 fn link_into(main: &Path, slot: &Path, rel: &str) -> Result<(), String> {
     let checked = checked_relative(rel)?;
     let src = main.join(&checked);
-    if std::fs::symlink_metadata(&src).is_err() {
-        return Err(format!("source missing: {rel}"));
+    if let Err(e) = std::fs::symlink_metadata(&src) {
+        return Err(source_error(rel, &e));
     }
-    let dst = slot.join(&checked);
-    create_parent(&dst)?;
+    let dst = dst_in_slot(slot, &checked)?;
     if std::fs::symlink_metadata(&dst).is_ok() {
         remove_entry(&dst)?;
     }
@@ -287,12 +372,11 @@ fn link_into(main: &Path, slot: &Path, rel: &str) -> Result<(), String> {
 fn copy_into(main: &Path, slot: &Path, rel: &str) -> Result<(), String> {
     let checked = checked_relative(rel)?;
     let src = main.join(&checked);
-    let meta = std::fs::metadata(&src).map_err(|_| format!("source missing: {rel}"))?;
+    let meta = std::fs::metadata(&src).map_err(|e| source_error(rel, &e))?;
     if meta.is_dir() {
         return Err(format!("copy is for files; use link for the folder {rel}"));
     }
-    let dst = slot.join(&checked);
-    create_parent(&dst)?;
+    let dst = dst_in_slot(slot, &checked)?;
     // The scratch name carries the whole file name, so `keep.yml` writes `keep.yml.tmp` and a
     // real `keep.tmp` beside it is not the file being written. Anything at that name is ours
     // to remove: a leftover from a crash, or a symlink a copy would otherwise write through.
@@ -301,5 +385,10 @@ fn copy_into(main: &Path, slot: &Path, rel: &str) -> Result<(), String> {
         remove_entry(&tmp)?;
     }
     std::fs::copy(&src, &tmp).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &dst).map_err(|e| e.to_string())
+    // A rename that fails leaves the whole file under the scratch name, in the author's git
+    // working tree, until the next apply of this same directive. Take it back.
+    std::fs::rename(&tmp, &dst).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
 }

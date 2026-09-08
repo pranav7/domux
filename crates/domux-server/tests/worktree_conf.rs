@@ -471,3 +471,231 @@ fn apply_refuses_a_slot_that_is_the_main_checkout_under_another_name() {
         "the real file is not a link now"
     );
 }
+
+#[test]
+fn link_refuses_a_destination_reached_through_a_symlink_out_of_the_slot() {
+    // The reviewer's reproduction, with no attacker in it: a conf that links a folder and then
+    // names something inside it. Before the destination was bounded, the second directive
+    // removed the main checkout's own file and left a loop where it was.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let slot = tmp.path().join("workspace-1");
+    std::fs::create_dir_all(main.join("vendor")).unwrap();
+    std::fs::create_dir_all(main.join("target/debug")).unwrap();
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(
+        main.join("vendor/lib.txt"),
+        "THE REAL FILE IN THE MAIN CHECKOUT",
+    )
+    .unwrap();
+    std::fs::write(main.join("target/debug/big.bin"), "EXPENSIVE BUILD OUTPUT").unwrap();
+    let (directives, _) = parse(
+        "link vendor\nlink vendor/lib.txt\nlink target\nlink target/debug\ncopy vendor/lib.txt\n",
+    );
+    let applied = apply(&main, &slot, &directives);
+    assert_eq!(
+        applied.failures(),
+        vec![
+            "link vendor/lib.txt: the slot's \"vendor\" is a link, so this would land outside \
+             the slot; link either a folder or what is inside it, not both"
+                .to_string(),
+            "link target/debug: the slot's \"target\" is a link, so this would land outside the \
+             slot; link either a folder or what is inside it, not both"
+                .to_string(),
+            "copy vendor/lib.txt: the slot's \"vendor\" is a link, so this would land outside \
+             the slot; link either a folder or what is inside it, not both"
+                .to_string(),
+        ]
+    );
+    assert_eq!(applied.summary().to_string(), "linked 2, 3 skipped");
+    assert!(
+        main.join("vendor/lib.txt").is_file(),
+        "the main checkout's file is a regular file, not a loop"
+    );
+    assert_eq!(
+        std::fs::read_to_string(main.join("vendor/lib.txt")).unwrap(),
+        "THE REAL FILE IN THE MAIN CHECKOUT"
+    );
+    assert_eq!(
+        std::fs::read_to_string(main.join("target/debug/big.bin")).unwrap(),
+        "EXPENSIVE BUILD OUTPUT",
+        "remove_dir_all did not run in the main checkout"
+    );
+}
+
+#[test]
+fn link_and_copy_refuse_a_slot_folder_that_leads_out_of_the_slot() {
+    // The same guard against a symlink somebody else put in the slot, which is the reviewer's
+    // attacker case: nothing outside the slot is read, written or removed.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let slot = tmp.path().join("workspace-1");
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(main.join("vendor")).unwrap();
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(main.join("vendor/precious.txt"), "from main").unwrap();
+    std::fs::write(elsewhere.join("precious.txt"), "PRECIOUS, OUTSIDE THE SLOT").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, slot.join("vendor")).unwrap();
+    let (directives, _) = parse("link vendor/precious.txt\ncopy vendor/precious.txt\n");
+    let applied = apply(&main, &slot, &directives);
+    assert_eq!(applied.failures().len(), 2);
+    for failure in applied.failures() {
+        assert!(
+            failure.ends_with(
+                "the slot's \"vendor\" is a link, so this would land outside the slot; link \
+                 either a folder or what is inside it, not both"
+            ),
+            "unexpected failure: {failure}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(elsewhere.join("precious.txt")).unwrap(),
+        "PRECIOUS, OUTSIDE THE SLOT"
+    );
+    assert_eq!(
+        std::fs::read_dir(&elsewhere).unwrap().count(),
+        1,
+        "nothing was created outside the slot, the scratch file included"
+    );
+}
+
+#[test]
+fn a_slot_path_that_goes_through_a_file_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let slot = tmp.path().join("workspace-1");
+    std::fs::create_dir_all(main.join("config")).unwrap();
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(main.join("config/local.yml"), "port: 3000").unwrap();
+    std::fs::write(slot.join("config"), "a file where a folder should be").unwrap();
+    let (directives, _) = parse("copy config/local.yml\n");
+    let applied = apply(&main, &slot, &directives);
+    assert_eq!(
+        applied.failures(),
+        vec![
+            "copy config/local.yml: the slot's \"config\" is a file, not a folder; name a path \
+              that does not go through it"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(slot.join("config")).unwrap(),
+        "a file where a folder should be"
+    );
+}
+
+#[test]
+fn link_normalises_a_dot_component_and_a_trailing_slash_in_the_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let slot = tmp.path().join("workspace-1");
+    std::fs::create_dir_all(main.join("config")).unwrap();
+    std::fs::create_dir_all(main.join("vendor")).unwrap();
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(main.join("config/local.yml"), "port: 3000").unwrap();
+    std::fs::write(main.join("keep.txt"), "kept").unwrap();
+    let (directives, _) =
+        parse("link ./config/./local.yml\nlink vendor/\ncopy ./keep.txt\ncopy keep.txt/\n");
+    let applied = apply(&main, &slot, &directives);
+    assert_eq!(applied.failures(), Vec::<String>::new());
+    assert_eq!(applied.summary().to_string(), "linked 2, copied 2");
+    // Compared as text, not as paths: `Path` equality skips a `.` component and a trailing
+    // slash, so it cannot see what was actually stored in the link.
+    assert_eq!(
+        std::fs::read_link(slot.join("config/local.yml"))
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        main.join("config/local.yml").to_str().unwrap(),
+        "the stored target holds no . component"
+    );
+    assert_eq!(
+        std::fs::read_link(slot.join("vendor"))
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        main.join("vendor").to_str().unwrap(),
+        "a trailing slash names the folder itself, and is not stored"
+    );
+    assert_eq!(
+        std::fs::read_to_string(slot.join("keep.txt")).unwrap(),
+        "kept"
+    );
+}
+
+#[test]
+fn a_source_that_cannot_be_read_is_not_reported_as_a_missing_source() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let slot = tmp.path().join("workspace-1");
+    std::fs::create_dir_all(main.join("locked")).unwrap();
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(main.join("locked/secret.txt"), "there all along").unwrap();
+    std::fs::set_permissions(main.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::metadata(main.join("locked/secret.txt")).is_ok();
+    let (directives, _) = parse("link locked/secret.txt\ncopy locked/secret.txt\n");
+    let applied = apply(&main, &slot, &directives);
+    std::fs::set_permissions(main.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        // Running as root, where mode 000 denies nothing. There is no unreadable file to test.
+        return;
+    }
+    for (failure, verb) in applied.failures().iter().zip(["link", "copy"]) {
+        assert!(
+            failure.starts_with(&format!(
+                "{verb} locked/secret.txt: could not read locked/secret.txt in the main checkout: "
+            )),
+            "a file that is there but cannot be read is not a missing file: {failure}"
+        );
+    }
+    assert_eq!(applied.failures().len(), 2);
+}
+
+#[test]
+fn a_copy_that_cannot_be_renamed_into_place_leaves_no_scratch_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = tmp.path().join("main");
+    let slot = tmp.path().join("workspace-1");
+    std::fs::create_dir_all(&main).unwrap();
+    std::fs::create_dir_all(slot.join("a.txt/in-the-way")).unwrap();
+    std::fs::write(main.join("a.txt"), "the file").unwrap();
+    let (directives, _) = parse("copy a.txt\n");
+    let applied = apply(&main, &slot, &directives);
+    assert_eq!(applied.failures().len(), 1, "the rename failed");
+    assert!(
+        !slot.join("a.txt.tmp").exists(),
+        "the scratch file is taken back when the rename fails"
+    );
+    assert!(
+        slot.join("a.txt/in-the-way").is_dir(),
+        "the folder survives"
+    );
+}
+
+#[test]
+fn parse_drops_an_argument_that_reorders_how_it_reads() {
+    // A right-to-left override shows the reader one command and hands the pane another, and it
+    // is not a control character in Unicode's sense, so the C0 rule does not cover it.
+    let (directives, warnings) = parse("run make\u{202e}txt.esrever\nrun ok\u{200d}fine\n");
+    assert_eq!(
+        warnings,
+        vec!["run: the argument contains a text direction control".to_string()]
+    );
+    assert_eq!(directives.len(), 1);
+    assert_eq!(
+        directives[0].arg, "ok\u{200d}fine",
+        "a zero-width joiner drives nothing and is left alone"
+    );
+    for c in [
+        '\u{200e}', '\u{200f}', '\u{202a}', '\u{202d}', '\u{2066}', '\u{2069}',
+    ] {
+        let (directives, warnings) = parse(&format!("link a{c}b\n"));
+        assert!(directives.is_empty(), "{c:?} was accepted");
+        assert_eq!(
+            warnings,
+            vec!["link: the argument contains a text direction control".to_string()]
+        );
+    }
+}
