@@ -1016,10 +1016,19 @@ impl Core {
             JobOutcome::Failed { message, code } => {
                 // A refusal is a red pill, the same line a result is a green one (interface
                 // spec 7.3, and the theme table's `red` for refusal pills). It does not
-                // duplicate `Core::answer`'s hint: the hint is the top bar's answer to the key
-                // just pressed, and the pill is the result line in the sidebar's hint row and
-                // the overlay's footer. Different surfaces, and a caller with a command line
-                // gets neither - it gets the error itself.
+                // duplicate `Core::answer`'s hint: `Hint` is drawn only by `top_bar.rs` and
+                // `Pill` only by `sidebar.rs` and `overlay.rs`, so the two share no pixels. The
+                // hint is the top bar's answer to the key just pressed; the pill is the result
+                // line in the sidebar's hint row and the overlay's footer. A caller with a
+                // command line gets neither - it gets the error itself.
+                //
+                // Every job's failure reaches this arm, `project.add`'s included, and that is
+                // deliberate: a refusal is a refusal whatever asked for it. **Successes are not
+                // symmetric.** `project_read` sets no pill, because registering a project shows
+                // its own answer - the project appears in the box, which is the response
+                // (principle 8) - while a create's answer is a slot that takes seconds to
+                // build and a line saying it worked. Two jobs, two different needs, so the
+                // green half is set where it is earned rather than in this shared arm.
                 self.set_pill(client.as_ref(), message.clone(), false);
                 Err(ApiError {
                     code,
@@ -2090,6 +2099,15 @@ mod tests {
     /// finishing and the others ending - a race, and a test that is a race is a test that
     /// inverts a mutation verdict when it flakes. Here the state is set directly and the
     /// question is asked exactly.
+    ///
+    /// This is sufficient rather than a second best. The bridge from the invariant to the
+    /// consequence is tested link by link elsewhere: that a handler reads the claims and skips
+    /// what they hold (`a_slot_number_another_call_has_spoken_for_is_skipped`), that a job in
+    /// flight really holds its number
+    /// (`two_creates_in_flight_at_once_take_two_different_slot_numbers`), and that a number
+    /// comes back when its job ends (`a_create_that_failed_gives_its_slot_number_back`). The
+    /// one link no test exercises is arrival timing, and it carries no logic: `HashSet::remove`
+    /// does not behave differently at three keys than at two.
     #[test]
     fn a_finished_job_releases_its_own_claim_and_leaves_the_others_held() {
         let dir = tempfile::tempdir().unwrap();

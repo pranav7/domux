@@ -282,13 +282,15 @@ async fn a_run_line_that_could_not_be_typed_is_not_counted_as_having_run() {
     );
 }
 
-/// A create that fails says so on the screen too, in a red pill (interface spec 7.3).
+/// A create that fails says so on the screen too, in a red pill, on the client that asked
+/// (interface spec 7.3).
 ///
-/// The green half is the test above it; this is the half that gives `ok: false` a writer. The
-/// colour is the assertion that matters, because a pill that reported a failure in green would
-/// carry the same words.
+/// The green half is the test above it; this is the half that gives `ok: false` a writer. Two
+/// things need the fixture they have: the colour, because a pill that reported a failure in
+/// green would carry the same words, and the second client, because the failure arm chooses a
+/// screen of its own and a one-client fixture cannot tell "the caller's" from "the first".
 #[tokio::test]
-async fn a_create_that_fails_puts_a_red_pill_in_the_hint_row() {
+async fn a_create_that_fails_puts_a_red_pill_in_the_hint_row_of_the_client_that_asked() {
     let dir = tempfile::tempdir().unwrap();
     support::git(dir.path(), &["init", "-q", "-b", "main"]);
     support::git(dir.path(), &["config", "user.email", "t@example.com"]);
@@ -302,25 +304,35 @@ async fn a_create_that_fails_puts_a_red_pill_in_the_hint_row() {
         .unwrap()
         .to_string();
     let mut h = Harness::start(Config::default(), 120, 24).await;
+    let first = h.client.clone();
+    let second = h.attach(120, 24).await;
     h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
         .await
         .unwrap();
     h.api("sidebar.show", json!({})).await.unwrap();
-    h.api("workspace.create", json!({"project": name}))
-        .await
-        .unwrap_err();
+    h.api(
+        "workspace.create",
+        json!({"project": name, "client": second.to_string()}),
+    )
+    .await
+    .unwrap_err();
 
-    let f = h
+    let asked = h
         .wait_for(
-            h.client.clone(),
+            second.clone(),
             |f| f.contains("git fetch"),
             Duration::from_secs(5),
         )
         .await;
     // Catppuccin base on red: the refusal pill of interface spec 7.3 and the theme table.
     assert!(
-        f.contains("bold fg=#1e1e2e bg=#f38ba8"),
-        "and it is red, not the green a result gets:\n{f}"
+        asked.contains("bold fg=#1e1e2e bg=#f38ba8"),
+        "and it is red, not the green a result gets:\n{asked}"
+    );
+    let other = h.frame(first).await;
+    assert!(
+        !other.contains("git fetch"),
+        "and the reader who did not ask is not told:\n{other}"
     );
 }
 
@@ -691,29 +703,51 @@ async fn a_create_with_no_project_makes_the_slot_where_the_client_is_looking() {
     assert_eq!(handles(&h, &repo), ["main", "workspace-1"]);
 }
 
-/// The create answers on the screen too: a green pill in the hint row, saying what was made.
+/// The create answers on the screen too: a green pill in the hint row of the client that asked,
+/// and not of the one that did not.
+///
+/// Two clients, and the call names the second. With one attached, "the caller's screen" and
+/// "the first screen" are the same screen, and a create that lit the wrong reader's hint row
+/// would pass. `Harness::api` resolves to the most recent client when nothing is named, so the
+/// `client` parameter is given explicitly rather than left to attach order (constraints 62).
 #[tokio::test]
-async fn a_create_puts_a_green_pill_in_the_hint_row() {
+async fn a_create_puts_a_green_pill_in_the_hint_row_of_the_client_that_asked() {
     let (_tmp, repo) = repo_with_origin("main");
     let mut h = Harness::start(Config::default(), 120, 24).await;
+    let first = h.client.clone();
+    // The same width, so neither attach resizes a pane and the two frames differ only in what
+    // this test is about.
+    let second = h.attach(120, 24).await;
     h.api("project.add", json!({"path": repo.to_str().unwrap()}))
         .await
         .unwrap();
+    // `sidebar_open` is the server's, so one call opens the sidebar for both clients and the
+    // hint row is drawn on each. Without that this test could not tell an absent pill from an
+    // undrawn one.
     h.api("sidebar.show", json!({})).await.unwrap();
-    h.api("workspace.create", json!({"project": "audrey-app"}))
-        .await
-        .unwrap();
 
-    let f = h
+    h.api(
+        "workspace.create",
+        json!({"project": "audrey-app", "client": second.to_string()}),
+    )
+    .await
+    .unwrap();
+
+    let asked = h
         .wait_for(
-            h.client.clone(),
+            second.clone(),
             |f| f.contains("Created workspace-1"),
             Duration::from_secs(5),
         )
         .await;
     // Catppuccin base on green, bold: interface spec 7.3's result pill, not a plain hint.
     assert!(
-        f.contains("bold fg=#1e1e2e bg=#a6e3a1"),
-        "and it is green:\n{f}"
+        asked.contains("bold fg=#1e1e2e bg=#a6e3a1"),
+        "and it is green:\n{asked}"
+    );
+    let other = h.frame(first).await;
+    assert!(
+        !other.contains("Created workspace-1"),
+        "the other reader's hint row is their own:\n{other}"
     );
 }
