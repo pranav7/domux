@@ -1,11 +1,11 @@
 //! The fact registry: what domux observed, who observes it, and when. Providers run off the
 //! core task on blocking tasks; the core only reads the answers.
 //!
-//! The two built-in providers are Tasks 8 and 9. Their `pub mod` lines go in with the files
-//! they name, in those tasks: a `pub mod branch;` here with no `branch.rs` beside it is a
-//! compile error, and this task has to end with a green workspace build.
+//! The two built-in providers are the branch and the pull request. Everything else that
+//! observes a workspace arrives as an extension through the same `FactProvider` trait.
 
 pub mod branch;
+pub mod pr;
 
 use chrono::{DateTime, Local};
 use domux_core::facts::{Fact, FactKey, FactScope};
@@ -65,10 +65,22 @@ pub fn scope_lives(key: &FactKey, model: &Model) -> bool {
 
 /// The providers a real server runs. One list, in one file, so adding a provider is one
 /// edit and no call site changes. The branch provider goes first because the pull request
-/// provider (Task 9) reads its answer off the target rather than running git again.
+/// provider reads its answer off the target rather than running git again.
 pub fn default_providers() -> Vec<Arc<dyn FactProvider>> {
-    vec![Arc::new(branch::BranchProvider)]
+    vec![
+        Arc::new(branch::BranchProvider),
+        Arc::new(pr::PrProvider::from_env()),
+    ]
 }
+
+/// The facts that survive a restart in the cache file. The pull request costs a network call
+/// and is worth keeping; the branch is one `git rev-parse` away and is never written, because
+/// a branch read from a file after a restart could be a week old.
+///
+/// One list, read both by the core deciding whether an answer is worth writing and by
+/// `save_cache` deciding what to write: two spellings of that set is a cache that either
+/// holds what it should not or ages out what it should keep.
+pub const CACHED_FACTS: &[&str] = &[domux_core::facts::FACT_PR];
 
 /// What a provider watches. The registry walks the model and builds one target per object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,6 +587,10 @@ mod tests {
         assert!(
             text.contains(r#""schema_version": 1"#),
             "the file says which shape it is in, so a later shape can be read or refused: {text}"
+        );
+        assert!(
+            !text.contains("url"),
+            "a pull request with no title has no url in the file, not a null: {text}"
         );
         let mut fresh = FactRegistry::new();
         fresh.load_cache(&path, at(5));

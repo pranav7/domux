@@ -36,6 +36,34 @@ use tokio::sync::mpsc;
 /// a message rather than a stuck CI job.
 const SETTLE: Duration = Duration::from_secs(5);
 
+/// Runs `f` on its own thread and fails, rather than hanging, when it does not finish inside
+/// `limit`. `what` names the call in the failure.
+///
+/// For the synchronous tests whose regression is a hang and not a wrong answer: a test binary
+/// has no way to report "this never finished", so a lost bound would stall the whole suite
+/// silently instead of failing one test. The same reasoning as the outer `tokio::time::timeout`
+/// around `wait_for_fact` in `tests/facts_harness.rs`, for code that is not async.
+///
+/// A thread that outlives its limit is left running: joining it is the hang this avoids. The
+/// test harness ends the process when the run is over.
+pub fn finishes_within<T: Send + 'static>(
+    limit: Duration,
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(value) => value,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{what} did not finish within {limit:?}")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+    }
+}
+
 pub struct HarnessOptions {
     pub config: Config,
     pub cols: u16,

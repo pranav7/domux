@@ -13,6 +13,7 @@ pub mod persist;
 pub mod process;
 pub mod render;
 pub mod socket;
+pub mod subprocess;
 pub mod testing;
 pub mod worktree_conf;
 
