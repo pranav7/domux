@@ -68,8 +68,16 @@ fn set(ctx: &mut Ctx, open: bool) -> Result<Value, ApiError> {
         view.sidebar_open = open;
         // The reader asking for the sidebar on a screen too narrow to show it on its own
         // gets it: `leader b` shows it at any width (interface spec 12.1). Only for the
-        // client that asked, because the auto-hide is each client's own. Hiding clears it
-        // everywhere: with the intent closed there is nothing left to override.
+        // client that asked, because the auto-hide is each client's own.
+        //
+        // The `open &&` keeps the field's meaning true at all times - forced is never set
+        // while the sidebar is closed - and it cannot be observed today, so no test pins it.
+        // `sidebar_forced` is read only through `sidebar_visible`, which ANDs it with
+        // `sidebar_open`; the only place a view's `sidebar_open` becomes true is this loop,
+        // which re-assigns `sidebar_forced` beside it; and a fresh client gets `false` from
+        // `Core` because `Model::clients` is not persisted. So a stale `true` is always
+        // overwritten before anything can read it. Kept for the invariant, not for a
+        // behaviour, and said here so the next reader does not go looking for the test.
         view.sidebar_forced = open && asked && view.size.cols < SIDEBAR_MIN_COLS;
         if !open && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects)) {
             // Hiding the box the keys were in gives them back to the pane, so no frame is

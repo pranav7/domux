@@ -405,12 +405,16 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
 /// `Cell::reset()` on the trailing cell first and clears the fill. That is why the row's
 /// background is a parameter of `TabRow::draw` rather than left to the patch.
 ///
-/// Asserted on the composed buffer rather than on a client's frame, deliberately. Whether a
-/// client ever *sees* the hole depends on `ratatui-core`'s diff, which skips the trailing
-/// cell of an unchanged wide grapheme and emits it explicitly when the cell changes
-/// (`buffer/diff.rs`). That is transport, and it has changed between ratatui versions; the
-/// renderer's contract is that the row it drew has one background all the way across, and
-/// this is the level that contract lives at.
+/// Asserted on the composed buffer, which is the general statement and not a fallback: the
+/// renderer's promise is that the row it drew has one background all the way across, and
+/// that is true whatever the transport does with it.
+///
+/// The hole does reach a client, by a path that is worth naming because two earlier attempts
+/// at this comment named the wrong one. It is not the diff: `Buffer::diff` never yields a
+/// wide grapheme's trailing cell, whether or not the cell changed. It is
+/// `ClientConn::take_frame`, which has two branches - when `needs_full` is set it sends
+/// every cell of the buffer rather than a diff, and that is the first frame after an attach,
+/// every resize, and every frame dropped because the channel was full.
 #[test]
 fn a_wide_grapheme_in_a_tab_name_leaves_no_hole_in_the_top_bar() {
     use domux_core::model::ClientView;

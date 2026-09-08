@@ -453,13 +453,17 @@ async fn a_call_naming_a_client_that_is_not_attached_changes_nothing() {
 #[tokio::test]
 async fn asking_for_the_sidebar_on_a_narrow_screen_leaves_another_narrow_client_hidden() {
     let mut h = Harness::start(Config::default(), 119, 24).await;
-    let other = h.attach(119, 24).await;
     h.api(
         "sidebar.show",
         serde_json::json!({ "client": h.client.to_string() }),
     )
     .await
     .unwrap();
+    // Attached after the show, deliberately. A client attaching onto a sidebar that is
+    // already remembered open must auto-hide on a narrow screen, and every fixture that
+    // attaches first hides that: `set` re-assigns `sidebar_forced` for every attached
+    // client, so it overwrites whatever the attach default was.
+    let other = h.attach(119, 24).await;
     let f = h
         .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
@@ -478,11 +482,15 @@ async fn asking_for_the_sidebar_on_a_narrow_screen_leaves_another_narrow_client_
     );
 }
 
-/// Hiding the sidebar clears the override. With the intent closed there is nothing left to
-/// override, so showing it again from a screen wide enough on its own leaves the narrow
-/// client auto-hidden as it was, rather than still forced from before.
+/// A client that did not ask does not carry an override across another client's show.
+///
+/// Named for what it proves rather than for the line that motivated it. The `open &&` in
+/// `api::sidebar::set` is not what makes this pass - the `asked` gate on the second show is,
+/// and removing `open &&` leaves this green. That term is equivalent and `api/sidebar.rs`
+/// says why; this is the property that is real: after the wide client asks, the narrow one
+/// is auto-hidden because it never asked, whatever it was doing before.
 #[tokio::test]
-async fn hiding_the_sidebar_clears_the_narrow_screen_override() {
+async fn a_client_that_did_not_ask_keeps_no_override_across_another_clients_show() {
     let mut h = Harness::start(Config::default(), 119, 24).await;
     let me = serde_json::json!({ "client": h.client.to_string() });
     h.api("sidebar.show", me.clone()).await.unwrap();
