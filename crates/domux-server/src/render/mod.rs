@@ -1,6 +1,7 @@
 //! Composes one client's frame: the top bar, then the tab's pane boxes.
 
 pub mod boxed;
+pub mod list_box;
 pub mod overlay;
 pub mod pane_box;
 pub mod tab_row;

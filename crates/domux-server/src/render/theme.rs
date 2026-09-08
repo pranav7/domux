@@ -18,3 +18,7 @@ pub const MAUVE: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
 /// The focused region's border and bold title, and the current tab's fill. Nothing else.
 /// The domux logo's mauve, the same value as MAUVE (ruled 2026-09-06).
 pub const ACCENT: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
+/// Branch names.
+pub const PINK: Color = Color::Rgb(0xE3, 0xB4, 0xD8);
+/// Workspace names.
+pub const TEAL: Color = Color::Rgb(0x93, 0xE2, 0xD5);
