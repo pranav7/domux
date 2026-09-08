@@ -4,17 +4,213 @@
 use crate::render::boxed::{put_within, Boxed};
 use crate::render::{theme, RenderInput};
 use domux_core::model::Overlay;
-use domux_core::text::truncate_with_ellipsis;
+use domux_core::text::{display_width, truncate_with_ellipsis};
 use domux_term::Size;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 
+/// The columns an overlay leaves on the screen, and how far down it starts
+/// (interface spec 12.13).
+pub const OVERLAY_MARGIN: u16 = 24;
+pub const OVERLAY_TOP: u16 = 3;
+
+/// The narrowest and widest a list overlay is allowed to be (interface spec 12.13). The
+/// floor is above the sidebar's 38 columns, so whatever fits in the sidebar fits here
+/// (interface spec 5.1) without a second clamp saying so.
+const LIST_MIN_WIDTH: u16 = 60;
+const LIST_MAX_WIDTH: u16 = 120;
+
+/// Between two hints in the footer, the same separator the sidebar's hint row uses.
+const HINT_SEP: &str = " · ";
+
+/// Draws the overlay a client has open, and the one it was opened over under it
+/// (interface spec 12.7).
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
-    // Only the help overlay draws here in M1. The prompt lives in the tab cell; the others
-    // arrive with M2 to M4.
-    if let Some(Overlay::Help) = &input.view.overlay {
-        draw_help(input, buf);
+    if let Some(under) = &input.view.overlay_under {
+        draw_one(input, under, buf);
+    }
+    if let Some(top) = &input.view.overlay {
+        draw_one(input, top, buf);
+    }
+}
+
+fn draw_one(input: &RenderInput, overlay: &Overlay, buf: &mut Buffer) {
+    match overlay {
+        Overlay::Help => draw_help(input, buf),
+        Overlay::Switcher => crate::render::switcher::draw(input, buf),
+        Overlay::NameWorkspace(id) => crate::render::name_box::draw(input, id, buf),
+        Overlay::Confirm(kind) => crate::render::confirm::draw(input, kind, buf),
+        // The tab prompt lives in the tab cell; Agents is M3 and Usage is M4.
+        Overlay::Prompt(_) | Overlay::Agents | Overlay::Usage => {}
+    }
+}
+
+/// How wide a list overlay is on a screen of this width: the screen less 24 columns, at
+/// least 60 and at most 120, and never wider than the screen less its own two margin
+/// columns.
+///
+/// Answered on its own because the switcher needs the width before it has the rows: the
+/// rows truncate to the box's inner width, and the row count then decides the height. The
+/// width does not depend on the rows, so the two passes cannot disagree.
+///
+/// The screen bound is applied last on purpose. Interface spec 5.1's "never narrower than
+/// the sidebar" is already carried by the 60-column floor, and clamping up to 38 after the
+/// screen bound would put the box outside a screen narrower than 40 columns, where
+/// `Boxed::render` indexes past the buffer rather than clipping.
+pub fn list_overlay_width(screen: Rect) -> u16 {
+    screen
+        .width
+        .saturating_sub(OVERLAY_MARGIN)
+        .clamp(LIST_MIN_WIDTH, LIST_MAX_WIDTH)
+        .min(screen.width.saturating_sub(2))
+}
+
+/// The rectangle a list overlay takes: `list_overlay_width` wide, centred, three rows from
+/// the top, its height fitting `lines` up to the screen less six, and always with a row
+/// left under it on the screen for the footer (interface spec 12.13).
+pub fn list_overlay_area(screen: Rect, lines: u16) -> Rect {
+    let width = list_overlay_width(screen);
+    let max_height = screen.height.saturating_sub(6).max(3);
+    let height = lines
+        .saturating_add(2)
+        .clamp(3, max_height)
+        // The footer's row is the screen's, not the box's, so the box gives it up rather
+        // than drawing a footer past the bottom row.
+        .min(screen.height.saturating_sub(OVERLAY_TOP + 1));
+    Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + OVERLAY_TOP.min(screen.height.saturating_sub(height + 1)),
+        width,
+        height,
+    )
+}
+
+/// Paints `area` in the overlay's background, so nothing of the screen shows through.
+pub fn clear(area: Rect, buf: &mut Buffer) {
+    for y in area.y..area.y + area.height {
+        for x in area.x..area.x + area.width {
+            buf[(x, y)].reset();
+            buf[(x, y)].set_style(Style::default().bg(theme::BASE));
+        }
+    }
+}
+
+/// The same box `frame` draws, at a rectangle the caller chose. Returns the inner area.
+///
+/// A list overlay calls `clear` instead and lets its `ListBox` draw the border, so the
+/// switcher and the sidebar share one drawing of the Projects box. The name box and the
+/// confirmation are not list boxes and take the whole thing.
+pub fn frame_at(title: &str, area: Rect, buf: &mut Buffer) -> Rect {
+    clear(area, buf);
+    Boxed {
+        title,
+        flag: None,
+        focused: true,
+    }
+    .render(area, buf)
+}
+
+/// Dims every cell outside `keep`, so the screen reads as being behind the overlay
+/// (interface spec 7.1). Colour is not the only carrier: the overlay's border and its
+/// cleared background already separate it.
+///
+/// Called after the overlay has drawn itself, so `keep` is what decides that the overlay is
+/// not dimmed with the screen. Dimming first and relying on the overlay's own clear to undo
+/// it would leave `keep` doing nothing that could be seen.
+pub fn dim(buf: &mut Buffer, keep: &[Rect]) {
+    for y in buf.area.y..buf.area.bottom() {
+        for x in buf.area.x..buf.area.right() {
+            if keep.iter().any(|r| r.contains((x, y).into())) {
+                continue;
+            }
+            buf[(x, y)].modifier.insert(Modifier::DIM);
+        }
+    }
+}
+
+/// `⏎ open · / filter · ? help · esc close`, rendered from the configured `[keys.list]`
+/// bindings (principle 3). While `/` is being typed it becomes `Filter › text▮  esc clear`
+/// (interface spec 12.10); a pill replaces both until it clears.
+///
+/// It lives here rather than in one overlay because it is the overlay frame's row: the
+/// switcher draws it and M3's agents overlay draws the same one (roadmap 5.9).
+///
+/// No input reaches the degenerate-area guard below, so no test pins it and removing it
+/// breaks nothing today: the only caller derives the row from `list_overlay_area`, and
+/// `a_list_overlay_and_its_footer_row_stay_inside_any_screen` sweeps that function for
+/// exactly this promise. It is defence for the rectangles Tasks 15, 16 and 18 will pass.
+pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut Buffer) {
+    if area.height == 0 || area.width == 0 || area.y >= buf.area.bottom() {
+        return;
+    }
+    let base = Style::default().bg(theme::BASE);
+    // The row is the footer's: whatever the screen had there is gone, so the overlay is
+    // read as one thing with its keys under it rather than as a box over someone's text.
+    clear(Rect::new(area.x, area.y, area.width, 1), buf);
+    let y = area.y;
+    let x = area.x + 1;
+    // One cell of padding at each end, the same as a box's title.
+    let last_x = area.x + area.width.saturating_sub(2);
+    let width = area.width.saturating_sub(2) as usize;
+    let key_style = base.fg(theme::BLUE);
+    let word_style = base.fg(theme::OVERLAY0);
+    let sep_style = base.fg(theme::SURFACE1);
+    if let Some(pill) = &input.view.pill {
+        let style = base
+            .fg(theme::BASE)
+            .bg(if pill.ok { theme::GREEN } else { theme::RED })
+            .add_modifier(Modifier::BOLD);
+        put_within(
+            buf,
+            x,
+            y,
+            last_x,
+            &truncate_with_ellipsis(&pill.text, width),
+            style,
+        );
+        return;
+    }
+    if input.view.filtering {
+        // `esc clear` is spelled out rather than looked up: no action clears the filter, so
+        // there is no binding to read. Task 14 gives Esc that meaning while `/` is open.
+        let mut cx = put_within(buf, x, y, last_x, "Filter › ", word_style);
+        cx = put_within(buf, cx, y, last_x, &input.view.filter, base.fg(theme::TEXT));
+        cx = put_within(
+            buf,
+            cx,
+            y,
+            last_x,
+            " ",
+            base.add_modifier(Modifier::REVERSED),
+        );
+        put_within(buf, cx, y, last_x, "  esc clear", word_style);
+        return;
+    }
+    let mut cx = x;
+    for (action, label) in hints {
+        // A key the reader has rebound to nothing drops out of the row rather than naming a
+        // key that does nothing (principle 3).
+        let Some(k) = input.keymap.list_key_for(action) else {
+            continue;
+        };
+        let text = format!(" {label}");
+        // The separator belongs to the hint after it, so a hint too wide for what is left
+        // takes its separator with it and the row never ends on a dangling ` · `. `cx > x`
+        // and not "this is not the first hint": a first hint whose key is unbound draws
+        // nothing, and counting instead would open the row with a separator.
+        let sep_width = if cx > x { display_width(HINT_SEP) } else { 0 };
+        // Whole hints only, and `break` rather than `continue`: `hints` is in the order the
+        // reader should see them, so keeping a narrower later one over an earlier one would
+        // reorder the row.
+        if sep_width + display_width(&k) + display_width(&text) > (last_x + 1 - cx) as usize {
+            break;
+        }
+        if sep_width > 0 {
+            cx = put_within(buf, cx, y, last_x, HINT_SEP, sep_style);
+        }
+        cx = put_within(buf, cx, y, last_x, &k, key_style);
+        cx = put_within(buf, cx, y, last_x, &text, word_style);
     }
 }
 
@@ -66,18 +262,7 @@ pub fn frame(title: &str, width: u16, height: u16, buf: &mut Buffer) -> Rect {
         width,
         height,
     );
-    for y in area.y..area.y + area.height {
-        for x in area.x..area.x + area.width {
-            buf[(x, y)].reset();
-            buf[(x, y)].set_style(Style::default().bg(theme::BASE));
-        }
-    }
-    Boxed {
-        title,
-        flag: None,
-        focused: true,
-    }
-    .render(area, buf)
+    frame_at(title, area, buf)
 }
 
 /// `┌ Keys ┐`: the leader, every `[keys.bindings]` line as `C-a |    pane.split right`,
@@ -184,4 +369,340 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
         "esc close",
         footer,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facts::FactRegistry;
+    use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
+    use domux_core::keymap::Keymap;
+    use domux_core::model::{ClientView, Focus, Model, Pill, TextInput};
+    use domux_core::proto::Capabilities;
+    use std::collections::HashMap;
+
+    fn view() -> ClientView {
+        ClientView {
+            id: ClientId("c_0001".into()),
+            size: Size { cols: 80, rows: 24 },
+            caps: Capabilities::default(),
+            workspace: WorkspaceId("w_0001".into()),
+            tab: TabId("t_0001".into()),
+            focus: Focus::Pane(PaneId("p_0001".into())),
+            sidebar_open: false,
+            sidebar_forced: false,
+            overlay: None,
+            chord: None,
+            filter: String::new(),
+            last_active_seq: 0,
+            projects_cursor: None,
+            projects_scroll: 0,
+            filtering: false,
+            input: TextInput::new(""),
+            overlay_under: None,
+            pill: None,
+        }
+    }
+
+    /// Draws the footer for `view` into `area` of `buf`, leaving whatever else is in `buf`.
+    fn footer_into(view: &ClientView, area: Rect, buf: &mut Buffer) {
+        hints_into(
+            view,
+            &[("list.activate", "open"), ("focus.pane", "close")],
+            area,
+            buf,
+        );
+    }
+
+    /// The same, for a test that needs hints of its own.
+    fn hints_into(view: &ClientView, hints: &[(&str, &str)], area: Rect, buf: &mut Buffer) {
+        let model = Model::new(1);
+        let facts = FactRegistry::new();
+        let panes = HashMap::new();
+        let keymap = Keymap::defaults();
+        let input = RenderInput {
+            model: &model,
+            facts: &facts,
+            panes: &panes,
+            view,
+            keymap: &keymap,
+            now: chrono::Local::now(),
+            config_error: None,
+            hint: None,
+        };
+        footer(&input, hints, area, buf);
+    }
+
+    fn line_of(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// A buffer with every cell holding `X`, so a draw that clears nothing is visible.
+    fn filled(w: u16, h: u16) -> Buffer {
+        let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
+        for y in 0..h {
+            for x in 0..w {
+                buf[(x, y)].set_symbol("X");
+            }
+        }
+        buf
+    }
+
+    fn screen(cols: u16, rows: u16) -> Rect {
+        Rect::new(0, 0, cols, rows)
+    }
+
+    /// The width the interface spec's three cases give, read off the formula rather than
+    /// through a frame: the screen less the margin, the 120 cap, and the 60 floor.
+    #[test]
+    fn a_list_overlay_is_the_screen_less_the_margin_between_60_and_120_columns() {
+        assert_eq!(list_overlay_width(screen(80, 24)), 60, "the floor holds");
+        assert_eq!(
+            list_overlay_width(screen(100, 24)),
+            76,
+            "the margin decides"
+        );
+        assert_eq!(list_overlay_width(screen(200, 50)), 120, "the cap holds");
+        assert_eq!(
+            list_overlay_width(screen(60, 12)),
+            58,
+            "a screen with no room for the floor keeps its own two columns"
+        );
+    }
+
+    /// The box and its footer row stay inside the screen at every size, including screens
+    /// too small to draw on at all.
+    ///
+    /// Down to 1x1 rather than down to the 40x10 minimum, because this is a pure function and
+    /// the two bounds that hold the invariant on a tiny screen - the top pulled up, and the
+    /// height giving up the footer's row - are each redundant above the minimum. Swept only
+    /// over usable screens, either one could be deleted and the sweep stayed green; the
+    /// screens where each is the one doing the work are the ones `compose` refuses to draw.
+    /// `Boxed::render` indexes the buffer without checking, so a rectangle past the edge is a
+    /// panic and not a clipped box.
+    #[test]
+    fn a_list_overlay_and_its_footer_row_stay_inside_any_screen() {
+        for cols in [1u16, 2, 3, 20, 39, 40, 41, 60, 80, 119, 120, 200, 400] {
+            for rows in [1u16, 2, 3, 4, 5, 9, 10, 11, 12, 24, 25, 50, 200] {
+                for lines in [0u16, 1, 3, 5, 20, 100, u16::MAX] {
+                    let s = screen(cols, rows);
+                    let a = list_overlay_area(s, lines);
+                    let what = format!("{cols}x{rows}, {lines} lines: {a:?}");
+                    assert!(a.x + a.width <= cols, "past the right edge at {what}");
+                    assert!(
+                        a.y + a.height < rows,
+                        "no row left for the footer at {what}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// On every screen domux actually draws on, the box is centred, at least as wide as the
+    /// sidebar, and tall enough to be a box.
+    #[test]
+    fn a_list_overlay_is_centred_and_never_narrower_than_the_sidebar() {
+        for cols in [crate::render::MIN_COLS, 41, 60, 80, 119, 120, 200, 400] {
+            for rows in [crate::render::MIN_ROWS, 11, 12, 24, 25, 50, 200] {
+                for lines in [0u16, 1, 3, 5, 20, 100, u16::MAX] {
+                    let a = list_overlay_area(screen(cols, rows), lines);
+                    let what = format!("{cols}x{rows}, {lines} lines: {a:?}");
+                    assert!(
+                        a.width >= domux_core::model::SIDEBAR_WIDTH,
+                        "narrower than the sidebar at {what}"
+                    );
+                    assert!(a.height >= 3, "shorter than a box at {what}");
+                    let right_margin = cols - (a.x + a.width);
+                    assert!(
+                        a.x.abs_diff(right_margin) <= 1,
+                        "not centred at {what}: {} left, {right_margin} right",
+                        a.x
+                    );
+                }
+            }
+        }
+    }
+
+    /// The screen is a rectangle and not a size, so the box lands inside it wherever it
+    /// starts. `compose` builds its buffer at the origin and is the only caller today, so
+    /// this is the one fixture that can tell an area measured from the screen from one
+    /// measured from 0,0. Tasks 15, 16 and 18 are the next callers.
+    #[test]
+    fn a_list_overlay_sits_inside_the_screen_it_was_given_wherever_that_starts() {
+        let moved = list_overlay_area(Rect::new(7, 2, 80, 24), 3);
+        let at_origin = list_overlay_area(screen(80, 24), 3);
+        assert_eq!(moved.width, at_origin.width);
+        assert_eq!(moved.height, at_origin.height);
+        assert_eq!(moved.x, at_origin.x + 7);
+        assert_eq!(moved.y, at_origin.y + 2);
+    }
+
+    /// The height follows the rows until the screen runs out, and then stops.
+    #[test]
+    fn a_list_overlay_grows_with_its_rows_up_to_the_screen_less_six() {
+        assert_eq!(list_overlay_area(screen(80, 24), 0).height, 3);
+        assert_eq!(list_overlay_area(screen(80, 24), 3).height, 5);
+        assert_eq!(list_overlay_area(screen(80, 24), 16).height, 18);
+        assert_eq!(
+            list_overlay_area(screen(80, 24), 40).height,
+            18,
+            "24 - 6, so six rows of screen stay readable behind it"
+        );
+        assert_eq!(
+            list_overlay_area(screen(80, 24), 0).y,
+            OVERLAY_TOP,
+            "three rows from the top"
+        );
+    }
+
+    /// The box lands where it was told inside a bigger buffer, and writes nothing outside
+    /// itself. Both halves matter: a box drawn in the right place that overruns its bounds
+    /// has the same symptom as one drawn in the wrong place.
+    #[test]
+    fn frame_at_draws_at_its_rectangle_and_clears_only_that() {
+        let mut buf = filled(20, 6);
+        let inner = frame_at("T", Rect::new(4, 1, 10, 3), &mut buf);
+        assert_eq!(inner, Rect::new(5, 2, 8, 1));
+        assert_eq!(line_of(&buf, 0), "X".repeat(20));
+        assert_eq!(line_of(&buf, 1), "XXXX┌ T ─────┐XXXXXX");
+        assert_eq!(
+            line_of(&buf, 2),
+            "XXXX│        │XXXXXX",
+            "the inside is cleared, not left holding what was under it"
+        );
+        assert_eq!(line_of(&buf, 3), "XXXX└────────┘XXXXXX");
+        assert_eq!(line_of(&buf, 4), "X".repeat(20));
+        assert_eq!(buf[(4, 2)].bg, theme::BASE, "and it is cleared to base");
+    }
+
+    /// Everything outside `keep` is dimmed and nothing inside it is, and the text is left
+    /// where it was: dimming is an attribute over the screen, not a repaint of it.
+    #[test]
+    fn dim_marks_everything_outside_what_it_was_told_to_keep() {
+        let mut buf = filled(6, 3);
+        dim(&mut buf, &[Rect::new(2, 1, 2, 1)]);
+        for (x, y, want) in [
+            (0u16, 0u16, true),
+            (2, 0, true),
+            (1, 1, true),
+            (2, 1, false),
+            (3, 1, false),
+            (4, 1, true),
+            // The screen's last column, which is the one a sweep stopping one short of the
+            // right edge would leave bright under the overlay.
+            (5, 1, true),
+            (2, 2, true),
+        ] {
+            assert_eq!(
+                buf[(x, y)].modifier.contains(Modifier::DIM),
+                want,
+                "at {x},{y}"
+            );
+            assert_eq!(buf[(x, y)].symbol(), "X", "at {x},{y}");
+        }
+    }
+
+    /// The row is the footer's: what was there is gone, and nothing past its own columns is
+    /// touched.
+    #[test]
+    fn the_footer_clears_its_row_and_draws_inside_its_own_columns() {
+        let mut buf = filled(30, 3);
+        footer_into(&view(), Rect::new(4, 1, 20, 1), &mut buf);
+        assert_eq!(line_of(&buf, 0), "X".repeat(30));
+        assert_eq!(line_of(&buf, 1), "XXXX ⏎ open · esc close XXXXXX");
+        assert_eq!(line_of(&buf, 2), "X".repeat(30));
+        // The separator is the row's quietest colour, under both the key and the word, so a
+        // reader's eye lands on the keys. Nothing else here reads a style off the footer.
+        assert_eq!(buf[(12, 1)].symbol(), "·");
+        assert_eq!(buf[(12, 1)].fg, theme::SURFACE1);
+        assert_eq!(buf[(11, 1)].fg, theme::SURFACE1, "and its spaces with it");
+    }
+
+    /// A hint the row has no room for ends the row: the hints are in the order the reader
+    /// should see them, so a later one that would fit is dropped with it rather than moving
+    /// up into the gap.
+    ///
+    /// The middle hint is the widest, which is what separates the two. `HINTS` in the
+    /// switcher happens to end with its widest, `esc close`, so its own footer draws the
+    /// same row either way; `footer` is public and takes whatever hints it is given, and
+    /// `[keys.list]` decides how wide each one is.
+    ///
+    /// 15 cells of room: `⏎ open` is 6, ` · esc close` is 12 and does not fit, ` · ? help`
+    /// is 9 and would.
+    #[test]
+    fn the_footer_stops_at_the_first_hint_that_does_not_fit_rather_than_keeping_a_later_one() {
+        let mut buf = filled(20, 1);
+        hints_into(
+            &view(),
+            &[
+                ("list.activate", "open"),
+                ("focus.pane", "close"),
+                ("help", "help"),
+            ],
+            Rect::new(0, 0, 17, 1),
+            &mut buf,
+        );
+        assert_eq!(line_of(&buf, 0), " ⏎ open          XXX");
+    }
+
+    /// A hint that does not fit the row is dropped whole, with its separator, rather than
+    /// cut in half or left as a dangling ` · ` at the end of the row.
+    #[test]
+    fn the_footer_drops_a_hint_that_does_not_fit_instead_of_cutting_it() {
+        let mut buf = filled(30, 1);
+        footer_into(&view(), Rect::new(4, 0, 10, 1), &mut buf);
+        assert_eq!(line_of(&buf, 0), "XXXX ⏎ open   XXXXXXXXXXXXXXXX");
+    }
+
+    /// The hints keep a cell of padding at each end of the row, the same as a box's title.
+    ///
+    /// `⏎ open · esc close` is 18 cells, so a 20-column footer is the narrowest that holds
+    /// it and a 19-column one drops the last hint. One cell either way here, and both cases
+    /// are needed: a footer measured to the row's last column instead of one short of it
+    /// draws both hints at 19 and reads as text pressed against the border.
+    #[test]
+    fn the_footer_keeps_a_cell_of_padding_at_each_end() {
+        let mut wide = filled(20, 1);
+        footer_into(&view(), Rect::new(0, 0, 20, 1), &mut wide);
+        assert_eq!(line_of(&wide, 0), " ⏎ open · esc close ");
+        let mut narrow = filled(19, 1);
+        footer_into(&view(), Rect::new(0, 0, 19, 1), &mut narrow);
+        assert_eq!(line_of(&narrow, 0), " ⏎ open            ");
+    }
+
+    /// While `/` is being typed the footer is the filter and the way to clear it
+    /// (interface spec 12.10), and the caret is drawn at the end of the text.
+    #[test]
+    fn the_footer_shows_the_filter_while_one_is_being_typed() {
+        let mut v = view();
+        v.filtering = true;
+        v.filter = "auth".into();
+        let mut buf = filled(40, 1);
+        footer_into(&v, Rect::new(0, 0, 40, 1), &mut buf);
+        assert_eq!(line_of(&buf, 0), " Filter › auth   esc clear              ");
+        assert!(
+            buf[(14, 0)].modifier.contains(Modifier::REVERSED),
+            "the caret is the cell after the text"
+        );
+    }
+
+    /// A result displaces the keys until it clears (interface spec 7.3 and 12.12), and it
+    /// is cut to the row rather than running past it.
+    #[test]
+    fn a_pill_takes_the_footer_while_it_is_showing() {
+        let mut v = view();
+        v.pill = Some(Pill {
+            text: "w".repeat(40),
+            ok: false,
+            at: String::new(),
+        });
+        let mut buf = filled(20, 1);
+        footer_into(&v, Rect::new(0, 0, 20, 1), &mut buf);
+        assert_eq!(line_of(&buf, 0), format!(" {}… ", "w".repeat(17)));
+        assert_eq!(buf[(1, 0)].bg, theme::RED, "red because it was refused");
+        v.pill.as_mut().unwrap().ok = true;
+        let mut buf = filled(20, 1);
+        footer_into(&v, Rect::new(0, 0, 20, 1), &mut buf);
+        assert_eq!(buf[(1, 0)].bg, theme::GREEN);
+    }
 }

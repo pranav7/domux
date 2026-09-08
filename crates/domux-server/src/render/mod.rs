@@ -2,11 +2,14 @@
 //! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
 pub mod boxed;
+pub mod confirm;
 pub mod list_box;
+pub mod name_box;
 pub mod overlay;
 pub mod pane_box;
 pub mod projects_box;
 pub mod sidebar;
+pub mod switcher;
 pub mod tab_row;
 pub mod theme;
 pub mod top_bar;
@@ -18,7 +21,6 @@ pub fn to_rect(r: domux_core::model::Rect) -> Rect {
 }
 
 use crate::client::Hint;
-use crate::facts::FactRegistry;
 use crate::pane::PaneRuntime;
 use crate::render::boxed::Boxed;
 use crate::render::pane_box::{cursor_position, render_grid};
@@ -40,12 +42,13 @@ pub const MIN_ROWS: u16 = 10;
 
 pub struct RenderInput<'a> {
     pub model: &'a Model,
+    /// What domux observed about each workspace. The Projects box reads a branch and a pull
+    /// request from here; a fact that did not arrive draws as absent, never as a guess
+    /// (principle 4).
+    pub facts: &'a crate::facts::FactRegistry,
     pub panes: &'a HashMap<PaneId, PaneRuntime>,
     pub view: &'a ClientView,
     pub keymap: &'a Keymap,
-    /// What domux observed about each workspace. The Projects box reads it; nothing here
-    /// fetches, because a fetch shells out and rendering runs on the core task.
-    pub facts: &'a FactRegistry,
     pub now: DateTime<Local>,
     pub config_error: Option<&'a ConfigError>,
     /// One line for the clock's place. Its kind is what decides where it sits in the right

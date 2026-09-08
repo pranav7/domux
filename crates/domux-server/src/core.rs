@@ -1277,10 +1277,10 @@ impl Core {
             };
             let input = RenderInput {
                 model: &self.model,
+                facts: &self.facts,
                 panes: &self.panes,
                 view: &view,
                 keymap: &self.config.keymap,
-                facts: &self.facts,
                 now: self.deps.clock.now(),
                 config_error: self.config.error.as_ref(),
                 hint: conn.hint.as_ref(),
@@ -1476,8 +1476,6 @@ mod tests {
         ("workspace.clear_name", r#"{"workspace":"w"}"#),
         ("workspace.focus", r#"{"workspace":"w"}"#),
         ("workspace.resume", r#"{"workspace":"w"}"#),
-        ("switcher.open", "{}"),
-        ("switcher.close", "{}"),
         ("list.down", "{}"),
         ("list.up", "{}"),
         ("list.activate", "{}"),
