@@ -2578,7 +2578,10 @@ fn param_client(method: &Method) -> Option<ClientId> {
         WorkspaceRename(p) => p.client.clone(),
         WorkspaceFocus(p) => p.client.clone(),
         SwitcherOpen(p) | SwitcherClose(p) | SidebarToggle(p) | SidebarShow(p) | SidebarHide(p)
-        | ListDown(p) | ListUp(p) | ListActivate(p) | ListFilter(p) => p.client.clone(),
+        | ListDown(p) | ListUp(p) | ListActivate(p) | ListFilter(p) | AgentsOpen(p)
+        | AgentsClose(p) | FocusNextRegion(p) => p.client.clone(),
+        AgentGet(p) | AgentFocus(p) | AgentDismiss(p) => p.client.clone(),
+        AgentResume(p) => p.client.clone(),
         ServerInfo(_)
         | ServerStop(_)
         | EventsSubscribe(_)
@@ -2590,7 +2593,13 @@ fn param_client(method: &Method) -> Option<ClientId> {
         | WorkspaceClear(_)
         | WorkspaceDelete(_)
         | WorkspaceClearName(_)
-        | WorkspaceResume(_) => None,
+        | WorkspaceResume(_)
+        | AgentList(_)
+        | AgentSelf(_)
+        | AgentReport(_)
+        | AgentSend(_)
+        | AgentRead(_)
+        | AgentWait(_) => None,
     }
 }
 

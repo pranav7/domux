@@ -230,6 +230,50 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ListUp(p) => list::up(ctx, p),
         ListActivate(p) => list::activate(ctx, p),
         ListFilter(p) => list::filter(ctx, p),
+        // M3's verbs are declared before their handlers, so every caller reads one shape of
+        // this API from the first commit of the milestone. Each refuses in its own words
+        // until the task that builds it replaces the arm, the way `workspace::resume` has
+        // refused since M2: the verb exists, it does nothing yet, and the answer says when
+        // it starts (principle 9).
+        AgentList(_) => Err(ApiError::unavailable(
+            "agent.list arrives with the agent records in M3",
+        )),
+        AgentGet(_) => Err(ApiError::unavailable(
+            "agent.get arrives with the agent records in M3",
+        )),
+        AgentSelf(_) => Err(ApiError::unavailable(
+            "agent.self arrives with the agent records in M3",
+        )),
+        AgentReport(_) => Err(ApiError::unavailable(
+            "agent.report arrives with the agent hooks in M3",
+        )),
+        AgentFocus(_) => Err(ApiError::unavailable(
+            "agent.focus arrives with the agents overlay in M3",
+        )),
+        AgentDismiss(_) => Err(ApiError::unavailable(
+            "agent.dismiss arrives with the agents overlay in M3",
+        )),
+        AgentResume(_) => Err(ApiError::unavailable(
+            "agent.resume arrives with resuming exited records in M3",
+        )),
+        AgentSend(_) => Err(ApiError::unavailable(
+            "agent.send arrives with messaging in M4",
+        )),
+        AgentRead(_) => Err(ApiError::unavailable(
+            "agent.read arrives with messaging in M4",
+        )),
+        AgentWait(_) => Err(ApiError::unavailable(
+            "agent.wait arrives with messaging in M4",
+        )),
+        AgentsOpen(_) => Err(ApiError::unavailable(
+            "agents.open arrives with the agents overlay in M3",
+        )),
+        AgentsClose(_) => Err(ApiError::unavailable(
+            "agents.close arrives with the agents overlay in M3",
+        )),
+        FocusNextRegion(_) => Err(ApiError::unavailable(
+            "focus.next_region arrives with the sidebar's Agents box in M3",
+        )),
     }
 }
 

@@ -11,6 +11,7 @@ pub struct Config {
     pub keys: KeysConfig,
     pub terminal: TerminalConfig,
     pub worktrees: WorktreesConfig,
+    pub resume: ResumeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -49,6 +50,30 @@ pub struct WorktreesConfig {
     /// The ref a new slot branches from and a cleared slot resets to. `None` means detect
     /// it per project from `origin/HEAD`, falling back to `main` (architecture spec 2).
     pub base: Option<String>,
+}
+
+/// `[resume]` (architecture spec section 9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResumeConfig {
+    pub agents: ResumeMode,
+}
+
+impl Default for ResumeConfig {
+    fn default() -> ResumeConfig {
+        ResumeConfig {
+            agents: ResumeMode::Manual,
+        }
+    }
+}
+
+/// `manual`: the author presses Enter on an exited row or runs the resume subcommand.
+/// `auto`: every resumable record is resumed when the server starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeMode {
+    Manual,
+    Auto,
 }
 
 impl TerminalConfig {
@@ -98,6 +123,7 @@ impl Default for KeysConfig {
                 ("b", "sidebar.toggle"),
                 ("N", "workspace.rename"),
                 ("n", "workspace.clear_name"),
+                ("a", "agents.open"),
             ]),
             global: map(&[
                 ("C-h", "focus.left"),
@@ -109,8 +135,8 @@ impl Default for KeysConfig {
                 ("S-Right", "pane.resize right 2"),
             ]),
             passthrough: PassthroughConfig::default(),
-            // Keys inside the Projects box, with no leader (interface spec section 10).
-            // M3 adds "Tab" = "focus.next_region" with the Agents box it crosses to.
+            // Keys inside the Projects and Agents boxes, with no leader (interface spec
+            // section 10). "Tab" crosses from one box to the other.
             list: map(&[
                 ("j", "list.down"),
                 ("k", "list.up"),
@@ -121,6 +147,7 @@ impl Default for KeysConfig {
                 ("/", "list.filter"),
                 ("?", "help"),
                 ("n", "workspace.rename"),
+                ("Tab", "focus.next_region"),
             ]),
         }
     }
@@ -187,7 +214,7 @@ pub struct Parsed {
     pub warnings: Vec<ConfigWarning>,
 }
 
-pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees"];
+pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees", "resume"];
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "keys",
@@ -196,6 +223,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("keys.passthrough", &["commands", "keys"]),
     ("terminal", &["shell", "scrollback", "remain_on_exit"]),
     ("worktrees", &["base"]),
+    ("resume", &["agents"]),
 ];
 
 impl Config {
@@ -242,6 +270,7 @@ impl Config {
             keys,
             terminal: user.terminal,
             worktrees: user.worktrees,
+            resume: user.resume,
         };
         Ok(Parsed { config, warnings })
     }
@@ -458,9 +487,10 @@ mod tests {
             c.keys.bindings.get("n").map(String::as_str),
             Some("workspace.clear_name")
         );
-        assert!(
-            !c.keys.bindings.contains_key("a"),
-            "agents overlay arrives with M3"
+        // M3 adds the agents overlay key and the key that crosses the sidebar's two boxes.
+        assert_eq!(
+            c.keys.bindings.get("a").map(String::as_str),
+            Some("agents.open")
         );
         assert_eq!(
             c.keys.list.get("Enter").map(String::as_str),
@@ -470,9 +500,9 @@ mod tests {
             c.keys.list.get("Esc").map(String::as_str),
             Some("focus.pane")
         );
-        assert!(
-            !c.keys.list.contains_key("Tab"),
-            "Tab crosses nothing until M3 adds the Agents box"
+        assert_eq!(
+            c.keys.list.get("Tab").map(String::as_str),
+            Some("focus.next_region")
         );
     }
 
@@ -671,6 +701,41 @@ mod tests {
             Some("origin/develop")
         );
         assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn resume_agents_defaults_to_manual_and_parses_auto() {
+        let c = Config::default();
+        assert_eq!(
+            c.resume.agents,
+            ResumeMode::Manual,
+            "nothing is resumed until someone asks for it"
+        );
+        let p = Config::parse("[resume]\nagents = \"auto\"\n").unwrap();
+        assert_eq!(p.config.resume.agents, ResumeMode::Auto);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+    }
+
+    #[test]
+    fn an_unknown_resume_mode_names_the_line_and_the_two_values() {
+        let err = Config::parse("[resume]\nagents = \"sometimes\"\n").unwrap_err();
+        assert_eq!(err.line, Some(2));
+        assert!(
+            err.message.contains("manual") && err.message.contains("auto"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_under_resume_warns_with_its_line_and_keeps_the_rest() {
+        let parsed = Config::parse("[resume]\nagents = \"auto\"\nwhen = \"friday\"\n").unwrap();
+        assert_eq!(parsed.config.resume.agents, ResumeMode::Auto);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.warnings[0].0,
+            "unknown key resume.when (line 3) is ignored"
+        );
     }
 
     #[test]

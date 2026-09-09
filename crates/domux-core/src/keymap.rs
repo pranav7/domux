@@ -435,6 +435,27 @@ mod tests {
         assert_eq!(km.key_for("pane.split right"), Some("C-a \\".to_string()));
     }
 
+    /// The two keys M3 adds, through the lookups that answer them: `leader a` opens the
+    /// agents overlay, and `Tab` inside a box crosses to the other one.
+    #[test]
+    fn leader_a_opens_the_agents_overlay_and_tab_crosses_regions_in_a_list() {
+        let km = Keymap::defaults();
+        assert_eq!(
+            km.binding_for(&press(Key::Char('a'), Mods::empty()))
+                .unwrap()
+                .to_string(),
+            "agents.open"
+        );
+        assert_eq!(
+            km.list_for(&press(Key::Tab, Mods::empty()))
+                .unwrap()
+                .to_string(),
+            "focus.next_region"
+        );
+        assert_eq!(km.hint_for("agents.open").as_deref(), Some("leader a"));
+        assert_eq!(km.list_key_for("focus.next_region").as_deref(), Some("Tab"));
+    }
+
     /// A typo in an action used to be accepted in silence: the file loaded, `config.reload`
     /// answered "config reloaded", and the key was found to do nothing only by pressing it.
     /// The whole point of reloading is to learn whether the edit took.
@@ -482,13 +503,6 @@ mod tests {
         assert_eq!(by_action("sidebar.toggle").as_deref(), Some("b"));
         assert_eq!(by_action("workspace.rename").as_deref(), Some("N"));
         assert_eq!(by_action("workspace.clear_name").as_deref(), Some("n"));
-        assert_eq!(
-            km.bindings
-                .iter()
-                .find(|b| b.action.to_string() == "agents.open"),
-            None,
-            "leader a is unbound until M3"
-        );
         let list = |a: &str| {
             km.list
                 .iter()
@@ -499,13 +513,6 @@ mod tests {
         assert_eq!(list("list.activate").as_deref(), Some("Enter"));
         assert_eq!(list("focus.pane").as_deref(), Some("Esc"));
         assert_eq!(list("workspace.rename").as_deref(), Some("n"));
-        assert_eq!(
-            km.list
-                .iter()
-                .find(|b| b.action.to_string() == "focus.next_region"),
-            None,
-            "Tab crosses nothing until M3 adds the Agents box"
-        );
     }
 
     #[test]

@@ -231,10 +231,11 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
         .insert("g".into(), "pane.split right".into());
     cfg.keys.bindings.insert("|".into(), "".into());
     // Tall enough that the full list fits with no truncation: M2 added four leader
-    // bindings (switcher.open, sidebar.toggle, workspace.rename, workspace.clear_name),
-    // so this grew from the 80x30 M1 needed. The 80x24 case is the next test, which is
-    // where truncation is the behaviour under test.
-    let mut h = Harness::start(cfg, 80, 34).await;
+    // bindings (switcher.open, sidebar.toggle, workspace.rename, workspace.clear_name)
+    // and M3 added agents.open and the box keys' Tab, so this grew from the 80x30 M1
+    // needed. The 80x24 case is the next test, which is where truncation is the behaviour
+    // under test.
+    let mut h = Harness::start(cfg, 80, 48).await;
     h.key(h.client.clone(), "C-b").await;
     h.key(h.client.clone(), "?").await;
     let f = h
@@ -256,6 +257,10 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
         "{f}"
     );
     assert!(f.contains("esc close"), "{f}");
+    assert!(
+        !f.contains("more, see domux.toml"),
+        "the screen is tall enough for the whole list, which is what this case is about:\n{f}"
+    );
     let pane = h.focused_pane(h.client.clone());
     h.key(h.client.clone(), "j").await;
     h.frame(h.client.clone()).await;

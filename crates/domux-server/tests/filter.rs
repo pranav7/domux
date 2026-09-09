@@ -754,9 +754,16 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
     // A blank row under the block, so it reads as its own table rather than running into the
     // leader table below it. The pane ordering pins the blank on the other side of the block,
     // and the two are separate lines of code: the mutant for this one survived a sweep with
-    // only that assertion in the suite.
+    // only that assertion in the suite. The anchor is whichever leader binding sorts first,
+    // not `client.detach` by name: M3's `agents.open` took that place, and the claim is about
+    // the blank row above the leader table rather than about which action heads it.
+    let first_leader = f
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
     assert_eq!(
-        row(&f, row_holding(&f, "client.detach") - 1).trim_matches(|c| c == ' ' || c == '\u{2502}'),
+        row(&f, first_leader - 1).trim_matches(|c| c == ' ' || c == '\u{2502}'),
         "",
         "the block ends with a blank row before the leader table:\n{f}"
     );
