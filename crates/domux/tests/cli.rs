@@ -1777,11 +1777,14 @@ fn recording_server(
     (handle, recorded)
 }
 
-fn a_workspace(id: &str) -> serde_json::Value {
+/// The handle is deliberately not the id: a workspace is resumed by the id the list answered
+/// with, and a fixture where the two are the same string cannot tell that from a resume by
+/// handle, which is only unique inside one project.
+fn a_workspace(id: &str, handle: &str) -> serde_json::Value {
     serde_json::json!({
         "id": id,
         "project": "pr_19f0",
-        "handle": id,
+        "handle": handle,
         "name": null,
         "path": "/repo/audrey-app",
         "branch": "main",
@@ -1809,7 +1812,10 @@ async fn resume_with_a_project_target_resumes_every_workspace_of_that_project() 
         vec![
             (
                 "workspace.list",
-                serde_json::json!({ "result": [a_workspace("w_c3a1"), a_workspace("w_7b02")] }),
+                serde_json::json!({ "result": [
+                    a_workspace("w_c3a1", "main"),
+                    a_workspace("w_7b02", "workspace-1"),
+                ] }),
             ),
             ("workspace.resume", nothing_resumed()),
         ],
