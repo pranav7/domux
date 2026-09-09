@@ -1,7 +1,7 @@
 //! The transcript reader: the recap and the session name, cached by path and modification
-//! time (architecture spec 3.6). Carried over from V1's `scanRecap`
-//! (`.superpowers/sdd/m3-agents/v1-reference/recap.go`), minus the directory-name encoding
-//! V2 does not need because the hooks give `transcript_path`.
+//! time (architecture spec 3.6). Carried over from V1's `scanRecap`, in `recap.go` on the
+//! `main` branch (`git show main:recap.go`), minus the directory-name encoding V2 does not
+//! need because the hooks give `transcript_path`.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -61,10 +61,13 @@ impl RecapReader {
 }
 
 /// The whole file under the limit; above it, the head and the tail with the partial lines at
-/// each cut dropped.
+/// each cut dropped. Both branches read lossily: a transcript half-written by a crashed
+/// process can carry one invalid byte, and a good recap sitting in an earlier valid line
+/// must survive that rather than being thrown away with the whole file.
 fn read_bounded(path: &Path, len: u64) -> std::io::Result<String> {
     if len <= FULL_SCAN_BYTES {
-        return std::fs::read_to_string(path);
+        let bytes = std::fs::read(path)?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
     let mut f = std::fs::File::open(path)?;
     let mut head = vec![0u8; HEAD_BYTES as usize];
@@ -289,7 +292,39 @@ mod tests {
     }
 
     #[test]
-    fn a_second_read_of_an_unchanged_file_comes_from_the_cache() {
+    fn a_second_read_of_an_unchanged_file_is_served_from_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::copy(fixture("fresh"), &path).unwrap();
+        let mut r = RecapReader::default();
+        assert_eq!(
+            r.read(&path).recap.as_deref(),
+            Some("Session check cleanup")
+        );
+        assert_eq!(r.cached(), 1);
+
+        // Change the file's content without changing its mtime. A reader that
+        // re-scans regardless of mtime would see the new content; the cache must
+        // not, because `read` only re-scans when the mtime it saw last time has
+        // moved.
+        let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::fs::write(&path, text("full")).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(original_mtime)
+            .unwrap();
+        assert_eq!(
+            r.read(&path).recap.as_deref(),
+            Some("Session check cleanup"),
+            "an unchanged mtime must be served from the cache, not re-scanned"
+        );
+        assert_eq!(r.cached(), 1);
+    }
+
+    #[test]
+    fn a_changed_file_is_re_read_and_forget_drops_it_from_the_cache() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
         std::fs::copy(fixture("fresh"), &path).unwrap();
@@ -307,16 +342,35 @@ mod tests {
     }
 
     #[test]
-    fn a_transcript_larger_than_the_full_scan_limit_reads_its_head_and_its_tail() {
+    fn a_transcript_larger_than_the_full_scan_limit_reads_its_head_and_tail_but_not_the_excluded_middle(
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("huge.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "{{\"type\":\"ai-title\",\"aiTitle\":\"Early title\"}}").unwrap();
         let filler = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"padding padding padding padding padding\"}]}}";
-        for _ in 0..120_000 {
+        for i in 0..120_000 {
             writeln!(f, "{filler}").unwrap();
+            if i == 60_000 {
+                // Sits deep in the excluded middle, nowhere near either the head or
+                // the tail window. If the size guard above were removed and the
+                // whole file scanned, this away_summary would beat the head's
+                // title and the assertion below would see it instead: proof the
+                // middle is truly dropped, not merely that the fixture is big.
+                writeln!(
+                    f,
+                    "{{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:30:00.000Z\",\"content\":\"Wrong: this sits in the excluded middle.\"}}"
+                )
+                .unwrap();
+            }
         }
-        writeln!(f, "{{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T11:00:00.000Z\",\"content\":\"Late summary of the last turn.\"}}").unwrap();
+        // A rename that only exists in the tail window: if the tail read broke (a
+        // bad seek offset, say), this would come back absent.
+        writeln!(
+            f,
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>tail-proof</command-args>\"}}}}"
+        )
+        .unwrap();
         f.flush().unwrap();
         assert!(
             std::fs::metadata(&path).unwrap().len() > FULL_SCAN_BYTES,
@@ -326,8 +380,33 @@ mod tests {
         let t = r.read(&path);
         assert_eq!(
             t.recap.as_deref(),
-            Some("Late summary of the last turn"),
-            "the tail carries the summary"
+            Some("Early title"),
+            "a summary buried in the excluded middle must not reach the recap"
+        );
+        assert_eq!(
+            t.name.as_deref(),
+            Some("tail-proof"),
+            "the tail must still be read for the rename"
+        );
+    }
+
+    #[test]
+    fn a_bad_utf8_byte_after_a_good_line_does_not_discard_the_whole_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_utf8.jsonl");
+        // Simulates a process that crashed mid-write: a good line, then an invalid
+        // UTF-8 byte with no closing newline. Well under FULL_SCAN_BYTES, so this
+        // exercises the full-scan branch of read_bounded, not the head/tail branch
+        // (which was already lossy).
+        let mut bytes =
+            b"{\"type\":\"ai-title\",\"aiTitle\":\"Valid before the crash\"}\n".to_vec();
+        bytes.push(0xFF);
+        std::fs::write(&path, &bytes).unwrap();
+        let mut r = RecapReader::default();
+        assert_eq!(
+            r.read(&path).recap.as_deref(),
+            Some("Valid before the crash"),
+            "an invalid byte must not discard the whole transcript"
         );
     }
 }
