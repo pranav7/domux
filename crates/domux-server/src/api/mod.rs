@@ -2,6 +2,7 @@
 //! here as a `Method` and leave as a `Value` or an `ApiError`.
 
 pub mod agent;
+pub mod agents;
 pub mod client;
 pub mod config;
 pub mod focus;
@@ -259,12 +260,8 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         AgentWait(_) => Err(ApiError::unavailable(
             "agent.wait arrives with messaging in M4 and is not built yet",
         )),
-        AgentsOpen(_) => Err(ApiError::unavailable(
-            "agents.open arrives with the agents overlay in M3 and is not built yet",
-        )),
-        AgentsClose(_) => Err(ApiError::unavailable(
-            "agents.close arrives with the agents overlay in M3 and is not built yet",
-        )),
+        AgentsOpen(p) => agents::open(ctx, p),
+        AgentsClose(p) => agents::close(ctx, p),
         FocusNextRegion(_) => Err(ApiError::unavailable(
             "focus.next_region arrives with the sidebar's Agents box in M3 and is not built yet",
         )),

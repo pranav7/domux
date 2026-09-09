@@ -9,6 +9,7 @@ use crate::process::ForegroundProcess;
 use crate::render::{self, RenderInput};
 use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
+use chrono::{DateTime, Local};
 use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
 use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
@@ -912,6 +913,7 @@ impl Core {
             projects_cursor: None,
             projects_scroll: 0,
             agents_cursor: None,
+            agents_scroll: 0,
             filtering: false,
             input: domux_core::model::TextInput::new(""),
             overlay_under: None,
@@ -2353,53 +2355,6 @@ impl Core {
         }
     }
 
-    /// One `AgentsView` per frame: the records in sort order, their places, and this frame's
-    /// glyph and working words. Building it here is what keeps `render` free of the Model's
-    /// lookups, and what makes the sidebar and the agents overlay draw one agent one way.
-    fn agents_view(&mut self) -> crate::render::agents_box::AgentsView {
-        use crate::render::agents_box::{AgentEntry, AgentsView};
-        use domux_core::model::agent::AgentState;
-        let glyph = crate::agents::labels::frame_at(self.agents.glyph_tick);
-        let now = self.deps.clock.now();
-        let red_dots = self.model.red_dot_count();
-        // `self.model` is read while `self.agents` is written: two fields, borrowed apart.
-        let sorted = self.model.sorted_agents();
-        let mut entries = Vec::with_capacity(sorted.len());
-        for a in sorted {
-            // A working word for a working agent and for no other, so a row that must not
-            // carry one cannot (principle 4).
-            let word = if a.state == AgentState::Working {
-                self.agents.words.word_for(&a.id)
-            } else {
-                ""
-            };
-            entries.push(AgentEntry {
-                id: a.id.clone(),
-                kind: a.kind,
-                name: a.name.clone(),
-                state: a.state,
-                unseen: a.unseen,
-                recap: a.recap.clone(),
-                place_with_tab: crate::agents::context::place_of(&self.model, a),
-                place_without_tab: crate::agents::context::place_without_tab(&self.model, a),
-                last_activity_at: a.last_activity_at.clone(),
-                word,
-            });
-        }
-        AgentsView {
-            agents: entries,
-            glyph,
-            now,
-            red_dots,
-            // One lookup a frame, so an exited row and the sidebar's hint row name the same
-            // key for one action (principle 3).
-            resume_key: self
-                .config
-                .keymap
-                .list_key_for(crate::render::agents_box::RESUME_ACTION),
-        }
-    }
-
     fn render(&mut self) {
         let any_dirty = self.panes.values().any(|p| p.dirty);
         if !self.view_dirty && !any_dirty {
@@ -2412,7 +2367,8 @@ impl Core {
         }
         // One view for every client on this server: the agent list is the same list
         // wherever it is drawn, and the glyph is the core's frame, not each client's.
-        let agents = self.agents_view();
+        let now = self.deps.clock.now();
+        let agents = agents_view(&self.model, &mut self.agents, &self.config.keymap, now);
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
@@ -2782,6 +2738,59 @@ fn slot_directory(root: &Path, slot: u32) -> PathBuf {
     }
     root.join(crate::git::LEGACY_WORKTREE_DIR)
         .join(crate::git::slot_branch(slot))
+}
+
+/// One `AgentsView`: the records in sort order, their places, and this frame's glyph and
+/// working words.
+///
+/// Free rather than a method on `Core`, because two callers need it. `Core::render` builds one
+/// per frame, and `api::list` builds one to walk the cursor over exactly the rows that frame
+/// drew (interface spec 12.2). A second builder would be a second list, and the cursor would
+/// come to rest on rows the box does not have.
+///
+/// Building it here is what keeps `render` free of the Model's lookups, and what makes the
+/// sidebar and the agents overlay draw one agent one way.
+pub(crate) fn agents_view(
+    model: &Model,
+    state: &mut crate::agents::AgentsState,
+    keymap: &domux_core::keymap::Keymap,
+    now: DateTime<Local>,
+) -> crate::render::agents_box::AgentsView {
+    use crate::render::agents_box::{AgentEntry, AgentsView};
+    let glyph = crate::agents::labels::frame_at(state.glyph_tick);
+    let red_dots = model.red_dot_count();
+    let sorted = model.sorted_agents();
+    let mut entries = Vec::with_capacity(sorted.len());
+    for a in sorted {
+        // A working word for a working agent and for no other, so a row that must not carry
+        // one cannot (principle 4).
+        let word = if a.state == AgentState::Working {
+            state.words.word_for(&a.id)
+        } else {
+            ""
+        };
+        entries.push(AgentEntry {
+            id: a.id.clone(),
+            kind: a.kind,
+            name: a.name.clone(),
+            state: a.state,
+            unseen: a.unseen,
+            recap: a.recap.clone(),
+            place_with_tab: crate::agents::context::place_of(model, a),
+            place_without_tab: crate::agents::context::place_without_tab(model, a),
+            last_activity_at: a.last_activity_at.clone(),
+            word,
+        });
+    }
+    AgentsView {
+        agents: entries,
+        glyph,
+        now,
+        red_dots,
+        // One lookup a frame, so an exited row and the sidebar's hint row name the same key
+        // for one action (principle 3).
+        resume_key: keymap.list_key_for(crate::render::agents_box::RESUME_ACTION),
+    }
 }
 
 /// The `client` parameter of a view method, when the request carried one.
@@ -3263,8 +3272,6 @@ mod tests {
         ("agent.send", r#"{"text": "hello"}"#),
         ("agent.read", "{}"),
         ("agent.wait", "{}"),
-        ("agents.open", "{}"),
-        ("agents.close", "{}"),
         ("focus.next_region", "{}"),
     ];
 

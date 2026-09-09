@@ -11,7 +11,7 @@ use domux_core::config::Config;
 use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::{KeyName, Keymap};
-use domux_core::model::{AgentKind, Model};
+use domux_core::model::{AgentKind, ClientView, Focus, Model, TextInput};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, CursorState, Decoder, FrameDiff, Hello, ServerMsg, WireColor,
     PROTOCOL_VERSION,
@@ -890,6 +890,43 @@ fn attrs_from(m: Modifier) -> Attrs {
         a |= Attrs::STRIKETHROUGH;
     }
     a
+}
+
+/// One `ClientView` with every field at the value a render fixture starts from, for the
+/// tests that draw a surface without a server behind them.
+///
+/// Six render modules and `tests/render_primitives.rs` each built this by hand, so every
+/// field added to `ClientView` had to be written into seven places that were already the
+/// same. Each of them now spreads this and names only the fields its own fixture cares
+/// about, which is also what makes those fixtures readable: what is written down is what the
+/// test is about.
+///
+/// It lives here rather than in a `#[cfg(test)]` module under `render`, because
+/// `tests/render_primitives.rs` is compiled as its own crate and can only see what the
+/// library exports.
+pub fn client_view() -> ClientView {
+    ClientView {
+        id: ClientId("c_0001".into()),
+        size: Size { cols: 80, rows: 24 },
+        caps: Capabilities::default(),
+        workspace: WorkspaceId("w_0001".into()),
+        tab: TabId("t_0001".into()),
+        focus: Focus::Pane(PaneId("p_0001".into())),
+        sidebar_open: false,
+        sidebar_forced: false,
+        overlay: None,
+        chord: None,
+        filter: String::new(),
+        last_active_seq: 0,
+        projects_cursor: None,
+        projects_scroll: 0,
+        agents_cursor: None,
+        agents_scroll: 0,
+        filtering: false,
+        input: TextInput::new(""),
+        overlay_under: None,
+        pill: None,
+    }
 }
 
 /// The nth `|...|` row of a frame, without the trailing newline.

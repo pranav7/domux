@@ -2,6 +2,7 @@
 //! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
 pub mod agents_box;
+pub mod agents_overlay;
 pub mod boxed;
 pub mod confirm;
 pub mod list_box;
@@ -319,31 +320,15 @@ mod tests {
     use super::*;
 
     use domux_core::ids::ClientId;
-    use domux_core::model::TextInput;
-    use domux_core::proto::Capabilities;
 
     /// A client on `tab` with a screen of `cols` x `rows` and its remembered sidebar state.
     fn view(id: &str, tab: &str, cols: u16, rows: u16, sidebar_open: bool) -> ClientView {
         ClientView {
             id: ClientId(id.to_string()),
             size: Size { cols, rows },
-            caps: Capabilities::default(),
-            workspace: domux_core::ids::WorkspaceId("w_0001".into()),
             tab: TabId(tab.to_string()),
-            focus: Focus::Pane(PaneId("p_0001".into())),
             sidebar_open,
-            sidebar_forced: false,
-            overlay: None,
-            chord: None,
-            filter: String::new(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            agents_cursor: None,
-            filtering: false,
-            input: TextInput::new(""),
-            overlay_under: None,
-            pill: None,
+            ..crate::testing::client_view()
         }
     }
 

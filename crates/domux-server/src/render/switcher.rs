@@ -87,12 +87,9 @@ mod tests {
     use crate::facts::FactRegistry;
     use domux_core::facts::{Fact, FactKey, FACT_BRANCH};
     use domux_core::ids::ProjectId;
-    use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
+    use domux_core::ids::WorkspaceId;
     use domux_core::keymap::Keymap;
-    use domux_core::model::{
-        ClientView, Focus, Model, Project, ProjectKind, TextInput, Workspace, WorkspaceHandle,
-    };
-    use domux_core::proto::Capabilities;
+    use domux_core::model::{ClientView, Model, Project, ProjectKind, Workspace, WorkspaceHandle};
     use domux_term::Size;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -100,25 +97,8 @@ mod tests {
 
     fn view(filter: &str) -> ClientView {
         ClientView {
-            id: ClientId("c_0001".into()),
-            size: Size { cols: 80, rows: 24 },
-            caps: Capabilities::default(),
-            workspace: WorkspaceId("w_0001".into()),
-            tab: TabId("t_0001".into()),
-            focus: Focus::Pane(PaneId("p_0001".into())),
-            sidebar_open: false,
-            sidebar_forced: false,
-            overlay: None,
-            chord: None,
             filter: filter.into(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            agents_cursor: None,
-            filtering: false,
-            input: TextInput::new(""),
-            overlay_under: None,
-            pill: None,
+            ..crate::testing::client_view()
         }
     }
 

@@ -289,6 +289,11 @@ pub struct ClientView {
     /// survives a re-sort (principle 2).
     #[serde(default)]
     pub agents_cursor: Option<AgentId>,
+    /// The first visible line inside an Agents box, beside `agents_cursor` as
+    /// `projects_scroll` is beside `projects_cursor`, so scrolling moves as little as it can
+    /// when the cursor leaves the view.
+    #[serde(default)]
+    pub agents_scroll: u16,
     /// True while `/` is being typed into. `filter` holds the text either way.
     #[serde(default)]
     pub filtering: bool,
@@ -2109,6 +2114,7 @@ mod tests {
             projects_cursor: None,
             projects_scroll: 0,
             agents_cursor: None,
+            agents_scroll: 0,
             filtering: false,
             input: TextInput::new(""),
             overlay_under: None,

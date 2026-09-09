@@ -205,34 +205,16 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
     use domux_core::keymap::Keymap;
-    use domux_core::model::{ClientView, Model, Pill, TextInput};
-    use domux_core::proto::Capabilities;
+    use domux_core::model::{ClientView, Model, Pill};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn view(cols: u16, rows: u16) -> ClientView {
         ClientView {
-            id: ClientId("c_0001".into()),
             size: Size { cols, rows },
-            caps: Capabilities::default(),
-            workspace: WorkspaceId("w_0001".into()),
-            tab: TabId("t_0001".into()),
-            focus: Focus::Pane(PaneId("p_0001".into())),
             sidebar_open: true,
-            sidebar_forced: false,
-            overlay: None,
-            chord: None,
-            filter: String::new(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            agents_cursor: None,
-            filtering: false,
-            input: TextInput::new(""),
-            overlay_under: None,
-            pill: None,
+            ..crate::testing::client_view()
         }
     }
 

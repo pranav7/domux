@@ -683,11 +683,12 @@ impl Ctx<'_> {
     /// is also the key both renderers fill their row from, so the workspace this names is the
     /// one the reader can see the fill on.
     ///
-    /// `list::in_a_box` rather than the focus kind: the keys are in the switcher's box
-    /// whenever the switcher is open, whatever `focus` holds after an overlay over it closed,
-    /// and they are in the sidebar's only while the sidebar is actually showing. Asking the
-    /// question `list.*` asks keeps the box the cursor belongs to and the box the keys are in
-    /// one answer.
+    /// `list::in_a_projects_box` rather than the focus kind: the keys are in the switcher's
+    /// box whenever the switcher is open, whatever `focus` holds after an overlay over it
+    /// closed, and they are in the sidebar's only while the sidebar is actually showing.
+    /// Asking the question `list.*` asks keeps the box the cursor belongs to and the box the
+    /// keys are in one answer. The Agents box holds the same keys and is not one of these:
+    /// `projects_cursor` names no row the reader can see while the agents overlay is open.
     ///
     /// One state has no fill to point at: a filter that dropped the cursor's row. This still
     /// answers with that row, where `list.activate` refuses. Switching would move the reader
@@ -700,7 +701,7 @@ impl Ctx<'_> {
             .client(&client)
             .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
         match &view.projects_cursor {
-            Some(cursor) if super::list::in_a_box(self, &client) => Ok(cursor.clone()),
+            Some(cursor) if super::list::in_a_projects_box(self, &client) => Ok(cursor.clone()),
             _ => Ok(view.workspace.clone()),
         }
     }

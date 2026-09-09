@@ -285,23 +285,10 @@ fn model_with_clients(
         model.attach_client(ClientView {
             id: domux_core::ids::ClientId((*id).into()),
             size: *size,
-            caps: Default::default(),
             workspace: ws.clone(),
             tab: tab.clone(),
             focus: Focus::Pane(pane.clone()),
-            sidebar_open: false,
-            sidebar_forced: false,
-            overlay: None,
-            chord: None,
-            filter: String::new(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            agents_cursor: None,
-            filtering: false,
-            input: domux_core::model::TextInput::new(""),
-            overlay_under: None,
-            pill: None,
+            ..domux_server::testing::client_view()
         });
     }
     (model, tab)
