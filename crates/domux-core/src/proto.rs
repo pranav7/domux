@@ -19,7 +19,7 @@ pub struct Capabilities {
 }
 
 /// Bumped when a message shape changes. The server refuses a client with another value.
-/// 3 added `ClientMsg::Mouse` (decision 0013).
+/// 3 added `ClientMsg::Mouse` (decision 0014).
 pub const PROTOCOL_VERSION: u32 = 3;
 /// A frame larger than this is a bug or an attack, never a screen. The value is also what
 /// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.

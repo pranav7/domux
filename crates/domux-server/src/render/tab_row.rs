@@ -44,7 +44,7 @@ impl TabCell {
     }
 }
 
-/// What a cell of the drawn row acts on when it is clicked (decision 0013).
+/// What a cell of the drawn row acts on when it is clicked (decision 0014).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabTarget {
     /// The tab at this index among the workspace's tabs.

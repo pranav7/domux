@@ -1,5 +1,5 @@
 //! The pointer: the wheel to a program that asked for it, and the buttons to a selection
-//! (decision 0013).
+//! (decision 0014).
 
 use domux_core::config::Config;
 use domux_server::testing::{row, Harness};

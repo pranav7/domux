@@ -560,7 +560,7 @@ fn text_in_range_reads_a_blank_range_as_empty_text_and_a_failed_read_as_absent()
 }
 
 /// The wheel over a pane belongs to the pane's program when the program asked for the mouse
-/// (decision 0013), so the one question the server asks has to answer for every tracking mode
+/// (decision 0014), so the one question the server asks has to answer for every tracking mode
 /// a program can set, and has to be false before any of them is set.
 #[test]
 fn mouse_tracking_is_active_for_every_tracking_mode_a_program_can_set() {

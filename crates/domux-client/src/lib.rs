@@ -239,7 +239,7 @@ where
                     button_event(&mut self.clicks, &mouse, button, MouseAction::Drag)
                 }
                 // Horizontal scroll has nothing to do, and motion with no button held is not
-                // asked for: mode 1003 stays off (decision 0013).
+                // asked for: mode 1003 stays off (decision 0014).
                 MouseEventKind::Moved
                 | MouseEventKind::ScrollLeft
                 | MouseEventKind::ScrollRight => None,

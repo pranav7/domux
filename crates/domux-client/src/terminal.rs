@@ -39,7 +39,7 @@ const RESTORE_ALTERNATE_SCROLL: &[u8] = b"\x1b[?1007r";
 /// Save button tracking and SGR mouse modes, then enable them. Button tracking (1002) is
 /// normal tracking (1000) plus motion while a button is held, which is what a drag is; unlike
 /// crossterm's broad mouse command it does not ask for motion with no button held, and nothing
-/// in domux reads that (decision 0013).
+/// in domux reads that (decision 0014).
 const SAVE_AND_ENABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1002s\x1b[?1006s\x1b[?1002h\x1b[?1006h";
 const RESTORE_MOUSE_REPORTING: &[u8] = b"\x1b[?1006r\x1b[?1002r";
 

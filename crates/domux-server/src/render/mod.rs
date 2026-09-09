@@ -154,7 +154,7 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
     (buf, cursor)
 }
 
-/// What one screen cell belongs to (decision 0013). `compose` draws these; the pointer routes
+/// What one screen cell belongs to (decision 0014). `compose` draws these; the pointer routes
 /// to them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hit {

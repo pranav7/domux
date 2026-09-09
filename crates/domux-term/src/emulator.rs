@@ -26,7 +26,7 @@ pub enum Mode {
     /// DECSET 1: application cursor keys.
     AppCursor,
     /// DECSET 9, 1000, 1002 or 1003: the program asked to be told about the mouse, so the
-    /// wheel over its pane is its own rather than copy mode's (decision 0013).
+    /// wheel over its pane is its own rather than copy mode's (decision 0014).
     MouseTracking,
 }
 

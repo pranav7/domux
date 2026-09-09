@@ -1,4 +1,4 @@
-//! Where a pointer event goes (decision 0013).
+//! Where a pointer event goes (decision 0014).
 //!
 //! The wheel over a pane belongs to that pane's program when the program asked for the mouse,
 //! and to copy mode otherwise. The buttons are always domux's: a press focuses what it lands
@@ -119,7 +119,7 @@ pub fn button(core: &mut Core, client: &ClientId, event: MouseEvent, count: u8) 
 }
 
 /// A press on the chrome runs the same handler the key for that operation runs, so a click, a
-/// key and a CLI subcommand cannot mean three different things (decision 0013). A refusal from
+/// key and a CLI subcommand cannot mean three different things (decision 0014). A refusal from
 /// one of them reaches the hint row the way a key's refusal does.
 fn chrome(core: &mut Core, client: &ClientId, hit: Hit) {
     let method = match hit {
@@ -176,7 +176,7 @@ fn press(core: &mut Core, client: &ClientId, hit: &PaneHit, count: u8) {
 ///
 /// A drag that leaves the pane clamps to its edge rather than scrolling the viewport under it, so
 /// a selection made with the pointer alone reaches no further than the screen. Copy mode's keys
-/// extend it into the scrollback from there, and decision 0013 records the gap.
+/// extend it into the scrollback from there, and decision 0014 records the gap.
 fn drag(core: &mut Core, client: &ClientId, hit: &PaneHit) {
     let Some(rt) = core.panes.get_mut(&hit.pane) else {
         return;
@@ -211,7 +211,7 @@ fn drag(core: &mut Core, client: &ClientId, hit: &PaneHit) {
 }
 
 /// A release copies what the drag selected and leaves copy mode, which is the whole gesture in
-/// one movement (decision 0013). A press that never dragged selected nothing, so it copies
+/// one movement (decision 0014). A press that never dragged selected nothing, so it copies
 /// nothing and the pane keeps the focus the press gave it.
 fn release(core: &mut Core, client: &ClientId, hit: &PaneHit) {
     let Some(rt) = core.panes.get_mut(&hit.pane) else {

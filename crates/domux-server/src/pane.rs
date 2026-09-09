@@ -322,7 +322,7 @@ pub struct PaneRuntime {
     pub copy: Option<CopyMode>,
     /// Where the left button went down inside this pane, in the pane's own cells, while it is
     /// still held. The drag that follows anchors its selection there, and a press with no drag
-    /// after it leaves nothing behind (decision 0013).
+    /// after it leaves nothing behind (decision 0014).
     pub pressed_at: Option<(u16, u16)>,
     responses: Vec<u8>,
 }

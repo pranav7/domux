@@ -133,7 +133,7 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
 /// reaches its hint row, and copy mode closes unless the outcome was to stay.
 ///
 /// Enter and a release of the pointer both arrive here, so a copy cannot mean one thing from the
-/// keys and another from the pointer (decision 0013).
+/// keys and another from the pointer (decision 0014).
 pub fn finish_copy(core: &mut Core, client: &ClientId, pane: &PaneId, outcome: CopyOutcome) {
     match outcome {
         CopyOutcome::Continue => {}

@@ -20,7 +20,7 @@ colour (principle 2). Enter with no selection leaves without copying, as in tmux
 - The keys are not configurable in M1. If a `[keys.copy]` table is wanted, it is one
   more table in `KeysConfig` and one lookup in `copy_mode::handle_key`.
 - Mouse selection ends in the same copy path. It arrived in M2 rather than in V2.x: see
-  decision 0013.
+  decision 0014.
 
 ## Extension, 2026-09-08
 
@@ -30,7 +30,7 @@ ignores clicks, drag, motion and horizontal scroll. Mouse selection remains V2.x
 
 ## Extension, 2026-09-09
 
-Superseded in part by decision 0013. The client now reports the buttons and drag as well as the
+Superseded in part by decision 0014. The client now reports the buttons and drag as well as the
 wheel, a drag selects and copies on release, and the wheel over a pane whose program asked for
 the mouse goes to that program instead of to copy mode. The keys above are unchanged, and both
 the pointer and Enter copy through `copy_mode::yank`.

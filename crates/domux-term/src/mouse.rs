@@ -2,7 +2,7 @@
 //!
 //! domux knows nothing about pixels: the client reports the cell the pointer was on and the
 //! server routes that cell to a pane or to the chrome. The mouse protocols count buttons and
-//! the wheel in one numbering, so `MouseButton` does too (decision 0013).
+//! the wheel in one numbering, so `MouseButton` does too (decision 0014).
 
 use crate::key::Mods;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ pub enum MouseAction {
     Release,
     /// The pointer moved with the button held. Motion with no button held is not reported:
     /// nothing in domux reads it, and asking the outer terminal for it is the loudest mode on
-    /// the wire (decision 0013).
+    /// the wire (decision 0014).
     Drag,
 }
 
