@@ -4243,34 +4243,47 @@ mod tests {
     /// An agent id outlives its record: a client's `agents_cursor` holds one, and so do the
     /// server's per-agent working word and recap. An id handed back would show a dead
     /// session's recap under a live agent, which is the aliasing `retired` exists to stop.
+    ///
+    /// Each removal path is checked by rewinding the generator to the stream that already
+    /// produced the id, so the collision is certain and each path answers for itself. Drawing
+    /// fresh ids in a loop and asserting they differ would instead depend on the draw count
+    /// passing the generator's first repeat, and on which branch happened to remove the
+    /// earlier of the two colliding ids: a precondition that holds or fails silently.
     #[test]
     fn ids_are_not_reissued_after_an_agent_is_dismissed_or_its_workspace_is_cleared() {
-        let (mut m, ws, _, pane) = model_with_one_tab();
-        let mut seen = std::collections::HashSet::new();
-        for i in 0..150 {
-            let sid = format!("s{i}");
+        for clear_the_workspace in [false, true] {
+            let (mut m, ws, _, pane) = model_with_one_tab();
             let id = m
                 .report_agent(
                     &pane,
                     AgentKind::Claude,
-                    hook(AgentEvent::SessionStart, &sid),
+                    hook(AgentEvent::SessionStart, "s1"),
                     T0,
                 )
                 .unwrap()
                 .agent;
-            assert!(seen.insert(id.0.clone()), "agent id {id} was reissued");
-            if i % 2 == 0 {
+            if clear_the_workspace {
+                m.remove_agents_of_workspace(&ws);
+            } else {
                 m.report_agent(
                     &pane,
                     AgentKind::Claude,
-                    hook(AgentEvent::SessionEnd, &sid),
+                    hook(AgentEvent::SessionEnd, "s1"),
                     T0,
                 )
                 .unwrap();
                 m.dismiss_agent(&id).unwrap();
-            } else {
-                m.remove_agents_of_workspace(&ws);
             }
+            assert!(m.agents.is_empty());
+            // The fixture seeds the generator with 7 and this id was its fifth draw, so
+            // rewinding offers that exact value again within the next few.
+            m.reseed(7);
+            let redrawn: Vec<String> = (0..8).map(|_| m.next_id("a").unwrap()).collect();
+            assert!(
+                !redrawn.contains(&id.0),
+                "a removed agent's id {id} came back as {redrawn:?} \
+                 (clear_the_workspace: {clear_the_workspace})"
+            );
         }
     }
 
