@@ -26,6 +26,8 @@ pub enum PaneAction {
         #[arg(long)]
         lines: Option<usize>,
     },
+    /// Empty this pane: its screen and its scrollback
+    Clear,
     /// Type text into this pane
     SendText { text: String },
     /// Send one key by name: Enter, C-c, S-Left
@@ -57,6 +59,9 @@ pub async fn run(cmd: PaneCmd) -> anyhow::Result<()> {
             if !r.text.is_empty() {
                 print_line(&r.text)?;
             }
+        }
+        PaneAction::Clear => {
+            call("pane.clear", json!({ "pane": pane })).await?;
         }
         PaneAction::SendText { text } => {
             call("pane.send_text", json!({ "pane": pane, "text": text })).await?;

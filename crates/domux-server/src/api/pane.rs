@@ -7,7 +7,7 @@ use domux_core::api::{
     PaneSendTextParams, PaneSplitParams, PaneTargetParams, TabTargetParams, ZoomResult,
 };
 use domux_core::keymap::KeyName;
-use domux_term::{Emulator, KeyAction, KeyEvent, ScrollbackPos};
+use domux_term::{Emulator, KeyAction, KeyEvent, Mode, ScrollbackPos};
 use serde_json::Value;
 
 pub fn list(ctx: &mut Ctx, p: TabTargetParams) -> Result<Value, ApiError> {
@@ -105,6 +105,45 @@ pub fn copy_mode(ctx: &mut Ctx, p: PaneTargetParams) -> Result<Value, ApiError> 
     let on = rt.copy.is_some();
     rt.dirty = true;
     ctx.model.set_pane_copy_mode(&pane, on);
+    ctx.view_dirty = true;
+    ok(Ack { ok: true })
+}
+
+/// What `clear(1)` writes: cursor home, erase the screen, erase the scrollback. The three
+/// together are what "clear" means, and the third is the one a terminfo without `E3` leaves
+/// out, which is how a clear comes to leave history behind.
+const CLEARS_THE_PANE: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+
+/// Empties the pane: its screen and its scrollback, with nothing left to scroll back to.
+///
+/// The bytes go to the pane's own emulator and never to its program, which is the whole
+/// point of having this as well as the `clear` command. A shell whose line editor is holding
+/// rubbish - the reply to a device attributes query that arrived at the prompt, which is
+/// what a binary file printed to a terminal does - will not run `clear` when you type it,
+/// because what you typed is not what it has. This key does not ask the program for
+/// anything.
+///
+/// The alternate screen is refused. There is no scrollback to erase there, and the screen
+/// belongs to a full screen program that will not know to redraw it: clearing would leave the
+/// reader looking at a blank pane with a live editor behind it (principle 2).
+///
+/// Copy mode ends, because the history it was walking is what this just took away.
+pub fn clear(ctx: &mut Ctx, p: PaneTargetParams) -> Result<Value, ApiError> {
+    let pane = ctx.resolve_pane_param(p.pane.as_deref())?;
+    let rt = ctx
+        .panes
+        .get_mut(&pane)
+        .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
+    if rt.emulator.mode_active(Mode::AltScreen) {
+        return Err(ApiError::refused(format!(
+            "pane {pane} is running a full screen program, which owns its screen; there is no scrollback to clear"
+        )));
+    }
+    rt.feed(CLEARS_THE_PANE);
+    let was_in_copy_mode = rt.copy.take().is_some();
+    if was_in_copy_mode {
+        ctx.model.set_pane_copy_mode(&pane, false);
+    }
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

@@ -218,6 +218,22 @@ impl Harness {
     }
 
     pub async fn attach(&mut self, cols: u16, rows: u16) -> ClientId {
+        match self.try_attach(cols, rows).await {
+            Ok(id) => id,
+            Err(reason) => panic!("refused: {reason}"),
+        }
+    }
+
+    /// Why the server would not take a client. For a test about a server with nothing to
+    /// seat one on, where the refusal is the behaviour rather than a failure.
+    pub async fn attach_refusal(&mut self, cols: u16, rows: u16) -> String {
+        match self.try_attach(cols, rows).await {
+            Ok(id) => panic!("the server attached client {id} rather than refusing"),
+            Err(reason) => reason,
+        }
+    }
+
+    async fn try_attach(&mut self, cols: u16, rows: u16) -> Result<ClientId, String> {
         let stream = UnixStream::connect(&self.socket).await.expect("connect");
         let (mut reader, mut writer) = stream.into_split();
         let hello = ClientMsg::Hello(Hello {
@@ -263,7 +279,7 @@ impl Harness {
             .expect("open")
         {
             ServerMsg::Welcome { client, .. } => client,
-            ServerMsg::Refused { reason } => panic!("refused: {reason}"),
+            ServerMsg::Refused { reason } => return Err(reason),
             other => panic!("unexpected first message {other:?}"),
         };
         self.clients.insert(id.clone(), client);
@@ -277,7 +293,7 @@ impl Harness {
             "the model never held the new client",
         )
         .await;
-        id
+        Ok(id)
     }
 
     /// Waits until the published model satisfies `ready`, or panics after `SETTLE`.
@@ -626,6 +642,11 @@ impl Harness {
             }),
             None,
         );
+    }
+
+    /// The directory the server was started in, which is the project it seeded.
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
     }
 
     pub fn state_dir(&self) -> &Path {

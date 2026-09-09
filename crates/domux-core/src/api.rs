@@ -735,6 +735,7 @@ methods! {
     PaneSendText = "pane.send_text": PaneSendTextParams => Ack,
     PaneSendKey = "pane.send_key": PaneSendKeyParams => Ack,
     PaneRead = "pane.read": PaneReadParams => PaneReadResult,
+    PaneClear = "pane.clear": PaneTargetParams => Ack,
     FocusLeft = "focus.left": ClientParams => FocusResult,
     FocusRight = "focus.right": ClientParams => FocusResult,
     FocusUp = "focus.up": ClientParams => FocusResult,
@@ -783,15 +784,22 @@ impl Params for ProjectAddParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRemoveParams {
-    pub project: String,
+    /// A project id or name. Absent only with `all`.
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub yes: bool,
+    /// Let every project go at once, for starting over. Names no project, because the answer
+    /// to "which one" is all of them.
+    #[serde(default)]
+    pub all: bool,
 }
 impl Params for ProjectRemoveParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
         Ok(ProjectRemoveParams {
-            project: arg::<String>(args, 0, "project")?,
+            project: Some(arg::<String>(args, 0, "project")?),
             yes: false,
+            all: false,
         })
     }
 }
@@ -1012,6 +1020,7 @@ mod tests {
         "pane.send_text",
         "pane.send_key",
         "pane.read",
+        "pane.clear",
         "focus.left",
         "focus.right",
         "focus.up",
@@ -1146,6 +1155,7 @@ mod tests {
             ("pane.send_text", serde_json::json!({"text": "hello"})),
             ("pane.send_key", serde_json::json!({"key": "Enter"})),
             ("pane.read", serde_json::json!({})),
+            ("pane.clear", serde_json::json!({})),
             ("focus.left", serde_json::json!({})),
             ("focus.right", serde_json::json!({})),
             ("focus.up", serde_json::json!({})),

@@ -110,7 +110,15 @@ pub fn removal_copy(name: &str, workspaces: usize, root: &Path) -> RemovalCopy {
 /// overlay, and a caller with a command line is refused with the question and told to add
 /// `--yes`. Both refusals leave the model exactly as they found it.
 pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> {
-    let project = ctx.resolve_project_param(&p.project)?;
+    if p.all {
+        return remove_all(ctx, p.yes);
+    }
+    let Some(target) = p.project.as_deref() else {
+        return Err(ApiError::invalid_params(
+            "name a project to remove, or pass --all to remove every one",
+        ));
+    };
+    let project = ctx.resolve_project_param(target)?;
     // Unreachable: `resolve_project_param` has already answered with the id of a project
     // the model holds, and nothing runs between the two. Kept because the alternative is an
     // `expect` in a destructive handler, and written out rather than left silent so the next
@@ -118,7 +126,7 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
     let target = ctx
         .model
         .project(&project)
-        .ok_or_else(|| ApiError::not_found(format!("no project called {}", p.project)))?;
+        .ok_or_else(|| ApiError::not_found(format!("no project called {target}")))?;
     let (name, count, root) = (
         target.name.clone(),
         target.workspaces.len(),
@@ -171,6 +179,87 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
     // a workspace restored without a tab, a future kind that spawns nothing - the removal
     // must still redraw, and the cost of being wrong is a screen still showing a project
     // that is gone.
+    ctx.view_dirty = true;
+    ok(Ack { ok: true })
+}
+
+/// The question `--all` asks, in one place so the refusal and any later surface agree.
+fn removes_everything(names: &[String]) -> String {
+    format!(
+        "Remove every project? There {} {}: {}. {KEEPS_THE_FOLDER}",
+        if names.len() == 1 { "is" } else { "are" },
+        projects_phrase(names.len()),
+        names.join(", ")
+    )
+}
+
+/// `1 project` or `3 projects`.
+fn projects_phrase(count: usize) -> String {
+    match count {
+        1 => "1 project".to_string(),
+        n => format!("{n} projects"),
+    }
+}
+
+/// Lets every project go at once: the way back to an empty domux without deleting the state
+/// file by hand.
+///
+/// It removes records and never files, exactly as removing one project does. What is left is
+/// a server with no workspace, which is a state the screen already has words for: the
+/// Projects box says "No projects yet" and names the command that ends it, and `attach`
+/// offers to register the directory it was typed in. So this does not seed a replacement
+/// project on the way out; inventing one would answer a different question from the one that
+/// was asked.
+///
+/// There is no key for it and there is not going to be one. A key that removed every record
+/// on the screen is not a key anybody should be one keystroke away from; the command line
+/// asks first and takes `--yes`.
+fn remove_all(ctx: &mut Ctx, yes: bool) -> Result<Value, ApiError> {
+    let names: Vec<String> = ctx.model.projects.iter().map(|p| p.name.clone()).collect();
+    // Nothing to remove is not a failure: the caller asked for no projects and there are
+    // none. It answers without asking, because a question about an empty list has no answer
+    // worth giving.
+    if names.is_empty() {
+        return ok(Ack { ok: true });
+    }
+    if !yes {
+        return Err(ApiError::needs_confirmation(
+            removes_everything(&names),
+            names
+                .iter()
+                .map(|name| format!("the record of {name}"))
+                .collect(),
+            ctx.model
+                .projects
+                .iter()
+                .map(|p| {
+                    format!(
+                        "the folder at {} and every worktree under it",
+                        p.root.display()
+                    )
+                })
+                .collect(),
+        ));
+    }
+    let projects: Vec<ProjectId> = ctx.model.projects.iter().map(|p| p.id.clone()).collect();
+    for project in projects {
+        // Every pane under the project, before the records go, for the reason the single
+        // removal gives: `remove_project` takes the tabs and the panes with it without
+        // passing through `close_pane`, so nothing else would ever kill these PTYs.
+        let doomed: Vec<domux_core::ids::PaneId> = ctx
+            .model
+            .workspaces_of(&project)
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.layout.pane_ids())
+            .collect();
+        ctx.events.extend(ctx.model.remove_project(&project)?);
+        ctx.pending_kills.extend(doomed);
+    }
+    // Nothing to reseat a client onto once the last project is gone, and `reseat_stranded_clients`
+    // says so by leaving every client where it is. Called anyway, because it is the one rule
+    // about a stranded client and this path must not grow a second.
+    let moved = reseat_stranded_clients(ctx.model);
+    ctx.events.extend(moved);
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

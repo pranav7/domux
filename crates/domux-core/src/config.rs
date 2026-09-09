@@ -78,6 +78,10 @@ impl Default for KeysConfig {
                 ("-", "pane.split down"),
                 ("z", "pane.zoom"),
                 ("[", "pane.copy_mode"),
+                // Empties the pane, screen and scrollback. The key a reader reaches for when
+                // the shell in front of them will not run `clear` because its line editor is
+                // holding something they did not type.
+                ("k", "pane.clear"),
                 ("c", "tab.create"),
                 ("1", "tab.select 1"),
                 ("2", "tab.select 2"),
