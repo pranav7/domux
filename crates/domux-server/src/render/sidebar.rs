@@ -5,7 +5,7 @@
 //! sidebar and the switcher cannot show one project two ways.
 
 use crate::render::boxed::{put, put_within};
-use crate::render::list_box::ListBox;
+use crate::render::list_box::{content_width, ListBox};
 use crate::render::projects_box::{rows, Extras, PROJECTS_TITLE};
 use crate::render::{theme, RenderInput};
 use domux_core::model::{Focus, RegionKind, SIDEBAR_WIDTH};
@@ -63,7 +63,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         input.facts,
         filter,
         Some(key),
-        Extras::compact(area.width.saturating_sub(2)),
+        Extras::compact(content_width(area.width)),
     );
     (built, focused)
 }
@@ -581,7 +581,7 @@ mod tests {
         draw_two(&mut buf, |v, slot| v.projects_cursor = Some(slot.clone()));
         assert_eq!(
             filled_row(&buf).as_deref(),
-            Some("main"),
+            Some("   main"),
             "the keys are in a pane, so the fill stays on the workspace this client is in"
         );
 
@@ -592,7 +592,7 @@ mod tests {
         });
         assert_eq!(
             filled_row(&buf).as_deref(),
-            Some("workspace-1"),
+            Some("   workspace-1"),
             "with the keys in the box the fill follows the cursor"
         );
     }
@@ -687,20 +687,20 @@ mod tests {
     /// every row, which is the only condition under which the field can matter at all.
     #[test]
     fn the_scroll_the_client_remembers_moves_the_view() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 6));
-        draw_sized(&mut buf, 6, |_, _| {});
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 5));
+        draw_sized(&mut buf, 5, |_, _| {});
         let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
         assert!(
-            top.starts_with("AUDREY-APP"),
+            top.starts_with(" AUDREY-APP"),
             "unscrolled, the box starts at the project header: {top:?}"
         );
 
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 6));
-        draw_sized(&mut buf, 6, |v, _| v.projects_scroll = 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 5));
+        draw_sized(&mut buf, 5, |v, _| v.projects_scroll = 1);
         let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
         assert_eq!(
             top.trim_end(),
-            "main",
+            "   main",
             "scrolled by one, the header has moved off the top"
         );
     }

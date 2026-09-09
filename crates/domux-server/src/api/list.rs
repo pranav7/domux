@@ -9,7 +9,7 @@
 //! methods only say which row the keys are on.
 
 use super::{ok, Ctx};
-use crate::render::list_box::{scroll_to_show, ListRow};
+use crate::render::list_box::{content_width, scroll_to_show, ListRow};
 use crate::render::projects_box::{self, Extras};
 use domux_core::api::{Ack, ApiError, ClientParams, WorkspaceFocusParams};
 use domux_core::ids::{ClientId, WorkspaceId};
@@ -98,7 +98,7 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::switcher(width.saturating_sub(2)),
+            Extras::switcher(content_width(width)),
         );
         // The switcher's height follows its rows, the same two passes `switcher::draw` makes:
         // the width does not depend on the rows, and the row count then decides the height.
@@ -115,7 +115,7 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::compact(area.width.saturating_sub(2)),
+            Extras::compact(content_width(area.width)),
         );
         (rows, area.height.saturating_sub(2))
     };
@@ -132,9 +132,9 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
 fn step(ctx: &mut Ctx, delta: isize) -> Result<Value, ApiError> {
     let client = ctx.view()?;
     let v = visible(ctx, &client)?;
-    // The cursor rests on workspaces only: a project header and the blank rows between
-    // workspaces are stepped over, so one press moves one workspace rather than one line
-    // (interface spec 12.14).
+    // The cursor rests on workspaces only: a project header and the blank row before it are
+    // stepped over, so one press moves one workspace rather than one line (interface spec
+    // 12.14).
     let stops: Vec<usize> = v
         .rows
         .iter()

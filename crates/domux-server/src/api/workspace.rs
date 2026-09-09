@@ -705,6 +705,24 @@ impl Ctx<'_> {
         }
     }
 
+    /// The project of the row the cursor is on, for a call that named none and must not
+    /// guess.
+    ///
+    /// `project_of_view` falls back to the caller's own project, which is right for creating
+    /// a workspace and wrong for removing one: a shell that typed `project remove` with
+    /// nothing after it would then take away the project it happens to be in. So this refuses
+    /// unless the keys are in a Projects box, where the row is on the screen with the fill on
+    /// it, and names the two ways to ask in the refusal.
+    pub fn project_of_cursor(&self) -> Result<ProjectId, ApiError> {
+        let client = self.view()?;
+        if !super::list::in_a_box(self, &client) {
+            return Err(ApiError::invalid_params(
+                "name a project to remove, or pass --all to remove every one",
+            ));
+        }
+        self.project_of_view()
+    }
+
     /// The project the calling client is looking at, for a call that named none.
     pub fn project_of_view(&self) -> Result<ProjectId, ApiError> {
         let workspace = self.workspace_of_view()?;

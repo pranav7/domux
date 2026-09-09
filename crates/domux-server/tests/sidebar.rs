@@ -62,11 +62,11 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     );
     assert_eq!(
         cols(row(&f, 1), 0, 37),
-        "│PROJ ───────────────────────────────│"
+        "│ PROJ ───────────────────────────── │"
     );
     assert_eq!(
         cols(row(&f, 2), 0, 37),
-        "│main                                │"
+        "│   main                             │"
     );
     assert_eq!(
         cols(row(&f, 22), 0, 37),
@@ -81,15 +81,16 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     // where it put the fill, so the band and the brightening are one answer: the band runs
     // the row's whole inner width and the text on it is brightened to `text`.
     assert!(
-        f.contains("r2 c1-4 fg=#cdd6f4 bg=#313244"),
-        "`main` is the current workspace, so its row carries the fill:\n{f}"
+        f.contains("r2 c2-7 fg=#cdd6f4 bg=#313244"),
+        "`main` is the current workspace, so its row carries the fill, its indent \
+         included:\n{f}"
     );
     assert!(
-        f.contains("r2 c5-36 bg=#313244"),
+        f.contains("r2 c1-1 bg=#313244") && f.contains("r2 c8-36 bg=#313244"),
         "and the band runs to the border rather than stopping at the text:\n{f}"
     );
     assert!(
-        f.contains("r1 c1-5 bold fg=#7f849c\n"),
+        f.contains("r1 c2-6 bold fg=#7f849c\n"),
         "the project header is not a row the keys can act on, so it takes no fill:\n{f}"
     );
 }

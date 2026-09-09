@@ -1109,3 +1109,121 @@ async fn attaching_to_a_server_with_no_project_says_how_to_add_one() {
     );
     h.stop().await;
 }
+
+/// The keys are in the sidebar's Projects box, with the cursor on the row this client is in.
+async fn in_the_sidebar_box(h: &mut Harness) {
+    h.api("sidebar.show", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Projects"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+}
+
+/// `X` in the Projects box removes the project of the row under the cursor.
+///
+/// The binding carries no project. `leader`-bound `project.remove audrey-app` names one and
+/// has its own tests above; what this pins is the target a key in a box has and a shell does
+/// not, which is the row the reader can see the fill on (interface spec 7.3).
+#[tokio::test]
+async fn x_in_the_projects_box_asks_about_the_project_the_cursor_is_in_and_y_removes_it() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let name = h
+        .model()
+        .project_of_workspace(&w1)
+        .map(|p| p.name.clone())
+        .expect("the slot is in a project");
+    h.api("workspace.focus", json!({"workspace": w1.as_str()}))
+        .await
+        .unwrap();
+    in_the_sidebar_box(&mut h).await;
+
+    h.key(h.client.clone(), "X").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(&format!("Remove {name}?")),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert_eq!(
+        h.model().client(&h.client).map(|v| v.focus.clone()),
+        Some(Focus::Region(RegionKind::Overlay)),
+        "the keys are in the question, not still in the box:\n{f}"
+    );
+    assert!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()).contains(&name),
+        "asking is not doing"
+    );
+
+    h.key(h.client.clone(), "y").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(&format!("Remove {name}?")),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        !project_names(&h.api("project.list", json!({})).await.unwrap()).contains(&name),
+        "and y removes the project the cursor was in"
+    );
+    assert_eq!(
+        h.model()
+            .client(&h.client)
+            .and_then(|v| v.projects_cursor.clone()),
+        None,
+        "the cursor is not left on a workspace that has gone, which would draw no fill at all"
+    );
+    h.stop().await;
+}
+
+/// The same key in the switcher, which shares the sidebar's `[keys.list]` table.
+#[tokio::test]
+async fn x_in_the_switcher_asks_the_same_question_over_the_overlay_it_was_pressed_in() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let name = h
+        .model()
+        .project_of_workspace(&w1)
+        .map(|p| p.name.clone())
+        .expect("the slot is in a project");
+    h.api("workspace.focus", json!({"workspace": w1.as_str()}))
+        .await
+        .unwrap();
+    h.api("switcher.open", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Projects"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    h.key(h.client.clone(), "X").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(&format!("Remove {name}?")),
+        Duration::from_secs(5),
+    )
+    .await;
+    h.key(h.client.clone(), "Esc").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains(&format!("Remove {name}?")),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(
+        f.contains("esc close"),
+        "esc closes the question and uncovers the switcher it was asked over:\n{f}"
+    );
+    assert!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()).contains(&name),
+        "and the project is still there"
+    );
+    h.stop().await;
+}
