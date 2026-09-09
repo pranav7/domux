@@ -117,8 +117,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     let view = ctx
         .model
         .client(client)
-        .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?
-        .clone();
+        .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
     let screen = Rect::new(0, 0, view.size.cols, view.size.rows);
     if surface == Surface::AgentsOverlay {
         let width = crate::render::overlay::list_overlay_width(screen);

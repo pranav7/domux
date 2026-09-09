@@ -341,8 +341,11 @@ impl ClientView {
     /// when it uncovered nothing. Never a frame with the keys in a region nothing on the
     /// screen marks (principle 2).
     ///
-    /// The switcher is named rather than lumped in with `Overlay`, because the region is what
-    /// says which key table the reader is holding and the switcher's box has one of its own.
+    /// The switcher and the agents overlay are named rather than lumped in with `Overlay`,
+    /// because the region is what says which key table the reader is holding and each of those
+    /// two holds a box with one of its own. `render::overlay::draw_help` reads exactly that to
+    /// decide which table to list first, so an uncovered box left as `Overlay` would answer a
+    /// reader standing in it with a help screen missing the keys they are holding.
     /// Answered here rather than at each of the three callers - `api::focus::pane`,
     /// `api::switcher::close` and `input::close_overlay` - which wrote the same match out
     /// three times.
@@ -356,6 +359,7 @@ impl ClientView {
     pub fn focus_after_pop(&self, fallback: Focus) -> Focus {
         match &self.overlay {
             Some(Overlay::Switcher) => Focus::Region(RegionKind::Switcher),
+            Some(Overlay::Agents) => Focus::Region(RegionKind::AgentsOverlay),
             Some(_) => Focus::Region(RegionKind::Overlay),
             None => fallback,
         }
@@ -3164,16 +3168,16 @@ mod tests {
         assert_eq!(view.overlay, None);
     }
 
-    /// Where the keys go after a pop, for every shape of stack. `Switcher` and not `Overlay`
-    /// for a switcher that comes back, because the region is what says which key table the
-    /// reader is holding and `render::overlay::draw_help` reads it to decide which table to
-    /// list first.
+    /// Where the keys go after a pop, for every shape of stack. `Switcher` and `AgentsOverlay`
+    /// rather than `Overlay` for the two overlays that hold a box, because the region is what
+    /// says which key table the reader is holding and `render::overlay::draw_help` reads it to
+    /// decide which table to list first.
     ///
-    /// The `NameWorkspace` case is the one that separates the first two arms: both leave an
-    /// overlay open, and an implementation answering `Overlay` for either would pass a
-    /// fixture that only ever uncovered a switcher.
+    /// The `NameWorkspace` case is the one that separates those arms from the last: every one
+    /// of the three leaves an overlay open, and an implementation answering `Overlay` for all
+    /// of them would pass a fixture that only ever uncovered a modal.
     #[test]
-    fn the_keys_go_to_what_a_pop_uncovers_and_the_switcher_is_named_as_a_box() {
+    fn the_keys_go_to_what_a_pop_uncovers_and_a_box_that_comes_back_is_named_as_one() {
         let mut m = Model::new(7);
         let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
         let (tab, pane, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
@@ -3186,6 +3190,15 @@ mod tests {
             view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
             Focus::Region(RegionKind::Switcher),
             "a switcher that comes back is a box, not any old modal"
+        );
+
+        view.push_overlay(Overlay::Agents);
+        view.push_overlay(Overlay::Help);
+        view.pop_overlay();
+        assert_eq!(
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
+            Focus::Region(RegionKind::AgentsOverlay),
+            "and so is an agents overlay that comes back"
         );
 
         view.push_overlay(Overlay::NameWorkspace(ws.clone()));

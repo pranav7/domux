@@ -748,3 +748,71 @@ async fn reopening_after_a_switch_out_of_the_filter_comes_back_with_the_keys_row
     );
     assert!(!h.model().client(&h.client).unwrap().filtering);
 }
+
+/// `?` inside the Agents box lists the box's own keys first, and still does after the help has
+/// been opened and closed once.
+///
+/// Closing the help pops back to the agents overlay, and `ClientView::focus_after_pop` is what
+/// says which region the keys land in. Left as `Region(Overlay)` - the one region kind that is
+/// not a box - the next `?` drops the `[keys.list]` block to the bottom of the overlay, where a
+/// 24 row screen cuts it off entirely: a reader standing in the Agents box asks for help and is
+/// not shown the keys they are holding. M2 left that arm for the milestone that made the box
+/// reachable.
+///
+/// A 24 row screen on purpose, for the reason `tests/filter.rs` gives for the switcher's half of
+/// this: the overlay does not fit, so the order is the whole of what the reader gets and a block
+/// placed last is gone rather than merely late.
+#[tokio::test]
+async fn help_inside_the_box_lists_the_box_keys_first_after_the_help_has_been_closed_once() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    two_agents(&mut h).await;
+    open_overlay(&mut h).await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("j          list.down"),
+        "the box's keys come first the first time:\n{f}"
+    );
+    h.key(h.client.clone(), "Esc").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        Focus::Region(RegionKind::AgentsOverlay),
+        "the keys came back to the box the help was opened over:\n{f}"
+    );
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("j          list.down"),
+        "and they still come first the second time:\n{f}"
+    );
+    // The anchor is whichever leader binding sorts first, not a named action: the leader table
+    // is the thing the box's block has to precede, and which action heads it is not the claim.
+    let first_leader = f
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
+    assert!(
+        row_holding(&f, "in a list") < first_leader,
+        "before the leader table:\n{f}"
+    );
+}
