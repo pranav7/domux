@@ -1,7 +1,8 @@
 use domux_core::ids::PaneId;
 use domux_server::core::CoreMsg;
 use domux_server::pane::{
-    new_pane_emulator, FakeSpawner, PaneRuntime, PtySpawner, RealSpawner, SpawnRequest, PANE_TERM,
+    new_pane_emulator, FakeSpawner, PaneRuntime, PtySpawner, RealSpawner, SpawnRequest,
+    FAKE_PTY_FD_BASE, PANE_TERM,
 };
 use domux_term::{GhosttyEmulator, Rgb, Size};
 use std::path::PathBuf;
@@ -132,9 +133,16 @@ async fn fake_spawner_records_requests_and_captures_writes() {
         emulator(Size { cols: 200, rows: 5 }),
         pty,
     );
-    // No process, so there is no pid and no fd: absent, not a zero.
+    // No process, so there is no pid: absent, not a zero.
     assert_eq!(pane.pty.pid(), None);
-    assert_eq!(pane.pty.raw_fd(), None);
+    // A descriptor there is, and it is not one the kernel knows: it is a number that tells
+    // this pane's PTY from the next one's, which is what `FakeInspector::set_for` keys on. The
+    // handle and the spawner agree about it, so a test can ask either one.
+    assert_eq!(pane.pty.raw_fd(), Some(FAKE_PTY_FD_BASE));
+    assert_eq!(
+        fake.raw_fd(&PaneId("p_0002".into())),
+        Some(FAKE_PTY_FD_BASE)
+    );
     pane.write(b"ls\r");
     assert_eq!(fake.requests().len(), 1);
     assert_eq!(fake.requests()[0].cwd, PathBuf::from("/tmp"));
@@ -144,6 +152,24 @@ async fn fake_spawner_records_requests_and_captures_writes() {
     pane.snapshot();
     assert!(!pane.dirty);
     assert_eq!(pane.grid.cell(0, 0).text, "h");
+}
+
+/// The fake's descriptors exist to tell one pane's PTY from another's, which is what lets a
+/// test put a different process in front of each pane.
+#[tokio::test(flavor = "current_thread")]
+async fn every_fake_pane_gets_a_descriptor_of_its_own() {
+    let (tx, _rx) = tokio::sync::mpsc::channel(8);
+    let fake = FakeSpawner::default();
+    let first = fake
+        .spawn(request("p_0005", &[], "/tmp"), tx.clone())
+        .unwrap();
+    let second = fake.spawn(request("p_0006", &[], "/tmp"), tx).unwrap();
+    assert_eq!(first.raw_fd(), Some(FAKE_PTY_FD_BASE));
+    assert_eq!(second.raw_fd(), Some(FAKE_PTY_FD_BASE + 1));
+    assert_eq!(fake.raw_fd(&PaneId("p_0005".into())), first.raw_fd());
+    assert_eq!(fake.raw_fd(&PaneId("p_0006".into())), second.raw_fd());
+    // A pane the spawner never saw has no descriptor at all.
+    assert_eq!(fake.raw_fd(&PaneId("p_0009".into())), None);
 }
 
 #[tokio::test(flavor = "current_thread")]

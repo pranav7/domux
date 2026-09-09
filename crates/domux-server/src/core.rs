@@ -1,9 +1,11 @@
 //! The core task: the one owner of the Model, every PaneRuntime and every ClientConn.
 
+use crate::agents::observer::{self, PaneProcess};
 use crate::api::{self, Ctx};
 use crate::client::{ClientConn, Hint, HintKind};
 use crate::facts::FactRegistry;
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
+use crate::process::ForegroundProcess;
 use crate::render::{self, RenderInput};
 use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
@@ -11,6 +13,7 @@ use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
 use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
+use domux_core::model::agent::AgentState;
 use domux_core::model::{
     ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, Pill, RegionKind, PILL_SECONDS,
 };
@@ -730,7 +733,7 @@ impl Core {
                 // Ask the inspector now rather than waiting for the next tick. A pane's box
                 // shows its command, and up to a second of an untitled box is up to a
                 // second of a frame that does not yet say what is running (principle 8).
-                let observed = self.panes.get(pane).map(|rt| self.observe_pane(rt));
+                let observed = self.panes.get(pane).map(|rt| self.observe_pane(rt).0);
                 if let Some(facts) = observed {
                     self.model.set_pane_facts(pane, facts);
                 }
@@ -795,6 +798,10 @@ impl Core {
                         status,
                     });
                     self.view_dirty = true;
+                    // Here rather than on the next tick: the child is gone, so every agent
+                    // that was running in this pane is gone with it, and a row must not read
+                    // `working` for up to a second after the process it names ended.
+                    self.agents_gone_with_pane(&pane);
                 }
             }
             CoreMsg::ClientConnected { hello, tx, reply } => {
@@ -1684,6 +1691,11 @@ impl Core {
     ) {
         let acted = !spawns.is_empty() || !kills.is_empty() || !detaches.is_empty();
         for pane in kills {
+            // Every close reaches this list: `close_pane`, `pane.close`, `tab.close`, a
+            // deleted workspace and a removed project all put their panes here, and the last
+            // three never pass through `close_pane` at all. So this is where a pane going
+            // away ends the agents that were running in it, rather than in each of those.
+            self.agents_gone_with_pane(&pane);
             if let Some(mut rt) = self.panes.remove(&pane) {
                 rt.pty.kill();
             }
@@ -1766,27 +1778,62 @@ impl Core {
             .unwrap_or(fallback)
     }
 
+    /// Publishes what the observer did and answers whether it did anything. A record that
+    /// stopped working frees its working word, exactly as a hook report does: the word is per
+    /// working agent, and an agent that exited is not one.
+    fn agents_changed(&mut self, events: Vec<Event>) -> bool {
+        if events.is_empty() {
+            return false;
+        }
+        for e in &events {
+            if let Event::AgentStateChanged { agent, to, .. } = e {
+                if *to != AgentState::Working {
+                    self.agents.words.release(agent);
+                }
+            }
+        }
+        self.pending_events.extend(events);
+        true
+    }
+
+    /// Every live record on `pane` exits now: a record must never read `working` on a pane
+    /// that is gone. The records are found by the pane they hold, so this answers whether or
+    /// not the model still has that pane, and each record keeps the workspace it started in.
+    fn agents_gone_with_pane(&mut self, pane: &PaneId) {
+        let now = self.deps.clock.now().to_rfc3339();
+        let events = observer::pane_gone(&mut self.model, pane, &now);
+        if self.agents_changed(events) {
+            self.view_dirty = true;
+        }
+    }
+
     /// What the process inspector and the emulator say about one pane right now. Each field
     /// is `None` when nothing answered, so `set_pane_facts` leaves that fact alone rather
     /// than clearing it.
-    fn observe_pane(&self, pane: &PaneRuntime) -> PaneFacts {
+    ///
+    /// The foreground process comes back beside the facts because the observer asks a second
+    /// question of the same answer: the pane box wants the command's name, and the observer
+    /// wants to know whether that command is a known agent.
+    fn observe_pane(&self, pane: &PaneRuntime) -> (PaneFacts, Option<ForegroundProcess>) {
         let fg = self.deps.inspector.foreground(pane.pty.raw_fd());
         let cwd = pane
             .emulator
             .cwd()
             .or_else(|| fg.as_ref().and_then(|f| self.deps.inspector.cwd_of(f.pid)));
-        PaneFacts {
+        let facts = PaneFacts {
             command: fg.as_ref().map(|f| f.name.clone()),
             pid: fg.as_ref().map(|f| f.pid),
             cwd,
             title: pane.emulator.title(),
-        }
+        };
+        (facts, fg)
     }
 
     fn tick(&mut self) {
         let mut changed = false;
+        let mut seen: Vec<PaneProcess> = Vec::with_capacity(self.panes.len());
         for (id, pane) in &self.panes {
-            let facts = self.observe_pane(pane);
+            let (facts, foreground) = self.observe_pane(pane);
             if let Some(current) = self.model.pane(id) {
                 if (facts.command.is_some() && facts.command != current.command)
                     || (facts.cwd.is_some() && facts.cwd.as_ref() != Some(&current.cwd))
@@ -1795,8 +1842,23 @@ impl Core {
                     changed = true;
                 }
             }
+            seen.push(PaneProcess {
+                pane: id.clone(),
+                foreground,
+            });
             self.model.set_pane_facts(id, facts);
         }
+        // The agent question, off the same walk: the inspector was asked once and both the
+        // pane boxes and the records read that one answer.
+        let now = self.deps.clock.now().to_rfc3339();
+        let events = observer::run(
+            &mut self.model,
+            &seen,
+            &self.agents.manifests,
+            self.deps.inspector.as_ref(),
+            &now,
+        );
+        changed |= self.agents_changed(events);
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
             self.last_minute = Some(minute);

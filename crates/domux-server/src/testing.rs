@@ -125,7 +125,15 @@ pub struct Harness {
     cols: u16,
     rows: u16,
     providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+    /// The next process id `set_foreground_for` hands out. Counts up from `FIRST_FAKE_PID` so
+    /// every process a test puts in a foreground has its own, and the numbers a failure
+    /// prints are the same every run.
+    next_pid: u32,
 }
+
+/// Where `Harness::set_foreground_for` starts numbering. Clear of the pid the harness gives
+/// every pane's default `sh`, and clear of the low numbers a real system uses.
+const FIRST_FAKE_PID: u32 = 5000;
 
 impl Harness {
     pub async fn start(config: Config, cols: u16, rows: u16) -> Harness {
@@ -176,6 +184,7 @@ impl Harness {
             cols: opts.cols,
             rows: opts.rows,
             providers: opts.providers,
+            next_pid: FIRST_FAKE_PID,
         };
         h.start_server().await;
         h.client = h.attach(opts.cols, opts.rows).await;
@@ -656,6 +665,36 @@ impl Harness {
             }),
             None,
         );
+    }
+
+    /// Puts a process in front of one pane, or nothing, and answers with its process id. The
+    /// fake inspector answers per PTY descriptor, so two panes can hold two agents.
+    ///
+    /// Every call is a new process id, as a new program in a pane is: a test that puts a tool
+    /// in the foreground and then the agent back is describing three processes, not one.
+    pub async fn set_foreground_for(&mut self, pane: &PaneId, name: Option<&str>) -> u32 {
+        let fd = self
+            .spawner
+            .as_ref()
+            .expect("set_foreground_for needs fake PTYs")
+            .raw_fd(pane)
+            .unwrap_or_else(|| panic!("pane {pane} has no PTY"));
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        self.inspector.set_for(
+            fd,
+            name.map(|n| ForegroundProcess {
+                pid,
+                name: n.into(),
+            }),
+            None,
+        );
+        pid
+    }
+
+    /// The process is gone; the inspector says so from the next tick on.
+    pub async fn kill_process(&mut self, pid: u32) {
+        self.inspector.set_dead(pid);
     }
 
     pub fn state_dir(&self) -> &Path {
