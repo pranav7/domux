@@ -1550,6 +1550,12 @@ impl Core {
     /// `Model::dismiss_agent` rather than a removal of its own: taking away an exited record
     /// is one operation, and this is a clear asking for it once per record.
     ///
+    /// Of the two caches `forget_agent_caches` drops below, only the transcript is ever there
+    /// on this route: the filter takes records whose session is over, and such a record holds
+    /// no working word, for the reason `api::agent::dismiss` sets out. The word half is live
+    /// on the other caller, `forget_agent_caches_of`, which a delete uses and which takes
+    /// working records too.
+    ///
     /// That choice leaves the filter and the removal as two guards over one rule, and the
     /// removal's is the stronger: `dismiss_agent` refuses a live record on its own, so
     /// deleting the filter here would not let one through. The filter is what says which
@@ -1579,22 +1585,12 @@ impl Core {
         events
     }
 
-    // `forget_agent_caches` drops a working word and a cached transcript. On a clear only the
-    // transcript is ever there: the filter above takes records whose session is over, and such
-    // a record holds no word, for the reason `api::agent::dismiss` sets out. The word half is
-    // live on the other caller: `forget_agent_caches_of`, which a delete uses, takes every
-    // record of the workspace including a working one, and
-    // `deleting_a_workspace_gives_back_the_working_words_of_its_agents` holds it.
-
     /// Drops the working word and the cached transcript keyed to a record that has just gone.
     /// `api::agent::dismiss` does the same for the record it removes and says why: an agent id
     /// is never reissued, so nothing will ever ask for either again, and the pool of working
     /// words is finite, so a word never released is a slot lost for the life of the server.
     fn forget_agent_caches(&mut self, agent: &AgentId, transcript: Option<&Path>) {
-        self.agents.words.release(agent);
-        if let Some(path) = transcript {
-            self.agents.recaps.forget(path);
-        }
+        self.agents.forget_record(agent, transcript);
     }
 
     /// The same for every record of a workspace that is about to go with it, which is what a
@@ -5374,6 +5370,46 @@ mod tests {
             core.model.agents.is_empty(),
             "the records went with the slot"
         );
+        assert_eq!(core.agents.words.in_use(), 0, "and so did their words");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            0,
+            "and their cached transcripts"
+        );
+    }
+
+    /// Removing a project takes every record under it, so their caches go with them.
+    ///
+    /// The harsher of the two removal paths and the one worth a test of its own. A clear
+    /// leaves its records behind as exited, so a word it missed is still reclaimable by a
+    /// later dismiss; a project removal takes the record away, and nothing can ever name what
+    /// it held again.
+    #[test]
+    fn removing_a_project_gives_back_the_caches_of_the_records_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        let transcript = a_transcript(dir.path());
+        hook_with(&mut core, &pane, "UserPromptSubmit", Some(&transcript));
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            1,
+            "and its transcript is cached"
+        );
+        let project = core.model.projects[0].id.clone();
+
+        core.dispatch(
+            Method::from_request(
+                "project.remove",
+                serde_json::json!({ "project": project.as_str(), "yes": true }),
+            )
+            .expect("project.remove takes these params"),
+            None,
+        )
+        .expect("project.remove");
+
+        assert!(core.model.agents.is_empty(), "the records went with it");
         assert_eq!(core.agents.words.in_use(), 0, "and so did their words");
         assert_eq!(
             core.agents.recaps.cached(),

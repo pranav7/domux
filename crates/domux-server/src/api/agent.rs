@@ -260,8 +260,11 @@ pub fn dismiss(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
     // carries, so it is dropped here.
     //
     // **The word half frees nothing today, and it is kept anyway.** `Model::dismiss_agent`
-    // refuses a live record, and every path out of `working` frees the word on the way, so a
-    // record that can be dismissed is one that holds none. The three paths are held by
+    // refuses a live record, and every path that leaves the record in the list frees the word
+    // on the way, so a record that can be dismissed is one that holds none. Not every path out
+    // of `working`: a removal takes the record with it, and `api::project::remove` and
+    // `Core::workspace_deleted` free the word themselves for exactly that reason. The three
+    // paths that leave a record behind are held by
     // `a_stop_hook_gives_the_working_word_back_to_the_pool`,
     // `a_pane_that_exits_gives_back_the_working_words_of_its_agents` and
     // `a_session_that_takes_a_pane_gives_back_the_word_of_the_one_it_displaced`. The last of
