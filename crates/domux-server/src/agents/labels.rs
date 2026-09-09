@@ -204,6 +204,11 @@ pub const GLYPH_FRAMES: [&str; 13] = [
 ];
 
 /// One frame every 80 ms (V1's `pickerSpinnerInterval`).
+///
+/// It has a floor that is not V1's. While anything works the core pushes a frame every
+/// interval, and `testing::Harness::pump` returns only after 50 ms with no message, so an
+/// interval at or below that window would leave every `frame()` call during work reading
+/// frames until the test timed out. Lowering this number means raising that one.
 pub const GLYPH_INTERVAL: Duration = Duration::from_millis(80);
 
 /// The frame for an animation tick counter. The counter is the core's, so every client on

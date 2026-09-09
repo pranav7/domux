@@ -88,6 +88,12 @@ async fn the_glyph_turns_while_an_agent_works_and_stands_still_when_it_stops() {
     );
 
     // And it stops. No agent works, so no row draws a glyph and the screen stands still.
+    //
+    // The whole frame, and not only the row, because nothing else in it moves either: the
+    // harness runs the server on a `FixedClock`, which is what `render` hands the top bar and
+    // what `Core::tick` measures its minute against, so the clock at the top right reads the
+    // same string on both looks. It starts no fact providers, so nothing arrives from outside
+    // either. Take either of those away and this comparison becomes a wall-clock race.
     h.report(pane.clone(), AgentKind::Claude, CLAUDE_STOPS)
         .await;
     let quiet = h.frame(h.client.clone()).await;

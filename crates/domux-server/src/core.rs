@@ -5217,6 +5217,59 @@ mod tests {
         );
     }
 
+    /// The same when the pane changes hands between two kinds, which is the shape a reader
+    /// meets: they close claude and start codex in the pane it was working in.
+    ///
+    /// A second test over the branch above rather than a duplicate of it. It arrives by a
+    /// different route (the kinds differ, so the payload cannot be matched to the live record
+    /// by session id) and on a different hook, and it is the sequence Task 17's review wrote
+    /// out when it found the leak, so it is the one a reader will come looking for.
+    #[test]
+    fn a_different_kind_taking_over_a_pane_gives_back_the_working_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook_session(&mut core, &pane, "UserPromptSubmit", Some("c1"));
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "claude is working and has a word"
+        );
+
+        let method = Method::from_request(
+            "agent.report",
+            serde_json::json!({
+                "pane": &pane,
+                "kind": "codex",
+                "payload": {"hook_event_name": "SessionStart", "session_id": "x1"},
+            }),
+        )
+        .expect("agent.report takes these params");
+        core.dispatch(method, None).expect("agent.report");
+        drawn(&mut core);
+
+        use domux_core::model::agent::AgentKind;
+        let records: Vec<(AgentKind, AgentState)> = core
+            .model
+            .agents
+            .iter()
+            .map(|a| (a.kind, a.state))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (AgentKind::Claude, AgentState::Exited),
+                (AgentKind::Codex, AgentState::Idle)
+            ],
+            "codex took the pane and the claude record exited with it"
+        );
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "nothing is working, so no word is held"
+        );
+    }
+
     /// The same for the record a resume removes rather than exits. A session-less record the
     /// observer left on a pane is dropped when the session that owns that pane reports from
     /// it, and a dropped record frees its word like an exited one.
@@ -5333,10 +5386,13 @@ mod tests {
     ///
     /// The word is put in the pool here rather than by a hook, because no sequence of hooks
     /// can leave one for a dismiss to find: a record has to be exited before `dismiss_agent`
-    /// will take it, and both ways out of `working` free the word on the way (the two tests
-    /// above hold them). The line is still worth pinning. The pool is finite, an agent id is
-    /// never reissued, and a slot leaked in it is leaked for the life of the server, so the
-    /// state it guards is set directly rather than left with no test at all.
+    /// will take it, and every way out of `working` frees the word on the way. There are three
+    /// of them and the tests above hold all three: a hook that stops the agent, a pane that
+    /// exits under it, and a report that takes its pane for another session. The third leaked
+    /// a word until Task 17, which is why this is set by hand rather than driven by hooks, and
+    /// also why the line is worth pinning: the pool is finite, an agent id is never reissued,
+    /// and a slot leaked in it is leaked for the life of the server, so a later change that
+    /// makes this path reachable must not depend on someone adding the release back.
     #[test]
     fn dismissing_a_record_gives_its_working_word_back_to_the_pool() {
         let dir = tempfile::tempdir().unwrap();
