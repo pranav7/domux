@@ -12,7 +12,7 @@ use crate::core::Core;
 use domux_core::api::Method;
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::keymap::Action;
-use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind};
+use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind, RegionKind};
 use domux_core::proto::ServerMsg;
 use domux_term::{Emulator, Key, KeyAction, KeyEvent, Mods};
 
@@ -220,7 +220,8 @@ fn filter_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
 
 /// Keys inside an overlay. The prompt edits its input; Enter saves, Esc cancels. The help
 /// overlay closes on Esc, `q` or `?`. A confirmation acts on `y` and cancels on anything
-/// else. Closing returns focus to the pane.
+/// else. Closing returns the keys to the overlay underneath, or to the pane when there is
+/// none: see `close_overlay`.
 fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
     let Some(overlay) = core
         .model
@@ -280,14 +281,11 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         // The same rule as the tab above, and the keys the box itself offers:
         // `y remove project    esc keep project` (interface spec 7.3).
         //
-        // `api::project::remove` opened this with `push_overlay` and this closes it with
-        // `close_overlay`, which clears the top overlay and leaves `overlay_under` where it
-        // is - so it does not merely fail to restore what was underneath, it strands it.
-        // The two agree while nothing opens the confirmation over another overlay, which
-        // nothing in M2 does: the only way here is a key bound to `project.remove`, and a
-        // key bound to anything reaches `run_action` only when no overlay is open. Task 18,
-        // which adds `X` inside the Projects box, opens it over the switcher and has to
-        // come back to this: `pop_overlay` is the call that does the right thing there.
+        // `api::project::remove` opens this with `push_overlay` and `close_overlay` pops it,
+        // so a confirmation raised over another overlay comes back to that overlay rather
+        // than stranding it. Task 20 made that true; before it, `close_overlay` cleared the
+        // top overlay and left `overlay_under` where it stood. Task 18, which adds `X`
+        // inside the Projects box, is the first caller to open one over the switcher.
         Overlay::Confirm(ConfirmKind::RemoveProject(project)) => {
             close_overlay(core, client);
             if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
@@ -313,12 +311,27 @@ fn set_prompt(core: &mut Core, client: &ClientId, prompt: PromptKind) {
     }
 }
 
+/// Closes the overlay that has the keys and gives them back to what was under it: the
+/// overlay it was opened over (interface spec 12.7), or the pane.
+///
+/// One overlay, not the whole stack. `?` over the switcher has to come back to the switcher,
+/// and `view.overlay = None` would not merely fail to restore it, it would strand it in
+/// `overlay_under` where nothing draws it and nothing closes it.
+///
+/// The three-arm focus match is `api::focus::pane`'s and `api::switcher::close`'s, written
+/// out rather than shared: those two are API handlers over `Ctx` and this one edits the model
+/// through `Core`, so there is no call either could make. `RegionKind::Overlay` and not
+/// `Switcher` for the overlay that comes back, because those two answer it that way and
+/// nothing in the tree reads the distinction; a fourth answer here would be the drift.
 fn close_overlay(core: &mut Core, client: &ClientId) {
     let focused = core.focused_pane(client);
     if let Some(view) = core.model.client_mut(client) {
-        view.overlay = None;
-        if let Some(p) = focused {
-            view.focus = Focus::Pane(p);
-        }
+        view.pop_overlay();
+        // Never a frame with the keys in a region nothing on the screen marks (principle 2).
+        view.focus = match (&view.overlay, focused) {
+            (Some(_), _) => Focus::Region(RegionKind::Overlay),
+            (None, Some(p)) => Focus::Pane(p),
+            (None, None) => view.focus.clone(),
+        };
     }
 }

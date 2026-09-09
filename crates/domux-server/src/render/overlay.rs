@@ -190,9 +190,14 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
     // What the start-up prune took away, over the keys: the keys are the same on every frame
     // and the note is on this one only. Under the pill and under the filter, which are both
     // answers to something the reader just did, where a note is about what happened before
-    // they arrived. The filter cannot in fact be open with a note showing - typing `/` is a
-    // key in a box and clears the notes - so that half of the order is a statement of intent
-    // rather than a case any input reaches today.
+    // they arrived.
+    //
+    // The note under the filter is reachable, and Task 21's note here said it was not: it
+    // reasoned that typing `/` is a key in a box and clears the notes, which is true of the
+    // key and not of the operation. `list.filter` over the API opens the field without a key
+    // and the note is still standing. `sidebar::hint_row` answers this the same way, which it
+    // did not before Task 20 - it had the note over the filter, so the two surfaces disagreed
+    // while both comments said they agreed.
     if let Some(note) = crate::render::note_line(input.notes) {
         put_within(
             buf,
@@ -295,8 +300,9 @@ pub fn centred_area(width: u16, height: u16, buf: &Buffer) -> Rect {
 }
 
 /// `┌ Keys ┐`: the leader, every `[keys.bindings]` line as `C-a |    pane.split right`,
-/// every `[keys.global]` line, the passthrough rule, and `esc close`. Rendered from the
-/// loaded keymap, so a rebinding shows here (principle 3).
+/// every `[keys.global]` line, the passthrough rule, every `[keys.list]` line under
+/// `in a list`, and `esc close`. Rendered from the loaded keymap, so a rebinding shows here
+/// (principle 3).
 fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     let km = input.keymap;
     let mut lines: Vec<String> = Vec::new();
@@ -347,6 +353,24 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    // The keys inside a box, which are the third table `[keys.list]` and the ones `?`
+    // answers for when it is pressed in the switcher or the sidebar's box (interface spec
+    // 5.4). Last, after the leader table and the globals, because those two apply wherever
+    // the reader is and this one applies only in a box. On a screen too short for all three
+    // it is therefore what the truncation drops, and the row says how many lines went.
+    if !km.list.is_empty() {
+        lines.push(String::new());
+        lines.push("in a list".into());
+        let mut list: Vec<(String, String)> = km
+            .list
+            .iter()
+            .map(|b| (b.key.to_string(), b.action.to_string()))
+            .collect();
+        list.sort_by(|a, b| a.1.cmp(&b.1));
+        for (k, a) in list {
+            lines.push(format!("{k:<10} {a}"));
+        }
     }
     lines.push(String::new());
     let inner = frame("Keys", 60, lines.len() as u16 + 3, buf);
