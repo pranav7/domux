@@ -154,7 +154,10 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
                         Style::default().fg(theme::OVERLAY1),
                     )),
                     Line::default(),
-                    Line::from(Span::styled(copy.removes, Style::default().fg(theme::TEXT))),
+                    Line::from(Span::styled(
+                        copy.removes_without_the_path,
+                        Style::default().fg(theme::TEXT),
+                    )),
                     Line::from(Span::styled(
                         copy.keeps.to_string(),
                         Style::default().fg(theme::OVERLAY0),
@@ -166,11 +169,9 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
         }
         ConfirmKind::ClearWorkspace(id) => {
             let w = input.model.workspace(id)?;
-            let root = input
-                .model
-                .project_of_workspace(id)
-                .map(|p| p.root.clone())?;
-            let copy = crate::api::workspace::clear_copy(&w.display_name(), &root, &w.path);
+            // No project lookup here, unlike the delete arm: `clear_copy` names no path
+            // inside its sentence, so there is nothing to make relative.
+            let copy = crate::api::workspace::clear_copy(&w.display_name(), &w.path);
             Some(Question {
                 title: copy.title,
                 lines: vec![
@@ -182,6 +183,10 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
                     Line::from(Span::styled(copy.removes, Style::default().fg(theme::TEXT))),
                     Line::from(Span::styled(
                         copy.keeps.to_string(),
+                        Style::default().fg(theme::OVERLAY0),
+                    )),
+                    Line::from(Span::styled(
+                        copy.stops.to_string(),
                         Style::default().fg(theme::OVERLAY0),
                     )),
                     Line::default(),
@@ -222,7 +227,11 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    /// A project at `/p` holding one slot, checked out somewhere the handle does not name.
+    /// A project holding one slot, at a root as long as a real one.
+    ///
+    /// The path is realistic rather than `/p` because one of the tests below is about the box
+    /// fitting a 120 column screen, and a two-character root would let it pass on a width no
+    /// reader will ever have.
     ///
     /// The path and the root are literals and nothing here touches a filesystem: the box is
     /// composed on the core task, so it reads the model and the facts and never asks git.
@@ -232,13 +241,13 @@ mod tests {
         model.projects.push(Project {
             id: ProjectId("p_1".into()),
             name: "audrey-app".into(),
-            root: "/p".into(),
+            root: "/Users/pranav/projects/audrey-app".into(),
             kind: ProjectKind::Folder,
             workspaces: vec![Workspace {
                 id: id.clone(),
                 handle: WorkspaceHandle::Slot(1),
                 name: None,
-                path: "/p/.domux/worktrees/workspace-1".into(),
+                path: "/Users/pranav/projects/audrey-app/.domux/worktrees/workspace-1".into(),
                 tabs: Vec::new(),
                 last_tab: None,
             }],
@@ -279,9 +288,14 @@ mod tests {
     /// none of them holds one. It is not a claim that the box could never draw an `@`: a
     /// branch or a path containing one would. It is here so the box has something to cover.
     fn drawn(model: &Model, facts: &FactRegistry, kind: &ConfirmKind) -> String {
+        drawn_at(model, facts, kind, 160)
+    }
+
+    fn drawn_at(model: &Model, facts: &FactRegistry, kind: &ConfirmKind, cols: u16) -> String {
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
-        let v = view(Overlay::Confirm(kind.clone()));
+        let mut v = view(Overlay::Confirm(kind.clone()));
+        v.size = Size { cols, rows: 24 };
         let input = RenderInput {
             model,
             facts,
@@ -292,7 +306,7 @@ mod tests {
             config_error: None,
             hint: None,
         };
-        let mut buf = Buffer::empty(Rect::new(0, 0, 160, 24));
+        let mut buf = Buffer::empty(Rect::new(0, 0, cols, 24));
         for cell in buf.content.iter_mut() {
             cell.set_symbol("@");
         }
@@ -334,13 +348,15 @@ mod tests {
         );
         let text = drawn(&model, &facts, &ConfirmKind::DeleteWorkspace(id));
         assert!(text.contains("Delete workspace-1?"), "{text}");
-        assert!(text.contains("/p/.domux/worktrees/workspace-1"), "{text}");
+        assert!(
+            text.contains("/Users/pranav/projects/audrey-app/.domux/worktrees/workspace-1"),
+            "{text}"
+        );
         assert!(
             text.contains(
-                "Removes the worktree at .domux/worktrees/workspace-1 and the local branch \
-                 feat/auth-cleanup and closes 0 tabs."
+                "Removes the worktree, the local branch feat/auth-cleanup and closes 0 tabs."
             ),
-            "{text}"
+            "the box's sentence does not repeat the path its identity line already shows: {text}"
         );
         assert!(
             text.contains("The remote branch and any pull request stay."),
@@ -385,7 +401,7 @@ mod tests {
             &ConfirmKind::DeleteWorkspace(id),
         );
         assert!(
-            text.contains("and its local branch and closes 0 tabs."),
+            text.contains("Removes the worktree, its local branch and closes 0 tabs."),
             "{text}"
         );
         assert!(!text.contains("the local branch workspace-1"), "{text}");
@@ -401,13 +417,13 @@ mod tests {
         );
         assert!(text.contains("Clear workspace-1?"), "{text}");
         assert!(
-            text.contains("/p/.domux/worktrees/workspace-1"),
+            text.contains("/Users/pranav/projects/audrey-app/.domux/worktrees/workspace-1"),
             "the identity line says which slot, in full: {text}"
         );
         assert!(
             text.contains(
-                "Throws away every commit, change and untracked file in the worktree at \
-                 .domux/worktrees/workspace-1 and puts its branch back at its base."
+                "Throws away every commit, change and untracked file in it and puts its \
+                 branch back at its base."
             ),
             "{text}"
         );
@@ -415,10 +431,46 @@ mod tests {
             text.contains("The slot, its number, its name and the files git ignores stay."),
             "{text}"
         );
+        // Principle 10's third answer, which for a clear is "nothing". Said rather than left
+        // to be inferred: a dev server in the slot keeps running against a tree that changed.
+        assert!(
+            text.contains(
+                "Nothing in its panes is stopped, so they keep running against the tree that \
+                 changed."
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("y clear workspace    esc keep workspace"),
             "{text}"
         );
+    }
+
+    /// Nothing in either box is cut at the width the harness calls a terminal.
+    ///
+    /// `confirm::draw` does not wrap: it draws one `Line` per row and `put_within` clips what
+    /// does not fit, so a sentence longer than the box loses its tail to an ellipsis. That is
+    /// survivable in a list and not survivable here, where the tail is the half of the
+    /// sentence that says what happens to the branch. 120 columns is the width every harness
+    /// test in this milestone attaches at, so it is the width this has to hold at.
+    #[test]
+    fn neither_box_is_cut_at_a_hundred_and_twenty_columns() {
+        let (model, id) = model_with_a_slot();
+        let mut facts = FactRegistry::new();
+        facts.set(
+            domux_core::facts::FactKey::workspace(&id, domux_core::facts::FACT_BRANCH),
+            Some(branch_fact("feat/auth-cleanup")),
+        );
+        for kind in [
+            ConfirmKind::DeleteWorkspace(id.clone()),
+            ConfirmKind::ClearWorkspace(id.clone()),
+        ] {
+            let text = drawn_at(&model, &facts, &kind, 120);
+            assert!(
+                !text.contains('\u{2026}'),
+                "a confirmation lost words to the box's edge:\n{text}"
+            );
+        }
     }
 
     /// A workspace the model no longer holds asks nothing rather than drawing a box about it,

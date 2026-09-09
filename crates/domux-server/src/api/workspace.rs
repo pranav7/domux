@@ -326,8 +326,18 @@ pub struct DeletionCopy {
     /// is why it is the absolute path and not the short form the sentence uses.
     pub identity: String,
     /// `Removes the worktree at .domux/worktrees/workspace-1 and the local branch
-    /// workspace-1 and closes 1 tab.`
+    /// workspace-1 and closes 1 tab.` For a caller that has nothing above the sentence
+    /// saying where the slot is, which is every caller with a command line.
     pub removes: String,
+    /// The same sentence without the path, for a surface that draws `identity` over it.
+    ///
+    /// Not a second spelling: both are built in `deletion_copy` from the same `worktree`,
+    /// `branch` and `tabs_phrase`, so they cannot come to disagree about what goes. What
+    /// differs is the one thing that should: the overlay says where the slot is on its own
+    /// line and the sentence would only repeat it, and at 120 columns the repetition is what
+    /// pushes the branch off the end of the box. `confirm::draw` clips rather than wraps, so
+    /// a line that does not fit loses its tail.
+    pub removes_without_the_path: String,
     /// What domux does not reach. Nothing here talks to a remote.
     pub keeps: &'static str,
     /// The same content as lists, for `ApiError::needs_confirmation`.
@@ -363,6 +373,10 @@ pub fn deletion_copy(
             "Removes {worktree} and {branch} and closes {}.",
             tabs_phrase(tabs)
         ),
+        removes_without_the_path: format!(
+            "Removes the worktree, {branch} and closes {}.",
+            tabs_phrase(tabs)
+        ),
         keeps: DELETE_KEEPS,
         removes_list: vec![worktree, branch],
         keeps_list: vec!["the remote branch and any pull request".to_string()],
@@ -377,6 +391,14 @@ pub struct ClearCopy {
     pub identity: String,
     pub removes: String,
     pub keeps: &'static str,
+    /// What a clear does not stop. Principle 10 asks for what is removed, **stopped** and
+    /// preserved, and a clear is the case where the third answer is "nothing": the shell in
+    /// pane 2 is the author's and killing it is not part of putting a branch back.
+    ///
+    /// It is said rather than left to be inferred, because the surprise is the quiet one. A
+    /// dev server running in the slot keeps running, against a tree that changed underneath
+    /// it, and a reader who was told only what goes has no reason to expect that.
+    pub stops: &'static str,
 }
 
 /// The base is not named. Resolving it reads `origin/HEAD`, which is a git call and does not
@@ -385,15 +407,23 @@ pub struct ClearCopy {
 /// `worktree.conf` setup puts `.env`, and `git::clean` is `-fd` for exactly that reason.
 pub const CLEAR_KEEPS: &str = "The slot, its number, its name and the files git ignores stay.";
 
-pub fn clear_copy(name: &str, root: &Path, path: &Path) -> ClearCopy {
+/// Nothing in the slot's panes is killed, restarted or told anything. The clause exists
+/// because that is not what a reader expects of a command that empties the directory those
+/// programs are running in.
+pub const CLEAR_STOPS: &str =
+    "Nothing in its panes is stopped, so they keep running against the tree that changed.";
+
+/// The path is not repeated: the overlay is this copy's only reader and its identity line
+/// shows the worktree in full, one line above.
+pub fn clear_copy(name: &str, path: &Path) -> ClearCopy {
     ClearCopy {
         title: format!("Clear {name}?"),
         identity: path.display().to_string(),
-        removes: format!(
-            "Throws away every commit, change and untracked file in the worktree at {} and puts its branch back at its base.",
-            relative_to(root, path)
-        ),
+        removes:
+            "Throws away every commit, change and untracked file in it and puts its branch back at its base."
+                .to_string(),
         keeps: CLEAR_KEEPS,
+        stops: CLEAR_STOPS,
     }
 }
 

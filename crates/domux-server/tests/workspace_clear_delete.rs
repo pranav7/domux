@@ -609,7 +609,7 @@ async fn a_key_bound_to_workspace_delete_asks_in_an_overlay_and_y_deletes() {
         )
         .await;
     assert!(
-        f.contains("Removes the worktree at .domux/worktrees/workspace-1"),
+        f.contains("Removes the worktree, its local branch and closes 1 tab."),
         "the box says what goes:\n{f}"
     );
     assert!(
@@ -774,6 +774,12 @@ async fn a_key_bound_to_workspace_clear_asks_in_an_overlay_and_y_clears() {
     assert!(
         f.contains("The slot, its number, its name and the files git ignores stay."),
         "and what stays:\n{f}"
+    );
+    // Principle 10's third answer. A clear stops nothing, which is the right behaviour and
+    // the surprising one: the shell in pane 2 keeps running in a directory that just changed.
+    assert!(
+        f.contains("Nothing in its panes is stopped"),
+        "and what keeps running:\n{f}"
     );
     assert!(
         f.contains("y clear workspace    esc keep workspace"),
