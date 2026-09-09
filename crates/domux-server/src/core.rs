@@ -1095,14 +1095,20 @@ impl Core {
         if self.notes.is_empty() || key.action == domux_term::KeyAction::Release {
             return;
         }
-        // The switcher is the one box a key can reach in M2. `Focus::Region(SidebarProjects)`
-        // is the other and `api::focus::region` refuses it today, so it is written out here
-        // rather than left for Task 14 to remember: the rule is about a box, not about the
-        // switcher.
-        let in_a_box = self.model.client(client).is_some_and(|view| {
-            matches!(view.overlay, Some(Overlay::Switcher))
-                || matches!(view.focus, Focus::Region(RegionKind::SidebarProjects))
-        });
+        // One question, asked of the focus, because the rule is about a box and not about any
+        // particular one. M2 wrote it out as the switcher plus the sidebar's Projects box and
+        // M3 added two more places a key can land in a box, the sidebar's Agents box and the
+        // agents overlay, which a list of names silently fell through. `RegionKind::is_box`
+        // is the same question `render::overlay::draw_help` asks to pick a key table.
+        //
+        // The focus alone is enough. Every box sets its own region when it opens
+        // (`api::switcher::open`, `api::agents::open`, `enter_sidebar_box`), and
+        // `ClientView::focus_after_pop` names the switcher and the agents overlay again when
+        // an overlay over one closes, so a box the reader came back to still reads as a box.
+        let in_a_box = self
+            .model
+            .client(client)
+            .is_some_and(|view| matches!(view.focus, Focus::Region(kind) if kind.is_box()));
         if in_a_box {
             self.notes.clear();
         }
@@ -4381,16 +4387,23 @@ mod tests {
     /// and clearing on the release would take the note away one event before `route_key` had
     /// decided what the press meant. The harness sends only presses, so this is the only place
     /// the two can be told apart.
+    ///
+    /// The switcher is opened through its own handler rather than by setting the overlay
+    /// field. `api::switcher::open` sets the overlay and the region together, and a fixture
+    /// that set only one of them would be a state no running server can be in.
     #[test]
     fn a_key_release_in_a_box_leaves_a_note_where_it_is() {
         let dir = tempfile::tempdir().unwrap();
         let mut core = core(dir.path());
         let client = attached(&mut core);
         core.notes = vec!["Pruned workspace-2: its worktree is gone".into()];
-        core.model
-            .client_mut(&client)
-            .expect("the client is attached")
-            .overlay = Some(Overlay::Switcher);
+        core.dispatch(
+            Method::SwitcherOpen(domux_core::api::ClientParams {
+                client: Some(client.clone()),
+            }),
+            Some(client.clone()),
+        )
+        .expect("switcher.open");
         let key = |action| domux_term::KeyEvent {
             key: domux_term::Key::Char('j'),
             mods: domux_term::Mods::empty(),
