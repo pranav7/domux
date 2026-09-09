@@ -413,6 +413,57 @@ async fn esc_over_the_switcher_gives_the_switcher_back() {
     );
 }
 
+/// A second `n` after the first box has been cancelled still names the row under the cursor.
+///
+/// This is the case the focus kind cannot answer on its own. Closing the name box uncovers the
+/// switcher, and what `focus` then holds is decided by the pop, not by the switcher: on this
+/// branch it is `Region(Overlay)`, and Task 20 changes it to `Region(Switcher)`. Either way
+/// the switcher is open and holding the keys, so `Ctx::workspace_of_view` asks
+/// `list::in_a_box` - which reads the open overlay and the sidebar's visibility - rather than
+/// reading `focus` and getting a different answer two keystrokes apart.
+///
+/// The client is in `proj`'s `main` throughout, so a second `n` that fell back to the client's
+/// own workspace would open `Name main` and this would fail rather than pass quietly.
+#[tokio::test]
+async fn a_second_n_after_esc_still_names_the_row_under_the_cursor() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+    h.api("switcher.open", json!({"client": client.as_str()}))
+        .await
+        .unwrap();
+    h.key(client.clone(), "k").await;
+    h.key(client.clone(), "k").await;
+    h.key(client.clone(), "n").await;
+    h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
+        .await;
+    h.key(client.clone(), "Esc").await;
+    h.wait_for(client.clone(), |f| !f.contains("Name workspace-1"), WAIT)
+        .await;
+
+    h.key(client.clone(), "n").await;
+
+    let f = h
+        .wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
+        .await;
+    let m = h.model();
+    let view = m.client(&client).unwrap();
+    assert_eq!(
+        view.overlay,
+        Some(Overlay::NameWorkspace(w1.clone())),
+        "the cursor row, not the workspace the client is in:\n{f}"
+    );
+    assert_eq!(
+        view.overlay_under,
+        Some(Overlay::Switcher),
+        "and still over the switcher it came from"
+    );
+    assert_eq!(
+        view.input.text, "",
+        "with an empty field: the cancelled draft went with the box that held it"
+    );
+}
+
 /// A name that reads as a handle is refused, and the box stays open holding what was typed:
 /// the refusal names something to change about the name, so closing would take the name away
 /// with the question.
