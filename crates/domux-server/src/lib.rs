@@ -1,5 +1,6 @@
 //! The domux server: one core task owns the model, the panes and the clients.
 
+pub mod agents;
 pub mod api;
 pub mod client;
 pub mod copy_mode;
