@@ -12,7 +12,8 @@ use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
 use domux_core::model::{
-    ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, Pill, RegionKind, PILL_SECONDS,
+    ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, Pill, ProjectKind, RegionKind,
+    WorkspaceHandle, PILL_SECONDS,
 };
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
@@ -1640,9 +1641,51 @@ impl Core {
                 root: root.to_path_buf(),
             });
         }
+        // Before the slots, so `project.added` reaches a subscriber ahead of the
+        // `workspace.created` of every slot adopted under it.
+        self.pending_events.extend(events);
+        let adopted = self.adopt_slots(&project, root, slots);
+        Ok((project, adopted))
+    }
+
+    /// Registers a slot for every worktree the job found beside `root` that the model does not
+    /// hold yet, and answers with the handles it registered, in slot order.
+    ///
+    /// The filter is what lets this run against a project that is registered already.
+    /// `Model::add_slot` refuses a slot the project holds, and that refusal is not worth a
+    /// line here: a worktree that is on disk and registered is the ordinary case, not a
+    /// problem. What is left after the filter is a slot the model should have taken and would
+    /// not, which is.
+    ///
+    /// `adopted` names what this call registered, never what it found on disk, because the
+    /// answer is a report of work done: a caller told that `workspace-1` was adopted when it
+    /// had been registered for a week would go looking for a record it already had.
+    fn adopt_slots(
+        &mut self,
+        project: &ProjectId,
+        root: &Path,
+        slots: Vec<(u32, PathBuf)>,
+    ) -> Vec<String> {
+        let held: Vec<u32> = self
+            .model
+            .project(project)
+            .map(|p| {
+                p.workspaces
+                    .iter()
+                    .filter_map(|w| match w.handle {
+                        WorkspaceHandle::Slot(n) => Some(n),
+                        WorkspaceHandle::Main => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut adopted = Vec::new();
+        let mut events = Vec::new();
         for (slot, slot_path) in slots {
-            match self.model.add_slot(&project, slot, slot_path) {
+            if held.contains(&slot) {
+                continue;
+            }
+            match self.model.add_slot(project, slot, slot_path) {
                 Ok((_, more)) => {
                     adopted.push(format!("workspace-{slot}"));
                     events.extend(more);
@@ -1657,23 +1700,22 @@ impl Core {
             }
         }
         self.pending_events.extend(events);
-        Ok((project, adopted))
+        adopted
     }
 
     /// `project.add`'s model change: register the path and adopt the worktrees the job
-    /// found beside it.
+    /// found beside it, or bring a path that is registered already up to what the job read.
     fn project_read(
         &mut self,
         root: PathBuf,
         default_branch: Option<String>,
         slots: Vec<(u32, PathBuf)>,
     ) -> Result<serde_json::Value, ApiError> {
-        // Idempotence is decided here rather than in the handler, because the canonical
-        // path is only known once the job has resolved it. A path that is already a project
-        // is answered for as it stands, and nothing new is adopted: `project.add` is how a
-        // path is registered, and `workspace.create` is how a slot is made.
+        // Whether this path is registered already is decided here rather than in the handler,
+        // because the canonical path is only known once the job has resolved it.
         if let Some(existing) = self.model.project_at(&root) {
-            return api::project::added(existing, Vec::new());
+            let project = existing.id.clone();
+            return self.reconcile_project(project, root, default_branch, slots);
         }
         // `Core::handle` returns nothing, so a failure here is answered rather than
         // propagated with `?` to a caller that is not there: the one who is waiting is on
@@ -1689,6 +1731,62 @@ impl Core {
         self.view_dirty = true;
         let registered = self.model.project(&project).ok_or_else(|| {
             ApiError::internal("the project was registered and is not there any more")
+        })?;
+        api::project::added(registered, adopted)
+    }
+
+    /// Brings a project that is registered already up to what the job just read: its kind, and
+    /// a record for every worktree beside it the model does not hold.
+    ///
+    /// `project.add` is still how a path is registered and `workspace.create` is still how a
+    /// slot is made. What this adds is that a record can be wrong about the disk in two ways it
+    /// could otherwise never be put right: a repository registered before decision record 0010
+    /// is held as a folder with none of its worktrees, and a worktree V1 made beside a project
+    /// V2 already held is on disk and unregistered. Both used to need `project remove --all`,
+    /// which throws away every name, tab and layout in every project to correct one record, and
+    /// `import v1` met the second of them on the author's own state: it plans a
+    /// `workspace.rename` for a slot the server does not hold and reports the whole workspace
+    /// as not registered.
+    ///
+    /// **The kind only ever gains.** A folder at a path git now answers for becomes a git
+    /// project, and one whose `origin/HEAD` has moved records the branch it moved to. A git
+    /// project at a path git has stopped answering for keeps its kind: its slots are recorded,
+    /// a folder project has none, and taking the kind away would leave slot records that
+    /// nothing on the sidebar draws a branch for. A path that is gone altogether belongs to
+    /// `prune_missing_paths`, at start, where the reader is told what went.
+    fn reconcile_project(
+        &mut self,
+        project: ProjectId,
+        root: PathBuf,
+        default_branch: Option<String>,
+        slots: Vec<(u32, PathBuf)>,
+    ) -> Result<serde_json::Value, ApiError> {
+        if let Some(branch) = default_branch {
+            let kind = ProjectKind::Git {
+                default_branch: branch,
+            };
+            let changed = match self.model.project_mut(&project) {
+                Some(p) if p.kind != kind => {
+                    p.kind = kind;
+                    true
+                }
+                _ => false,
+            };
+            // The row gains a branch: `facts::targets` skips a folder, so nothing was fetching
+            // one until now. The fetch itself is the next poll's, not this call's.
+            if changed {
+                self.view_dirty = true;
+            }
+        }
+        let adopted = self.adopt_slots(&project, &root, slots);
+        if !adopted.is_empty() {
+            // Every new workspace gets its tab and its shell, the same invariant
+            // `apply_side_effects` keeps for every other path that makes one.
+            self.apply_side_effects(Vec::new(), Vec::new(), Vec::new());
+            self.view_dirty = true;
+        }
+        let registered = self.model.project(&project).ok_or_else(|| {
+            ApiError::internal("the project was reconciled and is not there any more")
         })?;
         api::project::added(registered, adopted)
     }

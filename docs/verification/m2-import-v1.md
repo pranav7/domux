@@ -66,3 +66,38 @@ it survived in the skip line.
 This is the one thing the fixtures could not have found. Every shape in the author's
 directory was one the fixtures already covered; what real data exposed was a sentence
 about those shapes that the fixtures asserted without questioning.
+
+## The second run, against the author's own V2 state
+
+Run later on 2026-09-09, against `~/.local/share/domux2` rather than a scratch state
+directory. Three workspaces did not arrive:
+
+    /Users/pranav/projects/audrey/audrey-app/.domux/worktrees/workspace-1 is not registered
+    under /Users/pranav/projects/audrey/audrey-app, so its tabs were not created.
+
+with the same line for `workspace-2` and `workspace-3`, then `Imported 5 projects, 5
+workspaces, 5 tabs.` and `Not imported: 3 workspaces. Read the messages above, then run this
+again.`
+
+Two causes, neither of them the import's.
+
+The binary was stale. `~/bin/domux2` pointed at `projects/domux-v2/target/release/domux2`, a
+detached worktree of this repository at `5288590`, built before decision record 0010 landed at
+`bc3c18f`. That build's seed registered the directory the server was started in without asking
+git, so `audrey-app` was held as `{"kind": "folder"}` with `main` and none of the four
+`workspace-N` worktrees beside it. `dotfiles` in the same file was a git project with its slot
+adopted, because `project.add` registered that one.
+
+And the record could not be put right. `project.add` answered for a registered path as it
+stood, so `workspace.list` held no slot for the import to rename and the same three lines would
+print for ever. Decision record 0015 is the fix and has the reasoning; the sentence telling the
+reader to run it again is true once a run can change the record.
+
+Measured against a copy of the real state file with the fix in: `audrey-app` goes from
+`folder` with one workspace to `git` on `main` with five, `workspace-1` arrives with the name
+`Atcore | COS Testing`, `workspace-4` is adopted although no V1 session names it, and the run
+ends `Imported 5 projects, 8 workspaces, 8 tabs.` with status 0.
+
+What the two runs together say about this feature is that both of its field failures were
+about state written by something else - a V1 session file in the first, a V2 state file in the
+second - and neither was reachable from a fixture that builds its own inputs.

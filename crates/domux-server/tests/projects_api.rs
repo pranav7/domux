@@ -98,10 +98,12 @@ async fn adding_a_repository_registers_main_and_adopts_the_worktrees_on_disk() {
         .map(|w| w.id.to_string())
         .expect("audrey-app has a main workspace");
     assert_eq!(added["workspace"], main);
-    // Adding a registered path again adopts nothing: `project.add` registers a path and
-    // `workspace.create` makes a slot. The worktrees are still on disk, so an
-    // implementation reporting what it found rather than what it registered would answer
-    // `["workspace-1", "workspace-3"]` here.
+    // Adding a registered path again adopts nothing here, because there is nothing left to
+    // adopt: both worktrees are registered already. `adopted` names what the call registered,
+    // not what it found beside the root, so an implementation reporting the second would
+    // answer `["workspace-1", "workspace-3"]` and claim to have made records it did not make.
+    // A worktree that is on disk and *not* registered is the other case, and
+    // `a_worktree_made_after_the_project_was_registered_is_adopted_by_adding_it_again` has it.
     let again = h
         .api("project.add", json!({"path": repo.to_str().unwrap()}))
         .await
@@ -198,6 +200,133 @@ async fn a_plain_folder_becomes_a_project_with_main_only_and_adding_it_twice_is_
         before.len() + 1,
         "and the path that is not there registered nothing"
     );
+}
+
+/// A worktree that appeared after the project was registered is adopted by adding the path
+/// again.
+///
+/// This is what moving over from V1 looks like: V1 makes `workspace-2` beside a repository V2
+/// already holds, and until this the record could never learn about it. `import v1` calls
+/// `project.add` for every project it plans, so the import is the reader who meets this
+/// first - it looks the slot up in `workspace.list` and reports "is not registered under"
+/// when it is not there.
+#[tokio::test]
+async fn a_worktree_made_after_the_project_was_registered_is_adopted_by_adding_it_again() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let added = h
+        .api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        added["adopted"],
+        json!([]),
+        "nothing was beside it yet to adopt"
+    );
+
+    git::worktree_add(
+        &repo,
+        &git::slot_path(&repo, 2),
+        "workspace-2",
+        "origin/main",
+    )
+    .unwrap();
+
+    let again = h
+        .api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        again["project"], added["project"],
+        "the same project, not a second one"
+    );
+    assert_eq!(again["adopted"], json!(["workspace-2"]));
+    let listed = h.api("project.list", json!({})).await.unwrap();
+    let after = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == added["project"])
+        .unwrap()
+        .clone();
+    assert_eq!(after["workspaces"], 2, "main and the slot it just adopted");
+    let held = h
+        .api("workspace.list", json!({"project": added["project"]}))
+        .await
+        .unwrap();
+    let slot = held
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["handle"] == "workspace-2")
+        .expect("workspace-2 is registered")
+        .clone();
+    assert_eq!(
+        slot["path"],
+        git::slot_path(&repo, 2)
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "at the path the worktree is really at"
+    );
+    assert_eq!(
+        slot["tabs"], 1,
+        "and it has its tab, like every other workspace"
+    );
+}
+
+/// A folder record at a path that is a repository becomes a git project, with the worktrees
+/// beside it adopted.
+///
+/// Every state file written before decision record 0010 holds this shape, because the seed
+/// registered the directory the server started in without asking git: the author's own state
+/// held `audrey-app` as a folder at a repository root with four `workspace-N` worktrees on
+/// disk and none of them registered. `facts::targets` skips a folder, so the sidebar row had
+/// no branch either.
+#[tokio::test]
+async fn a_folder_record_at_a_repository_becomes_a_git_project_when_it_is_added_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("audrey-app");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let added = h
+        .api("project.add", json!({"path": root.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(added["kind"], "folder", "git had nothing to say about it");
+
+    // The record is now the one the old seed wrote: a folder at a path that is a repository
+    // with a worktree beside it.
+    domux_server::testing::repo_with_origin_at(&root, "develop");
+    git::worktree_add(
+        &root,
+        &git::slot_path(&root, 1),
+        "workspace-1",
+        "origin/develop",
+    )
+    .unwrap();
+
+    let again = h
+        .api("project.add", json!({"path": root.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(again["project"], added["project"], "the same project");
+    assert_eq!(again["kind"], "git");
+    assert_eq!(again["adopted"], json!(["workspace-1"]));
+    let listed = h.api("project.list", json!({})).await.unwrap();
+    let after = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == added["project"])
+        .unwrap()
+        .clone();
+    assert_eq!(
+        after["default_branch"], "develop",
+        "read from origin/HEAD, like any other git project"
+    );
+    assert_eq!(after["workspaces"], 2);
 }
 
 /// A path that is a file names the state and what to do about it, and it too registers

@@ -41,6 +41,10 @@ beside it was a git project showing `master`.
 - A repository that is not a repository any more, or a directory that cannot be read, still
   gets a folder project and a line in the log. The seed exists so a server always has
   somewhere to be; refusing would leave it running and unattachable.
-- Records already written are not repaired. A folder project in an existing `state.json` stays
-  one, because the seed only runs on an empty model. `project remove --all` is the way to
-  start over, and it was added alongside this for exactly that.
+- Records already written are not repaired by the seed, which only runs on an empty model.
+  **Superseded in part by decision record 0015:** this record said `project remove --all` was
+  the way to start over, and `import v1` against the author's own state showed that to be out of
+  proportion to the fault. `project.add` now reconciles a record with the disk, so a folder
+  project at a repository becomes a git project with its worktrees adopted the next time the
+  path is added, opened or imported. `project remove --all` stands, and is still the way to
+  start over deliberately.
