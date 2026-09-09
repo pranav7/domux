@@ -123,6 +123,16 @@ pub fn plan(sessions: &[V1Session], exists: &dyn Fn(&Path) -> bool) -> ImportPla
     let mut projects: Vec<Building> = Vec::new();
     let mut skips: Vec<Skip> = Vec::new();
 
+    // Sorted here rather than by whoever read the files, so every output of this function is
+    // settled by the sessions themselves. Two of them decide something by order: which of two
+    // sessions naming one workspace keeps its name, and the order of the skips. Leaving that
+    // to the caller made it depend on `read_dir`, which promises no order, and no test could
+    // pin it without depending on the same thing.
+    let mut sessions: Vec<&V1Session> = sessions.iter().collect();
+    sessions.sort_by(|a, b| {
+        (a.root.as_deref(), a.name.as_str()).cmp(&(b.root.as_deref(), b.name.as_str()))
+    });
+
     for session in sessions {
         let who = session_label(session);
         let Some(root) = session.root.as_ref().filter(|r| !r.as_os_str().is_empty()) else {
@@ -228,9 +238,10 @@ pub fn plan(sessions: &[V1Session], exists: &dyn Fn(&Path) -> bool) -> ImportPla
         }
     }
 
-    // Sorted, so the plan reads the same however the session files arrived. `read_dir` has
-    // no order of its own, and the author compares a dry run against the run that follows it.
-    projects.sort_by(|a, b| a.root.cmp(&b.root));
+    // The projects are already in root order: the sessions were sorted by root above, and a
+    // project root is an ancestor of its session root, so the order the projects were first
+    // seen in is the order their roots sort in. An explicit sort here used to say so and did
+    // nothing, which is a line no test could ever fail without.
     ImportPlan {
         projects: projects
             .into_iter()
@@ -267,14 +278,64 @@ pub fn counts(projects: &[PlannedProject]) -> (usize, usize, usize) {
     (projects.len(), workspaces, tabs)
 }
 
-/// What the import did, in one line.
-pub fn report_line(projects: usize, workspaces: usize, tabs: usize) -> String {
+/// Whether a summary describes what an import did or what it would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Run {
+    /// The import called the server.
+    Real,
+    /// `--dry-run`: nothing was called.
+    Dry,
+}
+
+/// What the import did, or would do, in one line.
+///
+/// The tense is in this sentence rather than in a note beside it, because a note can be on
+/// another stream or redirected away and this line cannot. `import v1 --dry-run > plan.txt`
+/// used to leave a file saying "Imported 3 tabs" about work that never happened, which is a
+/// fact that did not arrive rendered as one (principle 4).
+///
+/// `skipped_line` needs no such tense. A skip happens when the plan is made, so a dry run
+/// really has skipped what it names, and a real run skipped it before it called anything.
+pub fn report_line(run: Run, projects: usize, workspaces: usize, tabs: usize) -> String {
+    let verb = match run {
+        Run::Real => "Imported",
+        Run::Dry => "Would import",
+    };
     format!(
-        "Imported {}, {}, {}.",
+        "{verb} {}, {}, {}.",
         count_of(projects, "project"),
         count_of(workspaces, "workspace"),
         count_of(tabs, "tab")
     )
+}
+
+/// What an import could not carry across, when something failed rather than being skipped.
+///
+/// Each count names its own noun. The three are different things and a run can lose some of
+/// each, so they are never added together: a count of projects presented as a count of
+/// sessions is a wrong number in front of the author, and one project can hold several
+/// sessions.
+pub fn failure_line(unreadable: usize, projects: usize, workspaces: usize) -> Option<String> {
+    let mut parts = Vec::new();
+    if unreadable > 0 {
+        parts.push(format!(
+            "{} that would not read",
+            count_of(unreadable, "session file")
+        ));
+    }
+    if projects > 0 {
+        parts.push(count_of(projects, "project"));
+    }
+    if workspaces > 0 {
+        parts.push(count_of(workspaces, "workspace"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not imported: {}. Read the messages above, then run this again.",
+        parts.join(", ")
+    ))
 }
 
 /// What did not come across, in one line, or nothing at all when everything did.
@@ -672,6 +733,39 @@ mod tests {
         );
     }
 
+    /// The skips settle too, and they are the part the caller cannot sort afterwards,
+    /// because a skip's place in the list is the only order it has. Whoever reads V1's
+    /// directory gets no order from `read_dir`, so if this were left to them no test could
+    /// pin it without depending on the filesystem.
+    #[test]
+    fn the_skips_come_out_in_the_same_order_whatever_order_the_sessions_arrive_in() {
+        let set = [
+            no_root(),
+            not_a_slot_session(),
+            handle_label(),
+            audrey_app(),
+        ];
+        let forwards = planned(&set);
+        let mut backwards: Vec<V1Session> = set.to_vec();
+        backwards.reverse();
+        let backwards = planned(&backwards);
+        assert_eq!(forwards.skips, backwards.skips);
+        // Four sessions, four different reasons, so no two entries of this list can stand
+        // in for each other and a wrong order is visible.
+        assert_eq!(
+            forwards
+                .skips
+                .iter()
+                .map(|s| s.session.as_str())
+                .collect::<Vec<_>>(),
+            // Sorted by root, with a session that has none first: `/repo/atlas` and the
+            // worktree under it both precede `/repo/audrey-app`, because `atlas` sorts
+            // before `audrey-app`. I predicted session order here and the test disproved
+            // it, so the prediction went rather than the code.
+            vec!["planner-old", "atlas", "atlas-feature", "audrey-app"]
+        );
+    }
+
     #[test]
     fn a_field_v2_has_no_use_for_is_ignored_rather_than_refused() {
         let text = include_str!("../fixtures/import/audrey-app.json");
@@ -834,6 +928,35 @@ mod tests {
         );
     }
 
+    /// Two sessions with the same root are separated by their names, not left in whatever
+    /// order they arrived in.
+    ///
+    /// `sort_by` is stable, so a sort that compared roots alone would leave two sessions of
+    /// one root in the caller's order and the caller's order would decide which name a
+    /// workspace keeps. Passing the pair both ways round is the only fixture that can tell
+    /// the two sorts apart: with the name in the key, `audrey-app` precedes
+    /// `audrey-app-again` whichever way they arrive.
+    #[test]
+    fn two_sessions_of_one_root_are_ordered_by_name_whichever_way_they_arrive() {
+        for pair in [[audrey_app(), duplicate()], [duplicate(), audrey_app()]] {
+            let plan = planned(&pair);
+            assert_eq!(
+                plan.projects[0].workspaces[0].name.as_deref(),
+                Some("audit-harness"),
+                "the session named audrey-app holds the name either way"
+            );
+            assert_eq!(
+                tab_names(&plan.projects[0].workspaces[0]),
+                vec![
+                    Some("agent-harness".into()),
+                    Some("agent-harness".into()),
+                    Some("second look".into())
+                ],
+                "and its windows come first either way"
+            );
+        }
+    }
+
     /// The first session had no name and the second does, so the second's is taken rather
     /// than refused. Otherwise the order the files were read in would decide whether the
     /// author's one name survived.
@@ -895,16 +1018,72 @@ mod tests {
     #[test]
     fn the_report_line_counts_one_of_a_thing_without_an_s() {
         assert_eq!(
-            report_line(1, 1, 1),
+            report_line(Run::Real, 1, 1, 1),
             "Imported 1 project, 1 workspace, 1 tab."
         );
         assert_eq!(
-            report_line(3, 7, 12),
+            report_line(Run::Real, 3, 7, 12),
             "Imported 3 projects, 7 workspaces, 12 tabs."
         );
         assert_eq!(
-            report_line(0, 0, 0),
+            report_line(Run::Real, 0, 0, 0),
             "Imported 0 projects, 0 workspaces, 0 tabs."
+        );
+    }
+
+    /// A dry run's summary says what would happen, in the summary itself. A note on another
+    /// stream does not travel with it: `import v1 --dry-run > plan.txt` keeps this line and
+    /// throws the note away, and "Imported 3 tabs" would then be a written record of work
+    /// that never happened.
+    #[test]
+    fn a_dry_runs_summary_is_about_what_would_happen() {
+        assert_eq!(
+            report_line(Run::Dry, 1, 2, 3),
+            "Would import 1 project, 2 workspaces, 3 tabs."
+        );
+        // The counts and their plurals are the same either way, so a reader can hold the
+        // two summaries side by side and see one word differ.
+        let real = report_line(Run::Real, 1, 2, 3);
+        assert_eq!(
+            real.trim_start_matches("Imported"),
+            report_line(Run::Dry, 1, 2, 3).trim_start_matches("Would import")
+        );
+    }
+
+    #[test]
+    fn nothing_lost_is_no_failure_line() {
+        assert_eq!(failure_line(0, 0, 0), None);
+    }
+
+    /// Each count keeps its own noun. A project can hold several sessions, so adding the
+    /// counts and calling the total sessions states a number about the wrong thing: with
+    /// two unreadable files and three refused projects the old line read "5 of V1's
+    /// sessions did not come across", and five sessions is a number nothing measured.
+    #[test]
+    fn the_failure_line_names_the_noun_it_counts() {
+        assert_eq!(
+            failure_line(0, 3, 0).unwrap(),
+            "Not imported: 3 projects. Read the messages above, then run this again."
+        );
+        assert_eq!(
+            failure_line(2, 0, 0).unwrap(),
+            "Not imported: 2 session files that would not read. Read the messages above, \
+             then run this again."
+        );
+        assert_eq!(
+            failure_line(0, 0, 1).unwrap(),
+            "Not imported: 1 workspace. Read the messages above, then run this again."
+        );
+    }
+
+    /// The three counts are distinct, so the fixture gives each a different value: a line
+    /// built from the wrong field, or from their sum, cannot produce this string.
+    #[test]
+    fn the_failure_line_reports_all_three_kinds_at_once() {
+        assert_eq!(
+            failure_line(1, 2, 3).unwrap(),
+            "Not imported: 1 session file that would not read, 2 projects, 3 workspaces. \
+             Read the messages above, then run this again."
         );
     }
 
@@ -981,7 +1160,9 @@ mod tests {
             duplicate(),
         ]);
         let mut text = plan_lines(&plan.projects).join("\n");
-        text.push_str(&report_line(1, 2, 3));
+        text.push_str(&report_line(Run::Real, 1, 2, 3));
+        text.push_str(&report_line(Run::Dry, 1, 2, 3));
+        text.push_str(&failure_line(1, 2, 3).expect("three kinds"));
         text.push_str(&skipped_line(&plan.skips).expect("this set skips"));
         assert!(!text.contains('\u{2014}'), "{text}");
     }

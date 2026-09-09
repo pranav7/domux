@@ -5,13 +5,14 @@
 //! directory: the planning is `domux_core::import_v1`, which cannot open a file at all, and
 //! everything this file writes goes through the same API calls a person could type.
 
-use super::{call, call_as, print_line};
+use super::{call, call_as, not_running, print_line, socket};
 use anyhow::Context;
 use clap::{Args, Subcommand};
+use domux_client::control;
 use domux_core::api::{TabInfo, WorkspaceInfo};
 use domux_core::ids::WorkspaceId;
 use domux_core::import_v1::{
-    self, ImportPlan, PlannedProject, PlannedTab, PlannedWorkspace, Skip, V1Session,
+    self, ImportPlan, PlannedProject, PlannedTab, PlannedWorkspace, Run, Skip, V1Session,
 };
 use domux_core::paths;
 use serde_json::json;
@@ -51,42 +52,54 @@ pub async fn run(cmd: ImportCmd) -> anyhow::Result<()> {
     }
     let plan = import_v1::plan(&sessions, &|p| p.is_dir());
 
-    let (projects, refused) = if args.dry_run {
+    let (run, projects, lost) = if args.dry_run {
         // Nothing is called, so nothing can refuse: what the plan holds is what the report
-        // describes. Said on stderr, because stdout carries the data (principle 12) and a
-        // dry run's data is the plan itself.
-        eprintln!("Dry run: nothing was changed.");
-        (plan.projects.clone(), 0)
+        // describes, and its summary says so in its own words rather than in a note beside
+        // it.
+        (Run::Dry, plan.projects.clone(), Lost::default())
     } else {
-        apply(&plan).await?
+        let (projects, lost) = apply(&plan).await?;
+        (Run::Real, projects, lost)
     };
-    report(&projects, &plan.skips)?;
+    report(run, &projects, &plan.skips)?;
 
     // A skip is a decision the plan made and said out loud, so it is not a failure. A file
-    // that would not read and a project the server would not take are failures, and a
-    // failure leaves a status of 1 (principle 12), whatever else the run managed.
-    if unreadable.is_empty() && refused == 0 {
-        return Ok(());
+    // that would not read, a project the server would not take and a planned workspace that
+    // never arrived are failures, and a failure leaves a status of 1 (principle 12),
+    // whatever else the run managed.
+    let lost = Lost {
+        unreadable: unreadable.len(),
+        ..lost
+    };
+    match import_v1::failure_line(lost.unreadable, lost.projects, lost.workspaces) {
+        None => Ok(()),
+        Some(line) => Err(anyhow::anyhow!(line)),
     }
-    Err(anyhow::anyhow!(
-        "{} of V1's sessions did not come across. Read the messages above, then run this again.",
-        unreadable.len() + refused
-    ))
+}
+
+/// What a run could not carry across. Each field counts its own kind, because one project
+/// can hold several sessions and adding them together states a number of one noun about
+/// another.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Lost {
+    unreadable: usize,
+    projects: usize,
+    workspaces: usize,
 }
 
 /// V1's session files and the paths of the ones that would not read.
 ///
-/// Sorted by path, so two runs read the same files in the same order: `read_dir` has an
-/// order of its own that nobody promised, and the author compares a dry run with the run
-/// that follows it.
+/// The order they come back in does not matter. `read_dir` promises none, and
+/// `import_v1::plan` sorts the sessions itself so that every part of the plan, the skips
+/// included, is settled by the sessions rather than by the filesystem. Sorting here as well
+/// would look like the guarantee while the real one lived elsewhere.
 fn read_sessions(dir: &Path) -> anyhow::Result<(Vec<V1Session>, Vec<PathBuf>)> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+    let files: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("read {}", dir.display()))?
         .flatten()
         .map(|entry| entry.path())
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
         .collect();
-    files.sort();
     let mut sessions = Vec::new();
     let mut unreadable = Vec::new();
     for path in files {
@@ -109,16 +122,24 @@ fn read_sessions(dir: &Path) -> anyhow::Result<(Vec<V1Session>, Vec<PathBuf>)> {
 /// on to the next project. Every call after it acts on records the server has just made, so
 /// a failure there means something is wrong rather than something is missing, and it ends
 /// the run.
-async fn apply(plan: &ImportPlan) -> anyhow::Result<(Vec<PlannedProject>, usize)> {
+async fn apply(plan: &ImportPlan) -> anyhow::Result<(Vec<PlannedProject>, Lost)> {
+    // Asked once, before the loop. Every `project.add` below reports its own failure and
+    // carries on, which is right for a failure about that project's root. A server that is
+    // not listening is not about any root and is the same answer for all of them, so
+    // without this the most likely failure the author will ever hit prints one identical
+    // line per project.
+    if !control::is_live(&socket()).await {
+        return Err(not_running());
+    }
     let mut arrived = Vec::new();
-    let mut refused = 0;
+    let mut lost = Lost::default();
     for project in &plan.projects {
         // `project.add` adopts the worktrees already on disk, so a slot the plan names is
         // usually there already and only `main` is new. It is also how a project that is
         // registered already is recognised, which is what makes a second import quiet.
         if let Err(e) = call("project.add", json!({ "path": project.root })).await {
             eprintln!("Could not add {}: {e:#}", project.root.display());
-            refused += 1;
+            lost.projects += 1;
             continue;
         }
         let registered: Vec<WorkspaceInfo> = call_as("workspace.list", json!({})).await?;
@@ -136,6 +157,7 @@ async fn apply(plan: &ImportPlan) -> anyhow::Result<(Vec<PlannedProject>, usize)
                     planned.path.display(),
                     project.root.display()
                 );
+                lost.workspaces += 1;
                 continue;
             };
             if let Some(name) = &planned.name {
@@ -156,7 +178,7 @@ async fn apply(plan: &ImportPlan) -> anyhow::Result<(Vec<PlannedProject>, usize)
             workspaces,
         });
     }
-    Ok((arrived, refused))
+    Ok((arrived, lost))
 }
 
 /// Creates the tabs the workspace does not have yet, and answers with every planned tab the
@@ -226,12 +248,12 @@ fn resolved(path: &Path) -> PathBuf {
 
 /// The plan, then what it comes to, then what did not come across. The same lines in a dry
 /// run and in a real one, so the author can hold the two side by side.
-fn report(projects: &[PlannedProject], skips: &[Skip]) -> anyhow::Result<()> {
+fn report(run: Run, projects: &[PlannedProject], skips: &[Skip]) -> anyhow::Result<()> {
     for line in import_v1::plan_lines(projects) {
         print_line(&line)?;
     }
     let (projects, workspaces, tabs) = import_v1::counts(projects);
-    print_line(&import_v1::report_line(projects, workspaces, tabs))?;
+    print_line(&import_v1::report_line(run, projects, workspaces, tabs))?;
     if let Some(line) = import_v1::skipped_line(skips) {
         print_line(&line)?;
     }
