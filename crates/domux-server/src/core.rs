@@ -252,6 +252,11 @@ pub struct Core {
     /// same job, so it is visible rather than silent, and the deadline belongs to the lane
     /// (decision record 0006) rather than to the claim.
     claims: HashSet<String>,
+    /// What the start-up prune took away, in the words the switcher's footer and the
+    /// sidebar's hint row print. One list for the server rather than one per client: the
+    /// prune runs before any client attaches, so a per-client list would be empty for
+    /// everybody. Cleared by the first key in a box, so a note is read once.
+    pub notes: Vec<String>,
 }
 
 impl Core {
@@ -265,6 +270,7 @@ impl Core {
         published_facts: Arc<Mutex<HashMap<FactKey, Fact>>>,
     ) -> anyhow::Result<Core> {
         let started_at = opts.deps.clock.now().to_rfc3339();
+        let project_root = opts.project_root.clone();
         let mut model = match std::fs::read_to_string(state_file) {
             Ok(text) => match state_file::parse(&text).and_then(state_file::restore) {
                 Ok(m) => m,
@@ -317,12 +323,6 @@ impl Core {
                 },
             );
         }
-        if model.projects.is_empty() {
-            // A fresh model has every id free, so this cannot exhaust the id space.
-            model
-                .add_folder_project(opts.project_root.clone())
-                .expect("a fresh model cannot exhaust the id space");
-        }
         let mut facts = FactRegistry::new();
         for provider in opts.providers {
             facts.register(provider);
@@ -334,7 +334,6 @@ impl Core {
             &crate::facts::pr_cache_path(&opts.state_dir),
             opts.deps.clock.now(),
         );
-        facts.forget_deleted(&model);
         let mut core = Core {
             model,
             panes: HashMap::new(),
@@ -359,7 +358,31 @@ impl Core {
             respawn_blocked: HashSet::new(),
             facts,
             claims: HashSet::new(),
+            notes: Vec::new(),
         };
+        // Before the seed below and before anything is spawned or resumed. A record whose
+        // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
+        // a tab, or `spawn_pane`, which would start a shell in a directory that is not there.
+        core.notes = core.prune_missing_paths();
+        // The directory the server was started in, when the model holds nothing else. After
+        // the prune rather than before it: a state file whose every project has been removed
+        // with `rm -rf` prunes down to nothing, and a server with no workspace refuses every
+        // client at `attach`, which leaves it running and unusable with no way back but
+        // deleting the state file.
+        if core.model.projects.is_empty() {
+            // A model with no projects holds at most `RETIRED_CAPACITY` ids of a possible
+            // 65536, so this cannot exhaust the id space.
+            core.model
+                .add_folder_project(project_root)
+                .expect("a model with no projects cannot exhaust the id space");
+        }
+        // Last of the three, so it judges the model the server is actually starting with:
+        // anything the cache knew about a record the prune took away, and nothing about the
+        // project that was just seeded. Run before the prune it would keep a pruned
+        // workspace's pull request, which the cache file would then carry for ever; run
+        // before the seed it would drop the seeded project's own facts on the way past an
+        // empty model.
+        core.facts.forget_deleted(&core.model);
         core.ensure_every_workspace_has_a_tab();
         for pane in core.model.all_pane_ids() {
             core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
@@ -369,6 +392,53 @@ impl Core {
             socket: core.socket_path.clone(),
         });
         Ok(core)
+    }
+
+    /// Records whose path is gone are removed at start, before any pane is spawned, and the
+    /// reason is kept for the switcher's footer and the sidebar's hint row (architecture spec
+    /// section 5). The author who removed a worktree or a project folder with `rm -rf` gets a
+    /// model that matches the disk again, and one line saying so.
+    ///
+    /// The project loop runs first on purpose. A `main` workspace's path is the project's
+    /// root, so when the root is gone the project is gone and takes its `main` with it.
+    /// `prune_workspace` refuses `main` on its own, which is why the workspace loop reads
+    /// `if let Ok`: by the time it runs, every surviving `main` has a folder, so the refusal
+    /// is unreachable rather than swallowed.
+    ///
+    /// Nothing here retires an id. `remove_project` and `prune_workspace` retire every
+    /// workspace, tab and pane id they take away, so a prune at start cannot hand an id back
+    /// out to a different object later in the session. One place owns that and it is the
+    /// model.
+    fn prune_missing_paths(&mut self) -> Vec<String> {
+        let mut notes = Vec::new();
+        let gone_projects: Vec<_> = self
+            .model
+            .projects
+            .iter()
+            .filter(|p| !p.root.is_dir())
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect();
+        for (id, name) in gone_projects {
+            if let Ok(events) = self.model.remove_project(&id) {
+                self.pending_events.extend(events);
+                notes.push(format!("Removed {name}: its folder is gone"));
+            }
+        }
+        let gone: Vec<_> = self
+            .model
+            .projects
+            .iter()
+            .flat_map(|p| p.workspaces.iter())
+            .filter(|w| !w.path.is_dir())
+            .map(|w| (w.id.clone(), w.display_name()))
+            .collect();
+        for (id, name) in gone {
+            if let Ok((_, events)) = self.model.prune_workspace(&id) {
+                self.pending_events.extend(events);
+                notes.push(format!("Pruned {name}: its worktree is gone"));
+            }
+        }
+        notes
     }
 
     fn ensure_every_workspace_has_a_tab(&mut self) {
@@ -736,8 +806,37 @@ impl Core {
     /// One key, routed by `input::route_key`. Every key gets a frame: the chord indicator
     /// appearing, an action's result, a hint cleared or replaced (principle 8).
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
+        self.clear_notes_read_by(client, &key);
         let _ = crate::input::route_key(self, client, key);
         self.view_dirty = true;
+    }
+
+    /// A note is gone once the reader has been in a box with it on the screen, so it is read
+    /// once and does not sit in the row for the rest of the session.
+    ///
+    /// In a box, and not on any key: a note also prints in the sidebar's hint row, and the
+    /// sidebar stands beside a pane the reader is typing in. Clearing on any key at all would
+    /// take the note away during the first keystroke of the day, which is the one moment
+    /// nobody is looking at the sidebar.
+    ///
+    /// A release is not a key press. Both halves of a press arrive here, and clearing on the
+    /// release would take the note away one event before `route_key` decided what the press
+    /// meant.
+    fn clear_notes_read_by(&mut self, client: &ClientId, key: &domux_term::KeyEvent) {
+        if self.notes.is_empty() || key.action == domux_term::KeyAction::Release {
+            return;
+        }
+        // The switcher is the one box a key can reach in M2. `Focus::Region(SidebarProjects)`
+        // is the other and `api::focus::region` refuses it today, so it is written out here
+        // rather than left for Task 14 to remember: the rule is about a box, not about the
+        // switcher.
+        let in_a_box = self.model.client(client).is_some_and(|view| {
+            matches!(view.overlay, Some(Overlay::Switcher))
+                || matches!(view.focus, Focus::Region(RegionKind::SidebarProjects))
+        });
+        if in_a_box {
+            self.notes.clear();
+        }
     }
 
     /// Runs a keymap action through the same dispatcher the API uses.
@@ -1786,6 +1885,7 @@ impl Core {
                 now: self.deps.clock.now(),
                 config_error: self.config.error.as_ref(),
                 hint: conn.hint.as_ref(),
+                notes: &self.notes,
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -2037,6 +2137,15 @@ mod tests {
         dir: &Path,
         providers: Vec<Arc<dyn crate::facts::FactProvider>>,
     ) -> (Core, mpsc::Receiver<CoreMsg>) {
+        core_with(dir, providers, &dir.join("missing.json"))
+    }
+
+    /// The same, over a state file that is there, for a test about what a start makes of one.
+    fn core_with(
+        dir: &Path,
+        providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+        state_file: &Path,
+    ) -> (Core, mpsc::Receiver<CoreMsg>) {
         let project = dir.join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let (core_tx, core_rx) = mpsc::channel(8);
@@ -2058,7 +2167,7 @@ mod tests {
             opts,
             core_tx,
             persist_tx,
-            &dir.join("missing.json"),
+            state_file,
             Arc::new(Mutex::new(Model::new(7))),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
@@ -2716,6 +2825,58 @@ mod tests {
     /// The first workspace of the core's implicit project.
     fn first_workspace(core: &Core) -> WorkspaceId {
         core.model.first_workspace().expect("one workspace")
+    }
+
+    /// A note names a workspace the way the Projects box does: its name when it has one, and
+    /// its handle otherwise.
+    ///
+    /// A state file, and not the API, because `workspace.rename` is Task 19's and nothing in
+    /// this milestone can name a workspace through the server yet. Without a name in the
+    /// fixture the handle and the display name are the same string, and a note built from
+    /// either reads correctly.
+    #[test]
+    fn a_note_names_a_pruned_workspace_by_its_name_when_it_has_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut model = Model::new(7);
+        let (project, _main, _) = model.add_folder_project(root.clone()).unwrap();
+        let slot = WorkspaceId("w_5101".into());
+        model
+            .project_mut(&project)
+            .expect("the project is there")
+            .workspaces
+            .push(domux_core::model::Workspace {
+                id: slot.clone(),
+                handle: domux_core::model::WorkspaceHandle::Slot(1),
+                name: None,
+                // Under the project's root, which is there, so only this path is gone.
+                path: root.join(".domux/worktrees/workspace-1"),
+                tabs: Vec::new(),
+                last_tab: None,
+            });
+        model
+            .rename_workspace(&slot, Some("auth cleanup".to_string()))
+            .unwrap();
+        let saved = dir.path().join("state.json");
+        std::fs::write(
+            &saved,
+            serde_json::to_string(&state_file::snapshot(&model, "2026-09-04T14:32:00+01:00"))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        assert_eq!(
+            core.notes,
+            vec!["Pruned auth cleanup: its worktree is gone".to_string()],
+            "the reader is told about the workspace by the name they gave it"
+        );
+        assert_eq!(
+            core.model.projects.len(),
+            1,
+            "and the project, whose root is there, stayed"
+        );
     }
 
     fn fact_events(core: &Core) -> Vec<Event> {

@@ -55,6 +55,22 @@ pub struct RenderInput<'a> {
     /// end's priority order, so the whole hint is passed rather than its text: see
     /// `top_bar::right_end`.
     pub hint: Option<&'a Hint>,
+    /// What the start-up prune took away, for the switcher's footer and the sidebar's hint
+    /// row. Empty in every frame after the reader's first key in a box. See `note_line`.
+    pub notes: &'a [String],
+}
+
+/// The one line a list of notes prints as, or `None` when there is nothing to say.
+///
+/// One function for both rows: the footer and the hint row draw it in their own widths and
+/// their own styles, but a note cannot read one way in the switcher and another in the
+/// sidebar. Two prunes join with the separator the hint rows already use, so a start that
+/// took two records away says both rather than the first and a count.
+pub fn note_line(notes: &[String]) -> Option<String> {
+    match notes.is_empty() {
+        true => None,
+        false => Some(notes.join(" · ")),
+    }
 }
 
 impl<'a> RenderInput<'a> {
