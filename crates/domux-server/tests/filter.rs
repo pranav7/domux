@@ -343,6 +343,25 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
         list > globals && list > passthrough,
         "the box keys come after the leader table, the globals and the passthrough rule:\n{f}"
     );
+    // By action, like the other two tables, and not by key: sorted by key the four named
+    // keys run Down, Enter, Up, j, so `list.down` would come first and `list.activate`
+    // third. Sorted by action `list.activate` comes first, which is the row `Enter` is on.
+    assert!(
+        f.find("Enter      list.activate") < f.find("j          list.down"),
+        "the block is sorted by action:\n{f}"
+    );
+    // A blank row above the heading, so the block reads as its own table rather than as more
+    // of the passthrough rule above it.
+    let y = f
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .position(|l| l.contains("in a list"))
+        .expect("the heading is on a row");
+    assert_eq!(
+        row(&f, y - 1).trim_matches(|c| c == ' ' || c == '\u{2502}'),
+        "",
+        "the heading has a blank row over it:\n{f}"
+    );
 }
 
 /// The switcher has the width for the tab list and the sidebar does not (interface spec 5.5).
