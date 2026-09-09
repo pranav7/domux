@@ -1271,7 +1271,9 @@ impl Core {
         // ran past it and lost the branch to an ellipsis - defeating this line exactly when it
         // mattered. `Deleted {branch}` fits that row for a branch of 28 columns or less, and a
         // longer one is cut from its tail rather than removed whole, because it leads.
-        // `the_result_names_the_branch_that_went_when_it_is_not_the_handle` holds both.
+        // `the_hint_row_fits_a_branch_of_twenty_eight_columns_and_not_twenty_nine` holds the
+        // boundary and `a_branch_too_long_for_the_hint_row_still_leads_the_result` holds the
+        // leading, so neither number here is prose nobody checks.
         let said = if branch == handle.to_string() {
             format!("Deleted {name}")
         } else {
