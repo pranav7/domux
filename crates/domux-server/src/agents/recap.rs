@@ -1,6 +1,6 @@
 //! The transcript reader: the recap and the session name, cached by path and modification
-//! time (architecture spec 3.6). Carried over from V1's `scanRecap`, in `recap.go` on the
-//! `main` branch (`git show main:recap.go`), minus the directory-name encoding V2 does not
+//! time (architecture spec 3.6). Carried over from V1's `scanRecap`, in `recap.go` at commit
+//! e2fe7eb in this repository's V1 history, minus the directory-name encoding V2 does not
 //! need because the hooks give `transcript_path`.
 
 use serde_json::Value;
