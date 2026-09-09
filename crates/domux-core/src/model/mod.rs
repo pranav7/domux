@@ -137,6 +137,12 @@ pub struct Project {
     pub workspaces: Vec<Workspace>,
 }
 
+/// The refusal `main` earns, in one spelling. `Model::remove_workspace` is the last guard
+/// and `api::workspace::delete` is the first, and a reader who met one and then the other
+/// must not be told two different things (principle 10).
+pub const MAIN_CANNOT_BE_DELETED: &str =
+    "main is the project's checkout and cannot be deleted; delete a workspace-N slot instead";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceHandle {
@@ -1227,9 +1233,7 @@ impl Model {
             .workspace(id)
             .ok_or_else(|| ApiError::not_found(format!("no workspace with id {id}")))?;
         if w.handle == WorkspaceHandle::Main {
-            return Err(ApiError::refused(
-                "main is the project's checkout and cannot be deleted; delete a workspace-N slot instead",
-            ));
+            return Err(ApiError::refused(MAIN_CANNOT_BE_DELETED));
         }
         let handle = w.handle;
         // Every id that is about to stop existing, collected before the removal. Removing a

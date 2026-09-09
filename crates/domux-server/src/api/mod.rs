@@ -178,8 +178,6 @@ impl Ctx<'_> {
 /// counts. That is the deliberate exception, and it is a handler rather than a line here.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
-    // `method.name()` before the match, since the match below moves `method`.
-    let unbuilt = method.name();
     match method {
         ServerInfo(_) => server::info(ctx),
         ServerStop(_) => server::stop(ctx),
@@ -221,6 +219,8 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ProjectAdd(p) => project::add(ctx, p),
         ProjectRemove(p) => project::remove(ctx, p),
         WorkspaceCreate(p) => workspace::create(ctx, p),
+        WorkspaceClear(p) => workspace::clear(ctx, p),
+        WorkspaceDelete(p) => workspace::delete(ctx, p),
         WorkspaceList(p) => workspace::list(ctx, p),
         WorkspaceFocus(p) => workspace::focus(ctx, p),
         WorkspaceRename(p) => workspace::rename(ctx, p),
@@ -230,10 +230,6 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ListUp(p) => list::up(ctx, p),
         ListActivate(p) => list::activate(ctx, p),
         ListFilter(p) => list::filter(ctx, p),
-        // --- M2 stubs: placeholders for Tasks 16 to 18, not real handlers. ---
-        WorkspaceClear(_) | WorkspaceDelete(_) => {
-            Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
-        }
     }
 }
 

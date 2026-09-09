@@ -12,7 +12,7 @@ use crate::core::Core;
 use domux_core::api::Method;
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::keymap::Action;
-use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind};
+use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind, RegionKind};
 use domux_core::proto::ServerMsg;
 use domux_term::{Emulator, Key, KeyAction, KeyEvent, Mods};
 
@@ -260,13 +260,9 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             }
             set_prompt(core, client, PromptKind::TabName { tab, input });
         }
-        // `y` and nothing else closes the tab. Any other key cancels rather than waiting for
-        // one of two right answers: the safe outcome is the one a stray keystroke should
-        // reach, and a reader who typed something else has already stopped reading the
-        // question. Esc and `n` are in that set, and are what the bar offers.
         Overlay::Confirm(ConfirmKind::CloseTab(tab)) => {
             close_overlay(core, client);
-            if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
+            if confirmed(&key) {
                 let method = Method::TabClose(domux_core::api::TabTargetParams {
                     tab: Some(tab.to_string()),
                     client: Some(client.clone()),
@@ -280,17 +276,17 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         // The same rule as the tab above, and the keys the box itself offers:
         // `y remove project    esc keep project` (interface spec 7.3).
         //
-        // `api::project::remove` opened this with `push_overlay` and this closes it with
-        // `close_overlay`, which clears the top overlay and leaves `overlay_under` where it
-        // is - so it does not merely fail to restore what was underneath, it strands it.
-        // The two agree while nothing opens the confirmation over another overlay, which
-        // nothing in M2 does: the only way here is a key bound to `project.remove`, and a
-        // key bound to anything reaches `run_action` only when no overlay is open. Task 18,
-        // which adds `X` inside the Projects box, opens it over the switcher and has to
-        // come back to this: `pop_overlay` is the call that does the right thing there.
+        // `pop_confirmation` rather than `close_overlay`, and the same for the two workspace
+        // kinds below: all three are opened with `push_overlay`, and what `push_overlay`
+        // covers, `pop_overlay` uncovers. `close_overlay` clears the top overlay and leaves
+        // `overlay_under` where it is, so it does not merely fail to restore what was
+        // underneath, it strands it. That is invisible for `project.remove`, whose only way
+        // here is a key bound to it and a key reaches `run_action` only when no overlay is
+        // open, so this is behaviour that has never differed; it is written the one way
+        // because the two halves belong together, not because a test can tell them apart.
         Overlay::Confirm(ConfirmKind::RemoveProject(project)) => {
-            close_overlay(core, client);
-            if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
+            pop_confirmation(core, client);
+            if confirmed(&key) {
                 let method = Method::ProjectRemove(domux_core::api::ProjectRemoveParams {
                     project: project.to_string(),
                     yes: true,
@@ -298,10 +294,37 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                 let _ = core.dispatch_from_key(method, Some(client.clone()));
             }
         }
-        Overlay::Agents
-        | Overlay::NameWorkspace(_)
-        | Overlay::Confirm(ConfirmKind::DeleteWorkspace(_))
-        | Overlay::Usage => {
+        // `y` re-dispatches the method with the consent it was asked for and every other key
+        // keeps the workspace, so a held key cannot confirm a delete by accident
+        // (principle 10). The id is what goes back, not the handle or the name:
+        // `resolve_workspace_with` answers an id first, so a workspace named while the
+        // question was open is still the workspace the question was about.
+        //
+        // `force` is not passed. Consent to delete a slot is not consent to throw away
+        // commits that were never pushed, and the job's refusal names the state and what to
+        // do about it.
+        Overlay::Confirm(ConfirmKind::DeleteWorkspace(workspace)) => {
+            pop_confirmation(core, client);
+            if confirmed(&key) {
+                let method = Method::WorkspaceDelete(domux_core::api::WorkspaceDeleteParams {
+                    workspace: workspace.to_string(),
+                    yes: true,
+                    force: false,
+                });
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
+            }
+        }
+        Overlay::Confirm(ConfirmKind::ClearWorkspace(workspace)) => {
+            pop_confirmation(core, client);
+            if confirmed(&key) {
+                let method = Method::WorkspaceClear(domux_core::api::WorkspaceClearParams {
+                    workspace: Some(workspace.to_string()),
+                    yes: true,
+                });
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
+            }
+        }
+        Overlay::Agents | Overlay::NameWorkspace(_) | Overlay::Usage => {
             // M1 never opens these. M3 and M4 add their key handling here.
         }
     }
@@ -310,6 +333,37 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
 fn set_prompt(core: &mut Core, client: &ClientId, prompt: PromptKind) {
     if let Some(view) = core.model.client_mut(client) {
         view.overlay = Some(Overlay::Prompt(prompt));
+    }
+}
+
+/// `y` acts and every other key cancels, in one place for all four questions.
+///
+/// Not "wait for one of two right answers": the safe outcome is the one a stray keystroke
+/// should reach, and a reader who typed something else has already stopped reading the
+/// question (principle 10). Esc and `n` are in that set, and are what the box offers.
+fn confirmed(key: &KeyEvent) -> bool {
+    matches!(key.key, Key::Char('y') | Key::Char('Y'))
+}
+
+/// Closes a confirmation and gives the keys back to whatever was underneath: the overlay it
+/// was opened over (interface spec 12.7), or the pane.
+///
+/// The other half of `api::workspace::ask` and `api::project::remove`, which open with
+/// `push_overlay`. `close_overlay` below is for the overlays that are opened by assignment:
+/// the help overlay, the tab prompt, and the close-tab question `Core::confirmation_for`
+/// sets. Those cover nothing, so they have nothing to uncover.
+///
+/// The focus line is `api::switcher::close`'s, for the same reason: never a frame with the
+/// keys in a region nothing on the screen marks (principle 2).
+fn pop_confirmation(core: &mut Core, client: &ClientId) {
+    let focused = core.focused_pane(client);
+    if let Some(view) = core.model.client_mut(client) {
+        view.pop_overlay();
+        view.focus = match (&view.overlay, focused) {
+            (Some(_), _) => Focus::Region(RegionKind::Overlay),
+            (None, Some(pane)) => Focus::Pane(pane),
+            (None, None) => view.focus.clone(),
+        };
     }
 }
 
