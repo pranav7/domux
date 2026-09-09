@@ -568,7 +568,30 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
     let made = run(domux2(&h).args(["workspace", "create", "--project", "audrey-app"]))
         .await
         .ok();
-    assert_eq!(made.json()["handle"], "workspace-3", "{:?}", made.out);
+    let made = made.json();
+    assert_eq!(made["handle"], "workspace-3");
+    assert_eq!(
+        made["base"], "origin/main",
+        "with no --base the default is origin/HEAD"
+    );
+
+    // `--base` is the one thing about a create that the answer reports and nothing else can:
+    // the ref a slot was branched from is on no later row. A `main` that reached the server
+    // answers `main` where the default answers `origin/main`, so the two are told apart by
+    // the answer rather than by the flag having been typed.
+    let based = run(domux2(&h).args([
+        "workspace",
+        "create",
+        "--project",
+        "audrey-app",
+        "--base",
+        "main",
+    ]))
+    .await
+    .ok();
+    let based = based.json();
+    assert_eq!(based["handle"], "workspace-4");
+    assert_eq!(based["base"], "main");
 
     let scoped = run(domux2(&h).args(["workspace", "list", "--project", "audrey-app"]))
         .await
@@ -583,7 +606,13 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
         .collect();
     assert_eq!(
         handles,
-        ["main", "workspace-1", "workspace-2", "workspace-3"]
+        [
+            "main",
+            "workspace-1",
+            "workspace-2",
+            "workspace-3",
+            "workspace-4"
+        ]
     );
 
     let all = run(domux2(&h).args(["workspace", "list"])).await.ok();
