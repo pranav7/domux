@@ -1,0 +1,6 @@
+{"type":"user","timestamp":"2026-09-04T10:00:00.000Z","message":{"role":"user","content":"read auth/middleware.go and tidy the session checks"}}
+{"type":"ai-title","aiTitle":"Session check cleanup"}
+{"type":"assistant","timestamp":"2026-09-04T10:00:04.100Z","message":{"role":"assistant","content":[{"type":"text","text":"I will read the file first. This line is long on purpose so the reader does not choke on it, and it mentions <command-name> nowhere useful."}]}}
+{"type":"system","subtype":"away_summary","timestamp":"2026-09-04T10:21:00.000Z","content":"Goal: Replaced three session checks with one guard in auth/middleware.go. Tests pass."}
+{"type":"user","timestamp":"2026-09-04T10:40:00.000Z","message":{"role":"user","content":"<command-name>/recap</command-name>"}}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-04T10:40:01.000Z","content":"<local-command-stdout>Wrote the guard and deleted the duplicate checks. Ready for review.</local-command-stdout>"}

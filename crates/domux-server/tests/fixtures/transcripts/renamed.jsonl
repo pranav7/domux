@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-09-04T10:00:00.000Z","message":{"role":"user","content":"read auth/middleware.go and tidy the session checks"}}
+{"type":"ai-title","aiTitle":"Session check cleanup"}
+{"type":"assistant","timestamp":"2026-09-04T10:00:04.100Z","message":{"role":"assistant","content":[{"type":"text","text":"I will read the file first. This line is long on purpose so the reader does not choke on it, and it mentions <command-name> nowhere useful."}]}}
+{"type":"user","timestamp":"2026-09-04T10:05:00.000Z","message":{"role":"user","content":"<command-name>/rename</command-name>\n<command-args>auth-cleanup</command-args>"}}
+{"type":"system","subtype":"local_command","timestamp":"2026-09-04T10:05:00.500Z","content":"<local-command-stdout>Renamed the session to auth-cleanup</local-command-stdout>"}
