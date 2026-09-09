@@ -2358,6 +2358,66 @@ mod tests {
         );
     }
 
+    /// `workspace.focus` reports a workspace with no tab rather than quietly making one.
+    ///
+    /// `ensure_every_workspace_has_a_tab` is the one owner of that invariant: `Core::new` runs
+    /// it once and `apply_side_effects` runs it as its last statement, which is after every
+    /// dispatch. So no handler can ever be handed a workspace without a tab, and a handler
+    /// that made one would be a second owner whose repair no input could reach and no test
+    /// could check.
+    ///
+    /// A unit test, and the state is set directly rather than staged, because there is no
+    /// front door: every path that could leave a workspace tab-less runs the invariant on the
+    /// way out. **The cost is that the scenario is asserted rather than exercised.** What it
+    /// buys is a real verdict for the mutant on this branch, which was a permanent survivor
+    /// while the branch repaired instead of reporting. The link this does not exercise is
+    /// "the core really can hand a handler this state", and that link is exactly the one the
+    /// invariant exists to make impossible.
+    ///
+    /// `add_slot` is the right way in: it is what registers a worktree that already exists,
+    /// and it leaves `tabs` empty and `last_tab` `None` together, which is the same state the
+    /// invariant finds and fills.
+    #[test]
+    fn focusing_a_workspace_with_no_tab_reports_the_broken_invariant() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let client = attached(&mut core);
+        let project = core
+            .model
+            .projects
+            .first()
+            .map(|p| p.id.clone())
+            .expect("the project root is registered as a project");
+        let (ws, _) = core
+            .model
+            .add_slot(&project, 1, dir.path().join("workspace-1"))
+            .unwrap();
+        assert!(core.model.workspace(&ws).unwrap().tabs.is_empty());
+        let was_in = core.model.client(&client).unwrap().workspace.clone();
+        let last = core.model.last_workspace.clone();
+
+        let method = Method::from_request(
+            "workspace.focus",
+            serde_json::json!({ "workspace": ws.as_str() }),
+        )
+        .expect("workspace.focus takes these params");
+        let err = core
+            .dispatch(method, Some(client.clone()))
+            .expect_err("a workspace with no tab has nothing to show");
+
+        assert_eq!(err.code, ErrorCode::Internal, "{err}");
+        assert!(err.message.contains(ws.as_str()), "{err}");
+        assert!(
+            err.message.contains("ensure_every_workspace_has_a_tab"),
+            "the message names what should have run, so a reader can act on it: {err}"
+        );
+        // It refused rather than half working. The dispatch that just failed still ran
+        // `apply_side_effects` on its way out, so the workspace has a tab by now; what must
+        // not have moved is the client and the model's last workspace.
+        assert_eq!(core.model.client(&client).unwrap().workspace, was_in);
+        assert_eq!(core.model.last_workspace, last);
+    }
+
     /// The register `only_the_expected_m2_methods_still_answer_unavailable` and
     /// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt` both check against:
     /// every method Task 4 declared but no task has given a handler yet. When this is empty,

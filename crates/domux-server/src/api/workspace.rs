@@ -138,14 +138,12 @@ pub fn list(ctx: &mut Ctx, p: WorkspaceListParams) -> Result<Value, ApiError> {
 /// This client shows `workspace` on its last focused tab, and the keys go to that tab's
 /// focused pane (interface spec 5.4 and 12.26).
 ///
-/// A workspace with no tabs gets one with a shell in its own path, so switching always lands
-/// somewhere you can type. **That branch cannot be reached today**: `Core::apply_side_effects`
-/// runs `ensure_every_workspace_has_a_tab` at the end of every dispatch and `Core::start` runs
-/// it once more, so by the time a handler runs no workspace in the model is without a tab, and
-/// no test in the suite can enter the branch. It is kept because this handler should be right
-/// on its own terms rather than on an invariant two layers away, and it is written down here
-/// because untested-and-silent and deliberately-unspecified look the same in a diff. A mutant
-/// that removes it survives, and that is recorded rather than argued away.
+/// **It does not make a tab.** Every workspace has one because
+/// `Core::ensure_every_workspace_has_a_tab` gives it one: `Core::new` runs that once and
+/// `apply_side_effects` runs it as its last statement, which is after every dispatch. So that
+/// invariant has one owner, and a switch that quietly repaired a workspace without a tab would
+/// be a second - a repair no input could reach, and therefore no test could check. This reports
+/// the invariant broken instead, naming the workspace and what should have run.
 ///
 /// The switcher closes because switching is what it was open for. The sidebar does not: it
 /// is not an overlay, the fill moves to the row that is now the current one, and the keys go
@@ -170,29 +168,25 @@ pub fn focus(ctx: &mut Ctx, p: WorkspaceFocusParams) -> Result<Value, ApiError> 
         .model
         .workspace(&target)
         .ok_or_else(|| ApiError::not_found(format!("no workspace called {}", p.workspace)))?;
-    let path = w.path.clone();
-    let mut tab = w
-        .last_tab
-        .clone()
-        .or_else(|| w.tabs.first().map(|t| t.id.clone()));
-    if tab.is_none() {
-        let (new_tab, pane, events) = ctx.model.create_tab(&target, path)?;
-        ctx.events.extend(events);
-        // M1's `Ctx` has no `spawn`. A handler is pure over the model and the runtime maps;
-        // spawning a process is the core's, so it is recorded and the core does it.
-        ctx.pending_spawns.push(pane);
-        tab = Some(new_tab);
-    }
-    let tab = tab.expect("the branch above gives a workspace with no tabs one");
+    // `last_tab` answers both questions at once - which tab, and whether there is one -
+    // because the model keeps the two together: `create_tab` sets it, `select_tab` sets it,
+    // and `close_tab` moves it to the tab that took the closed one's place, leaving it `None`
+    // only when the workspace has no tabs left. So there is no fallback to `tabs.first()`
+    // here: a workspace with tabs always has `last_tab` set, and a fallback that no input can
+    // reach would be a second answer to a question the model already answers once.
+    let tab = w.last_tab.clone().ok_or_else(|| {
+        // The one owner of "every workspace has a tab" is
+        // `Core::ensure_every_workspace_has_a_tab`. Reaching this means it did not run, so
+        // the answer names the workspace and the thing that should have run, which is what a
+        // reader can act on. Making a tab here instead would hide that and give the invariant
+        // a second owner.
+        ApiError::internal(format!(
+            "workspace {target} has no tab; ensure_every_workspace_has_a_tab did not run for it"
+        ))
+    })?;
     ctx.model.last_workspace = Some(target.clone());
-    // Nothing writes `last_tab` back here, and that is a decision rather than an omission.
-    // The model already maintains it everywhere a tab is made, chosen or closed:
-    // `create_tab` sets it, `select_tab` sets it, and `close_tab` moves it to the tab that
-    // took the closed one's place. So a workspace with tabs always has `last_tab` set, the
-    // `or_else` fallback above can only fire for a workspace with none, and writing `tab`
-    // back would be the identity in both branches. A mutant that deleted such a line would
-    // survive, and an equivalent line that cannot fail is worse than no line: it reads as a
-    // second owner of a field that has one.
+    // Nothing writes `last_tab` back, for the reason above: `tab` came from it, so the write
+    // would be the identity, and an equivalent line that cannot fail is worse than no line.
     let pane = ctx.model.tab(&tab).map(|t| t.focused.clone());
     let in_switcher = ctx
         .model
