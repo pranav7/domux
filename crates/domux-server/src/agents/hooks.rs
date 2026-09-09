@@ -107,7 +107,8 @@ pub fn parse_claude(v: &Value) -> AgentReport {
 
 /// Codex: the same envelope shape as Claude, its own event names, and a session field recorded
 /// under one of three names (M3 plan assumption 13); the adapter accepts all three.
-/// `PermissionRequest` is the waiting event. Codex payloads name no transcript.
+/// `PermissionRequest` is the waiting event. The transcript path is Codex's own `rollout_path`,
+/// absent when the payload does not carry one.
 pub fn parse_codex(v: &Value) -> AgentReport {
     let event = match string(v, "hook_event_name").as_deref() {
         Some("SessionStart") => Some(AgentEvent::SessionStart),
@@ -124,7 +125,7 @@ pub fn parse_codex(v: &Value) -> AgentReport {
         session_id: string(v, "session_id")
             .or_else(|| string(v, "thread_id"))
             .or_else(|| string(v, "conversation_id")),
-        transcript_path: None,
+        transcript_path: path(v, "rollout_path"),
         cwd: path(v, "cwd"),
         reason: if event == Some(AgentEvent::Notification) {
             string(v, "message")
@@ -251,7 +252,64 @@ mod tests {
             r.session_id.as_deref(),
             Some("0199c6de-4f0a-7b31-9a2c-51d0e6b8a774")
         );
-        assert_eq!(r.transcript_path, None, "codex payloads name no transcript");
+        assert_eq!(
+            r.transcript_path, None,
+            "this fixture carries no rollout_path"
+        );
+    }
+
+    #[test]
+    fn every_codex_fixture_maps_to_the_event_the_state_machine_names() {
+        let cases = [
+            ("session_start", AgentEvent::SessionStart),
+            ("user_prompt_submit", AgentEvent::UserPromptSubmit),
+            ("pre_tool_use", AgentEvent::PreToolUse),
+            ("post_tool_use", AgentEvent::PostToolUse),
+            ("permission_request", AgentEvent::Notification),
+            ("stop", AgentEvent::Stop),
+            ("session_end", AgentEvent::SessionEnd),
+        ];
+        assert_eq!(
+            cases.len(),
+            EVENTS_CODEX.len(),
+            "one fixture per installed event"
+        );
+        for (name, expected) in cases {
+            let r = parse(AgentKind::Codex, &fixture("codex", name)).unwrap();
+            assert_eq!(r.event, Some(expected), "{name}");
+            assert_eq!(
+                r.session_id.as_deref(),
+                Some("0199c6de-4f0a-7b31-9a2c-51d0e6b8a774"),
+                "{name}"
+            );
+            assert_eq!(
+                r.cwd,
+                Some(PathBuf::from("/Users/pranav/projects/audrey-app")),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_reads_the_transcript_path_from_rollout_path() {
+        let r = parse(
+            AgentKind::Codex,
+            r#"{"hook_event_name":"Stop","session_id":"t-1","rollout_path":"/Users/pranav/.codex/sessions/t-1.jsonl"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.transcript_path,
+            Some(PathBuf::from("/Users/pranav/.codex/sessions/t-1.jsonl"))
+        );
+        let r = parse(
+            AgentKind::Codex,
+            r#"{"hook_event_name":"Stop","session_id":"t-1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.transcript_path, None,
+            "absent when the payload names no rollout_path"
+        );
     }
 
     #[test]
