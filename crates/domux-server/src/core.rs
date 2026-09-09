@@ -2360,17 +2360,18 @@ mod tests {
 
     /// The register `only_the_expected_m2_methods_still_answer_unavailable` and
     /// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt` both check against:
-    /// every method Task 4 declared but no task has given a handler yet. `workspace.resume`
-    /// is the one deliberate exception, left for M3: when this reads exactly
-    /// `[("workspace.resume", ..)]`, M2 has closed this class of gap.
+    /// every method Task 4 declared but no task has given a handler yet. When this is empty,
+    /// M2 has closed this class of gap.
+    ///
+    /// `workspace.resume` was on this list as the one method left for M3. It is off it now,
+    /// and not because it was built: Task 19 gave it a real handler that answers
+    /// `unavailable` with "resume arrives with agents in M3". Both directions of the register
+    /// key off the words "is not built yet", so a method that refuses in its own words has to
+    /// leave: direction A asserts that message on everything listed here, and direction B
+    /// only scans arms in `dispatch` that carry it.
     const STILL_UNBUILT: &[(&str, &str)] = &[
-        ("workspace.list", "{}"),
         ("workspace.clear", r#"{"workspace":"w"}"#),
         ("workspace.delete", r#"{"workspace":"w"}"#),
-        ("workspace.rename", "{}"),
-        ("workspace.clear_name", r#"{"workspace":"w"}"#),
-        ("workspace.focus", r#"{"workspace":"w"}"#),
-        ("workspace.resume", r#"{"workspace":"w"}"#),
         ("list.down", "{}"),
         ("list.up", "{}"),
         ("list.activate", "{}"),
