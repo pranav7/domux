@@ -194,6 +194,18 @@ async fn open_switches_to_main_and_names_the_slots_it_adopted() {
         ("audrey-app".to_string(), "main".to_string()),
         "the add answered with main, and that is where the switch lands"
     );
+
+    // A second `open` of the same path says nothing, because there is nothing new to say.
+    // `Core::project_read` answers a path that is already a project with the project as it
+    // stands and an empty `adopted`, which is the same answer a first `open` of a project
+    // with no slots gives: nothing in it tells a registration from a path that was already
+    // there. That is why `open` never says "Added audrey-app" - it would be a claim this
+    // command cannot check.
+    let again = run(domux2(&h).args(["open", root.to_str().unwrap()]))
+        .await
+        .ok();
+    assert_eq!(again.err, "");
+    assert_eq!(again.out, "");
 }
 
 /// `project add` registers a path and prints the record it made on stdout. It is not `open`:
