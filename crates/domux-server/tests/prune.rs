@@ -313,6 +313,95 @@ async fn a_note_clears_on_the_first_key_in_a_box() {
     );
 }
 
+/// A note is the server's, and the box a key was in is one client's. A key another client
+/// sent from a pane does not read a note on behalf of the reader looking at the switcher.
+///
+/// Two clients, because with one the client the key came from and the only client there is
+/// are the same client, and a rule reading either would pass.
+#[tokio::test]
+async fn a_key_another_client_sent_from_a_pane_does_not_clear_the_note() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    h.stop().await;
+    std::fs::remove_dir_all(root.join(".domux/worktrees/workspace-2")).unwrap();
+    h.restart().await;
+    let reader = h.client.clone();
+    let other = h.attach(80, 24).await;
+
+    // The switcher belongs to the first client; the second is in its pane.
+    h.api("switcher.open", json!({"client": reader.to_string()}))
+        .await
+        .unwrap();
+    let f = h
+        .wait_for(
+            reader.clone(),
+            |f| f.contains("Projects"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(f.contains("Pruned workspace-2"), "the note is there:\n{f}");
+
+    h.key(other.clone(), "x").await;
+    let f = h
+        .wait_for(
+            reader.clone(),
+            |f| f.contains("Projects"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("Pruned workspace-2: its worktree is gone"),
+        "the other client typed into a pane, so the note is still unread:\n{f}"
+    );
+
+    h.key(reader.clone(), "j").await;
+    let f = h
+        .wait_for(
+            reader.clone(),
+            |f| !f.contains("Pruned workspace-2"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("filter"),
+        "and the reader's own key in the box clears it:\n{f}"
+    );
+}
+
+/// Every record whose path is gone goes, not the first one. `rm -rf .domux` takes every
+/// worktree of a project at once, which is the fixture here: with one gone slot a prune that
+/// stopped after the first would look exactly like one that did not.
+#[tokio::test]
+async fn every_worktree_that_is_gone_is_pruned_and_named_not_only_the_first() {
+    // 120 columns so the footer has room for both notes whole: at 80 the second is cut at
+    // "workspa…", which is a line that a prune of only the first could also have produced.
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    h.stop().await;
+    std::fs::remove_dir_all(root.join(".domux/worktrees")).unwrap();
+    h.restart().await;
+
+    assert_eq!(
+        handles(&h, "audrey-app"),
+        vec!["main"],
+        "both slots went, and main, whose path is the project's root, stayed"
+    );
+    h.api("switcher.open", json!({})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Pruned"),
+            Duration::from_secs(2),
+        )
+        .await;
+    let y = row_holding(&f, "Pruned");
+    assert_eq!(
+        cells(&row(&f, y), 0, 95),
+        "│            Pruned workspace-1: its worktree is gone · Pruned workspace-2: its worktree is gone",
+        "both are named, in slot order:\n{f}"
+    );
+}
+
 /// A key in a pane is not a key in a box. The sidebar stands beside the pane the reader is
 /// typing in, so a note that cleared on any key at all would go during the first keystroke
 /// of the day, which is the one moment nobody is looking at it.
@@ -390,29 +479,34 @@ async fn the_sidebar_hint_row_shows_the_note_under_a_pill_and_over_the_keys() {
     );
 }
 
-/// The switcher's footer orders the same three the same way. The mutant this is here for
-/// lives in `overlay::footer`, and every test of the ordering in the sidebar's hint row is on
-/// the far side of a boundary from it: the two rows are drawn by different functions.
+/// The switcher's footer orders the same three the same way, and cuts a note too long for it.
+///
+/// The mutant this is here for lives in `overlay::footer`, and every test of the ordering in
+/// the sidebar's hint row is on the far side of a boundary from it: the two rows are drawn by
+/// different functions. Both worktrees are gone rather than one, so the note is 83 cells in a
+/// 58 cell row and the cut is visible: `put_within` clips at the row's end whatever it is
+/// handed, so only the ellipsis tells a note that was shortened from one that was chopped.
 #[tokio::test]
 async fn the_switcher_footer_shows_the_note_under_a_pill_and_over_the_keys() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (root, _w1, _w2) = h.git_project_with_two_slots().await;
     h.stop().await;
-    std::fs::remove_dir_all(root.join(".domux/worktrees/workspace-2")).unwrap();
+    std::fs::remove_dir_all(root.join(".domux/worktrees")).unwrap();
     h.restart().await;
 
     h.api("switcher.open", json!({})).await.unwrap();
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Pruned workspace-2"),
+            |f| f.contains("Pruned workspace-1"),
             Duration::from_secs(2),
         )
         .await;
-    let y = row_holding(&f, "Pruned workspace-2");
-    assert!(
-        !row(&f, y).contains("filter"),
-        "the note has the footer row, not a share of it:\n{f}"
+    let y = row_holding(&f, "Pruned workspace-1");
+    assert_eq!(
+        row(&f, y),
+        "│          Pruned workspace-1: its worktree is gone · Pruned workspa…          │",
+        "the note has the footer row, not a share of it, and ends in an ellipsis:\n{f}"
     );
     assert_eq!(
         style_at(&f, y, 11),
@@ -426,7 +520,7 @@ async fn the_switcher_footer_shows_the_note_under_a_pill_and_over_the_keys() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !f.contains("Pruned workspace-2"),
+            |f| !f.contains("Pruned workspace-1"),
             Duration::from_secs(5),
         )
         .await;
@@ -437,23 +531,31 @@ async fn the_switcher_footer_shows_the_note_under_a_pill_and_over_the_keys() {
     );
 }
 
-/// Two records gone at one start make one line naming both, so a reader who was away for a
-/// week is told everything that changed rather than the first thing and a count.
+/// Everything that went at one start is named in one line, so a reader who was away for a
+/// week is told all of it rather than the first thing and a count.
 ///
-/// The fixture holds one of each kind, which is also what separates a joined line from a
-/// line that prints only the first note.
+/// Three records, of both kinds: two gone folders and one gone worktree. Two projects rather
+/// than one because a project loop that stopped after the first would still have removed
+/// something and still have written a note; the second folder is what separates "every
+/// project whose root is gone" from "the first one". The screen is 150 columns so all three
+/// notes fit whole, since a line cut short is one a shorter list of notes could have made.
 #[tokio::test]
-async fn two_records_gone_at_one_start_are_both_named_in_the_note_row() {
+async fn every_record_gone_at_one_start_is_named_in_the_note_row() {
     let dir = tempfile::tempdir().unwrap();
-    let scratch = dir.path().join("scratch");
-    std::fs::create_dir_all(&scratch).unwrap();
-    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let alpha = dir.path().join("alpha");
+    let beta = dir.path().join("beta");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+    let mut h = Harness::start(Config::default(), 150, 24).await;
     let (root, _w1, _w2) = h.git_project_with_two_slots().await;
-    h.api("project.add", json!({"path": scratch.to_str().unwrap()}))
-        .await
-        .unwrap();
+    for folder in [&alpha, &beta] {
+        h.api("project.add", json!({"path": folder.to_str().unwrap()}))
+            .await
+            .unwrap();
+    }
     h.stop().await;
-    std::fs::remove_dir_all(&scratch).unwrap();
+    std::fs::remove_dir_all(&alpha).unwrap();
+    std::fs::remove_dir_all(&beta).unwrap();
     std::fs::remove_dir_all(root.join(".domux/worktrees/workspace-2")).unwrap();
     h.restart().await;
 
@@ -461,15 +563,15 @@ async fn two_records_gone_at_one_start_are_both_named_in_the_note_row() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Removed scratch"),
+            |f| f.contains("Removed alpha"),
             Duration::from_secs(2),
         )
         .await;
-    let y = row_holding(&f, "Removed scratch");
+    let y = row_holding(&f, "Removed alpha");
     assert_eq!(
-        row(&f, y).trim_end(),
-        "│          Removed scratch: its folder is gone · Pruned workspace-2:…          │",
-        "both, in one line, the projects first:\n{f}"
+        row(&f, y),
+        "│               Removed alpha: its folder is gone · Removed beta: its folder is gone · Pruned workspace-2: its worktree is gone                      │",
+        "all three, in one line, the projects first and in the order the model holds them:\n{f}"
     );
 }
 

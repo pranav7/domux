@@ -2879,6 +2879,106 @@ mod tests {
         );
     }
 
+    /// The prune records what it took away, so the first batch writes the corrected model.
+    ///
+    /// Nothing can subscribe before `Core::new` returns, so these events reach no reader: what
+    /// they do is make the first batch structural, and a structural batch persists. Without
+    /// them a server killed rather than stopped would keep a state file naming a directory
+    /// that is not there, and would say the same thing again at the next start.
+    ///
+    /// A unit test rather than a harness one, and deliberately: attaching a client resizes
+    /// the panes to fit inside their boxes, `sync_pane_sizes` publishes `PaneResized`, and
+    /// that is structural too - so through the harness the state file is written either way
+    /// and the events under test would have a second cause standing in for them.
+    ///
+    /// `pruned` is asserted rather than only the variant. It is the field that tells a reader
+    /// of the event stream a deletion from a path that went away underneath, and
+    /// `remove_workspace` produces the identical event with it false.
+    #[test]
+    fn the_prune_records_what_it_took_away_as_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut model = Model::new(7);
+        let (kept, _main, _) = model.add_folder_project(root.clone()).unwrap();
+        let slot = WorkspaceId("w_5101".into());
+        model
+            .project_mut(&kept)
+            .expect("the project is there")
+            .workspaces
+            .push(domux_core::model::Workspace {
+                id: slot.clone(),
+                handle: domux_core::model::WorkspaceHandle::Slot(1),
+                name: None,
+                path: root.join(".domux/worktrees/workspace-1"),
+                tabs: Vec::new(),
+                last_tab: None,
+            });
+        // A second project, whose root was never made, so both loops have something to say.
+        let (ghost, _, _) = model
+            .add_folder_project(dir.path().join("ghost"))
+            .expect("a second project");
+        let saved = dir.path().join("state.json");
+        std::fs::write(
+            &saved,
+            serde_json::to_string(&state_file::snapshot(&model, "2026-09-04T14:32:00+01:00"))
+                .unwrap(),
+        )
+        .unwrap();
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        assert!(
+            core.pending_events.contains(&Event::ProjectRemoved {
+                project: ghost.clone(),
+                name: "ghost".into(),
+            }),
+            "the project that went is in the batch: {:?}",
+            core.pending_events
+        );
+        assert!(
+            core.pending_events.contains(&Event::WorkspaceDeleted {
+                project: kept.clone(),
+                workspace: slot.clone(),
+                handle: "workspace-1".into(),
+                pruned: true,
+            }),
+            "and so is the slot, marked as a prune rather than as a deletion: {:?}",
+            core.pending_events
+        );
+    }
+
+    /// A key release is not a key press, so it does not read a note on the reader's behalf.
+    ///
+    /// Both halves of one press reach `Core::key` when the client's terminal reports releases,
+    /// and clearing on the release would take the note away one event before `route_key` had
+    /// decided what the press meant. The harness sends only presses, so this is the only place
+    /// the two can be told apart.
+    #[test]
+    fn a_key_release_in_a_box_leaves_a_note_where_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let client = attached(&mut core);
+        core.notes = vec!["Pruned workspace-2: its worktree is gone".into()];
+        core.model
+            .client_mut(&client)
+            .expect("the client is attached")
+            .overlay = Some(Overlay::Switcher);
+        let key = |action| domux_term::KeyEvent {
+            key: domux_term::Key::Char('j'),
+            mods: domux_term::Mods::empty(),
+            action,
+        };
+
+        core.key(&client, key(domux_term::KeyAction::Release));
+        assert_eq!(
+            core.notes.len(),
+            1,
+            "the note is still there for the press to clear"
+        );
+        core.key(&client, key(domux_term::KeyAction::Press));
+        assert!(core.notes.is_empty(), "and the press clears it");
+    }
+
     fn fact_events(core: &Core) -> Vec<Event> {
         core.pending_events
             .iter()
