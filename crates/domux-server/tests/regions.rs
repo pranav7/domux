@@ -328,8 +328,12 @@ async fn pressing_the_list_key_and_calling_the_api_move_the_cursor_the_same_way(
 }
 
 /// `list.*` act on a box, so they refuse when the keys are not in one, and refuse without
-/// touching the cursor. An error code alone would not say that: the refusal has to leave the
-/// state where it found it.
+/// touching the state. An error code alone would not say that: the refusal has to leave the
+/// view where it found it.
+///
+/// Every method, `list.filter` included. `filter` is the one that looks harmless - it writes a
+/// single flag - and it is the worst of the four to leave unguarded, because a filter field
+/// opened over no box takes every key the reader presses next.
 #[tokio::test]
 async fn the_list_methods_refuse_and_change_nothing_when_the_keys_are_not_in_a_box() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
@@ -341,7 +345,7 @@ async fn the_list_methods_refuse_and_change_nothing_when_the_keys_are_not_in_a_b
     )
     .await;
     let before = h.model().client(&h.client).unwrap().clone();
-    for method in ["list.down", "list.up", "list.activate"] {
+    for method in ["list.down", "list.up", "list.activate", "list.filter"] {
         let err = h.api(method, json!({})).await.expect_err(method);
         assert_eq!(
             err.code,
@@ -354,6 +358,8 @@ async fn the_list_methods_refuse_and_change_nothing_when_the_keys_are_not_in_a_b
     assert_eq!(after.projects_cursor, before.projects_cursor);
     assert_eq!(after.workspace, before.workspace);
     assert_eq!(after.focus, before.focus);
+    assert!(!after.filtering, "and no filter field was opened");
+    assert_eq!(after.filter, before.filter);
 }
 
 /// The switcher's box is the sidebar's box, so the same keys drive it: `overlay_key`'s
@@ -712,6 +718,18 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
         !f.contains("AUDREY-APP"),
         "while the top of the list has gone off it:\n{f}"
     );
+
+    // Back one row, which is still inside the window the box is showing. `scroll_to_show` is
+    // given the scroll the box already has and moves it as little as it can, so this must not
+    // move at all: a step handed 0 instead would answer 0, and the whole list would jump back
+    // to the top under a `k` that never left the view.
+    h.key(h.client.clone(), "k").await;
+    let f = h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().projects_scroll,
+        1,
+        "a step inside the window leaves the view where it is:\n{f}"
+    );
 }
 
 /// `focus.region` names a region rather than a direction, and every M2 kind refuses when the
@@ -930,4 +948,120 @@ async fn the_filter_row_belongs_to_the_box_and_not_to_the_sidebar() {
         "so the row shows the sidebar's keys:\n{}",
         row(&f, 23)
     );
+}
+
+/// Coming back into the box never lands the reader in a filter field they did not open.
+///
+/// `sidebar.hide` hands the keys back without closing the field - it is the one exit that does
+/// not go through `focus.pane` - so `filtering` is still set when the box is entered again,
+/// and `enter_projects_box` is what has to clear it. Nothing else can: `pop_overlay` clears it
+/// on the other exits, and this path has no overlay to pop.
+#[tokio::test]
+async fn coming_back_into_the_box_never_lands_in_a_filter_field_nobody_opened() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    in_the_box(&mut h).await;
+    h.key(h.client.clone(), "/").await;
+    h.type_text(h.client.clone(), "pro").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| row(f, 23).contains("Filter › pro"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    h.api("sidebar.hide", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    h.api("sidebar.show", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    h.frame(h.client.clone()).await;
+    assert!(
+        h.model().client(&h.client).unwrap().filtering,
+        "hiding the box left the field open, which is what makes the next step the question"
+    );
+
+    h.key(h.client.clone(), "C-h").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("r0 c0-0 fg=#cba6f7"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        filter(&h),
+        (String::new(), false),
+        "and entering the box starts fresh:\n{f}"
+    );
+    assert!(
+        row(&f, 23).contains("⏎ open"),
+        "so the row shows the box's keys and not a filter:\n{}",
+        row(&f, 23)
+    );
+    // The key that follows acts, rather than being typed into a field nobody opened.
+    h.key(h.client.clone(), "j").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(filter(&h).0, "", "`j` moved the cursor rather than typing");
+}
+
+/// A chorded letter is not text. Without the guard `C-b` would put a `b` in the filter, which
+/// is a key the reader pressed to do something else appearing as a search term.
+///
+/// `C-b` and not `C-a`: `C-a` is the leader, and a chord is claimed at step 2, so it never
+/// reaches the filter at all. `C-b` is bound in `[keys.bindings]`, which is only read after
+/// the leader, so it arrives here as an ordinary chorded key.
+#[tokio::test]
+async fn a_chorded_letter_is_not_typed_into_the_filter() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    in_the_box(&mut h).await;
+    h.key(h.client.clone(), "/").await;
+    h.key(h.client.clone(), "C-b").await;
+    h.key(h.client.clone(), "M-b").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        filter(&h),
+        (String::new(), true),
+        "neither chorded letter was typed, and neither closed the field"
+    );
+
+    h.key(h.client.clone(), "b").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        filter(&h),
+        ("b".to_string(), true),
+        "while the same letter on its own is text"
+    );
+}
+
+/// `focus.right` from inside an overlay moves nothing: the overlay owns its keys until it
+/// closes, and a frame with the keys on a pane under an open overlay marks the wrong thing.
+///
+/// The switcher's own region and not the sidebar's, which is the only fixture that separates
+/// "the sidebar's box hands the keys back" from "any region does".
+#[tokio::test]
+async fn focus_right_inside_an_overlay_leaves_the_overlay_where_it_is() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    h.api("switcher.open", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Projects"),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(focus(&h), Focus::Region(RegionKind::Switcher));
+
+    h.api("focus.right", json!({})).await.unwrap();
+    let f = h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().overlay,
+        Some(domux_core::model::Overlay::Switcher),
+        "the switcher is still open:\n{f}"
+    );
+    assert_eq!(
+        focus(&h),
+        Focus::Region(RegionKind::Switcher),
+        "and the keys are still in it:\n{f}"
+    );
+    assert!(f.contains("┌ Projects"), "{f}");
 }

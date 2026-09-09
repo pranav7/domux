@@ -28,32 +28,50 @@ struct Visible {
     scroll: u16,
 }
 
+/// Which box has this client's keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    Switcher,
+    Sidebar,
+}
+
+/// The box a `list.*` call acts on, or a refusal.
+///
+/// Every method here is a box operation, so every one of them asks this first: a cursor moved
+/// in no box, or a filter opened in no box, is a mode nothing on the screen marks (principle
+/// 2). It is also what keeps `visible` and the two renderers reading one list, because the
+/// sidebar applies its filter only while its box has the keys - so the two surfaces this
+/// names are exactly the two states in which the filter applies.
+fn surface(ctx: &Ctx, client: &ClientId) -> Result<Surface, ApiError> {
+    let view = ctx
+        .model
+        .client(client)
+        .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
+    if view.overlay == Some(Overlay::Switcher) {
+        return Ok(Surface::Switcher);
+    }
+    if view.sidebar_visible() && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects)) {
+        return Ok(Surface::Sidebar);
+    }
+    Err(ApiError::refused(
+        "the keys are not in a box; open the switcher or move into the sidebar first",
+    ))
+}
+
 /// The rows this client is looking at: the switcher's when it is open, the sidebar's when the
 /// keys are in its box.
 ///
-/// It refuses when neither box has the keys, rather than moving a cursor nothing on the
-/// screen is drawing (principle 2). That refusal is also what keeps this function and the two
-/// renderers in step: the sidebar draws its filter only while its box has the keys, so the
-/// two states this answers in are exactly the two states in which the filter applies.
-///
-/// Every other input is the renderer's own - `render::switcher::draw` for the first arm and
+/// Every input is the renderer's own - `render::switcher::draw` for the first arm and
 /// `render::sidebar::draw` for the second - so the cursor moves over the list on the screen
 /// rather than over a second list built to slightly different rules. The width decides where
 /// a row is cut and the extras decide how many lines it takes, and both change where
 /// `scroll_to_show` puts the view.
 fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
+    let surface = surface(ctx, client)?;
     let view = ctx
         .model
         .client(client)
         .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
-    let in_switcher = view.overlay == Some(Overlay::Switcher);
-    let in_sidebar =
-        view.sidebar_visible() && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects));
-    if !in_switcher && !in_sidebar {
-        return Err(ApiError::refused(
-            "the keys are not in a box; open the switcher or move into the sidebar first",
-        ));
-    }
     // The fill is the cursor, and with no cursor it is the workspace this client is in
     // (domain model, section 3.3). `list.*` runs while a box has the keys, which is exactly
     // when both renderers use this same key, so there is one answer and not three.
@@ -62,7 +80,7 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         .as_ref()
         .map(|w| w.as_str())
         .unwrap_or(view.workspace.as_str());
-    let (rows, height) = if in_switcher {
+    let (rows, height) = if surface == Surface::Switcher {
         let screen = Rect::new(0, 0, view.size.cols, view.size.rows);
         let width = crate::render::overlay::list_overlay_width(screen);
         let rows = projects_box::rows(
@@ -179,8 +197,13 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// This only opens the filter. `input::filter_key` owns the typing, because the keys that go
 /// into a text field are every key rather than a table of them, and the key that opens it
 /// stays configurable like every other (principle 3).
+///
+/// It asks `surface` like every other method here, and for the same reason: a filter field
+/// opened over no box takes every key the reader presses next and nothing on the screen says
+/// so.
 pub fn filter(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     let client = ctx.view()?;
+    surface(ctx, &client)?;
     let view = ctx
         .model
         .client_mut(&client)

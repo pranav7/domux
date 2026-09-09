@@ -85,12 +85,11 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
         return Route::Global(action);
     }
 
-    // 4. The focus target. A region handles the key itself, and a pane in copy mode handles
-    //    the key itself; a pane whose child exited (terminal.remain_on_exit) closes on Enter
-    //    and swallows other keys.
+    // 4. The focus target, which is a region or a pane.
     //
-    //    The region is read here rather than above, because step 3 may have moved it: `C-h`
-    //    is a global binding and entering the box is what it does.
+    //    The region is read here rather than beside the overlay and the chord above, because
+    //    step 3 may have just moved it: `C-h` is a global binding and entering the box is what
+    //    it does.
     if core
         .model
         .client(client)
@@ -100,8 +99,8 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
         return Route::Region;
     }
 
-    // 4. The focus target. A pane in copy mode handles the key itself; a pane whose child
-    //    exited (terminal.remain_on_exit) closes on Enter and swallows other keys.
+    //    A pane in copy mode handles the key itself; a pane whose child exited
+    //    (terminal.remain_on_exit) closes on Enter and swallows other keys.
     //
     //    Copy mode first, and on an exited pane too (ruled 2026-09-07). While it is open the
     //    bar reads `⏎ copy · esc leave`, and with the exited branch ahead of it Esc did
