@@ -125,6 +125,9 @@ impl Default for KeysConfig {
                 ("/", "list.filter"),
                 ("?", "help"),
                 ("n", "workspace.rename"),
+                // Destructive, so the key asks first: `project.remove` with no project named
+                // opens the confirmation for the project of the row under the cursor.
+                ("X", "project.remove"),
             ]),
         }
     }
@@ -473,6 +476,11 @@ mod tests {
         assert_eq!(
             c.keys.list.get("Esc").map(String::as_str),
             Some("focus.pane")
+        );
+        assert_eq!(
+            c.keys.list.get("X").map(String::as_str),
+            Some("project.remove"),
+            "with no project named, so the key acts on the row under the cursor"
         );
         assert!(
             !c.keys.list.contains_key("Tab"),

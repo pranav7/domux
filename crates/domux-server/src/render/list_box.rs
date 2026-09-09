@@ -68,6 +68,31 @@ impl ListRow {
     }
 }
 
+/// A cell of empty space between the border and a row's text, on both sides.
+///
+/// Interface spec 5.2 says rows are flush with the box's left padding; before this there was
+/// no padding to be flush with and the text touched the border. One cell puts a row's first
+/// character directly under the first character of the box's title, which `Boxed` draws at
+/// `area.x + 2`.
+pub const PAD: u16 = 1;
+
+/// The cells a row's text has inside a box `width` cells wide: the two borders and the two
+/// pads taken off. Every surface that builds rows asks this, so the width a row truncates to
+/// and the width it is drawn in are one number.
+pub fn content_width(width: u16) -> u16 {
+    width.saturating_sub(2 + 2 * PAD)
+}
+
+/// Whether a blank row goes between `above` and the row that follows it inside one group.
+///
+/// A row that said more than its name gets one, so its extra lines cannot be read as the
+/// next row's; rows of a single line stay tight and the group reads as one block. The row
+/// builder writes the list to this rule and `filter_rows` rebuilds it to the same one, so
+/// `/` changes what the list holds and never its shape.
+pub fn needs_gap_after(above: &ListRow) -> bool {
+    above.height() > 1
+}
+
 pub struct ListBox<'a> {
     pub title: &'a str,
     pub rows: &'a [ListRow],
@@ -102,14 +127,16 @@ impl ListBox<'_> {
             return self.scroll;
         }
         let right = inner.x + inner.width - 1;
+        // Where the text goes and how much of it fits. The fill still spans `inner`, so the
+        // pad is inside the band rather than beside it.
+        let text_x = inner.x + PAD;
+        let text_width = inner.width.saturating_sub(2 * PAD);
         if self.rows.is_empty() {
-            let text = truncate_with_ellipsis(
-                &sanitize_for_display(self.empty_text),
-                inner.width as usize,
-            );
+            let text =
+                truncate_with_ellipsis(&sanitize_for_display(self.empty_text), text_width as usize);
             put_within(
                 buf,
-                inner.x,
+                text_x,
                 inner.y,
                 right,
                 &text,
@@ -137,7 +164,7 @@ impl ListBox<'_> {
                         buf[(x, at)].set_style(Style::default().bg(theme::SURFACE0));
                     }
                 }
-                draw_line(line, inner.x, at, inner.width, fill, buf);
+                draw_line(line, text_x, at, text_width, fill, buf);
             }
         }
         scroll
@@ -185,11 +212,10 @@ fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: 
 /// whose rows all went with it. M3's Agents box filters the same way.
 ///
 /// The blanks are rebuilt rather than kept, because the blank above a match is usually the
-/// separator that followed the row the filter just dropped. They are rebuilt to the grammar
-/// of interface spec 5.2, which the filter does not change: one blank between rows and one
-/// before the next header. Dropping the first of those would let `/` change the shape of the
-/// list and not only its contents, and a switcher row is three lines, so two matches would
-/// abut with nothing between them.
+/// separator that led the group the filter just emptied. They are rebuilt to the grammar the
+/// row builder uses, which the filter does not change: one blank before a header, and under
+/// it whatever `needs_gap_after` asks for. Keeping a blank the builder would not have
+/// written would let `/` change the shape of the list and not only its contents.
 pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
     let filter = filter.trim().to_lowercase();
     if filter.is_empty() {
@@ -207,11 +233,15 @@ pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
         if !row.filter_text.contains(&filter) {
             continue;
         }
-        if !out.is_empty() {
-            out.push(ListRow::blank());
-        }
+        // A header opens a group and takes the blank before it; the first row under it sits
+        // straight beneath. Inside a group the builder's own rule decides.
         if let Some(h) = header.take() {
+            if !out.is_empty() {
+                out.push(ListRow::blank());
+            }
             out.push(h);
+        } else if out.last().is_some_and(needs_gap_after) {
+            out.push(ListRow::blank());
         }
         out.push(row.clone());
     }

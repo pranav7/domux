@@ -20,7 +20,8 @@ pub enum ProjectAction {
     },
     /// Let a project go. The folder and its worktrees stay on disk
     Remove {
-        /// A project id or name. Leave it out with --all
+        /// A project id or name. Leave it out with --all. In the Projects box the key
+        /// removes the project of the row under the cursor
         project: Option<String>,
         /// Remove it without asking
         #[arg(long)]
