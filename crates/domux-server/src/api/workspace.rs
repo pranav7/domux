@@ -8,7 +8,7 @@ use domux_core::api::{
 };
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
 use domux_core::ids::{ProjectId, WorkspaceId};
-use domux_core::model::{Focus, Overlay, ProjectKind, RegionKind, WorkspaceHandle};
+use domux_core::model::{Focus, Overlay, ProjectKind, RegionKind, TextInput, WorkspaceHandle};
 use serde_json::Value;
 
 /// Makes the next slot of a project: a worktree at the lowest free number, on a fresh branch
@@ -227,15 +227,12 @@ pub fn focus(ctx: &mut Ctx, p: WorkspaceFocusParams) -> Result<Value, ApiError> 
 ///
 /// A blank name clears it and the handle comes back, the rule `Model::rename_workspace`
 /// holds and the one `tab.rename` follows. **No name at all is a different request**: it
-/// means "ask me for one here", and the name box that asks is not built yet. So this refuses
-/// rather than reading no name as a blank one, which would clear the name of the workspace
-/// the reader was about to name.
+/// means "ask me for one here", so it opens the name box rather than reading no name as a
+/// blank one, which would clear the name of the workspace the reader was about to name.
 pub fn rename(ctx: &mut Ctx, p: WorkspaceRenameParams) -> Result<Value, ApiError> {
     let target = ctx.resolve_workspace_param(p.workspace.as_deref())?;
     let Some(name) = p.name else {
-        return Err(ApiError::unavailable(
-            "give a name: naming a workspace on the screen arrives with the name box",
-        ));
+        return open_name_box(ctx, target);
     };
     // A name that reads as a handle can never find the workspace it was given to. The handle
     // pass of `Model::resolve_workspace_with` runs before the name pass and returns as soon as
@@ -261,7 +258,49 @@ pub fn rename(ctx: &mut Ctx, p: WorkspaceRenameParams) -> Result<Value, ApiError
     ok(Ack { ok: true })
 }
 
-/// Takes the name off, so the handle comes back.
+/// Opens the name box on `target` in the calling view (interface spec 7.1), with the name the
+/// workspace has already in it so that fixing a typo does not mean retyping the whole name.
+///
+/// `leader N`, `n` on a row and `workspace name` with no argument all arrive here, because all
+/// three are `workspace.rename` with no name. Which workspace they name is
+/// `Ctx::workspace_of_view`'s answer, which is the row under the cursor while the keys are in
+/// a Projects box and the client's own workspace otherwise.
+fn open_name_box(ctx: &mut Ctx, target: WorkspaceId) -> Result<Value, ApiError> {
+    let client = ctx.view()?;
+    let current = ctx
+        .model
+        .workspace(&target)
+        .and_then(|w| w.name.clone())
+        .unwrap_or_default();
+    // Before anything is written: a call on behalf of a client that is not attached must
+    // leave the model as it found it, and there is no screen to put a box on anyway.
+    let view = ctx
+        .model
+        .client_mut(&client)
+        .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
+    view.input = TextInput::new(current);
+    // The box's hint row is its own, and the result of whatever the reader did before they
+    // opened it is not an answer to anything in it (interface spec 12.12). Cleared here
+    // rather than on the first key in the box, so the row that opens says what the two keys
+    // do rather than repeating the last thing that happened.
+    view.pill = None;
+    // Replaced, not stacked, when a name box is already open. `push_overlay` keeps one level
+    // underneath, so a second open would put this box over the first and leave whatever the
+    // first was opened over - the switcher, when `n` opened it - with nothing drawing it and
+    // nothing closing it. Only a caller can reach this: a key cannot, because the open box
+    // takes every key.
+    if matches!(view.overlay, Some(Overlay::NameWorkspace(_))) {
+        view.overlay = Some(Overlay::NameWorkspace(target));
+    } else {
+        view.push_overlay(Overlay::NameWorkspace(target));
+    }
+    view.focus = Focus::Region(RegionKind::Overlay);
+    ctx.view_dirty = true;
+    ok(Ack { ok: true })
+}
+
+/// Takes the name off, so the handle comes back. `leader n` presses it, with no prompt and no
+/// question: the row redrawing with its handle is the answer (interface spec 12.9).
 pub fn clear_name(ctx: &mut Ctx, p: WorkspaceTargetParams) -> Result<Value, ApiError> {
     let target = ctx.resolve_workspace_param(p.workspace.as_deref())?;
     let events = ctx.model.rename_workspace(&target, None)?;
@@ -301,13 +340,35 @@ impl Ctx<'_> {
         }
     }
 
-    /// The workspace the calling client is in, for a call that named none.
+    /// The workspace the calling client is in - or, while its keys are in a Projects box, the
+    /// row its cursor is on.
+    ///
+    /// That one rule is what makes `leader N` and `n` on a row the same operation (interface
+    /// spec 7.1). Neither key carries a target, so the answer has to come from where the keys
+    /// are, and `projects_cursor` is the model's own answer to "the row the keys act on". It
+    /// is also the key both renderers fill their row from, so the workspace this names is the
+    /// one the reader can see the fill on.
+    ///
+    /// `list::in_a_box` rather than the focus kind: the keys are in the switcher's box
+    /// whenever the switcher is open, whatever `focus` holds after an overlay over it closed,
+    /// and they are in the sidebar's only while the sidebar is actually showing. Asking the
+    /// question `list.*` asks keeps the box the cursor belongs to and the box the keys are in
+    /// one answer.
+    ///
+    /// One state has no fill to point at: a filter that dropped the cursor's row. This still
+    /// answers with that row, where `list.activate` refuses. Switching would move the reader
+    /// to a workspace the box is not showing; the name box puts the handle in its own title,
+    /// so it says which workspace it is naming whether or not a row is drawn for it.
     pub fn workspace_of_view(&self) -> Result<WorkspaceId, ApiError> {
         let client = self.view()?;
-        self.model
+        let view = self
+            .model
             .client(&client)
-            .map(|view| view.workspace.clone())
-            .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))
+            .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
+        match &view.projects_cursor {
+            Some(cursor) if super::list::in_a_box(self, &client) => Ok(cursor.clone()),
+            _ => Ok(view.workspace.clone()),
+        }
     }
 
     /// The project the calling client is looking at, for a call that named none.

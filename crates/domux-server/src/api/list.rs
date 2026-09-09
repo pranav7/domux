@@ -58,6 +58,16 @@ fn surface(ctx: &Ctx, client: &ClientId) -> Result<Surface, ApiError> {
     ))
 }
 
+/// Whether this client's keys are in a Projects box at all.
+///
+/// `Ctx::workspace_of_view` asks, so that a call carrying no target acts on the row under the
+/// cursor exactly when the reader is looking at one, and on the client's own workspace
+/// otherwise. It is `surface` and not a second reading of the same state, so the two can
+/// never disagree about which box has the keys.
+pub(super) fn in_a_box(ctx: &Ctx, client: &ClientId) -> bool {
+    surface(ctx, client).is_ok()
+}
+
 /// The rows this client is looking at: the switcher's when it is open, the sidebar's when the
 /// keys are in its box.
 ///
