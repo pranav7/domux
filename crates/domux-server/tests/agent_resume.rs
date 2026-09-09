@@ -321,7 +321,7 @@ async fn resuming_into_a_pane_whose_process_never_started_is_refused_and_skipped
 }
 
 #[tokio::test]
-async fn codex_and_opencode_do_not_resume_in_v2_0_and_the_message_says_so() {
+async fn codex_and_opencode_do_not_resume_yet_and_the_message_names_the_kind() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     let pane = h.focused_pane(h.client.clone());
     an_exited(&mut h, &pane, AgentKind::Codex, "x1").await;
