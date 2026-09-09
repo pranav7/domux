@@ -14,7 +14,7 @@
 
 use domux_core::api::ErrorCode;
 use domux_core::config::Config;
-use domux_core::model::{Focus, Overlay};
+use domux_core::model::{Focus, Overlay, RegionKind};
 use domux_server::testing::{row, Harness};
 use serde_json::json;
 use std::time::Duration;
@@ -117,9 +117,13 @@ async fn esc_closes_the_box_and_leaves_the_name_alone() {
 }
 
 /// The box opens on the name the workspace already has, so fixing a typo does not mean
-/// retyping the name, and emptying the field clears it (interface spec 7.1).
+/// retyping the name, and a blank field clears it (interface spec 7.1).
+///
+/// The field is emptied and then filled with two spaces, because a blank name is what
+/// `Model::rename_workspace` clears on: a field of nothing but spaces has to reach the same
+/// answer, and the pill has to agree with it or it claims a name the model did not keep.
 #[tokio::test]
-async fn the_box_opens_on_the_current_name_and_an_empty_field_clears_it() {
+async fn the_box_opens_on_the_current_name_and_a_blank_field_clears_it() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (_root, w1, _w2) = h.git_project_with_two_slots().await;
     let client = h.client.clone();
@@ -149,6 +153,7 @@ async fn the_box_opens_on_the_current_name_and_an_empty_field_clears_it() {
     for _ in 0..4 {
         h.key(client.clone(), "Backspace").await;
     }
+    h.type_text(client.clone(), "  ").await;
     h.key(client.clone(), "Enter").await;
 
     let f = h
@@ -157,7 +162,62 @@ async fn the_box_opens_on_the_current_name_and_an_empty_field_clears_it() {
     assert_eq!(
         h.model().workspace(&w1).unwrap().name,
         None,
-        "an empty name clears it:\n{f}"
+        "a blank name clears it:\n{f}"
+    );
+    let m = h.model();
+    assert_eq!(
+        m.client(&client)
+            .unwrap()
+            .pill
+            .as_ref()
+            .map(|p| (p.text.as_str(), p.ok)),
+        Some(("Cleared the name on workspace-1", true)),
+        "and says which slot it cleared (principle 8)"
+    );
+}
+
+/// `n` in the sidebar's Projects box is the same operation as `n` in the switcher: it names
+/// the row under the cursor. The keys leave the sidebar while the box is open, so the box is
+/// the one thing on the screen carrying the accent (principle 2).
+#[tokio::test]
+async fn n_in_the_sidebar_box_names_the_cursor_row_and_takes_the_keys_off_the_sidebar() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+    h.api("sidebar.show", serde_json::json!({})).await.unwrap();
+    h.wait_for(client.clone(), |f| f.contains("Projects"), WAIT)
+        .await;
+    h.key(client.clone(), "C-h").await;
+    h.wait_for(client.clone(), |f| f.contains("r0 c0-0 fg=#cba6f7"), WAIT)
+        .await;
+    // The cursor starts on `proj`'s `main`, the last row: two steps up is `workspace-1`.
+    h.key(client.clone(), "k").await;
+    h.key(client.clone(), "k").await;
+    h.frame(client.clone()).await;
+    assert_eq!(
+        h.model().client(&client).unwrap().projects_cursor.as_ref(),
+        Some(&w1),
+        "the cursor is on workspace-1 before the key under test"
+    );
+
+    h.key(client.clone(), "n").await;
+
+    let f = h
+        .wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
+        .await;
+    let m = h.model();
+    let view = m.client(&client).unwrap();
+    assert_eq!(view.overlay, Some(Overlay::NameWorkspace(w1.clone())));
+    assert_eq!(
+        view.focus,
+        Focus::Region(RegionKind::Overlay),
+        "the keys are in the box now, not in the sidebar"
+    );
+    // The dim is the name box's own, over everything it did not draw, so this line reads
+    // "dimmed and unfocused" rather than "dimmed", which a focused border would also be.
+    assert!(
+        f.contains("r0 c0-0 dim fg=#585b70"),
+        "so the sidebar's box gives up the accent:\n{f}"
     );
 }
 
