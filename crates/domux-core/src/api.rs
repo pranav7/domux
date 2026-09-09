@@ -1631,6 +1631,22 @@ mod tests {
             serde_json::to_string(&workspace).unwrap(),
             r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","name":null,"path":"/x","branch":"workspace-1","pr":"PR#212","pr_state":"OPEN","tabs":1}"#
         );
+        // The same row with nothing observed about it. The literal above sets every fact, so
+        // on its own it says nothing about how an absent one is written, which is the half
+        // this test's doc comment is about: a workspace with no pull request answers `null`,
+        // not a key that is not there. `serde_json`'s `Index` returns `Value::Null` for a
+        // missing key too, so a caller reading `row["pr"]` cannot tell them apart and the
+        // shape has to be pinned here, on the string.
+        let unobserved = WorkspaceInfo {
+            branch: None,
+            pr: None,
+            pr_state: None,
+            ..workspace
+        };
+        assert_eq!(
+            serde_json::to_string(&unobserved).unwrap(),
+            r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","name":null,"path":"/x","branch":null,"pr":null,"pr_state":null,"tabs":1}"#
+        );
 
         let created = WorkspaceCreated {
             id: WorkspaceId("w_1".into()),

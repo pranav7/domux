@@ -168,9 +168,13 @@ impl Ctx<'_> {
 /// `only_the_expected_m2_methods_still_answer_unavailable`, and a stub added anywhere in
 /// this function - joined into the block below or written as its own arm, here or
 /// elsewhere - without a matching `STILL_UNBUILT` line fails
-/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. `workspace.resume` is the
-/// one deliberate exception, left for M3; when `STILL_UNBUILT` reads exactly
-/// `["workspace.resume"]`, this class of M2 gap is closed.
+/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. When `STILL_UNBUILT` is
+/// empty, this class of M2 gap is closed.
+///
+/// `workspace.resume` was the one method the plan left for M3, and Task 19 gave it a real
+/// arm rather than a stub: `api::workspace::resume` answers `unavailable` in words about
+/// agents instead of the register's "is not built yet", so it is off the register on both
+/// counts. That is the deliberate exception, and it is a handler rather than a line here.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
     // `method.name()` before the match, since the match below moves `method`.
@@ -215,11 +219,14 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ProjectList(p) => project::list(ctx, p),
         ProjectAdd(p) => project::add(ctx, p),
         ProjectRemove(p) => project::remove(ctx, p),
-        // --- M2 stubs: placeholders for Tasks 14 to 19, not real handlers. ---
         WorkspaceCreate(p) => workspace::create(ctx, p),
-        WorkspaceList(_)
-        | WorkspaceClear(_) | WorkspaceDelete(_) | WorkspaceRename(_)
-        | WorkspaceClearName(_) | WorkspaceFocus(_) | WorkspaceResume(_)
+        WorkspaceList(p) => workspace::list(ctx, p),
+        WorkspaceFocus(p) => workspace::focus(ctx, p),
+        WorkspaceRename(p) => workspace::rename(ctx, p),
+        WorkspaceClearName(p) => workspace::clear_name(ctx, p),
+        WorkspaceResume(p) => workspace::resume(ctx, p),
+        // --- M2 stubs: placeholders for Tasks 14 to 18, not real handlers. ---
+        WorkspaceClear(_) | WorkspaceDelete(_)
         | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
             Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
         }
