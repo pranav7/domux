@@ -9,6 +9,7 @@
 //! every path these tests destroy is inside one.
 
 use domux_core::config::Config;
+use domux_core::ids::WorkspaceId;
 use domux_core::model::{Model, WorkspaceHandle};
 use domux_server::testing::{repo_with_origin, Harness};
 use serde_json::Value;
@@ -235,14 +236,37 @@ async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_wa
 
 // ---------------------------------------------------------------- name
 
+/// The names one workspace has, read back through `workspace list` rather than polled out of
+/// the published model.
+///
+/// `workspace.rename` is answered by its handler on the core task, and the core takes its
+/// messages in order, so a `workspace list` sent after the CLI has returned cannot be looking
+/// at the state from before it. Polling the snapshot would work too, and it would make a wrong
+/// implementation fail by running out of patience rather than by disagreeing: the timeout that
+/// is there to catch a wedged core would be carrying the assertion, and a bound that fires is
+/// a bound a loaded machine can fire on its own.
+async fn name_of(h: &Harness, workspace: &WorkspaceId) -> Option<String> {
+    let listed = run(domux2(h).args(["workspace", "list"])).await.ok();
+    listed
+        .json()
+        .as_array()
+        .expect("an array")
+        .iter()
+        .find(|w| w["id"] == workspace.as_str())
+        .unwrap_or_else(|| panic!("no row for {workspace}"))["name"]
+        .as_str()
+        .map(str::to_string)
+}
+
 /// `workspace name` acts on the workspace `DOMUX_WORKSPACE` holds, and an empty name clears
-/// it.
+/// it. `clear-name` is the same operation and reads the same variable.
 ///
 /// The workspace it names is not the one the client is in: `git_project_with_two_slots`
 /// registers its repository and makes two slots without moving anybody, so the client is
 /// still in the harness's own project. A subcommand that ignored the environment and let the
 /// server fall back to the view would name that one instead, and every assertion here would
-/// fail.
+/// fail. `elsewhere` is checked each time as well, because "it named the right one" and "it
+/// named nothing" are not the same answer.
 #[tokio::test]
 async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_name_clears_it() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
@@ -260,60 +284,33 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
     .ok();
     assert_eq!(named.out, "", "quiet on success");
     assert_eq!(named.err, "");
-    let m = model_when(&h, "the name arrives", |m| {
-        m.workspace(&w1).unwrap().name.is_some()
-    })
-    .await;
-    assert_eq!(
-        m.workspace(&w1).unwrap().name.as_deref(),
-        Some("auth cleanup")
-    );
-    assert_eq!(
-        m.workspace(&elsewhere).unwrap().name,
-        None,
-        "and only that workspace"
-    );
+    assert_eq!(name_of(&h, &w1).await.as_deref(), Some("auth cleanup"));
+    assert_eq!(name_of(&h, &elsewhere).await, None, "and only that one");
 
     run(domux2(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", ""]))
     .await
     .ok();
-    let m = model_when(&h, "the name goes", |m| {
-        m.workspace(&w1).unwrap().name.is_none()
-    })
-    .await;
-    assert_eq!(
-        m.workspace(&w1).unwrap().name,
-        None,
-        "an empty name clears it"
-    );
+    assert_eq!(name_of(&h, &w1).await, None, "an empty name clears it");
 
-    // `clear-name` is the same operation and reads the same variable. Checked here, where the
-    // client is somewhere else, rather than in the test that pairs it with `leader n`: there
-    // the client sits on this very workspace, so a subcommand that sent no target at all
-    // would reach it anyway.
+    // `clear-name` is checked here, where the client is somewhere else, rather than in the
+    // test that pairs it with `leader n`: there the client sits on this very workspace, so a
+    // subcommand that sent no target at all would reach it anyway.
     run(domux2(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", "auth cleanup"]))
     .await
     .ok();
-    model_when(&h, "the name comes back", |m| {
-        m.workspace(&w1).unwrap().name.is_some()
-    })
-    .await;
+    assert_eq!(name_of(&h, &w1).await.as_deref(), Some("auth cleanup"));
     run(domux2(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "clear-name"]))
     .await
     .ok();
-    let m = model_when(&h, "clear-name clears it", |m| {
-        m.workspace(&w1).unwrap().name.is_none()
-    })
-    .await;
-    assert_eq!(m.workspace(&w1).unwrap().name, None);
+    assert_eq!(name_of(&h, &w1).await, None);
     assert_eq!(
-        m.workspace(&elsewhere).unwrap().name,
+        name_of(&h, &elsewhere).await,
         None,
         "and it did not reach for the view's workspace"
     );
