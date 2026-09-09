@@ -1,7 +1,40 @@
 mod support;
 
 use domux_server::git;
+use std::time::{Duration, Instant};
 use support::{commit, git as run_git, repo_with_origin};
+
+/// `TIME_LIMIT` has to be far above what git really costs and far below "for ever". Only the
+/// lower half can be checked by running something: nothing can tell 300 seconds from 3,000
+/// without waiting out the difference, so the upper half is argued where the constant is
+/// declared rather than asserted here.
+///
+/// This is the lower half, and it is what stops the bound being tightened to a number that
+/// cuts off real work. Nothing else in the suite would notice: every git command these tests
+/// run is a fraction of a second, so a limit of one second passes the whole workspace.
+///
+/// The fixture is a repository with one file, which cannot stand in for a large checkout. The
+/// number the constant was actually sized from is a 50,000 file repository, recorded with the
+/// constant; building that here would cost minutes on every run. Two assertions rather than
+/// one, so a machine under load fails on the measurement being unusable instead of quietly
+/// weakening the claim.
+#[test]
+fn the_time_limit_leaves_a_real_worktree_add_far_more_room_than_it_needs() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let path = git::slot_path(&repo, 1);
+    let started = Instant::now();
+    git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+    let cost = started.elapsed();
+    assert!(
+        cost < Duration::from_secs(3),
+        "the measurement the bound is judged against is unusable on this machine: {cost:?}"
+    );
+    assert!(
+        git::TIME_LIMIT > 50 * cost.max(Duration::from_millis(1)),
+        "a bound of {:?} is the same order as a real worktree add ({cost:?})",
+        git::TIME_LIMIT
+    );
+}
 
 #[test]
 fn default_branch_reads_origin_head_and_falls_back_to_main() {
