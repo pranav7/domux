@@ -61,9 +61,14 @@ async fn adding_a_repository_registers_main_and_adopts_the_worktrees_on_disk() {
         "origin/develop",
     )
     .unwrap();
+    // 30 rows and not 24. From M3 the sidebar's column is halved between the Projects box and
+    // the Agents box, and this fixture's two projects are ten lines: on a 24 row screen the
+    // Projects box has nine, so the fill on the second project's `main` scrolls the first
+    // project's header off the top and the frame assertion below would be about a row the box
+    // is no longer showing rather than about what `project.add` adopted.
     let mut h = Harness::start_with(HarnessOptions {
         providers: vec![Arc::new(BranchProvider)],
-        ..HarnessOptions::new(Config::default(), 120, 24)
+        ..HarnessOptions::new(Config::default(), 120, 30)
     })
     .await;
     let added = h

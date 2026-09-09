@@ -4,7 +4,9 @@
 
 use crate::render::boxed::{put_within, Boxed};
 use crate::render::theme;
-use domux_core::text::{display_width, sanitize_for_display, truncate_with_ellipsis};
+use domux_core::text::{
+    display_width, sanitize_for_display, truncate_with_ellipsis, wrap_to_width,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -79,7 +81,7 @@ pub struct ListBox<'a> {
     /// can. `render` corrects it and returns what it used.
     pub scroll: u16,
     /// What to draw when there are no rows: name the state and the next action
-    /// (principle 9).
+    /// (principle 9). Wrapped to the box's inner width, over as many rows as it has.
     pub empty_text: &'a str,
 }
 
@@ -103,18 +105,39 @@ impl ListBox<'_> {
         }
         let right = inner.x + inner.width - 1;
         if self.rows.is_empty() {
-            let text = truncate_with_ellipsis(
-                &sanitize_for_display(self.empty_text),
-                inner.width as usize,
-            );
-            put_within(
-                buf,
-                inner.x,
-                inner.y,
-                right,
-                &text,
-                Style::default().fg(theme::OVERLAY0),
-            );
+            // Wrapped over the box's rows rather than cut at the first. The sentence names
+            // the state and then the next action (principle 9), and the action is its second
+            // half, so a box too narrow for one line would drop exactly the half the reader
+            // is here for: the sidebar's Agents box has 36 columns inside its border and its
+            // text is 47 cells. Text that fits one line still takes one, so nothing that
+            // fitted before has moved.
+            //
+            // A box with fewer rows than the text needs fills its last row from everything
+            // that is left rather than from the next wrapped line, and ends in the mark that
+            // says it was cut. Wrapping alone would show less than not wrapping at all: in a
+            // box one row tall the first wrapped line is one word, where cutting the sentence
+            // fills the row. So the rule is "wrap while there is room, then show as much as
+            // fits", which is what the reader wants in both cases.
+            let text = sanitize_for_display(self.empty_text);
+            let lines = wrap_to_width(&text, inner.width as usize);
+            let room = inner.height as usize;
+            for (n, line) in lines.iter().take(room).enumerate() {
+                let cut = n + 1 == room && lines.len() > room;
+                let text = match cut {
+                    // `wrap_to_width` splits on whitespace, so joining the rest with one space
+                    // is the text it was given, less the runs of spaces it already collapsed.
+                    true => truncate_with_ellipsis(&lines[n..].join(" "), inner.width as usize),
+                    false => line.clone(),
+                };
+                put_within(
+                    buf,
+                    inner.x,
+                    inner.y + n as u16,
+                    right,
+                    &text,
+                    Style::default().fg(theme::OVERLAY0),
+                );
+            }
             return 0;
         }
         let scroll = scroll_to_show(self.rows, self.filled, inner.height, self.scroll);

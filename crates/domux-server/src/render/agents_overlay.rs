@@ -9,9 +9,10 @@
 //!
 //! The rows are `agents_box::rows`, the same builder the sidebar's box uses, so one agent is
 //! one agent on both surfaces. What this asks for is the wider form: the place carries its
-//! tab and the recap is drawn, neither of which fits the sidebar's 38 columns.
+//! tab and the recap is drawn, neither of which fits the sidebar's 38 columns. The empty
+//! text is `agents_box::empty_text` for the same reason.
 
-use crate::render::agents_box::{rows, RowForm, TITLE};
+use crate::render::agents_box::{self, rows, RowForm, TITLE};
 use crate::render::list_box::{filter_rows, ListBox};
 use crate::render::projects_box::filled_index;
 use crate::render::{overlay, RenderInput};
@@ -48,7 +49,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // keeps the fill on the agent it was on (principle 2).
     let cursor = input.view.agents_cursor.as_ref().map(|id| id.to_string());
     let filled = filled_index(&visible, cursor.as_deref());
-    let empty = empty_text(input);
+    let empty = agents_box::empty_text(&input.view.filter);
     // `clear` and not `frame_at`: a `ListBox` draws its own border, so the agents overlay and
     // the sidebar share one drawing of the Agents box.
     overlay::clear(area, buf);
@@ -66,22 +67,4 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // `render` returns is dropped on purpose: a renderer does not write to the model, and
     // `list.down` and `list.up` own `agents_scroll`.
     overlay::dim(buf, &[area, footer]);
-}
-
-/// What the box says when it has no rows to show: the state, and the next action
-/// (principle 9).
-///
-/// Keyed on the filter and not on whether there are any records, which is the question
-/// `switcher::empty_text` asks for the same reason: a reader who has typed something is being
-/// told about what they typed, and a reader who has not is being told how to get a first
-/// agent.
-fn empty_text(input: &RenderInput) -> String {
-    if input.view.filter.trim().is_empty() {
-        "No agents yet. Start claude or codex in a pane.".to_string()
-    } else {
-        format!(
-            "No agent matches {:?}. esc clears the filter",
-            input.view.filter.trim()
-        )
-    }
 }

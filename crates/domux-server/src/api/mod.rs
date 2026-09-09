@@ -262,9 +262,7 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         )),
         AgentsOpen(p) => agents::open(ctx, p),
         AgentsClose(p) => agents::close(ctx, p),
-        FocusNextRegion(_) => Err(ApiError::unavailable(
-            "focus.next_region arrives with the sidebar's Agents box in M3 and is not built yet",
-        )),
+        FocusNextRegion(p) => focus::next_region(ctx, p),
     }
 }
 

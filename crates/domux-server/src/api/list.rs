@@ -2,7 +2,7 @@
 //!
 //! One set of handlers for every box. The sidebar's Projects box and the switcher's Projects
 //! box are the same rows from the same builder, so the cursor that walks them is the same
-//! cursor, and M3's Agents box joins them here rather than bringing a second set.
+//! cursor, and M3's two Agents boxes join them here rather than bringing a second set.
 //!
 //! Nothing here decides what a row looks like or what acting on one does.
 //! `render::projects_box` and `render::agents_box` own the rows, and `api::workspace::focus`,
@@ -41,9 +41,13 @@ struct Visible {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
     Switcher,
+    /// The Projects box in the sidebar.
     Sidebar,
     /// The Agents box inside the agents overlay (M3).
     AgentsOverlay,
+    /// The Agents box in the sidebar, under the Projects box (M3). The same rows as the
+    /// overlay's in the narrower two-line form, so the cursor walks what is drawn.
+    SidebarAgents,
 }
 
 impl Surface {
@@ -76,8 +80,12 @@ fn surface(ctx: &Ctx, client: &ClientId) -> Result<Surface, ApiError> {
     if view.overlay == Some(Overlay::Agents) {
         return Ok(Surface::AgentsOverlay);
     }
-    if view.sidebar_visible() && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects)) {
-        return Ok(Surface::Sidebar);
+    if view.sidebar_visible() {
+        match view.focus {
+            Focus::Region(RegionKind::SidebarProjects) => return Ok(Surface::Sidebar),
+            Focus::Region(RegionKind::SidebarAgents) => return Ok(Surface::SidebarAgents),
+            _ => {}
+        }
     }
     Err(ApiError::refused(
         "the keys are not in a box; open the switcher or the agents overlay, or move into the sidebar first",
@@ -91,16 +99,17 @@ fn surface(ctx: &Ctx, client: &ClientId) -> Result<Surface, ApiError> {
 /// otherwise. It is `surface` and not a second reading of the same state, so the two can
 /// never disagree about which box has the keys.
 ///
-/// The Agents box is a box and is not one of these. `n` is bound in `[keys.list]` and the
-/// Agents box holds those keys too, so a plain "is in a box" here would have `leader N` in the
-/// agents overlay rename whatever workspace `projects_cursor` was left pointing at - a row
-/// that is not on the screen.
+/// Neither Agents box is one of these. `n` is bound in `[keys.list]` and the Agents boxes hold
+/// those keys too, so a plain "is in a box" here would have `leader N` in the agents overlay
+/// rename whatever workspace `projects_cursor` was left pointing at - a row that is not on the
+/// screen.
 pub(super) fn in_a_projects_box(ctx: &Ctx, client: &ClientId) -> bool {
     surface(ctx, client).is_ok_and(Surface::is_projects)
 }
 
 /// The rows this client is looking at: the switcher's when it is open, the agents overlay's
-/// when that one is, and the sidebar's when the keys are in its box.
+/// when that one is, and the sidebar's Projects or Agents box when the keys are in one of
+/// them.
 ///
 /// Every input is the renderer's own - `render::switcher::draw`, `render::agents_overlay::draw`
 /// and `render::sidebar::draw` - so the cursor moves over the list on the screen rather than
@@ -119,6 +128,24 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         .client(client)
         .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
     let screen = Rect::new(0, 0, view.size.cols, view.size.rows);
+    if surface == Surface::SidebarAgents {
+        // The sidebar's own Agents box: its rectangle, its narrower form. `render::sidebar`
+        // splits the column the same way, so the cursor walks the rows on the screen.
+        let (_, area, _) =
+            crate::render::sidebar::split_column(crate::render::sidebar::sidebar_area(view.size));
+        let now = ctx.deps.clock.now();
+        let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
+        let all = agents_box::rows(&agents, RowForm::Sidebar, area.width.saturating_sub(2));
+        let rows = filter_rows(&all, &view.filter);
+        let at = projects_box::filled_index(&rows, view.agents_cursor.as_ref().map(|a| a.as_str()));
+        return Ok(Visible {
+            surface,
+            rows,
+            at,
+            height: area.height.saturating_sub(2),
+            scroll: view.agents_scroll,
+        });
+    }
     if surface == Surface::AgentsOverlay {
         let width = crate::render::overlay::list_overlay_width(screen);
         let now = ctx.deps.clock.now();

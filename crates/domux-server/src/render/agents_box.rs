@@ -32,8 +32,9 @@ const RESUME_GAP: &str = "   ";
 /// binding the label reads. Named here once, so the row and the sidebar's hint row cannot
 /// name different keys for one action (principle 3).
 pub const RESUME_ACTION: &str = "list.activate";
-/// The word after the key on an exited row.
-const RESUME_WORD: &str = "resume";
+/// The word after the key on an exited row. The sidebar's hint row carries the same pair,
+/// so both surfaces read it from here (interface spec 12.6).
+pub const RESUME_WORD: &str = "resume";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
@@ -89,6 +90,21 @@ impl AgentsView {
             red_dots: 0,
             resume_key: None,
         }
+    }
+}
+
+/// What a box with no rows to show says: the state, and the next action (principle 9).
+///
+/// Keyed on the filter and not on whether there are any records: a reader who has typed
+/// something is being told about what they typed, and a reader who has not is being told how
+/// to get a first agent. The sidebar's box and the agents overlay both call it, so an empty
+/// list reads one way on both (plan assumption 22).
+pub fn empty_text(filter: &str) -> String {
+    let filter = filter.trim();
+    if filter.is_empty() {
+        "No agents yet. Start claude or codex in a pane.".to_string()
+    } else {
+        format!("No agent matches {filter:?}. esc clears the filter")
     }
 }
 

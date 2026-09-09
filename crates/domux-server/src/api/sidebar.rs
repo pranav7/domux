@@ -79,15 +79,22 @@ fn set(ctx: &mut Ctx, open: bool) -> Result<Value, ApiError> {
         // overwritten before anything can read it. Kept for the invariant, not for a
         // behaviour, and said here so the next reader does not go looking for the test.
         view.sidebar_forced = open && asked && view.size.cols < SIDEBAR_MIN_COLS;
-        if !open && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects)) {
+        if !open
+            && matches!(
+                view.focus,
+                Focus::Region(RegionKind::SidebarProjects | RegionKind::SidebarAgents)
+            )
+        {
             // Hiding the box the keys were in gives them back to the pane, so no frame is
             // drawn with the keys in a region nothing on the screen marks (principle 2).
             //
-            // Unreachable in M2 and therefore untested: nothing sets
-            // `Focus::Region(RegionKind::SidebarProjects)` until `api::focus::region`
-            // accepts that region, which it refuses today. Written from the rule rather
-            // than from a test, so the task that opens the box to focus does not have to
-            // rediscover it.
+            // Both of the sidebar's boxes, and the match is over `RegionKind` rather than a
+            // `sidebar_visible` test so that adding a third box to this column is a change
+            // that has to come through here. M2 wrote this arm for the Projects box alone,
+            // from the rule and with nothing able to reach it; M3 gave the column a second
+            // box and the arm went on naming one, which left `leader b` from the Agents box
+            // with the keys in a region the screen no longer draws and every key after it
+            // swallowed by `input::list_key`.
             if let Some(pane) = pane {
                 view.focus = Focus::Pane(pane);
             }

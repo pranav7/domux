@@ -385,13 +385,14 @@ impl ClientView {
     /// help was open has no box left to come back to, and the keys would land in a region
     /// nothing on the screen marks (principle 2).
     ///
-    /// Only `SidebarProjects`: the switcher's box is an overlay and `focus_after_pop` answers
-    /// for it above, and M3's Agents boxes join this when they exist. They are left out rather
-    /// than written ahead, because nothing in M2 can put the keys there, so the arm could not
-    /// be tested and its mutant could never die.
+    /// The sidebar's two boxes and no other: the switcher's box and the agents overlay's box
+    /// are overlays and `focus_after_pop` answers for them above, so what is left is what the
+    /// sidebar draws under an overlay and still owns once it closes.
     pub fn focus_returning_from_overlay(&self, pane: Option<PaneId>) -> Focus {
-        if matches!(self.focus, Focus::Region(RegionKind::SidebarProjects))
-            && self.sidebar_visible()
+        if matches!(
+            self.focus,
+            Focus::Region(RegionKind::SidebarProjects | RegionKind::SidebarAgents)
+        ) && self.sidebar_visible()
         {
             return self.focus.clone();
         }

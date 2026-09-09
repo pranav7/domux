@@ -3272,7 +3272,6 @@ mod tests {
         ("agent.send", r#"{"text": "hello"}"#),
         ("agent.read", "{}"),
         ("agent.wait", "{}"),
-        ("focus.next_region", "{}"),
     ];
 
     /// Direction A of the register: implementing one of `STILL_UNBUILT` must fail this test
