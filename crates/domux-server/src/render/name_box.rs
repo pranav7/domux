@@ -60,10 +60,10 @@ pub fn draw(input: &RenderInput, workspace: &WorkspaceId, buf: &mut Buffer) {
             .unwrap_or_else(|| " ".to_string());
         let rest: String = after.chars().skip(1).collect();
         // A name wider than the box is cut at the border, which is where M1's tab prompt cuts
-        // one too. The caret then goes with the cut, so a name longer than the box is wide
-        // stops showing what is being typed. Said here rather than left silent: it is the
-        // limit of a 58 cell box and not an oversight, and the fix if it ever bites is a
-        // window that follows the caret rather than a wider box.
+        // one too. The caret goes with the cut, so a name longer than the box is wide stops
+        // showing what is being typed. Said here rather than left silent: it is the limit of a
+        // 58 cell box and not an oversight, and the fix if it ever bites is to scroll the
+        // field so the caret stays on it, not a wider box.
         let mut cx = put_within(buf, inner.x + 1, inner.y, last_x, &before, text);
         cx = put_within(
             buf,

@@ -285,10 +285,18 @@ async fn leader_n_clears_the_name_with_no_prompt() {
         .await;
     assert_eq!(h.model().workspace(&w1).unwrap().name, None);
     let m = h.model();
+    let view = m.client(&client).unwrap();
     assert_eq!(
-        m.client(&client).unwrap().overlay,
-        None,
+        view.overlay, None,
         "and without an overlay (interface spec 12.9)"
+    );
+    // And with no pill of its own. Asserted against the one string this key could have
+    // written rather than against `None`: the fixture's two creates leave `Created
+    // workspace-2` in the pill, and nothing here clears a pill it did not set.
+    assert_ne!(
+        view.pill.as_ref().map(|p| p.text.as_str()),
+        Some("Cleared the name on workspace-1"),
+        "the row redrawing with its handle is the answer (interface spec 12.9)"
     );
 }
 
