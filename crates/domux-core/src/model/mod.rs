@@ -1583,6 +1583,8 @@ impl Model {
                     // A placeholder the observer made for the session that is resuming. It
                     // never had a session id of its own, so nothing is lost by dropping it.
                     let gone = self.agents.remove(j);
+                    // Retired like every other removed id; `dismiss_agent` says why.
+                    self.retire(gone.id.to_string());
                     events.push(Event::AgentDismissed { agent: gone.id });
                     (if j < i { i - 1 } else { i }, false)
                 } else {
@@ -1823,6 +1825,10 @@ impl Model {
 
     /// Removes an exited record from the list. A live one is refused: the state it is in and
     /// the state dismiss needs are both in the message (plan assumption 31).
+    ///
+    /// Retires the id, as every removal path in this file does. A client's `agents_cursor`
+    /// holds an agent id, and so do the server's per-agent working word and recap, so an id
+    /// handed back to a new session would show a dead session's recap under a live agent.
     pub fn dismiss_agent(&mut self, id: &AgentId) -> Result<Vec<Event>, ApiError> {
         let a = self.agent(id).ok_or_else(|| {
             ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
@@ -1834,6 +1840,7 @@ impl Model {
             )));
         }
         self.agents.retain(|a| &a.id != id);
+        self.retire(id.to_string());
         Ok(vec![Event::AgentDismissed { agent: id.clone() }])
     }
 
@@ -1875,6 +1882,11 @@ impl Model {
             .map(|a| a.id.clone())
             .collect();
         self.agents.retain(|a| &a.workspace != ws);
+        // These records go without passing through `dismiss_agent`, so this path retires
+        // their ids itself, for the reason recorded there.
+        for gone in &ids {
+            self.retire(gone.to_string());
+        }
         ids.into_iter()
             .map(|agent| Event::AgentDismissed { agent })
             .collect()
@@ -1975,27 +1987,41 @@ impl Model {
                         )
                     })
                     .collect();
-                // The example names a tab one of these agents is in, so retyping it works.
-                let qualify = match tabs.iter().flatten().next() {
-                    Some(t) => format!("qualify with the tab, for example \"{target}/{t}\""),
-                    None => "qualify with the tab".to_string(),
+                // The example names a tab one of these agents is in, so retyping it
+                // works. A target that already names a tab has no further qualifier to
+                // offer, and appending a second one would read "main/pr1/pr1", which
+                // resolves to nothing; there the message asks for an id instead.
+                let example = if tab.is_some() {
+                    None
+                } else {
+                    tabs.iter().flatten().next()
                 };
-                Err(ApiError::ambiguous(
-                    format!("{n} agents are in {target}; {qualify}, or use an agent id"),
-                    candidates,
-                ))
+                let message = match example {
+                    Some(t) => format!(
+                        "{n} agents are in {target}; qualify with the tab, for example \
+                         \"{target}/{t}\", or use an agent id"
+                    ),
+                    None => format!("{n} agents are in {target}; use an agent id"),
+                };
+                Err(ApiError::ambiguous(message, candidates))
             }
         }
     }
 
     /// After a restart every record that was live is `exited` and resumable (architecture
-    /// spec section 5). Restore is not an exit the agent made, so unseen is left alone.
+    /// spec section 5). Restore is not an exit the agent made, so unseen is left alone: a dot
+    /// you have not acted on is still there tomorrow.
+    ///
+    /// The reason goes, as it does on every other path that leaves `waiting`. A record
+    /// restored from `waiting` that kept it would answer `agent.get` and `peek --json` with a
+    /// permission prompt from before the restart.
     pub fn mark_agents_exited_on_restore(&mut self) {
         for a in &mut self.agents {
             if a.state.is_live() {
                 a.state = AgentState::Exited;
                 a.pane = None;
                 a.pid = None;
+                a.reason = None;
                 a.source = AgentSource::Restore;
             }
         }
@@ -3833,7 +3859,7 @@ mod tests {
     fn sorted_agents_follow_interface_spec_6_7_and_12_28_and_the_count_is_the_red_dots() {
         let (mut m, ws, _, pane) = model_with_one_tab();
         let mut ids = Vec::new();
-        for i in 0..6 {
+        for i in 0..8 {
             let (t, p, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
             let _ = t;
             ids.push((i, p));
@@ -3907,6 +3933,30 @@ mod tests {
             "2026-09-04T14:06:00+00:00",
         )
         .unwrap();
+        // Compacting shares the working rank, so its place is decided by last activity
+        // alone: between the two working records rather than beside them.
+        let compacting = mk(&mut m, &ids[6].1, "compacting", "2026-09-04T14:03:30+00:00");
+        m.report_agent(
+            &ids[6].1,
+            AgentKind::Claude,
+            hook(AgentEvent::PreCompact, "compacting"),
+            "2026-09-04T14:03:30+00:00",
+        )
+        .unwrap();
+        // A second exited record, so "exited newest first" is an order and not one row.
+        let exited_older = mk(
+            &mut m,
+            &ids[7].1,
+            "exited-older",
+            "2026-09-04T14:05:30+00:00",
+        );
+        m.report_agent(
+            &ids[7].1,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "exited-older"),
+            "2026-09-04T14:05:30+00:00",
+        )
+        .unwrap();
         let (unknown, _) = m.observe_agent(
             &ids[5].1,
             AgentKind::Codex,
@@ -3919,18 +3969,21 @@ mod tests {
             vec![
                 waiting,
                 working_new,
+                compacting,
                 working_old,
                 idle_unseen,
                 idle_seen,
                 unknown,
-                exited
+                exited,
+                exited_older
             ],
-            "waiting, working by last activity, unseen idle, idle, unknown, exited last"
+            "waiting, working and compacting by last activity, unseen idle, idle, unknown, \
+             exited last and newest first"
         );
         assert_eq!(
             m.red_dot_count(),
-            3,
-            "waiting, idle-unseen and the exited one (exit sets unseen)"
+            4,
+            "waiting, idle-unseen and both exited ones (exit sets unseen)"
         );
     }
 
@@ -3989,24 +4042,300 @@ mod tests {
         );
     }
 
+    /// Both directions: a record you had seen must not gain a dot, and one you had not must
+    /// not lose it. Restore runs on every server start, so it is the one path in M3 placed to
+    /// break "a dot you did not act on is still there tomorrow".
     #[test]
     fn restore_marks_live_records_exited_without_touching_unseen() {
-        let (mut m, _, _, pane) = model_with_one_tab();
-        let id = m
+        let (mut m, ws, _, pane) = model_with_one_tab();
+        let (_, second, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let seen = m
             .report_agent(
                 &pane,
                 AgentKind::Claude,
-                hook(AgentEvent::UserPromptSubmit, "s"),
+                hook(AgentEvent::UserPromptSubmit, "s1"),
                 T0,
             )
             .unwrap()
             .agent;
+        m.report_agent(
+            &second,
+            AgentKind::Codex,
+            hook(AgentEvent::SessionStart, "s2"),
+            T0,
+        )
+        .unwrap();
+        let mut asking = hook(AgentEvent::Notification, "s2");
+        asking.reason = Some("Codex needs your permission to use Bash".into());
+        let dotted = m
+            .report_agent(&second, AgentKind::Codex, asking, T1)
+            .unwrap()
+            .agent;
+        assert!(!m.agent(&seen).unwrap().unseen && m.agent(&dotted).unwrap().unseen);
         m.mark_agents_exited_on_restore();
-        let a = m.agent(&id).unwrap();
+        let a = m.agent(&seen).unwrap();
         assert_eq!(a.state, AgentState::Exited);
         assert!(a.pane.is_none() && a.pid.is_none());
         assert_eq!(a.last_pane, Some(pane));
-        assert!(!a.unseen);
+        assert!(!a.unseen, "a record you had already seen gains no dot");
         assert_eq!(a.source, AgentSource::Restore);
+        let b = m.agent(&dotted).unwrap();
+        assert_eq!(b.state, AgentState::Exited);
+        assert_eq!(b.last_pane, Some(second));
+        assert!(b.unseen, "a dot you have not acted on survives the restart");
+        assert_eq!(b.reason, None, "the reason goes with the waiting state");
+        assert_eq!(b.source, AgentSource::Restore);
+    }
+
+    /// Plan assumption 8: a pane hosts one live agent, so a hook from a second kind starts a
+    /// new record and the first stays listed as exited with everything it had.
+    #[test]
+    fn a_hook_of_another_kind_on_the_pane_starts_a_new_record_and_exits_the_old_one() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let claude = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.set_agent_recap(&claude, Some("Wrote the migration".into()));
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Codex,
+                hook(AgentEvent::SessionStart, "s2"),
+                T1,
+            )
+            .unwrap();
+        assert!(out.created);
+        assert_ne!(out.agent, claude);
+        assert!(out.events.contains(&Event::AgentExited {
+            agent: claude.clone(),
+            pane: Some(pane.clone())
+        }));
+        let old = m.agent(&claude).unwrap();
+        assert_eq!(old.kind, AgentKind::Claude);
+        assert_eq!(old.state, AgentState::Exited);
+        assert_eq!(
+            old.recap.as_deref(),
+            Some("Wrote the migration"),
+            "the exited record keeps its recap"
+        );
+        assert_eq!(m.live_agent_on_pane(&pane).unwrap().kind, AgentKind::Codex);
+        assert_eq!(m.agents.len(), 2, "the old record stays listed");
+    }
+
+    /// The neighbouring case: a placeholder is dropped rather than exited, whatever kind the
+    /// observer guessed, because it never had a session of its own to remember.
+    #[test]
+    fn a_resuming_session_drops_a_placeholder_of_another_kind_instead_of_exiting_it() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let claude = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "s1"),
+            T0,
+        )
+        .unwrap();
+        let (placeholder, _) = m.observe_agent(&pane, AgentKind::Codex, Some(7), T1);
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T1,
+            )
+            .unwrap();
+        assert_eq!(out.agent, claude);
+        assert!(
+            m.agent(&placeholder).is_none(),
+            "the guess is gone, not exited"
+        );
+        assert!(out.events.contains(&Event::AgentDismissed {
+            agent: placeholder.clone()
+        }));
+        assert!(
+            !out.events.iter().any(|e| matches!(
+                e,
+                Event::AgentExited { agent, .. } if agent == &placeholder
+            )),
+            "a record that never ran a session does not exit"
+        );
+        assert_eq!(m.agents.len(), 1);
+    }
+
+    /// Interface spec 6.5: focus and input clear the dot, and nothing else does. The recap is
+    /// the one that matters, because it arrives on the same hook that turned the dot on.
+    #[test]
+    fn a_recap_a_name_a_pid_and_another_pane_all_leave_unseen_alone() {
+        let (mut m, ws, _, pane) = model_with_one_tab();
+        let (_, other, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let id = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::Notification, "s1"),
+            T1,
+        )
+        .unwrap();
+        assert!(m.agent(&id).unwrap().unseen, "waiting turned the dot on");
+        m.set_agent_recap(&id, Some("Read the transcript".into()));
+        assert!(
+            m.agent(&id).unwrap().unseen,
+            "the recap arrives with the turn, not with you reading it"
+        );
+        m.set_agent_name(&id, Some("auth cleanup".into()));
+        assert!(
+            m.agent(&id).unwrap().unseen,
+            "naming a session is not seeing it"
+        );
+        m.set_agent_pid(&id, Some(99));
+        assert!(m.agent(&id).unwrap().unseen);
+        let elsewhere = m
+            .report_agent(
+                &other,
+                AgentKind::Codex,
+                hook(AgentEvent::SessionStart, "s2"),
+                T1,
+            )
+            .unwrap()
+            .agent;
+        assert!(
+            m.clear_unseen_for_pane(&other).is_empty(),
+            "the other pane has no dot to clear"
+        );
+        m.clear_unseen(&elsewhere);
+        assert!(
+            m.agent(&id).unwrap().unseen,
+            "another pane's agent does not clear this one"
+        );
+        assert_eq!(
+            m.clear_unseen_for_pane(&pane),
+            vec![Event::AgentUnseenChanged {
+                agent: id.clone(),
+                unseen: false
+            }],
+            "focusing the pane is what clears it"
+        );
+        assert!(!m.agent(&id).unwrap().unseen);
+    }
+
+    /// An agent id outlives its record: a client's `agents_cursor` holds one, and so do the
+    /// server's per-agent working word and recap. An id handed back would show a dead
+    /// session's recap under a live agent, which is the aliasing `retired` exists to stop.
+    #[test]
+    fn ids_are_not_reissued_after_an_agent_is_dismissed_or_its_workspace_is_cleared() {
+        let (mut m, ws, _, pane) = model_with_one_tab();
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..150 {
+            let sid = format!("s{i}");
+            let id = m
+                .report_agent(
+                    &pane,
+                    AgentKind::Claude,
+                    hook(AgentEvent::SessionStart, &sid),
+                    T0,
+                )
+                .unwrap()
+                .agent;
+            assert!(seen.insert(id.0.clone()), "agent id {id} was reissued");
+            if i % 2 == 0 {
+                m.report_agent(
+                    &pane,
+                    AgentKind::Claude,
+                    hook(AgentEvent::SessionEnd, &sid),
+                    T0,
+                )
+                .unwrap();
+                m.dismiss_agent(&id).unwrap();
+            } else {
+                m.remove_agents_of_workspace(&ws);
+            }
+        }
+    }
+
+    #[test]
+    fn ids_are_not_reissued_after_a_resuming_session_drops_a_placeholder() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionStart, "s1"),
+            T0,
+        )
+        .unwrap();
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "s1"),
+            T0,
+        )
+        .unwrap();
+        let (placeholder, _) = m.observe_agent(&pane, AgentKind::Claude, Some(7), T1);
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionStart, "s1"),
+            T1,
+        )
+        .unwrap();
+        assert!(m.agent(&placeholder).is_none());
+        // Rewind the generator to the stream that already produced the placeholder's id, so
+        // the next few draws offer that exact value again.
+        m.reseed(7);
+        let redrawn: Vec<String> = (0..8).map(|_| m.next_id("a").unwrap()).collect();
+        assert!(
+            !redrawn.contains(&placeholder.0),
+            "a dropped placeholder's id {placeholder} came back as {redrawn:?}"
+        );
+    }
+
+    /// A target that already names a tab has no second qualifier to offer, so the message
+    /// asks for an id rather than printing `main/pr1/pr1`, which resolves to nothing.
+    #[test]
+    fn an_already_qualified_target_asks_for_an_id_rather_than_a_second_tab() {
+        let (mut m, _, tab, pane) = model_with_one_tab();
+        m.rename_tab(&tab, Some("pr1".into())).unwrap();
+        let (split, _) = m
+            .split_pane(&pane, Direction::Right, PathBuf::from("/x"))
+            .unwrap();
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionStart, "s1"),
+            T0,
+        )
+        .unwrap();
+        m.report_agent(
+            &split,
+            AgentKind::Codex,
+            hook(AgentEvent::SessionStart, "s2"),
+            T0,
+        )
+        .unwrap();
+        let err = m.resolve_agent_target("main/pr1").unwrap_err();
+        assert_eq!(err.code, crate::api::ErrorCode::Ambiguous);
+        assert_eq!(err.message, "2 agents are in main/pr1; use an agent id");
+        assert_eq!(err.data.unwrap().as_array().unwrap().len(), 2);
     }
 }
