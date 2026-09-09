@@ -87,14 +87,28 @@ const BRANCH_ADVICE: &str = "a slot branch is named workspace-<number>";
 
 /// How long any one git command may run before domux stops it.
 ///
-/// **One number for every command, not one per operation.** `run` is the single place a git
-/// process is built, and that is what makes a command added later impossible to leave
-/// unbounded. A table of per-operation bounds brings the miss straight back: whoever adds
-/// `git push` gets whichever entry the table calls the default, and a `push` bounded like a
-/// `rev-parse` is a worse defect than the one this fixes. The bound is here to guarantee that
-/// a command ends, not to make one quick, so a number that is too generous costs a wait and a
-/// number that is too tight costs a create that fails on a repository whose only fault was
-/// being large.
+/// **This is the default bound, and it is sized for the job lane.** `run` is the single place
+/// a git process is built, so putting a bound here is what makes a command added later
+/// impossible to leave unbounded: whoever adds `git push` gets this number rather than none.
+/// That is an argument for a bound at the chokepoint, not an argument that one number suits
+/// every caller. `subprocess::output_within` takes its limit as a parameter for exactly that
+/// reason, and `facts::pr::PR_TIMEOUT` is 20 seconds because it is a third of `PR_INTERVAL`,
+/// so a stuck look-up is released before the next one is due. A caller with a polling cadence
+/// of its own wants the same treatment, and passing a different limit through `run_within`
+/// costs the chokepoint nothing.
+///
+/// **`facts/branch.rs` is the caller that wants one and does not have one.** Its
+/// `BRANCH_INTERVAL` is 5 seconds and its `BRANCH_TTL` is 30, and `BranchProvider::fetch`
+/// runs `is_repo` and then `branch_of`, so a wedged repository can hold that workspace's
+/// branch fact for 600 seconds against a 30 second time to live. It is left on the default
+/// deliberately rather than by oversight: both calls were unbounded before this existed, so
+/// the default is strictly better than what it replaces, and both are local reads with no
+/// remote in them, which is what made `gh` need 20 seconds. Sizing a bound to a provider's
+/// cadence belongs with the registry that owns the cadence, not here.
+///
+/// The bound is here to guarantee that a command ends, not to make one quick, so a number
+/// that is too generous costs a wait and a number that is too tight costs a create that fails
+/// on a repository whose only fault was being large.
 ///
 /// Sized from the slow end, measured on this machine against a repository of 50,000 files:
 /// `git reset --hard` restoring all of them 4.8s, `git worktree add` checking them out 4.3s,
@@ -111,10 +125,14 @@ const BRANCH_ADVICE: &str = "a slot branch is named workspace-<number>";
 /// for `net.inet.tcp.keepidle`, which ships at 7,200,000 ms. Both checked on the machine these
 /// numbers come from, git 2.50.1.
 ///
-/// The bound is per command, so an operation that runs several has a worst case of their sum:
-/// `worktree_add` runs up to five, so 25 minutes rather than 5. That is still bounded, which
-/// is the property the fact registry and `Core::claims` need, and a deadline for a whole
-/// operation belongs to the job lane rather than to this file.
+/// The bound is per command, not per operation, so an operation that runs several has a worst
+/// case of their sum. A `workspace.create` runs six: `base_ref`'s `symbolic-ref` when
+/// `[worktrees] base` is unset, then `worktree_add`'s `fetch`, `worktree prune`, `show-ref`
+/// probe, `branch -f` and `worktree add`. That is 30 minutes. A create that gets past
+/// `worktree_add` and then fails rolls back through `worktree_remove`, which is three more,
+/// so 45 on that path. Still bounded, which is the property the fact registry and
+/// `Core::claims` need, but it is not a five minute create: a deadline for a whole operation
+/// belongs to the job lane rather than to this file.
 pub const TIME_LIMIT: Duration = Duration::from_secs(300);
 
 /// Runs git in `dir` and returns its trimmed stdout. stderr and stdout are joined in the
@@ -126,10 +144,12 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     run_within(dir, args, TIME_LIMIT)
 }
 
-/// `run` with the bound spelled out, which only the tests do. It stays private on purpose:
-/// the limit is not a caller's choice, so `run` is the one way in and a later operation
-/// cannot quietly pick a bound of its own. The tests need it because the alternative is a
-/// test that waits out `TIME_LIMIT`.
+/// `run` with the bound spelled out. It stays private so that no caller outside this file can
+/// pick a bound of its own; inside the module every operation could, which makes this a
+/// smaller claim than the absolute-directory refusal below. That one is a guard nothing can
+/// get past, because it is inside the function every command goes through. This is only a
+/// narrower public surface. The tests need it because the alternative is a test that waits
+/// out `TIME_LIMIT`.
 fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String, GitError> {
     let command = format!("git {}", args.join(" "));
     if !dir.is_absolute() {
@@ -358,6 +378,20 @@ pub fn worktree_remove(
     branch: &str,
     force: bool,
 ) -> Result<(), GitError> {
+    worktree_remove_within(root, path, branch, force, TIME_LIMIT)
+}
+
+/// `worktree_remove` with the bound spelled out, for the same reason `run_within` exists and
+/// with the same privacy. The probe below now answers differently when git ran out of time,
+/// and the only honest place to test that is `worktree_remove`'s own answer, which means a
+/// test needs a bound it can reach without waiting out `TIME_LIMIT`.
+fn worktree_remove_within(
+    root: &Path,
+    path: &Path,
+    branch: &str,
+    force: bool,
+    limit: Duration,
+) -> Result<(), GitError> {
     if !path.is_absolute() {
         return Err(not_absolute("git worktree remove".to_string(), path));
     }
@@ -371,12 +405,20 @@ pub fn worktree_remove(
         args.push("--force");
     }
     args.push(&path);
-    run(root, &args)?;
+    run_within(root, &args, limit)?;
     // Ask git whether the branch is there rather than reading the words of a `branch -D`
     // failure. git translates those, so a machine in another locale would report an error for
     // a slot it removed correctly, and matching on prose also swallows failures that happen to
     // contain the same phrase.
-    if run(
+    //
+    // The three answers are three different things, and reading them as two is how a delete
+    // reports success while the branch survives. `Ok` is a branch that is there. A `Failed`
+    // is git running and saying no, which is what a branch that is not there looks like, and
+    // is the case this tolerates on purpose: a create that crashed halfway leaves the worktree
+    // or the branch but not always both. A `TimedOut` is git never answering, so nobody knows
+    // whether the branch is there, and answering `Ok(())` to a delete on the strength of a
+    // question that was never answered is a fact nobody observed (principle 4).
+    match run_within(
         root,
         &[
             "show-ref",
@@ -384,10 +426,13 @@ pub fn worktree_remove(
             "--quiet",
             &format!("refs/heads/{branch}"),
         ],
-    )
-    .is_ok()
-    {
-        run(root, &["branch", "-D", branch])?;
+        limit,
+    ) {
+        Ok(_) => {
+            run_within(root, &["branch", "-D", branch], limit)?;
+        }
+        Err(GitError::Failed { .. }) => {}
+        Err(e @ GitError::TimedOut { .. }) => return Err(e),
     }
     Ok(())
 }
@@ -586,6 +631,85 @@ mod tests {
             message.to_lowercase().contains("argument list too long"),
             "the reason reaches the reader: {message}"
         );
+    }
+
+    /// A branch nobody could ask about is not a branch that is gone: `worktree_remove` reports
+    /// the probe's timeout rather than deleting the worktree, skipping `git branch -D` and
+    /// answering that it all worked.
+    ///
+    /// The test is on `worktree_remove`'s own answer, not on the probe. The mutant lives in
+    /// the match arm, and every route to that arm runs through this function, so a test that
+    /// handed the classification a `TimedOut` and watched it come back would be proving the
+    /// half nothing questioned. That is what `worktree_remove_within` is for: reaching the arm
+    /// through the caller costs `TIME_LIMIT` otherwise.
+    ///
+    /// The fixture makes exactly one git command hang and no other. `refs/heads/hangs` is a
+    /// named pipe with nothing on the other end, so `show-ref --verify refs/heads/hangs` blocks
+    /// opening it, while `git worktree remove` never reads that ref: the worktree it removes is
+    /// checked out on `other`. Both halves were checked directly before this test was written,
+    /// the remove finishing at once and the `show-ref` still running after three seconds. A
+    /// fixture where everything hangs would pass against a `worktree_remove` that failed on its
+    /// first command and never reached the probe at all, which is why the assertions below name
+    /// the `show-ref` and check the worktree really went.
+    #[test]
+    fn worktree_remove_reports_a_probe_that_ran_out_of_time_instead_of_calling_it_a_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_path_buf();
+        run(&repo, &["init", "-q"]).unwrap();
+        run(&repo, &["config", "user.email", "a@b"]).unwrap();
+        run(&repo, &["config", "user.name", "a"]).unwrap();
+        std::fs::write(repo.join("f"), "x").unwrap();
+        run(&repo, &["add", "-A"]).unwrap();
+        run(&repo, &["commit", "-qm", "one"]).unwrap();
+        run(&repo, &["branch", "other"]).unwrap();
+        let slot = repo.join("wt");
+        run(
+            &repo,
+            &["worktree", "add", "-q", slot.to_str().unwrap(), "other"],
+        )
+        .unwrap();
+        // The one command that will not answer.
+        let hangs = repo.join(".git/refs/heads/hangs");
+        assert_eq!(
+            unsafe { libc::mkfifo(c_path(&hangs).as_ptr(), 0o644) },
+            0,
+            "the fixture needs a named pipe where the ref would be"
+        );
+
+        let (asked, where_it_is) = (repo.clone(), slot.clone());
+        let err = finishes_within(
+            Duration::from_secs(20),
+            "worktree_remove against a branch probe that never answers",
+            move || {
+                worktree_remove_within(
+                    &asked,
+                    &where_it_is,
+                    "hangs",
+                    false,
+                    Duration::from_millis(300),
+                )
+                .unwrap_err()
+            },
+        );
+
+        let GitError::TimedOut { command, .. } = &err else {
+            panic!("a probe that never answered is not a branch that is gone: {err}");
+        };
+        assert!(
+            command.starts_with("git show-ref"),
+            "the probe is what ran out of time, not the remove before it: {command}"
+        );
+        assert!(
+            !slot.exists(),
+            "and the remove itself worked, so this is a failure after it rather than instead \
+             of it"
+        );
+    }
+
+    /// A `CString` of a path, for `mkfifo`. `std` has no way to make a named pipe.
+    fn c_path(path: &Path) -> std::ffi::CString {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap()
     }
 
     /// `run` gives a git command the whole of `TIME_LIMIT`, so a command that takes seconds
