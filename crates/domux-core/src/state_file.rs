@@ -513,6 +513,18 @@ mod tests {
             )
             .unwrap()
             .agent;
+        // Every optional field gets a distinct, non-default value. A field that
+        // round-trips to a matching `None` would pass a full-struct compare exactly as
+        // easily as a field that was silently dropped from serialization; only a real
+        // value tells the two apart.
+        {
+            let a = m.agent_mut(&id).unwrap();
+            a.name = Some("auth-cleanup".into());
+            a.reason = Some("permission needed".into());
+            a.recap = Some("Replaced three session checks with one guard".into());
+            a.last_message = Some("go ahead".into());
+            a.transcript_path = Some(PathBuf::from("/tmp/t.jsonl"));
+        }
         // Every field, not a chosen few: the point of a round trip is to catch a field
         // that silently fails to serialize, which two or three assertions cannot do.
         let mut expected = m.agent(&id).unwrap().clone();
@@ -526,16 +538,19 @@ mod tests {
             "pid is a fact and is not persisted"
         );
         let back = restore(parse(&json).unwrap()).unwrap();
-        // The only fields a restart actually changes (architecture spec section 5): the
-        // record comes back exited, off its pane, and marked as a restore rather than
-        // whatever created it.
+        // The fields a restart actually changes (architecture spec section 5): the
+        // record comes back exited, off its pane, marked as a restore rather than
+        // whatever created it, and with its waiting reason gone (`Model::
+        // mark_agents_exited_on_restore`: a restored `waiting` reason would describe a
+        // permission prompt from before the restart).
         expected.state = crate::model::AgentState::Exited;
         expected.pane = None;
+        expected.reason = None;
         expected.source = crate::model::AgentSource::Restore;
         assert_eq!(
             back.agent(&id).unwrap(),
             &expected,
-            "every field but state, pane and source round-trips unchanged"
+            "every field but state, pane, reason and source round-trips unchanged"
         );
     }
 
