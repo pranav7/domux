@@ -59,12 +59,16 @@ fn now() -> chrono::DateTime<chrono::Local> {
     FixedClock::at("2026-09-04T14:32:00").0
 }
 
+/// Slot 1 of a project whose default branch is `main`, so the two branch names a pull request
+/// is never looked up by are both something other than `branch`: a test that passes `main`
+/// here exercises the default branch rule, and one that passes `workspace-1` the slot rule.
 fn target(path: PathBuf, branch: &str) -> FactTarget {
     FactTarget {
         key: FactKey::workspace(&WorkspaceId("w_0001".into()), FACT_PR),
         path: path.clone(),
         root: path,
         default_branch: Some("main".into()),
+        handle: Some("workspace-1".into()),
         branch: Some(branch.to_string()),
         now: now(),
     }
@@ -220,6 +224,31 @@ fn a_workspace_on_the_default_branch_and_one_with_no_branch_are_skipped() {
         p.fetch(&gone).unwrap(),
         None,
         "a slot removed outside domux is absent, not an error the engineer sees"
+    );
+}
+
+/// The default branch rule with the other recycled branch name. A slot handle is permanent:
+/// every piece of work that ever passed through slot 4 branched off `workspace-4`, so
+/// `--head workspace-4` answers with whichever of them `gh` saw last. The number that turned
+/// up on an empty slot was a pull request merged a fortnight earlier by other work.
+#[test]
+fn a_slot_resting_on_its_own_branch_is_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bin, workspace) = bin_and_workspace(dir.path());
+    let gh = gh_printing(
+        &bin,
+        r#"[{"number":1165,"state":"MERGED","title":"Work that landed a fortnight ago","isDraft":false}]"#,
+    );
+    let p = PrProvider::new(&gh);
+    assert_eq!(
+        p.fetch(&target(workspace, "workspace-1")).unwrap(),
+        None,
+        "a slot on its own branch has done nothing yet, so it has no pull request"
+    );
+    assert!(
+        !bin.join("args").exists(),
+        "gh is not even run: the model already calls this slot untouched, and a number here \
+         would contradict that and cost the row its glyph"
     );
 }
 
