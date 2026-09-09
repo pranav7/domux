@@ -36,6 +36,8 @@ const START_CODEX: &str = r#"{"hook_event_name":"SessionStart","session_id":"x1"
 const CODEX_WAITS: &str = r#"{"hook_event_name":"PermissionRequest","session_id":"x1"}"#;
 const CODEX_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"x1"}"#;
 const CODEX_STOPS: &str = r#"{"hook_event_name":"Stop","session_id":"x1"}"#;
+const CLAUDE_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#;
+const CODEX_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"x1"}"#;
 
 /// True while any record has a dot. Read through `agent.list`, which is what both the command
 /// line and the Agents box read.
@@ -381,7 +383,9 @@ async fn the_messaging_verbs_answer_unavailable_and_name_the_milestone() {
 }
 
 /// M3 plan assumption 32. Each half removes the records of the workspace it names and leaves
-/// the other workspace's alone, so neither passes by removing every record there is.
+/// the other workspace's alone, so neither passes by removing every record there is. The
+/// record the clear takes is an exited one, which is all a clear takes; the record the delete
+/// takes is live, which is the difference between the two.
 #[tokio::test]
 async fn clearing_or_deleting_a_workspace_removes_its_records() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
@@ -389,6 +393,7 @@ async fn clearing_or_deleting_a_workspace_removes_its_records() {
     let p1 = h.first_pane_of(&w1.to_string()).await;
     let p2 = h.first_pane_of(&w2.to_string()).await;
     h.report(p1.clone(), AgentKind::Claude, START_CLAUDE).await;
+    h.report(p1.clone(), AgentKind::Claude, CLAUDE_ENDS).await;
     h.report(p2.clone(), AgentKind::Codex, START_CODEX).await;
     assert_eq!(h.agents().await.len(), 2);
 
@@ -412,8 +417,66 @@ async fn clearing_or_deleting_a_workspace_removes_its_records() {
     .expect("workspace.delete");
     assert!(
         h.agents().await.is_empty(),
-        "and the deleted slot's went with the slot"
+        "and the deleted slot's live record went with the slot"
     );
+}
+
+/// A clear resets the slot and keeps it, so the agent still running there is still running:
+/// its record stays, whole. Taking it would throw away the session id, the recap and the name
+/// a resume needs, and the observer would put a bare record in its place - a live session made
+/// unresumable because the reader reset a worktree. The exited record beside it goes, so this
+/// cannot pass by a clear that removes nothing at all.
+#[tokio::test]
+async fn a_clear_takes_the_exited_records_and_leaves_a_live_one_whole() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let live_pane = h.first_pane_of(&w1.to_string()).await;
+    let split = h
+        .api(
+            "pane.split",
+            json!({"pane": live_pane.to_string(), "dir": "right"}),
+        )
+        .await
+        .expect("pane.split");
+    let dead_pane = PaneId(
+        split["id"]
+            .as_str()
+            .expect("a split answers with an id")
+            .into(),
+    );
+
+    h.report(live_pane.clone(), AgentKind::Claude, START_CLAUDE)
+        .await;
+    h.report(dead_pane.clone(), AgentKind::Codex, START_CODEX)
+        .await;
+    h.report(dead_pane.clone(), AgentKind::Codex, CODEX_ENDS)
+        .await;
+    let before = h.agents().await;
+    assert_eq!(before.len(), 2, "one live and one exited, in the one slot");
+    let live = before
+        .iter()
+        .find(|a| a.state == AgentState::Idle)
+        .expect("the claude is live")
+        .clone();
+
+    support::api_at(
+        h.socket_path(),
+        "workspace.clear",
+        json!({"workspace": w1.to_string(), "yes": true}),
+    )
+    .await
+    .expect("workspace.clear");
+
+    let left = h.agents().await;
+    assert_eq!(left.len(), 1, "the exited codex went");
+    // The same record, not a fresh one the observer put back: an id is never reissued, so an
+    // id that survived is the record that survived, and the session id is what a resume needs.
+    assert_eq!(
+        left[0].id, live.id,
+        "and the live claude is the one that stayed"
+    );
+    assert_eq!(left[0].session_id.as_deref(), Some("c1"));
+    assert_eq!(left[0].state, AgentState::Idle);
 }
 
 #[tokio::test]

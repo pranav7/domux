@@ -11,7 +11,7 @@ use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
 use domux_core::facts::{Fact, FactKey, FactState};
-use domux_core::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
+use domux_core::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
 use domux_core::model::agent::AgentState;
 use domux_core::model::{
@@ -1491,13 +1491,14 @@ impl Core {
         })
     }
 
-    /// `workspace.clear`'s model change: the agent records of the slot, and nothing else. Its
+    /// `workspace.clear`'s model change: the slot's exited agent records, and nothing else. Its
     /// record, its number, its name and its tabs are what a clear keeps, and the rest of the
     /// work all happened on disk.
     ///
-    /// The records go because a clear puts the slot back at its base, so the work every
-    /// session there was about is gone too (M3 plan assumption 32; the architecture spec says
-    /// an exited record stays "until you dismiss it or clear the workspace").
+    /// Those records go because a clear puts the slot back at its base, so the work the
+    /// sessions that ended there were about is gone too (M3 plan assumption 32; the
+    /// architecture spec says an exited record stays "until you dismiss it or clear the
+    /// workspace").
     ///
     /// **Here rather than in `api::workspace::clear`**, which is where the plan put it. That
     /// handler only queues the job: it does not know yet whether the slot will be reset, and a
@@ -1514,8 +1515,7 @@ impl Core {
         name: String,
         base: String,
     ) -> Result<serde_json::Value, ApiError> {
-        self.forget_agent_caches_of(&workspace);
-        let gone = self.model.remove_agents_of_workspace(&workspace);
+        let gone = self.dismiss_exited_agents_of(&workspace);
         self.pending_events.extend(gone);
         self.pending_events
             .push(Event::WorkspaceCleared { workspace, base });
@@ -1524,29 +1524,73 @@ impl Core {
         api::ok(domux_core::api::Ack { ok: true })
     }
 
-    /// Drops the working word and the cached transcript of every record of a workspace that is
-    /// about to lose them. `api::agent::dismiss` does the same for one record and says why: an
-    /// agent id is never reissued, so nothing will ever ask for either again.
+    /// Dismisses every record of a workspace whose session is over, as a clear does.
     ///
-    /// Only the caches. The records themselves go through the model, which is where the two
-    /// paths differ: a delete takes them with the workspace, and a clear keeps the workspace.
+    /// **Exited only.** A clear keeps the workspace and its panes, so an agent running in the
+    /// slot is still running, and taking its record would destroy the session id, the recap
+    /// and the name a resume needs. The observer would then put a bare record in its place:
+    /// a live, resumable session made unresumable because the reader reset a worktree. The
+    /// spec's sentence is about how long an exited record lasts, not a licence over a live
+    /// one. A delete is the other case and takes everything, because the workspace itself is
+    /// gone.
     ///
-    /// Called before the removal, so a removal that refuses would release a word a record
-    /// still holds. Nothing observable turns on that: a working word is picked from the agent
-    /// id and comes back the same on the next look (M3 plan assumption 34), and a recap is
-    /// re-read from the transcript.
+    /// `Model::dismiss_agent` rather than a removal of its own: taking away an exited record
+    /// is one operation, and this is a clear asking for it once per record.
+    ///
+    /// That choice leaves the filter and the removal as two guards over one rule, and the
+    /// removal's is the stronger: `dismiss_agent` refuses a live record on its own, so
+    /// deleting the filter here would not let one through. The filter is what says which
+    /// records a clear is asking about, and it is what keeps the `Err` arm below unreached -
+    /// without it every live agent in the slot would log a warning on every clear, which is a
+    /// normal outcome reported as a failure.
+    fn dismiss_exited_agents_of(&mut self, workspace: &WorkspaceId) -> Vec<Event> {
+        let doomed: Vec<(AgentId, Option<PathBuf>)> = self
+            .model
+            .agents_in_workspace(workspace)
+            .into_iter()
+            .filter(|a| !a.state.is_live())
+            .map(|a| (a.id.clone(), a.transcript_path.clone()))
+            .collect();
+        let mut events = Vec::new();
+        for (id, transcript) in doomed {
+            // Both of `dismiss_agent`'s refusals are unreachable here: every id came from the
+            // model a line ago, and the filter already excluded a live record. Written as a
+            // match rather than an `expect` so a clear cannot panic the core if that ever
+            // stops being true.
+            match self.model.dismiss_agent(&id) {
+                Ok(dismissed) => events.extend(dismissed),
+                Err(e) => tracing::warn!("clearing {workspace}: {id} was not dismissed: {e}"),
+            }
+            self.forget_agent_caches(&id, transcript.as_deref());
+        }
+        events
+    }
+
+    /// Drops the working word and the cached transcript keyed to a record that has just gone.
+    /// `api::agent::dismiss` does the same for the record it removes and says why: an agent id
+    /// is never reissued, so nothing will ever ask for either again, and the pool of working
+    /// words is finite, so a word never released is a slot lost for the life of the server.
+    fn forget_agent_caches(&mut self, agent: &AgentId, transcript: Option<&Path>) {
+        self.agents.words.release(agent);
+        if let Some(path) = transcript {
+            self.agents.recaps.forget(path);
+        }
+    }
+
+    /// The same for every record of a workspace that is about to go with it, which is what a
+    /// delete takes. Called before the removal, so a removal that refuses would release a word
+    /// a record still holds. Nothing observable turns on that: a working word is picked from
+    /// the agent id and comes back the same on the next look (M3 plan assumption 34), and a
+    /// recap is re-read from the transcript.
     fn forget_agent_caches_of(&mut self, workspace: &WorkspaceId) {
-        let doomed: Vec<(domux_core::ids::AgentId, Option<PathBuf>)> = self
+        let doomed: Vec<(AgentId, Option<PathBuf>)> = self
             .model
             .agents_in_workspace(workspace)
             .into_iter()
             .map(|a| (a.id.clone(), a.transcript_path.clone()))
             .collect();
         for (id, transcript) in doomed {
-            self.agents.words.release(&id);
-            if let Some(path) = transcript {
-                self.agents.recaps.forget(&path);
-            }
+            self.forget_agent_caches(&id, transcript.as_deref());
         }
     }
 
