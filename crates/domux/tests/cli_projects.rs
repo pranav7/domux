@@ -585,6 +585,9 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
     // view's own workspace instead.
     let refused = run(domux2(&h).args(["workspace", "clear", "workspace-1"])).await;
     assert_eq!(refused.code, Some(1));
+    // The same code word the laid-out question carries. A refusal that is one line and a
+    // refusal that is five are told apart by a script the same way.
+    assert!(refused.err.starts_with("refused: "), "{}", refused.err);
     assert!(
         refused.err.contains(
             "workspace-1 has uncommitted or unpushed changes; clear it with --yes to throw them \
