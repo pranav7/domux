@@ -1679,6 +1679,55 @@ async fn resume_takes_the_workspace_from_the_environment_and_says_when_there_is_
     assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
 }
 
+/// One resume over a workspace holding two exited records that ran in the same pane: one line
+/// is typed and the other record says why it was left alone (M3 plan assumption 29). The
+/// reasons are messages, not data, so they go to standard error and the typed lines do not.
+#[tokio::test]
+async fn resume_prints_the_lines_it_typed_and_the_reasons_it_skipped() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let workspace = h
+        .model()
+        .pane_location(&pane)
+        .expect("a location")
+        .workspace;
+    for session in ["s1", "s2"] {
+        h.report(
+            pane.clone(),
+            AgentKind::Claude,
+            &format!(
+                r#"{{"hook_event_name":"SessionStart","session_id":"{session}","cwd":"/tmp"}}"#
+            ),
+        )
+        .await;
+        h.report(
+            pane.clone(),
+            AgentKind::Claude,
+            &format!(r#"{{"hook_event_name":"SessionEnd","session_id":"{session}"}}"#),
+        )
+        .await;
+    }
+    assert_eq!(h.agents().await.len(), 2, "two exited records in one pane");
+
+    let out = domux2(&h)
+        .env("DOMUX_WORKSPACE", workspace.as_str())
+        .arg("resume")
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let typed = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(typed.lines().count(), 1, "one line was typed: {typed}");
+    assert!(typed.contains("claude --resume "), "{typed}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(said.lines().count(), 1, "one record was skipped: {said}");
+    assert!(said.starts_with("skipped a_"), "{said}");
+    assert!(
+        said.contains("already took a relaunch line"),
+        "the reason, not just the fact: {said}"
+    );
+}
+
 /// The three messaging verbs the `SessionStart` block names. They are not built until M4, and
 /// what they answer says so: without them the block would name three commands clap does not
 /// know, and the reader would be told the subcommand is unrecognised rather than when it
@@ -1764,6 +1813,27 @@ async fn install_apply_writes_the_file_and_names_the_backup() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("Nothing to change."), "{text}");
     assert!(!text.contains(".domux-backup-"), "{text}");
+}
+
+/// A home with no settings file at all: the install creates one and says so. "Patched" would be
+/// a claim about a file that was not there.
+#[tokio::test]
+async fn install_apply_creates_the_file_when_there_is_none() {
+    let home = tempfile::tempdir().unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Created "), "{text}");
+    assert!(
+        !text.contains(".domux-backup-"),
+        "there was nothing to back up: {text}"
+    );
+    let written = std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap();
+    assert!(written.contains("agent report --agent claude"), "{written}");
 }
 
 #[tokio::test]
