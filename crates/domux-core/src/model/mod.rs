@@ -1,9 +1,11 @@
 //! The Model: the root of all shared state, owned by the core task. Every mutation is a
 //! method here that returns the events it produced. Nothing outside this crate writes fields.
 
+pub mod agent;
 pub mod focus;
 pub mod layout;
 
+pub use agent::{transition, Agent, AgentEvent, AgentKind, AgentReport, AgentSource, AgentState};
 pub use focus::{ConfirmKind, Focus, Overlay, PromptKind, RegionKind, TextInput};
 pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir};
 
