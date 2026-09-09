@@ -9,6 +9,7 @@ pub mod api;
 pub mod attach;
 pub mod config;
 pub mod events;
+pub mod import;
 pub mod pane;
 pub mod server;
 pub mod tab;

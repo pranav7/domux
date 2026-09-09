@@ -8,6 +8,7 @@ pub mod api;
 pub mod config;
 pub mod facts;
 pub mod ids;
+pub mod import_v1;
 pub mod keymap;
 pub mod model;
 pub mod names;

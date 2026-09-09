@@ -1,0 +1,12 @@
+{
+  "name": "planner",
+  "root": "/repo/planner",
+  "label": "",
+  "workspace": "free",
+  "windows": [
+    { "index": 1, "name": "", "cwd": "/repo/planner/docs", "agent": "" },
+    { "index": 2, "name": "notes", "cwd": "", "agent": "" }
+  ],
+  "created_at": "2026-04-11T07:30:00+01:00",
+  "updated_at": "2026-08-22T16:02:09+01:00"
+}

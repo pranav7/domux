@@ -1,0 +1,10 @@
+{
+  "name": "ledger-two",
+  "root": "/repo/ledger-two",
+  "label": "second pass",
+  "windows": [
+    { "index": 3, "name": "third", "cwd": "/repo/ledger-two", "agent": "" },
+    { "index": 1, "name": "first", "cwd": "/repo/ledger-two", "agent": "" },
+    { "index": 2, "name": "second", "cwd": "/repo/ledger-two", "agent": "" }
+  ]
+}

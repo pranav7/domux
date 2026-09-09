@@ -357,6 +357,16 @@ pub struct TabCreateParams {
     pub client: Option<ClientId>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
+    /// The tab's name, for a caller that already knows it. `None` leaves the tab with its
+    /// number, which is what every key and every other caller wants.
+    ///
+    /// It exists because `tab.rename` resolves its target inside the calling client's
+    /// workspace, so a caller with no view cannot name a tab it just made somewhere else,
+    /// and because a name is not always an afterthought: in V1's session file a window and
+    /// its name are one fact, and splitting them into two calls is V2's artefact rather
+    /// than something the caller meant (found by Task 23).
+    #[serde(default)]
+    pub name: Option<String>,
 }
 impl Params for TabCreateParams {}
 
@@ -602,6 +612,14 @@ pub struct TabInfo {
     /// 1-based position in the workspace.
     pub index: usize,
     pub name: Option<String>,
+    /// Where the tab's focused pane is, as the server last read it. That is the directory
+    /// the tab was opened at until its shell moves, and the shell's own directory after,
+    /// because the server polls it from the pane rather than recording where it started.
+    ///
+    /// Without this field a tab's directory can only be read through `pane.list`, which
+    /// resolves its target inside the calling client's workspace, so nothing could ask
+    /// where a tab is unless it was already looking at it (found by Task 23).
+    pub cwd: PathBuf,
     pub panes: Vec<PaneId>,
     pub focused: PaneId,
     pub zoomed: Option<PaneId>,

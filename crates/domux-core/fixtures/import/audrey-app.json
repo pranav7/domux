@@ -1,0 +1,12 @@
+{
+  "name": "audrey-app",
+  "root": "/repo/audrey-app",
+  "todo_path": "/state/by-path/%2Frepo%2Faudrey-app.md",
+  "label": "audit-harness",
+  "workspace": "occupied",
+  "windows": [
+    { "index": 1, "name": "agent-harness", "cwd": "/repo/audrey-app", "agent": "claude" }
+  ],
+  "created_at": "2026-05-19T19:05:15+01:00",
+  "updated_at": "2026-09-04T22:17:27+01:00"
+}
