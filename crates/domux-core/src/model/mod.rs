@@ -153,6 +153,30 @@ impl fmt::Display for WorkspaceHandle {
     }
 }
 
+impl WorkspaceHandle {
+    /// True when `text` reads as a handle: `main`, or `workspace-` and a number, in any case
+    /// and ignoring surrounding space. That is exactly what the handle pass of
+    /// `Model::resolve_workspace_with` can match, so a name that answers true here could
+    /// never resolve to the workspace it was given to: the handle pass runs first and returns
+    /// the workspace whose handle it is.
+    ///
+    /// The grammar, not the handles a model happens to hold. A name checked against today's
+    /// handles would be legal until someone made that slot, and nothing would look again.
+    ///
+    /// The round trip through `Display` is what settles the edge cases: `workspace-01` parses
+    /// as a number but no handle prints it, so nothing could match it and it is a perfectly
+    /// good name.
+    pub fn reads_as_handle(text: &str) -> bool {
+        let text = text.trim().to_ascii_lowercase();
+        if text == WorkspaceHandle::Main.to_string() {
+            return true;
+        }
+        text.strip_prefix("workspace-")
+            .and_then(|n| n.parse::<u32>().ok())
+            .is_some_and(|n| WorkspaceHandle::Slot(n).to_string() == text)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Workspace {
     pub id: WorkspaceId,
@@ -2503,6 +2527,46 @@ mod tests {
         assert_eq!(view.overlay_under, None);
         assert_eq!(view.pop_overlay(), None);
         assert_eq!(view.overlay, None);
+    }
+
+    /// The cases are derived from `Display` rather than written out beside it, so a change to
+    /// how a handle prints cannot leave this test agreeing with the old spelling.
+    ///
+    /// `workspace-01` and `workspace-+1` are the interesting refusals: both parse as the
+    /// number one, and neither is a handle, because no handle prints them and so the handle
+    /// pass of `resolve_workspace_with` could never match them. Someone may name a workspace
+    /// either.
+    #[test]
+    fn a_string_reads_as_a_handle_exactly_when_some_handle_prints_it() {
+        for handle in [
+            WorkspaceHandle::Main,
+            WorkspaceHandle::Slot(1),
+            WorkspaceHandle::Slot(42),
+        ] {
+            let printed = handle.to_string();
+            assert!(WorkspaceHandle::reads_as_handle(&printed), "{printed}");
+            assert!(
+                WorkspaceHandle::reads_as_handle(&printed.to_uppercase()),
+                "the handle pass ignores case, so this must too: {printed}"
+            );
+            assert!(
+                WorkspaceHandle::reads_as_handle(&format!("  {printed} ")),
+                "the resolver trims its target, so this must too: {printed}"
+            );
+        }
+        for name in [
+            "auth cleanup",
+            "workspace",
+            "workspace-",
+            "workspace-01",
+            "workspace-+1",
+            "workspace-x",
+            "workspace-1a",
+            "mainline",
+            "",
+        ] {
+            assert!(!WorkspaceHandle::reads_as_handle(name), "{name}");
+        }
     }
 
     #[test]

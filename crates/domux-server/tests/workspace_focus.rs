@@ -170,6 +170,52 @@ async fn focusing_from_a_switcher_opened_over_an_overlay_leaves_the_keys_in_that
     assert_eq!(view.focus, Focus::Region(RegionKind::Overlay));
 }
 
+/// The switcher closes, and **only** the switcher. An overlay the reader opened for something
+/// else is not what switching was asked for, so it stays.
+///
+/// This is the far side of the mutant the test above is on the near side of. That one opens
+/// the switcher over the help overlay, so a handler treating any overlay as the switcher
+/// behaves identically there: the switcher is what is open. Here there is no switcher at all,
+/// and a handler that popped whatever was open would close the help overlay and hand the keys
+/// to the pane.
+#[tokio::test]
+async fn focusing_a_workspace_with_a_help_overlay_open_leaves_the_overlay_open() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+    h.api("help", json!({"client": client.as_str()}))
+        .await
+        .unwrap();
+    let _ = h.frame(client.clone()).await;
+    assert_eq!(
+        h.model().client(&client).unwrap().overlay,
+        Some(domux_core::model::Overlay::Help),
+        "the fixture holds an overlay that is not the switcher"
+    );
+
+    h.api(
+        "workspace.focus",
+        json!({"workspace": w1.as_str(), "client": client.as_str()}),
+    )
+    .await
+    .unwrap();
+    let _ = h.frame(client.clone()).await;
+
+    let m = h.model();
+    let view = m.client(&client).unwrap();
+    assert_eq!(view.workspace, w1, "the switch still happened");
+    assert_eq!(
+        view.overlay,
+        Some(domux_core::model::Overlay::Help),
+        "and the overlay the reader opened is still open"
+    );
+    assert_eq!(
+        view.focus,
+        Focus::Region(RegionKind::Overlay),
+        "so the keys are still in it"
+    );
+}
+
 #[tokio::test]
 async fn focusing_a_workspace_with_the_sidebar_open_keeps_it_open_and_moves_the_fill() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
@@ -486,16 +532,21 @@ async fn workspace_list_carries_the_branch_and_the_pull_request_and_resume_says_
     assert_eq!(rows[0]["handle"], "main");
     assert_eq!(rows[1]["handle"], "workspace-1");
     assert_eq!(rows[1]["branch"], "workspace-1");
-    assert_eq!(
-        rows[1]["pr"],
-        serde_json::Value::Null,
-        "no pull request is null, not an empty string"
-    );
-    assert_eq!(
-        rows[1]["pr_state"],
-        serde_json::Value::Null,
-        "and neither is its state"
-    );
+    // Two different wrong shapes, and `rows[1]["pr"]` cannot tell them apart on its own:
+    // `serde_json`'s `Index` answers `Value::Null` for a key that is not there as well as for
+    // a key whose value is null. So the key is asserted separately from the value. A caller
+    // reading this row has the same problem, which is why the wire shape is the contract.
+    let row = rows[1].as_object().expect("a row is an object");
+    for field in ["pr", "pr_state"] {
+        assert!(
+            row.contains_key(field),
+            "{field} is written, not omitted: {row:?}"
+        );
+        assert!(
+            row[field].is_null(),
+            "and it is null, not an empty string: {row:?}"
+        );
+    }
     assert_eq!(rows[2]["handle"], "workspace-2");
     assert_eq!(rows[2]["pr"], "PR#212", "the row carries the fact's text");
     assert_eq!(
@@ -506,6 +557,15 @@ async fn workspace_list_carries_the_branch_and_the_pull_request_and_resume_says_
 
     let err = h
         .api("workspace.resume", json!({"workspace": "workspace-1"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Unavailable);
+    assert_eq!(err.message, "resume arrives with agents in M3");
+    // And for a target that matches nothing, which is the input that separates "refuses
+    // without looking" from "resolves first and then refuses": a resume that resolved would
+    // answer `NotFound` here and the same `Unavailable` above.
+    let err = h
+        .api("workspace.resume", json!({"workspace": "workspace-9"}))
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Unavailable);
@@ -795,4 +855,155 @@ async fn switching_workspaces_reaches_the_state_file_while_the_server_is_still_r
     let after: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state).expect("state.json")).unwrap();
     assert_eq!(after["last_workspace"], w1.as_str(), "{after}");
+}
+
+/// A name that reads as a handle is refused, so a name can always find the workspace it was
+/// given to.
+///
+/// `Model::resolve_workspace_with` runs the handle pass before the name pass and returns on
+/// the first pass with one hit. So without this guard, naming `workspace-1` the string
+/// `workspace-2` would leave that string resolving to the **other** workspace, the chosen name
+/// unreachable, and two rows in the Projects box reading the same words. `workspace.clear` and
+/// `workspace.delete` take their target through that resolver, so the reader who types the
+/// name they chose acts on the worktree they did not.
+///
+/// The fixture has both slots, because that is what makes the shadowing observable: with only
+/// `workspace-1` in the model the refused string would resolve to nothing and the two
+/// implementations would agree.
+#[tokio::test]
+async fn naming_a_workspace_with_a_handle_is_refused_so_the_name_stays_findable() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, w1, w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+
+    for shadow in ["workspace-2", "WORKSPACE-2", "main", " workspace-1 "] {
+        let err = h
+            .api(
+                "workspace.rename",
+                json!({"workspace": w1.as_str(), "name": shadow}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams, "{shadow}: {err}");
+        assert!(
+            err.message.contains("is a handle"),
+            "the refusal says what was refused: {err}"
+        );
+        assert_eq!(
+            h.model().workspace(&w1).unwrap().name,
+            None,
+            "and nothing was written: {shadow}"
+        );
+    }
+
+    // The near miss on the other side: `workspace-01` parses as a number and no handle prints
+    // it, so nothing could ever match it by the handle pass and it is a perfectly good name.
+    h.api(
+        "workspace.rename",
+        json!({"workspace": w1.as_str(), "name": "workspace-01"}),
+    )
+    .await
+    .unwrap();
+    let _ = h.frame(client.clone()).await;
+    assert_eq!(
+        h.model().workspace(&w1).unwrap().name.as_deref(),
+        Some("workspace-01")
+    );
+    // And the handle it nearly spells still answers for the workspace that owns it.
+    let info = h
+        .api(
+            "workspace.focus",
+            json!({"workspace": "workspace-1", "client": client.as_str()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(info["id"], w1.as_str());
+    let info = h
+        .api(
+            "workspace.focus",
+            json!({"workspace": "workspace-01", "client": client.as_str()}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(info["id"], w1.as_str(), "the name resolves too");
+    assert_ne!(info["id"], w2.as_str());
+}
+
+/// Naming a workspace puts the new name on the screen.
+///
+/// Only `ctx.view_dirty` can do that here: `dispatch_inner` ORs in the handler's own flag, and
+/// `apply_side_effects` raises it only when something was spawned, killed or replaced, which a
+/// naming never is. The harness clock is fixed, so nothing redraws on a tick either. So the
+/// frame changes because the handler asked for it or it does not change at all, and the wait
+/// below fails rather than passing on a redraw something else supplied.
+#[tokio::test]
+async fn naming_a_workspace_redraws_the_screen_that_shows_its_row() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+    h.api("sidebar.show", json!({"client": client.as_str()}))
+        .await
+        .unwrap();
+    let before = h
+        .wait_for(
+            client.clone(),
+            |f| f.contains("workspace-1"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(!before.contains("auth cleanup"), "{before}");
+
+    h.api(
+        "workspace.rename",
+        json!({"workspace": w1.as_str(), "name": "auth cleanup"}),
+    )
+    .await
+    .unwrap();
+
+    h.wait_for(
+        client.clone(),
+        |f| f.contains("auth cleanup"),
+        Duration::from_secs(2),
+    )
+    .await;
+}
+
+/// And taking it off puts the handle back on the screen, for the same reason and through the
+/// same one flag.
+#[tokio::test]
+async fn clearing_a_name_redraws_the_screen_that_shows_its_row() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+    h.api("sidebar.show", json!({"client": client.as_str()}))
+        .await
+        .unwrap();
+    h.api(
+        "workspace.rename",
+        json!({"workspace": w1.as_str(), "name": "auth cleanup"}),
+    )
+    .await
+    .unwrap();
+    let before = h
+        .wait_for(
+            client.clone(),
+            |f| f.contains("auth cleanup"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        !before.contains("workspace-1"),
+        "the name has replaced the handle on the row:\n{before}"
+    );
+
+    h.api("workspace.clear_name", json!({"workspace": w1.as_str()}))
+        .await
+        .unwrap();
+
+    h.wait_for(
+        client.clone(),
+        |f| f.contains("workspace-1"),
+        Duration::from_secs(2),
+    )
+    .await;
 }

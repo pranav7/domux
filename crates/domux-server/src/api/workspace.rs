@@ -8,7 +8,7 @@ use domux_core::api::{
 };
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
 use domux_core::ids::{ProjectId, WorkspaceId};
-use domux_core::model::{Focus, Overlay, ProjectKind, RegionKind};
+use domux_core::model::{Focus, Overlay, ProjectKind, RegionKind, WorkspaceHandle};
 use serde_json::Value;
 
 /// Makes the next slot of a project: a worktree at the lowest free number, on a fresh branch
@@ -237,6 +237,24 @@ pub fn rename(ctx: &mut Ctx, p: WorkspaceRenameParams) -> Result<Value, ApiError
             "give a name: naming a workspace on the screen arrives with the name box",
         ));
     };
+    // A name that reads as a handle can never find the workspace it was given to. The handle
+    // pass of `Model::resolve_workspace_with` runs before the name pass and returns as soon as
+    // it has one hit, so `workspace-2` would answer with the workspace whose handle that is,
+    // and the row would draw the same words in two places. Refusing here is the only place
+    // that can hold the line: `workspace.clear` and `workspace.delete` take their target
+    // through that resolver, so a name nobody can resolve is a worktree removed by mistake.
+    //
+    // The grammar, not a check against the handles the model holds today: a name that is free
+    // now would be shadowed the moment someone made that slot, and nothing would look again.
+    // A name another workspace already has is a different matter and is allowed - two projects
+    // can each have an `auth` - because the resolver answers that with an ambiguity naming
+    // both, rather than silently picking one.
+    if WorkspaceHandle::reads_as_handle(&name) {
+        return Err(ApiError::invalid_params(format!(
+            "{} is a handle, and a handle answers first, so nothing could find this workspace by that name; pick another",
+            name.trim()
+        )));
+    }
     let events = ctx.model.rename_workspace(&target, Some(name))?;
     ctx.events.extend(events);
     ctx.view_dirty = true;
