@@ -2644,10 +2644,6 @@ mod tests {
     const STILL_UNBUILT: &[(&str, &str)] = &[
         ("workspace.clear", r#"{"workspace":"w"}"#),
         ("workspace.delete", r#"{"workspace":"w"}"#),
-        ("list.down", "{}"),
-        ("list.up", "{}"),
-        ("list.activate", "{}"),
-        ("list.filter", "{}"),
     ];
 
     /// Direction A of the register: implementing one of `STILL_UNBUILT` must fail this test

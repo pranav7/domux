@@ -862,9 +862,13 @@ async fn server_stop_replies_before_the_server_stops() {
     server.stop().await;
 }
 
-/// A region that parses but has no M1 behaviour answers `Unavailable`, which is a different
+/// A region that parses but has no behaviour yet answers `Unavailable`, which is a different
 /// arm from the `NotFound` an unknown method name or an absent client gets. The client is
 /// attached first so the call gets past `Ctx::view`, which is the `NotFound` path.
+///
+/// The agents overlay and not the switcher: M2 built the switcher and the sidebar's box, and
+/// those two now answer `Refused` when the thing they name is not on the screen, which is the
+/// third arm and not this one.
 #[tokio::test]
 async fn a_region_that_arrives_in_a_later_milestone_returns_unavailable() {
     let (server, _dir) = start().await;
@@ -880,7 +884,7 @@ async fn a_region_that_arrives_in_a_later_milestone_returns_unavailable() {
     let response = call(
         &server.socket_path,
         "focus.region",
-        serde_json::json!({"region": "switcher"}),
+        serde_json::json!({"region": "agents_overlay"}),
     )
     .await;
     assert_eq!(
