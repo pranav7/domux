@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "permission.asked",
+  "session_id": "ses_7c1d2f3a",
+  "cwd": "/Users/pranav/projects/audrey-app",
+  "message": "opencode wants to edit src/auth.ts"
+}
