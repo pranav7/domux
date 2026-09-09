@@ -563,48 +563,63 @@ impl Core {
     /// resuming on attach would type a second `claude --resume` into a pane where the first one
     /// is already running.
     ///
-    /// Every record the model holds, with no filter of its own, and the reason is that it does
-    /// not need one rather than that a live record cannot turn up here.
+    /// One `workspace.resume` per workspace, which is every record the model holds: a record's
+    /// workspace is one the model has, because `state_file::restore` drops a record whose
+    /// workspace is gone rather than restoring it dangling.
     ///
-    /// `agent::plan_resume` is the one judge of what can be resumed. It refuses a live record and
-    /// types nothing, and this loop reaches it through `dispatch` for every record, so the worst a
-    /// live record could do here is produce a logged refusal. A filter would be a second judge of
-    /// the same question, and the two could disagree; there is nothing it could prevent.
+    /// **`workspace.resume` and not one `agent.resume` per record**, because resuming a set of
+    /// records is not the same operation as resuming one and the difference is a rule that has to
+    /// live in one place: a pane takes one relaunch line, so a set has to keep the first record
+    /// for each pane and skip the rest. That rule needs to know what the loop has already typed,
+    /// which `agent.resume` cannot know and `plan_resume` must not, so it belongs to the loop -
+    /// and there is one loop rather than two. A per-record loop here would have needed its own
+    /// copy, and its copy could not have been right: it would have had to guess which pane a
+    /// record resolves to before asking whether that record can resume at all, which is how a
+    /// Codex record that refuses ends up taking a pane from the Claude record behind it.
     ///
-    /// What no input can currently produce is a live record at this point at all, which is why no
-    /// test covers that path. `state_file::restore` ends by exiting every live record it reads -
-    /// the server stopped, so whatever those sessions were doing they are not doing now - and the
-    /// only two things that make a record, the observer's tick and an `agent.report` over the
-    /// socket, both run after `Core::new` has returned. **That is `restore`'s behaviour today and
-    /// not a promise to this function**, which is exactly why the safety above is written not to
-    /// rest on it.
+    /// It carries no filter of its own for the same reason. `agent::plan_resume` is the one judge
+    /// of what can be resumed, `workspace.resume` collects its refusals, and a live record here
+    /// would produce a skipped line rather than a write. That does not lean on
+    /// `state_file::restore` exiting every live record it reads, which is that function's
+    /// behaviour today rather than a promise to this one.
     ///
     /// This runs after the pane loop above because the line goes into a shell, and until each
     /// pane has been spawned there is no shell to type into.
     ///
-    /// It goes through `dispatch` rather than calling the handler, so `auto` and a reader
-    /// pressing Enter are one operation and nothing about resuming can be true of one and not
-    /// the other. A refusal is logged and skipped: one record whose kind does not resume must
-    /// not stop the ones that do, the same rule `workspace.resume` follows.
+    /// Everything it could not do is logged, because there is nobody to tell: no client has
+    /// attached - `Core::new` returns before `socket::listen` runs - so there is no screen for a
+    /// pill and no caller waiting for a reply.
     fn resume_agents_on_start(&mut self) {
         if self.config.config.resume.agents != ResumeMode::Auto {
             return;
         }
-        let records: Vec<AgentId> = self
+        let workspaces: Vec<WorkspaceId> = self
             .model
-            .sorted_agents()
-            .into_iter()
-            .map(|a| a.id.clone())
+            .projects
+            .iter()
+            .flat_map(|p| p.workspaces.iter())
+            .map(|w| w.id.clone())
             .collect();
-        for agent in records {
-            // No client: nothing has attached yet, so there is no screen for a pill and no
-            // caller waiting for a reply. The log line is the whole record of a refusal here.
-            let method = Method::AgentResume(domux_core::api::AgentResumeParams {
-                agent: Some(agent.to_string()),
-                client: None,
+        for workspace in workspaces {
+            let method = Method::WorkspaceResume(domux_core::api::WorkspaceTargetParams {
+                workspace: Some(workspace.to_string()),
             });
-            if let Err(e) = self.dispatch(method, None) {
-                tracing::info!(agent = %agent, "not resumed at start: {}", e.message);
+            match self.dispatch(method, None) {
+                Ok(value) => {
+                    for line in value
+                        .get("skipped")
+                        .and_then(|s| s.as_array())
+                        .map(|s| s.as_slice())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|line| line.as_str())
+                    {
+                        tracing::info!(workspace = %workspace, "not resumed at start: {line}");
+                    }
+                }
+                Err(e) => {
+                    tracing::info!(workspace = %workspace, "not resumed at start: {}", e.message)
+                }
             }
         }
     }
@@ -2886,7 +2901,7 @@ pub(crate) fn agents_view(
 ///
 /// A call with no client draws nothing, and that is the honest outcome: a pill is a place on a
 /// screen, and a caller with no screen has already been answered by its reply.
-pub fn set_pill(
+pub(crate) fn set_pill(
     model: &mut Model,
     client: Option<&ClientId>,
     text: String,

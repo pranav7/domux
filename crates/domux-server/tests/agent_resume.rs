@@ -106,6 +106,17 @@ async fn an_exited(h: &mut Harness, pane: &domux_core::ids::PaneId, kind: AgentK
     .await;
 }
 
+/// A live record of `kind` in `pane`, by hook.
+async fn a_live(h: &mut Harness, pane: &domux_core::ids::PaneId, kind: AgentKind, sid: &str) {
+    let (start, _) = start_and_end(kind);
+    h.report(
+        pane.clone(),
+        kind,
+        &format!(r#"{{"hook_event_name":"{start}","session_id":"{sid}"}}"#),
+    )
+    .await;
+}
+
 /// The names one kind's own hooks give the start and the end of a session. Claude and Codex
 /// share their spelling and OpenCode's plugin sends OpenCode's own (plan assumptions 13 and 14),
 /// so a helper that sent Claude's names to all three would build no OpenCode record at all.
@@ -114,6 +125,15 @@ fn start_and_end(kind: AgentKind) -> (&'static str, &'static str) {
         AgentKind::Claude | AgentKind::Codex => ("SessionStart", "SessionEnd"),
         AgentKind::Opencode => ("session.created", "session.deleted"),
     }
+}
+
+/// How many relaunch lines reached a pane. One line per pane is the rule, so the count is the
+/// assertion: `contains` would hold for two lines as readily as for one.
+fn lines_typed_into(h: &Harness, pane: &domux_core::ids::PaneId) -> usize {
+    String::from_utf8(h.pane_input(pane))
+        .expect("the typed bytes are utf-8")
+        .matches("--resume")
+        .count()
 }
 
 /// The overlay this client has open, which is what says whether Enter left the list up.
@@ -199,6 +219,222 @@ async fn a_quote_in_the_session_id_reaches_the_pane_quoted() {
     assert_eq!(
         String::from_utf8(h.pane_input(&pane)).unwrap(),
         "cd '/repo' && command -v claude >/dev/null 2>&1 && claude --resume 'a'\\''b'\r"
+    );
+}
+
+/// **The pane has to be free.** A record keeps its `last_pane` when it exits, so a pane where one
+/// session ended and another started has an exited record still naming it. Resuming that record
+/// would type a shell command into the running agent's prompt and submit it: text in someone's
+/// conversation that they never typed, in a session that is not even the one being resumed.
+///
+/// The assertion that matters is the empty pty, not the refusal. A refusal that typed the line
+/// first would satisfy `unwrap_err` and still have done the harm.
+#[tokio::test]
+async fn resuming_a_record_whose_pane_now_runs_another_agent_types_nothing_into_it() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    an_exited(&mut h, &pane, AgentKind::Claude, "old-1").await;
+    let exited = h.agents().await[0].id.clone();
+    // A second session takes the same pane and is still running.
+    a_live(&mut h, &pane, AgentKind::Claude, "new-1").await;
+    let live = h
+        .agents()
+        .await
+        .into_iter()
+        .find(|a| a.state.is_live())
+        .expect("the second session is live");
+    assert_ne!(live.id, exited, "two records, and they share the pane");
+    assert_eq!(live.pane.as_ref(), Some(&pane));
+
+    let err = h
+        .api("agent.resume", json!({"agent": exited.to_string()}))
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::Refused);
+    assert!(
+        err.message.contains("claude is running in pane"),
+        "the refusal names what is in the pane (principle 9): {}",
+        err.message
+    );
+    assert!(
+        h.pane_input(&pane).is_empty(),
+        "and above all nothing was typed into the running agent's prompt: {:?}",
+        String::from_utf8(h.pane_input(&pane))
+    );
+}
+
+/// The same guard through the key, because the Agents box offers `⏎ resume` on that row and the
+/// reader pressing it must not reach the running agent either.
+#[tokio::test]
+async fn enter_on_a_row_whose_pane_is_busy_refuses_in_the_footer_and_types_nothing() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    an_exited(&mut h, &pane, AgentKind::Claude, "old-1").await;
+    a_live(&mut h, &pane, AgentKind::Claude, "new-1").await;
+    let exited = h
+        .agents()
+        .await
+        .into_iter()
+        .find(|a| a.state == AgentState::Exited)
+        .expect("the first session's record")
+        .id
+        .clone();
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "a").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("⏎ resume"),
+        Duration::from_secs(2),
+    )
+    .await;
+    // Onto the exited row, whichever line it is on: the live record sorts ahead of it.
+    for _ in 0..4 {
+        if h.model()
+            .client(&h.client)
+            .and_then(|v| v.agents_cursor.clone())
+            == Some(exited.clone())
+        {
+            break;
+        }
+        h.key(h.client.clone(), "j").await;
+    }
+    h.key(h.client.clone(), "Enter").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| row_text(f, footer_row(f)).contains("is running in pane"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        style_at(&f, footer_row(&f), pill_col(&f)).contains(PILL_REFUSED),
+        "in red, because it refused:\n{f}"
+    );
+    assert!(
+        h.pane_input(&pane).is_empty(),
+        "and nothing was typed into the running agent's prompt"
+    );
+}
+
+/// **One line per pane.** Two sessions in one pane leave two exited records both naming it. Typing
+/// both lines would put the second into whatever the first started, so the record the Agents box
+/// lists first takes the pane and the other is skipped with a reason - and, the part that would
+/// otherwise be a lie, the skipped one is reported in `skipped` rather than in `resumed`.
+///
+/// The assertion is "the first row wins", not "the newest wins". Those are the same thing under a
+/// real clock, where `sorted_agents` orders exited records by last activity descending, but the
+/// harness holds a `FixedClock`, so both records here carry the same `last_activity_at` and the
+/// order falls to that function's id tie-break. The rule this loop implements is the first in the
+/// box's order, which is what the assertion says; which record that is belongs to
+/// `sorted_agents`.
+#[tokio::test]
+async fn workspace_resume_types_one_line_per_pane_and_skips_the_other_record_there() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    an_exited(&mut h, &pane, AgentKind::Claude, "first").await;
+    an_exited(&mut h, &pane, AgentKind::Claude, "second").await;
+    let records = h.agents().await;
+    assert_eq!(records.len(), 2, "two records, both exited, sharing a pane");
+    let leads = records[0].id.clone();
+    let behind = records[1].id.clone();
+    let leads_session = records[0]
+        .session_id
+        .clone()
+        .expect("the leading record has a session id");
+
+    let out = h.api("workspace.resume", json!({})).await.unwrap();
+
+    assert_eq!(
+        out["resumed"].as_array().unwrap().len(),
+        1,
+        "one line was typed, so one record is reported as resumed: {out}"
+    );
+    assert_eq!(out["resumed"][0]["agent"], leads.to_string(), "{out}");
+    assert_eq!(out["skipped"].as_array().unwrap().len(), 1, "{out}");
+    let skipped = out["skipped"][0].as_str().unwrap();
+    assert!(
+        skipped.starts_with(&format!("{behind}: ")),
+        "the record behind it is the one skipped: {out}"
+    );
+    assert!(
+        skipped.contains("already took a relaunch line"),
+        "and the reason says why (principle 9): {out}"
+    );
+    assert_eq!(
+        lines_typed_into(&h, &pane),
+        1,
+        "exactly one relaunch line reached the pty: {:?}",
+        String::from_utf8(h.pane_input(&pane))
+    );
+    assert!(String::from_utf8(h.pane_input(&pane))
+        .unwrap()
+        .contains(&format!("claude --resume '{leads_session}'")));
+}
+
+/// A pane is claimed where the line is typed and nowhere earlier. The Codex record here sorts
+/// ahead of the Claude record in its pane and cannot resume, so it must not take that pane: the
+/// Claude record behind it still comes back. A guard that reserved the pane before asking whether
+/// the record could resume would type nothing at all here.
+///
+/// The precondition is asserted rather than assumed. Both records carry the same
+/// `last_activity_at` under the harness's fixed clock, so `sorted_agents` breaks the tie on the id,
+/// and this fixture puts Codex first. If a change ever flips that, this fails on the assertion
+/// instead of quietly becoming a test of the other order, where the bug would not show.
+#[tokio::test]
+async fn a_record_that_cannot_resume_does_not_take_the_pane_from_one_that_can() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    an_exited(&mut h, &pane, AgentKind::Codex, "x1").await;
+    an_exited(&mut h, &pane, AgentKind::Claude, "c1").await;
+    let records = h.agents().await;
+    assert_eq!(
+        records[0].kind,
+        AgentKind::Codex,
+        "the codex record has to be reached first for this test to mean anything"
+    );
+    assert_eq!(records[1].kind, AgentKind::Claude);
+
+    let out = h.api("workspace.resume", json!({})).await.unwrap();
+
+    assert_eq!(out["resumed"].as_array().unwrap().len(), 1, "{out}");
+    assert_eq!(
+        out["resumed"][0]["agent"],
+        records[1].id.to_string(),
+        "{out}"
+    );
+    assert!(
+        out["skipped"][0]
+            .as_str()
+            .unwrap()
+            .contains("does not resume yet"),
+        "the codex record was skipped on its kind, not on the pane: {out}"
+    );
+    assert!(String::from_utf8(h.pane_input(&pane))
+        .unwrap()
+        .contains("claude --resume 'c1'"));
+    assert_eq!(lines_typed_into(&h, &pane), 1);
+}
+
+/// `auto` goes through the same loop, so it gets the same rule: a restart with two records in one
+/// pane types one line, not two.
+#[tokio::test]
+async fn auto_resume_at_start_types_one_line_per_pane() {
+    let mut cfg = Config::default();
+    cfg.resume.agents = ResumeMode::Auto;
+    let mut h = Harness::start(cfg, 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    an_exited(&mut h, &pane, AgentKind::Claude, "first").await;
+    an_exited(&mut h, &pane, AgentKind::Claude, "second").await;
+    assert_eq!(h.agents().await.len(), 2);
+    h.stop().await;
+    h.restart().await;
+    assert_eq!(h.agents().await.len(), 2, "both records came back");
+    assert_eq!(
+        lines_typed_into(&h, &pane),
+        1,
+        "one line, not one per record: {:?}",
+        String::from_utf8(h.pane_input(&pane))
     );
 }
 
@@ -318,6 +554,41 @@ async fn resuming_into_a_pane_whose_process_never_started_is_refused_and_skipped
         ))],
         "the write's failure joins the skipped list: {out}"
     );
+}
+
+/// A write that failed claims no pane. Nothing was typed, so a later record naming the same pane
+/// is still free to try, and telling it the pane "already took a relaunch line" would be a
+/// second untrue statement on top of the first failure.
+///
+/// This is the fixture for that: two records in a pane whose process never started. Both fail on
+/// the write, and both say so - where a loop that claimed the pane before the write succeeded
+/// would tell the second record it was skipped for a line that was never typed.
+#[tokio::test]
+async fn a_write_that_failed_leaves_the_pane_free_for_the_next_record() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    h.spawner
+        .as_ref()
+        .expect("the fake spawner")
+        .refuse_spawns();
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let second = h.focused_pane(h.client.clone());
+    an_exited(&mut h, &second, AgentKind::Claude, "first").await;
+    an_exited(&mut h, &second, AgentKind::Claude, "second").await;
+    assert_eq!(h.agents().await.len(), 2, "two records sharing the pane");
+
+    let out = h.api("workspace.resume", json!({})).await.unwrap();
+
+    assert_eq!(out["resumed"].as_array().unwrap().len(), 0, "{out}");
+    let skipped = out["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 2, "{out}");
+    for line in skipped {
+        let line = line.as_str().unwrap();
+        assert!(
+            line.ends_with(&format!("pane {second} has no terminal")),
+            "each record is skipped for the write that failed, not for a line another record \
+             never typed: {out}"
+        );
+    }
 }
 
 #[tokio::test]

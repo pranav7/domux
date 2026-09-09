@@ -630,6 +630,57 @@ async fn enter_in_the_sidebars_agents_box_switches_to_the_agents_pane() {
     );
 }
 
+/// And Enter on an **exited** row in the sidebar's box resumes it, the same as in the agents
+/// overlay, with the result in the sidebar's hint row rather than the overlay's footer.
+///
+/// The sidebar is the third surface `list.activate` serves, and the test above it only ever
+/// activates a live row: that one would pass with the exited arm broken. This is the other half,
+/// and it reads the pane to prove the line was typed rather than trusting the row.
+#[tokio::test]
+async fn enter_on_an_exited_row_in_the_sidebars_agents_box_resumes_it() {
+    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let first = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let second = h.focused_pane(h.client.clone());
+    h.report(second.clone(), AgentKind::Claude, CLAUDE_STARTS)
+        .await;
+    h.report(second.clone(), AgentKind::Claude, CLAUDE_ENDS)
+        .await;
+    h.api("sidebar.show", json!({})).await.unwrap();
+    sidebar_frame(&mut h).await;
+    h.api("pane.focus", json!({"pane": first.to_string()}))
+        .await
+        .unwrap();
+    h.api("focus.region", json!({"region": "sidebar_agents"}))
+        .await
+        .unwrap();
+
+    h.key(h.client.clone(), "Enter").await;
+
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Resumed"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("Resumed claude in "),
+        "the sidebar's hint row carries the result (principle 8):\n{f}"
+    );
+    assert_eq!(
+        focus_of(&h),
+        Focus::Region(RegionKind::SidebarAgents),
+        "and the keys stayed in the box, because resume is not a navigation"
+    );
+    assert!(
+        String::from_utf8(h.pane_input(&second))
+            .unwrap()
+            .contains("claude --resume 'c1'"),
+        "the line was typed into the agent's own pane"
+    );
+}
+
 /// A cursor left on a record that has gone starts again at the first row rather than naming
 /// a row the box is not showing (principle 2).
 ///

@@ -8,12 +8,13 @@ use domux_core::api::{
     WorkspaceRenameParams, WorkspaceResumeResult, WorkspaceTargetParams,
 };
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
-use domux_core::ids::{ProjectId, WorkspaceId};
+use domux_core::ids::{PaneId, ProjectId, WorkspaceId};
 use domux_core::model::{
     ConfirmKind, Focus, Overlay, ProjectKind, RegionKind, TextInput, WorkspaceHandle,
     MAIN_CANNOT_BE_DELETED,
 };
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Makes the next slot of a project: a worktree at the lowest free number, on a fresh branch
@@ -654,6 +655,23 @@ fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
 /// Every refusal is `agent::plan_resume`'s, which is what `agent.resume` refuses with too, so a
 /// record skipped here and the same record named on its own give the same reason in the same
 /// words. Nothing about resuming one agent is repeated here.
+///
+/// **One line per pane.** Two exited records name one pane whenever two sessions ran there in
+/// turn, because a record keeps its `last_pane` when it exits. Typing both lines would put the
+/// second into whatever the first started, and reporting both in `resumed` would claim a line
+/// reached a shell when it reached an agent's prompt (principle 4). So the first record resumed
+/// into a pane takes it and the rest are skipped.
+///
+/// First in the order this loop reads, which is `Model::sorted_agents` - the order the Agents box
+/// shows. Choosing *which* record that is belongs to that function and not to this one: it orders
+/// exited records by last activity descending, so the one that takes the pane is the session you
+/// had last, and V1 chose one session per window for that same reason
+/// (`bestAgentSession`, commit b02a3ae).
+///
+/// A pane is claimed where the line is actually typed and nowhere earlier. A record that cannot
+/// resume must not take a pane from one that can: an exited Codex record in front of an exited
+/// Claude record in the same pane refuses on its kind, and the Claude record behind it still
+/// comes back.
 pub fn resume(ctx: &mut Ctx, p: WorkspaceTargetParams) -> Result<Value, ApiError> {
     let workspace = ctx.resolve_workspace_param(p.workspace.as_deref())?;
     // Read out as ids before the loop, because the loop writes to the panes through `ctx` and
@@ -667,19 +685,30 @@ pub fn resume(ctx: &mut Ctx, p: WorkspaceTargetParams) -> Result<Value, ApiError
         .collect();
     let mut resumed = Vec::new();
     let mut skipped = Vec::new();
+    let mut typed_into: HashSet<PaneId> = HashSet::new();
     for agent in exited {
         match super::agent::plan_resume(ctx, &agent) {
             Ok((command, pane)) => {
+                if typed_into.contains(&pane) {
+                    skipped.push(format!(
+                        "{agent}: pane {pane} already took a relaunch line in this resume; one session comes back per pane, so resume this one yourself once that pane is free"
+                    ));
+                    continue;
+                }
                 match ctx.write_to_pane(&pane, format!("{command}\r").as_bytes()) {
-                    Ok(()) => resumed.push(AgentResumeResult {
-                        agent,
-                        pane,
-                        command,
-                    }),
+                    Ok(()) => {
+                        typed_into.insert(pane.clone());
+                        resumed.push(AgentResumeResult {
+                            agent,
+                            pane,
+                            command,
+                        })
+                    }
                     // A pane with no terminal is a record that cannot be resumed like any other, so
                     // it joins the skipped list instead of ending the run. `plan_resume` has already
                     // refused the pane the model does not hold; this is the narrower case of a pane
-                    // the model holds whose process failed to start.
+                    // the model holds whose process failed to start. It claims no pane: nothing was
+                    // typed, so a later record naming the same pane is free to try.
                     Err(e) => skipped.push(format!("{agent}: {}", e.message)),
                 }
             }

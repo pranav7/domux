@@ -337,6 +337,22 @@ pub(crate) fn plan_resume(ctx: &Ctx, id: &AgentId) -> Result<(String, PaneId), A
             "pane {pane} is gone; open a pane and run the command yourself"
         )));
     }
+    // The pane has to be free, and this is the question that says so. Resume types a line and
+    // submits it with a carriage return; a pane with a live agent in it is not at a shell prompt,
+    // so the line would arrive as a message in that agent's conversation - text the reader never
+    // typed, in a session that is not the one being resumed.
+    //
+    // Reachable in ordinary use, because a record keeps its `last_pane` when it exits
+    // (`Model::exit_record` clears `pane` and not `last_pane`, which is what resume types into).
+    // Exit claude in a pane, start another agent there, and the first record still names that
+    // pane. The agent found here is always a different record: this function has already refused
+    // a live one, so the record being resumed is exited and holds no `pane` of its own.
+    if let Some(running) = ctx.model.live_agent_on_pane(&pane) {
+        return Err(ApiError::refused(format!(
+            "{} is running in pane {pane}, so the line would go into its prompt instead of a shell; close it and resume again",
+            running.kind
+        )));
+    }
     let command =
         crate::agents::resume::resume_line(manifest, session, &agent.cwd).ok_or_else(|| {
             ApiError::internal("the manifest carries a resume command and no process name")

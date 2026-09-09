@@ -42,6 +42,12 @@ pub fn resume_line(manifest: &AgentManifest, session_id: &str, cwd: &Path) -> Op
     // extension registers they need not be.
     let binary = manifest.process_names.first()?;
     let command = template.replace("{session_id}", &shell_quote(session_id));
+    // The one value in the line that is not quoted, and the one that domux chose rather than
+    // read: it comes from a manifest this repository declares, where the session id and the
+    // directory come from an agent and the file system. V1 writes it bare too
+    // (`resumeAgentLaunchLine`, commit b02a3ae), and the line is meant to be the same line.
+    // Worth revisiting if `Registry::register` ever carries a manifest domux did not write, since
+    // a process name is then a value again rather than a constant.
     let guarded = format!("command -v {binary} >/dev/null 2>&1 && {command}");
     // A record with no directory is not something the handlers can produce today: every path
     // that makes one takes the cwd from the hook payload or from the pane, and a payload
