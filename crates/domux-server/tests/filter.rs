@@ -214,7 +214,7 @@ async fn question_mark_opens_the_keys_over_the_switcher_and_esc_comes_back_to_it
         )
         .await;
     assert!(
-        f.contains("C-a s      switcher.open"),
+        f.contains("C-a d      client.detach"),
         "the help renders the configured bindings:\n{f}"
     );
     assert_eq!(
@@ -242,8 +242,9 @@ async fn question_mark_opens_the_keys_over_the_switcher_and_esc_comes_back_to_it
     );
     assert_eq!(
         h.model().client(&h.client).unwrap().focus,
-        Focus::Region(RegionKind::Overlay),
-        "the keys are in the overlay that came back, not on a pane behind it"
+        Focus::Region(RegionKind::Switcher),
+        "the keys are in the box that came back, named as the box it is, not on a pane\n\
+         behind it and not as a modal with no key table of its own"
     );
 
     // The keys really are the switcher's again: `/` is a `[keys.list]` key and nothing else
@@ -692,5 +693,127 @@ async fn an_empty_list_table_draws_no_heading_in_the_keys_overlay() {
     assert!(
         f.contains("C-a s      switcher.open") && f.contains("esc close"),
         "and the rest of the overlay is where it was:\n{f}"
+    );
+}
+
+/// The row that says the overlay is truncated, wherever the keys are. Read out of the box's
+/// own inside so nothing else on the screen can answer for it.
+fn more_row(frame: &str) -> bool {
+    frame
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .any(|l| l.contains("more, see domux.toml"))
+}
+
+/// The line number of the row holding `needle`, among the frame's `|...|` rows.
+fn row_holding(frame: &str, needle: &str) -> usize {
+    frame
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .position(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no row holds {needle:?} in:\n{frame}"))
+}
+
+/// `?` from inside a box lists the box's keys first, on both boxes, because it is one
+/// question about where the reader's keys are.
+///
+/// A 24 row screen on purpose: the overlay shows 17 of its 38 lines there, so the order is
+/// the whole of what the reader gets, and a block placed last would be entirely gone. Both
+/// halves are in one test because the claim is that the two surfaces answer alike; separated,
+/// each half would pass under an implementation that special-cased its own surface.
+#[tokio::test]
+async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("switcher.open", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Projects"),
+        Duration::from_secs(3),
+    )
+    .await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("j          list.down"),
+        "the switcher's box keys are on the screen at 24 rows:\n{f}"
+    );
+    assert!(
+        row_holding(&f, "in a list") < row_holding(&f, "client.detach"),
+        "and they come before the leader table:\n{f}"
+    );
+    assert!(
+        more_row(&f),
+        "and the overlay says the rest of it did not fit:\n{f}"
+    );
+
+    // The sidebar's box, reached with no overlay in the way, gets the same answer.
+    h.key(h.client.clone(), "Esc").await;
+    h.key(h.client.clone(), "Esc").await;
+    h.api("sidebar.show", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Projects"),
+        Duration::from_secs(3),
+    )
+    .await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        Focus::Region(RegionKind::SidebarProjects),
+        "the keys are in the sidebar's box, which is the state this half is about"
+    );
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("j          list.down")
+            && row_holding(&f, "in a list") < row_holding(&f, "client.detach"),
+        "the sidebar's box gets the same order, from the same rule:\n{f}"
+    );
+    assert!(more_row(&f), "and the same truncation row:\n{f}");
+}
+
+/// `leader ?` from a pane lists the leader table first, which is the other half of the one
+/// rule: the reader is not holding the box keys, so they are the table that gives way.
+///
+/// The same 24 row screen as the box case, so the two differ in where the keys are and in
+/// nothing else.
+#[tokio::test]
+async fn the_keys_overlay_lists_the_leader_table_first_from_a_pane() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("C-a d      client.detach") && f.contains("C-a s      switcher.open"),
+        "the leader table is what a reader on a pane gets:\n{f}"
+    );
+    assert!(
+        !f.contains("in a list"),
+        "and the box keys are what the truncation drops:\n{f}"
+    );
+    assert!(
+        more_row(&f),
+        "which the overlay says rather than presenting a partial list as the whole of it:\n{f}"
     );
 }

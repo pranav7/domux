@@ -3,7 +3,7 @@
 
 use crate::render::boxed::{put_within, Boxed};
 use crate::render::{theme, RenderInput};
-use domux_core::model::Overlay;
+use domux_core::model::{Focus, Overlay};
 use domux_core::text::{display_width, truncate_with_ellipsis};
 use domux_term::Size;
 use ratatui::buffer::Buffer;
@@ -303,11 +303,45 @@ pub fn centred_area(width: u16, height: u16, buf: &Buffer) -> Rect {
 /// every `[keys.global]` line, the passthrough rule, every `[keys.list]` line under
 /// `in a list`, and `esc close`. Rendered from the loaded keymap, so a rebinding shows here
 /// (principle 3).
+///
+/// The `[keys.list]` block goes first when the reader's keys are in a box and last when they
+/// are on a pane; see the comment on `in_a_box` below.
 fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     let km = input.keymap;
+    // `[keys.list]`, the keys inside a box (interface spec 5.4). Built here and placed below,
+    // because where it goes depends on where the reader is standing.
+    let mut list_block: Vec<String> = Vec::new();
+    if !km.list.is_empty() {
+        list_block.push("in a list".into());
+        let mut list: Vec<(String, String)> = km
+            .list
+            .iter()
+            .map(|b| (b.key.to_string(), b.action.to_string()))
+            .collect();
+        list.sort_by(|a, b| a.1.cmp(&b.1));
+        for (k, a) in list {
+            list_block.push(format!("{k:<10} {a}"));
+        }
+    }
+    // The table the reader's keys are in comes first, so a screen too short for all three
+    // drops the tables they are not holding rather than the one they asked about. This
+    // overlay truncates from the bottom on any screen under 45 rows, so the order is the
+    // whole of the answer for most readers.
+    //
+    // One rule on both surfaces, and `RegionKind::is_box` is the line the model itself draws:
+    // a box has its own `[keys.list]` table, `Overlay` is every modal that has none. So `?`
+    // in the switcher and `?` in the sidebar's Projects box get the same answer, and `leader
+    // ?` from a pane gets the other one. `api::client::help` keeps a box's region for this,
+    // and `ClientView::focus_after_pop` names the switcher when it uncovers one, so a
+    // switcher the reader came back to still reads as a box.
+    let in_a_box = matches!(input.view.focus, Focus::Region(k) if k.is_box());
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!("leader {}", km.leader));
     lines.push(String::new());
+    if in_a_box && !list_block.is_empty() {
+        lines.extend(list_block.iter().cloned());
+        lines.push(String::new());
+    }
     // Collapse the run of `tab.select <n>` bindings into one row. Nine near-identical rows
     // push the globals, the passthrough rule and the footer past the bottom of the box on
     // an 80x24 screen, and the row still renders the configured keys (principle 3).
@@ -354,23 +388,9 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
                 .join(", ")
         ));
     }
-    // The keys inside a box, which are the third table `[keys.list]` and the ones `?`
-    // answers for when it is pressed in the switcher or the sidebar's box (interface spec
-    // 5.4). Last, after the leader table and the globals, because those two apply wherever
-    // the reader is and this one applies only in a box. On a screen too short for all three
-    // it is therefore what the truncation drops, and the row says how many lines went.
-    if !km.list.is_empty() {
+    if !in_a_box && !list_block.is_empty() {
         lines.push(String::new());
-        lines.push("in a list".into());
-        let mut list: Vec<(String, String)> = km
-            .list
-            .iter()
-            .map(|b| (b.key.to_string(), b.action.to_string()))
-            .collect();
-        list.sort_by(|a, b| a.1.cmp(&b.1));
-        for (k, a) in list {
-            lines.push(format!("{k:<10} {a}"));
-        }
+        lines.extend(list_block);
     }
     lines.push(String::new());
     let inner = frame("Keys", 60, lines.len() as u16 + 3, buf);

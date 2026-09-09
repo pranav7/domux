@@ -314,6 +314,24 @@ impl ClientView {
         self.filtering = false;
         self.overlay.clone()
     }
+
+    /// Where the keys go once `pop_overlay` has run: the overlay it uncovered, or `pane` when
+    /// it uncovered nothing. Never a frame with the keys in a region nothing on the screen
+    /// marks (principle 2).
+    ///
+    /// The switcher is named rather than lumped in with `Overlay`, because the region is what
+    /// says which key table the reader is holding and the switcher's box has one of its own.
+    /// Answered here rather than at each of the three callers - `api::focus::pane`,
+    /// `api::switcher::close` and `input::close_overlay` - which wrote the same match out
+    /// three times and would have grown this arm three times.
+    pub fn focus_after_pop(&self, pane: Option<PaneId>) -> Focus {
+        match (&self.overlay, pane) {
+            (Some(Overlay::Switcher), _) => Focus::Region(RegionKind::Switcher),
+            (Some(_), _) => Focus::Region(RegionKind::Overlay),
+            (None, Some(p)) => Focus::Pane(p),
+            (None, None) => self.focus.clone(),
+        }
+    }
 }
 
 /// A one-line result in the hint row or the footer: green when it worked, red when it was
@@ -2534,6 +2552,70 @@ mod tests {
         assert_eq!(view.overlay_under, None);
         assert_eq!(view.pop_overlay(), None);
         assert_eq!(view.overlay, None);
+    }
+
+    /// Where the keys go after a pop, for every shape of stack. `Switcher` and not `Overlay`
+    /// for a switcher that comes back, because the region is what says which key table the
+    /// reader is holding and `render::overlay::draw_help` reads it to decide which table to
+    /// list first.
+    ///
+    /// The `NameWorkspace` case is the one that separates the first two arms: both leave an
+    /// overlay open, and an implementation answering `Overlay` for either would pass a
+    /// fixture that only ever uncovered a switcher.
+    #[test]
+    fn the_keys_go_to_what_a_pop_uncovers_and_the_switcher_is_named_as_a_box() {
+        let mut m = Model::new(7);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (tab, pane, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let mut view = client("c_0001", &ws, &tab, &pane);
+
+        view.push_overlay(Overlay::Switcher);
+        view.push_overlay(Overlay::Help);
+        view.pop_overlay();
+        assert_eq!(
+            view.focus_after_pop(Some(pane.clone())),
+            Focus::Region(RegionKind::Switcher),
+            "a switcher that comes back is a box, not any old modal"
+        );
+
+        view.push_overlay(Overlay::NameWorkspace(ws.clone()));
+        view.push_overlay(Overlay::Help);
+        view.pop_overlay();
+        assert_eq!(
+            view.focus_after_pop(Some(pane.clone())),
+            Focus::Region(RegionKind::Overlay),
+            "a name box has no key table of its own"
+        );
+
+        view.pop_overlay();
+        view.pop_overlay();
+        assert_eq!(view.overlay, None);
+        assert_eq!(
+            view.focus_after_pop(Some(pane.clone())),
+            Focus::Pane(pane.clone()),
+            "with nothing left the keys go back to the pane"
+        );
+        let before = view.focus.clone();
+        assert_eq!(
+            view.focus_after_pop(None),
+            before,
+            "and a client with no pane keeps the focus it had rather than losing it"
+        );
+    }
+
+    /// A box is a region with its own `[keys.list]` table; `Overlay` is every modal that has
+    /// none. Derived over every variant, so a variant added later is not silently a box.
+    #[test]
+    fn every_region_but_overlay_is_a_box() {
+        for kind in [
+            RegionKind::Switcher,
+            RegionKind::AgentsOverlay,
+            RegionKind::SidebarProjects,
+            RegionKind::SidebarAgents,
+        ] {
+            assert!(kind.is_box(), "{kind:?} holds a list of its own");
+        }
+        assert!(!RegionKind::Overlay.is_box());
     }
 
     /// The cases are derived from `Display` rather than written out beside it, so a change to

@@ -33,7 +33,14 @@ pub fn help(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
         return ok(Ack { ok: true });
     }
     view.push_overlay(Overlay::Help);
-    view.focus = Focus::Region(RegionKind::Overlay);
+    // A box keeps its region while the help is over it, because the region is what says which
+    // key table the reader is holding and `draw_help` lists that one first. It is not a lie
+    // about where the keys are: an open overlay takes every key at step 1 of the routing
+    // whatever the focus says, and what is drawn under an overlay keeps its own look already
+    // - the switcher under the help draws its focused box and its footer hints.
+    if !matches!(view.focus, Focus::Region(k) if k.is_box()) {
+        view.focus = Focus::Region(RegionKind::Overlay);
+    }
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

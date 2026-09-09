@@ -12,7 +12,7 @@ use crate::core::Core;
 use domux_core::api::Method;
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::keymap::Action;
-use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind, RegionKind};
+use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind};
 use domux_core::proto::ServerMsg;
 use domux_term::{Emulator, Key, KeyAction, KeyEvent, Mods};
 
@@ -318,20 +318,12 @@ fn set_prompt(core: &mut Core, client: &ClientId, prompt: PromptKind) {
 /// and `view.overlay = None` would not merely fail to restore it, it would strand it in
 /// `overlay_under` where nothing draws it and nothing closes it.
 ///
-/// The three-arm focus match is `api::focus::pane`'s and `api::switcher::close`'s, written
-/// out rather than shared: those two are API handlers over `Ctx` and this one edits the model
-/// through `Core`, so there is no call either could make. `RegionKind::Overlay` and not
-/// `Switcher` for the overlay that comes back, because those two answer it that way and
-/// nothing in the tree reads the distinction; a fourth answer here would be the drift.
+/// Where the keys land is `ClientView::focus_after_pop`, which `api::focus::pane` and
+/// `api::switcher::close` also call. The three had written the same match out three times.
 fn close_overlay(core: &mut Core, client: &ClientId) {
     let focused = core.focused_pane(client);
     if let Some(view) = core.model.client_mut(client) {
         view.pop_overlay();
-        // Never a frame with the keys in a region nothing on the screen marks (principle 2).
-        view.focus = match (&view.overlay, focused) {
-            (Some(_), _) => Focus::Region(RegionKind::Overlay),
-            (None, Some(p)) => Focus::Pane(p),
-            (None, None) => view.focus.clone(),
-        };
+        view.focus = view.focus_after_pop(focused);
     }
 }

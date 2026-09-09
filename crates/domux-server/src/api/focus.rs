@@ -187,12 +187,7 @@ pub fn pane(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     // `overlay_under` where nothing draws it and nothing closes it.
     view.pop_overlay();
     view.chord = None;
-    // Never a frame with the keys in a region nothing on the screen marks (principle 2).
-    view.focus = match (&view.overlay, focused) {
-        (Some(_), _) => Focus::Region(RegionKind::Overlay),
-        (None, Some(pane)) => Focus::Pane(pane),
-        (None, None) => view.focus.clone(),
-    };
+    view.focus = view.focus_after_pop(focused);
     ctx.view_dirty = true;
     result(ctx)
 }
