@@ -333,10 +333,10 @@ pub fn preview(p: &Plan) -> String {
         return out;
     }
     for (event, command) in &p.removed {
-        out.push_str(&format!("- {event:<15} {command}\n"));
+        out.push_str(&format!("- {event:<18} {command}\n"));
     }
     for (event, command) in &p.added {
-        out.push_str(&format!("+ {event:<15} {command}\n"));
+        out.push_str(&format!("+ {event:<18} {command}\n"));
     }
     for note in &p.notes {
         out.push_str(&format!("\n{note}\n"));

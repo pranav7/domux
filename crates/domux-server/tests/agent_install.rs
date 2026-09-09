@@ -75,19 +75,19 @@ fn a_preview_writes_nothing_and_shows_what_would_change() {
         "{text}"
     );
     assert!(
-        text.contains("+ SessionStart    /Users/pranav/bin/domux2 agent report --agent claude"),
+        text.contains("+ SessionStart       /Users/pranav/bin/domux2 agent report --agent claude"),
         "{text}"
     );
     assert!(
-        text.contains("- SessionStart    domux workspace occupied"),
+        text.contains("- SessionStart       domux workspace occupied"),
         "{text}"
     );
     assert!(
-        text.contains("- Stop            domux ai-state clear"),
+        text.contains("- Stop               domux ai-state clear"),
         "{text}"
     );
     assert!(
-        text.contains("- statusLine      domux claude-statusline"),
+        text.contains("- statusLine         domux claude-statusline"),
         "{text}"
     );
     assert!(
