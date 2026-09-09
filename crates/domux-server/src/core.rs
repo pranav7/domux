@@ -3022,6 +3022,10 @@ mod tests {
     /// and the path is inside the test's own temporary directory, which is the only place
     /// anything in this file is ever allowed to point a delete at.
     fn a_slot(core: &mut Core, dir: &Path) -> WorkspaceId {
+        a_slot_at(core, dir.join("workspace-1"))
+    }
+
+    fn a_slot_at(core: &mut Core, path: PathBuf) -> WorkspaceId {
         let project = core
             .model
             .projects
@@ -3030,9 +3034,24 @@ mod tests {
             .expect("the project root is registered as a project");
         let (ws, _) = core
             .model
-            .add_slot(&project, 1, dir.join("workspace-1"))
+            .add_slot(&project, 1, path)
             .expect("a fresh model has the number free");
         ws
+    }
+
+    /// The outcome of the one job this core started, or a failure naming the wait.
+    async fn one_job(rx: &mut mpsc::Receiver<CoreMsg>) -> JobOutcome {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match rx.recv().await {
+                    Some(CoreMsg::JobFinished { outcome, .. }) => return outcome,
+                    Some(_) => continue,
+                    None => panic!("the core's channel closed before the job reported"),
+                }
+            }
+        })
+        .await
+        .expect("the job did not report")
     }
 
     fn delete_question(core: &mut Core) -> String {
@@ -3095,6 +3114,54 @@ mod tests {
             !question.contains("the local branch workspace-1"),
             "and the handle is not offered as one: {question}"
         );
+    }
+
+    /// The handler carries the branch fact into the job, so the reconciliation has something
+    /// to reconcile.
+    ///
+    /// This is the caller's half, and it has to be tested through the caller: the refusal
+    /// lives in the job, and a test that hands the job an expectation directly proves the half
+    /// nothing questioned. With `expected_branch: None` in the handler the job would go ahead
+    /// and delete `workspace-1` while the reader had been told `feat/auth-cleanup`, and every
+    /// test that stops at the job stays green.
+    ///
+    /// The fact is set on the registry directly, for the reason the sibling test gives: a fixed
+    /// clock never makes a branch fact due again, so one cannot be made to go stale through the
+    /// harness. What is exercised here is the wiring from `ctx.facts` to the job, which is the
+    /// line the mutant lives on.
+    #[tokio::test]
+    async fn the_handler_carries_the_branch_the_question_named_into_the_job() {
+        let (_tmp, repo) = crate::testing::repo_with_origin("main");
+        let path = crate::git::slot_path(&repo, 1);
+        crate::git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, mut rx) = core_with_providers(dir.path(), Vec::new());
+        let ws = a_slot_at(&mut core, path.clone());
+        // What the branch provider last saw. The worktree is really on `workspace-1`, so this
+        // is a fact that has gone stale, which is the state the reconciliation is about.
+        core.facts.set(
+            FactKey::workspace(&ws, domux_core::facts::FACT_BRANCH),
+            Some(a_fact("feat/auth-cleanup", None)),
+        );
+
+        core.dispatch(
+            Method::from_request(
+                "workspace.delete",
+                serde_json::json!({"workspace": "workspace-1", "yes": true}),
+            )
+            .expect("params"),
+            None,
+        )
+        .expect("the handler queues the job and defers its answer");
+
+        match one_job(&mut rx).await {
+            JobOutcome::Failed { message, code } => {
+                assert_eq!(code, ErrorCode::Conflict, "{message}");
+                assert!(message.contains("not feat/auth-cleanup"), "{message}");
+            }
+            _ => panic!("the delete went ahead on a branch the question did not name"),
+        }
+        assert!(path.is_dir(), "and the worktree is still there");
     }
 
     /// The job refuses when the worktree has left the branch the question named, and goes
