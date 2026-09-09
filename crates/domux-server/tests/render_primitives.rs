@@ -297,6 +297,7 @@ fn model_with_clients(
             last_active_seq: 0,
             projects_cursor: None,
             projects_scroll: 0,
+            agents_cursor: None,
             filtering: false,
             input: domux_core::model::TextInput::new(""),
             overlay_under: None,

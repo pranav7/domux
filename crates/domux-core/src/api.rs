@@ -1,9 +1,9 @@
 //! The control API's wire types: errors, events, and (Task 8) requests, responses and methods.
 
 use crate::facts::FactKey;
-use crate::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
+use crate::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use crate::keymap::Action;
-use crate::model::{Direction, Focus, RegionKind};
+use crate::model::{AgentKind, AgentSource, AgentState, Direction, Focus, RegionKind};
 use crate::names::BIN_NAME;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,34 @@ pub enum Event {
     PaneResized { pane: PaneId, cols: u16, rows: u16 },
     #[serde(rename = "pane.zoomed")]
     PaneZoomed { tab: TabId, pane: Option<PaneId> },
+    // The agent events of M3.
+    #[serde(rename = "agent.created")]
+    AgentCreated {
+        agent: AgentId,
+        kind: AgentKind,
+        pane: Option<PaneId>,
+        source: AgentSource,
+    },
+    #[serde(rename = "agent.state_changed")]
+    AgentStateChanged {
+        agent: AgentId,
+        from: AgentState,
+        to: AgentState,
+    },
+    #[serde(rename = "agent.recap_changed")]
+    AgentRecapChanged {
+        agent: AgentId,
+        recap: Option<String>,
+    },
+    #[serde(rename = "agent.exited")]
+    AgentExited {
+        agent: AgentId,
+        pane: Option<PaneId>,
+    },
+    #[serde(rename = "agent.dismissed")]
+    AgentDismissed { agent: AgentId },
+    #[serde(rename = "agent.unseen_changed")]
+    AgentUnseenChanged { agent: AgentId, unseen: bool },
 }
 
 /// Builds `Event::NAMES` and `Event::name` from one list, so a variant cannot exist
@@ -226,6 +254,12 @@ event_names! {
     Event::PaneFocused { .. } => "pane.focused",
     Event::PaneResized { .. } => "pane.resized",
     Event::PaneZoomed { .. } => "pane.zoomed",
+    Event::AgentCreated { .. } => "agent.created",
+    Event::AgentStateChanged { .. } => "agent.state_changed",
+    Event::AgentRecapChanged { .. } => "agent.recap_changed",
+    Event::AgentExited { .. } => "agent.exited",
+    Event::AgentDismissed { .. } => "agent.dismissed",
+    Event::AgentUnseenChanged { .. } => "agent.unseen_changed",
 }
 
 impl Event {
@@ -1508,6 +1542,32 @@ mod tests {
             Event::PaneZoomed {
                 tab: TabId("t_1".into()),
                 pane: None,
+            },
+            Event::AgentCreated {
+                agent: AgentId("a_5e21".into()),
+                kind: AgentKind::Claude,
+                pane: Some(PaneId("p_1234".into())),
+                source: AgentSource::Hook,
+            },
+            Event::AgentStateChanged {
+                agent: AgentId("a_5e21".into()),
+                from: AgentState::Working,
+                to: AgentState::Idle,
+            },
+            Event::AgentRecapChanged {
+                agent: AgentId("a_5e21".into()),
+                recap: None,
+            },
+            Event::AgentExited {
+                agent: AgentId("a_5e21".into()),
+                pane: Some(PaneId("p_1234".into())),
+            },
+            Event::AgentDismissed {
+                agent: AgentId("a_5e21".into()),
+            },
+            Event::AgentUnseenChanged {
+                agent: AgentId("a_5e21".into()),
+                unseen: true,
             },
         ];
         assert_eq!(

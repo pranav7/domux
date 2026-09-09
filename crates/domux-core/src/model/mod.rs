@@ -10,7 +10,7 @@ pub use focus::{ConfirmKind, Focus, Overlay, PromptKind, RegionKind, TextInput};
 pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir};
 
 use crate::api::{ApiError, Event};
-use crate::ids::{ClientId, IdGen, PaneId, ProjectId, TabId, WorkspaceId};
+use crate::ids::{AgentId, ClientId, IdGen, PaneId, ProjectId, TabId, WorkspaceId};
 use crate::names::BIN_NAME;
 use crate::proto::Capabilities;
 use domux_term::Size;
@@ -24,6 +24,9 @@ use std::path::{Path, PathBuf};
 pub struct Model {
     /// M1: one implicit plain-folder project. M2: git projects.
     pub projects: Vec<Project>,
+    /// M3: one record per AI coding session. Persisted; live ones come back as exited.
+    #[serde(default)]
+    pub agents: Vec<Agent>,
     /// Attached clients. Not persisted.
     #[serde(skip)]
     pub clients: Vec<ClientView>,
@@ -80,6 +83,7 @@ impl PartialEq for Model {
         // left out of equality with no error and no test failure.
         let Model {
             projects,
+            agents,
             clients,
             last_workspace,
             sidebar_open,
@@ -88,6 +92,7 @@ impl PartialEq for Model {
             retired: _,
         } = self;
         *projects == other.projects
+            && *agents == other.agents
             && *clients == other.clients
             && *last_workspace == other.last_workspace
             && *sidebar_open == other.sidebar_open
@@ -280,6 +285,10 @@ pub struct ClientView {
     /// can when the cursor leaves the view.
     #[serde(default)]
     pub projects_scroll: u16,
+    /// M3: the row the keys act on in an Agents box, as the agent under it, so the cursor
+    /// survives a re-sort (principle 2).
+    #[serde(default)]
+    pub agents_cursor: Option<AgentId>,
     /// True while `/` is being typed into. `filter` holds the text either way.
     #[serde(default)]
     pub filtering: bool,
@@ -422,6 +431,7 @@ impl Model {
     pub fn new(seed: u64) -> Model {
         Model {
             projects: Vec::new(),
+            agents: Vec::new(),
             clients: Vec::new(),
             last_workspace: None,
             sidebar_open: false,
@@ -466,6 +476,7 @@ impl Model {
             "t" => "no free tab id: every draw hit an id already in use or recently closed, so close a tab",
             "p" => "no free pane id: every draw hit an id already in use or recently closed, so close a pane",
             "c" => "no free client id: every draw hit an id already in use or recently closed, so detach a client",
+            "a" => "no free agent id: every draw hit an id already in use or recently closed, so dismiss an exited agent",
             // Nothing in this crate passes another prefix. An unknown one still gets a true
             // message rather than a guessed object name.
             _ => "no free id for that kind of object: every draw hit an id already in use or recently closed, so restart the server to clear the recently closed ids",
@@ -503,6 +514,7 @@ impl Model {
                         })
                 })
         }) || self.clients.iter().any(|c| c.id.as_str() == id)
+            || self.agents.iter().any(|a| a.id.as_str() == id)
     }
 
     /// Registers a project at `root` with its `main` workspace and no tabs. The project's
@@ -1499,6 +1511,497 @@ impl Model {
     }
 }
 
+/// What `report_agent` did: the record the payload landed on, the states it moved between,
+/// whether the report made the record, and the events to publish.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentReportOutcome {
+    pub agent: AgentId,
+    pub from: AgentState,
+    pub to: AgentState,
+    pub created: bool,
+    pub events: Vec<Event>,
+}
+
+/// The agent records (M3). Every mutation answers with the events it produced, as the rest
+/// of the Model does.
+impl Model {
+    pub fn agent(&self, id: &AgentId) -> Option<&Agent> {
+        self.agents.iter().find(|a| &a.id == id)
+    }
+
+    pub fn agent_mut(&mut self, id: &AgentId) -> Option<&mut Agent> {
+        self.agents.iter_mut().find(|a| &a.id == id)
+    }
+
+    /// The one live agent on a pane, if any.
+    pub fn live_agent_on_pane(&self, pane: &PaneId) -> Option<&Agent> {
+        self.agents
+            .iter()
+            .find(|a| a.state.is_live() && a.pane.as_ref() == Some(pane))
+    }
+
+    /// Every record of a workspace, live or exited, in creation order.
+    pub fn agents_in_workspace(&self, ws: &WorkspaceId) -> Vec<&Agent> {
+        self.agents.iter().filter(|a| &a.workspace == ws).collect()
+    }
+
+    /// Applies one hook payload from `pane`.
+    ///
+    /// Finds the record by session id, else the live record of that kind on the pane (the
+    /// observer's placeholder), else creates one. A second session id on a pane exits the
+    /// first record, because one pane hosts at most one live agent. A resumed session, whose
+    /// session id an exited record already holds, comes back as that record and the
+    /// observer's placeholder for it goes (decision record 0010).
+    pub fn report_agent(
+        &mut self,
+        pane: &PaneId,
+        kind: AgentKind,
+        report: AgentReport,
+        now: &str,
+    ) -> Result<AgentReportOutcome, ApiError> {
+        let loc = self.pane_location(pane).ok_or_else(|| {
+            ApiError::not_found(format!(
+                "pane {pane} does not exist; the hook ran outside a domux pane or the pane closed"
+            ))
+        })?;
+        let event = report
+            .event
+            .ok_or_else(|| ApiError::invalid_params("the payload names no event domux tracks"))?;
+        let mut events = Vec::new();
+        let by_session = report.session_id.as_deref().and_then(|sid| {
+            self.agents
+                .iter()
+                .position(|a| a.kind == kind && a.session_id.as_deref() == Some(sid))
+        });
+        let live_here = self
+            .agents
+            .iter()
+            .position(|a| a.state.is_live() && a.pane.as_ref() == Some(pane));
+        let (index, created) = match (by_session, live_here) {
+            (Some(i), Some(j)) if i != j => {
+                if self.agents[j].session_id.is_none() {
+                    // A placeholder the observer made for the session that is resuming. It
+                    // never had a session id of its own, so nothing is lost by dropping it.
+                    let gone = self.agents.remove(j);
+                    events.push(Event::AgentDismissed { agent: gone.id });
+                    (if j < i { i - 1 } else { i }, false)
+                } else {
+                    events.extend(self.exit_record(j, now));
+                    (i, false)
+                }
+            }
+            (Some(i), _) => (i, false),
+            (None, Some(j))
+                if self.agents[j].kind == kind && self.agents[j].session_id.is_none() =>
+            {
+                (j, false)
+            }
+            (None, Some(j)) => {
+                // A different session took the pane: the old record exits, a new one starts.
+                events.extend(self.exit_record(j, now));
+                (
+                    self.new_agent(kind, &loc, pane, AgentSource::Hook, now)?,
+                    true,
+                )
+            }
+            (None, None) => (
+                self.new_agent(kind, &loc, pane, AgentSource::Hook, now)?,
+                true,
+            ),
+        };
+        let pane_cwd = self.pane(pane).map(|p| p.cwd.clone());
+        let a = &mut self.agents[index];
+        let from = a.state;
+        let to = transition(from, event);
+        if created {
+            events.push(Event::AgentCreated {
+                agent: a.id.clone(),
+                kind,
+                pane: Some(pane.clone()),
+                source: AgentSource::Hook,
+            });
+        }
+        if from == AgentState::Exited && to == AgentState::Exited {
+            // Every hook but `SessionStart` leaves an exited record alone, down to its last
+            // activity time: the session that sent it is over (plan assumption 7).
+            return Ok(AgentReportOutcome {
+                agent: a.id.clone(),
+                from,
+                to,
+                created,
+                events,
+            });
+        }
+        if a.pane.as_ref() != Some(pane) {
+            a.pane = Some(pane.clone());
+            a.last_pane = Some(pane.clone());
+            a.workspace = loc.workspace.clone();
+        }
+        if let Some(sid) = report.session_id {
+            a.session_id = Some(sid);
+        }
+        if let Some(path) = report.transcript_path {
+            a.transcript_path = Some(path);
+        }
+        if event == AgentEvent::SessionStart {
+            if let Some(cwd) = report.cwd.or(pane_cwd) {
+                a.cwd = cwd;
+            }
+        }
+        if event == AgentEvent::Notification {
+            a.reason = report.reason;
+        } else if to != AgentState::Waiting {
+            // The reason belongs to the waiting state, so it goes when the state does.
+            a.reason = None;
+        }
+        a.last_activity_at = now.to_string();
+        a.state = to;
+        if to == AgentState::Exited {
+            a.pane = None;
+            a.pid = None;
+        }
+        let id = a.id.clone();
+        if from != to {
+            events.push(Event::AgentStateChanged {
+                agent: id.clone(),
+                from,
+                to,
+            });
+        }
+        if to == AgentState::Exited && from != AgentState::Exited {
+            events.push(Event::AgentExited {
+                agent: id.clone(),
+                pane: Some(pane.clone()),
+            });
+        }
+        if agent::attention(from, to) && !a.unseen {
+            a.unseen = true;
+            events.push(Event::AgentUnseenChanged {
+                agent: id.clone(),
+                unseen: true,
+            });
+        }
+        Ok(AgentReportOutcome {
+            agent: id,
+            from,
+            to,
+            created,
+            events,
+        })
+    }
+
+    /// Adds an `unknown` record on `pane` and answers with its index. The caller applies the
+    /// first event.
+    ///
+    /// Fallible for one reason: `next_id` is.
+    fn new_agent(
+        &mut self,
+        kind: AgentKind,
+        loc: &PaneLocation,
+        pane: &PaneId,
+        source: AgentSource,
+        now: &str,
+    ) -> Result<usize, ApiError> {
+        let id = AgentId(self.next_id("a")?);
+        let cwd = self.pane(pane).map(|p| p.cwd.clone()).unwrap_or_default();
+        self.agents.push(Agent::new(
+            id,
+            kind,
+            loc.workspace.clone(),
+            pane.clone(),
+            cwd,
+            source,
+            now,
+        ));
+        Ok(self.agents.len() - 1)
+    }
+
+    /// Exits the record at `index`, as the observer's `ProcessGone` does. The pane it was on
+    /// travels in the event, because the record no longer holds it.
+    fn exit_record(&mut self, index: usize, now: &str) -> Vec<Event> {
+        let a = &mut self.agents[index];
+        let from = a.state;
+        let to = transition(from, AgentEvent::ProcessGone);
+        let pane = a.pane.take();
+        a.pid = None;
+        a.state = to;
+        a.last_activity_at = now.to_string();
+        let mut events = Vec::new();
+        if from != to {
+            events.push(Event::AgentStateChanged {
+                agent: a.id.clone(),
+                from,
+                to,
+            });
+            events.push(Event::AgentExited {
+                agent: a.id.clone(),
+                pane,
+            });
+        }
+        if agent::attention(from, to) && !a.unseen {
+            a.unseen = true;
+            events.push(Event::AgentUnseenChanged {
+                agent: a.id.clone(),
+                unseen: true,
+            });
+        }
+        events
+    }
+
+    /// The observer saw a known agent command on `pane` with no live record there.
+    ///
+    /// Infallible, unlike `report_agent`: the observer runs on the core's tick and has no
+    /// caller to answer. It names only panes the model holds, and `next_id` refuses only
+    /// when every draw of an agent id collides, which takes an id space full of agents.
+    /// Both are model bugs rather than states the observer can be in.
+    pub fn observe_agent(
+        &mut self,
+        pane: &PaneId,
+        kind: AgentKind,
+        pid: Option<u32>,
+        now: &str,
+    ) -> (AgentId, Vec<Event>) {
+        let loc = self
+            .pane_location(pane)
+            .expect("the observer only names panes in the model");
+        let index = self
+            .new_agent(kind, &loc, pane, AgentSource::Observer, now)
+            .expect("an agent id is free");
+        self.agents[index].pid = pid;
+        let id = self.agents[index].id.clone();
+        (
+            id.clone(),
+            vec![Event::AgentCreated {
+                agent: id,
+                kind,
+                pane: Some(pane.clone()),
+                source: AgentSource::Observer,
+            }],
+        )
+    }
+
+    /// The observer saw the process leave, or the pane exited or closed.
+    pub fn agent_process_gone(&mut self, id: &AgentId, now: &str) -> Vec<Event> {
+        match self.agents.iter().position(|a| &a.id == id) {
+            Some(i) => self.exit_record(i, now),
+            None => Vec::new(),
+        }
+    }
+
+    pub fn set_agent_pid(&mut self, id: &AgentId, pid: Option<u32>) {
+        if let Some(a) = self.agent_mut(id) {
+            a.pid = pid;
+        }
+    }
+
+    /// A recap that did not change produces no event.
+    pub fn set_agent_recap(&mut self, id: &AgentId, recap: Option<String>) -> Vec<Event> {
+        match self.agent_mut(id) {
+            Some(a) if a.recap != recap => {
+                a.recap = recap.clone();
+                vec![Event::AgentRecapChanged {
+                    agent: id.clone(),
+                    recap,
+                }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Sets or clears the session name, and answers with whether it changed. `Some("")` and
+    /// whitespace clear, as `rename_tab` does. No event: the name is not a transition.
+    pub fn set_agent_name(&mut self, id: &AgentId, name: Option<String>) -> bool {
+        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        match self.agent_mut(id) {
+            Some(a) if a.name != name => {
+                a.name = name;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Removes an exited record from the list. A live one is refused: the state it is in and
+    /// the state dismiss needs are both in the message (plan assumption 31).
+    pub fn dismiss_agent(&mut self, id: &AgentId) -> Result<Vec<Event>, ApiError> {
+        let a = self.agent(id).ok_or_else(|| {
+            ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
+        })?;
+        if a.state.is_live() {
+            return Err(ApiError::refused(format!(
+                "agent {id} is {}, not exited; only exited agents can be dismissed",
+                a.state
+            )));
+        }
+        self.agents.retain(|a| &a.id != id);
+        Ok(vec![Event::AgentDismissed { agent: id.clone() }])
+    }
+
+    pub fn clear_unseen(&mut self, id: &AgentId) -> Vec<Event> {
+        match self.agent_mut(id) {
+            Some(a) if a.unseen => {
+                a.unseen = false;
+                vec![Event::AgentUnseenChanged {
+                    agent: id.clone(),
+                    unseen: false,
+                }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Focusing a pane or typing into it clears unseen on the agent there, live or not: an
+    /// exited record you are looking at has been seen too.
+    pub fn clear_unseen_for_pane(&mut self, pane: &PaneId) -> Vec<Event> {
+        let ids: Vec<AgentId> = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.unseen
+                    && (a.pane.as_ref() == Some(pane)
+                        || (a.pane.is_none() && a.last_pane.as_ref() == Some(pane)))
+            })
+            .map(|a| a.id.clone())
+            .collect();
+        ids.iter().flat_map(|id| self.clear_unseen(id)).collect()
+    }
+
+    /// Clearing or deleting a workspace removes its records (architecture spec 3.2).
+    pub fn remove_agents_of_workspace(&mut self, ws: &WorkspaceId) -> Vec<Event> {
+        let ids: Vec<AgentId> = self
+            .agents
+            .iter()
+            .filter(|a| &a.workspace == ws)
+            .map(|a| a.id.clone())
+            .collect();
+        self.agents.retain(|a| &a.workspace != ws);
+        ids.into_iter()
+            .map(|agent| Event::AgentDismissed { agent })
+            .collect()
+    }
+
+    /// Interface spec 6.7 and 12.28: waiting first, then working and compacting by last
+    /// activity, then unseen idle, then quiet idle, then unknown, then exited, each group
+    /// newest first. The architecture spec's 3.7 puts unseen idle ahead of working and says
+    /// the plans take this order; `rank` is the whole difference between the two.
+    pub fn sorted_agents(&self) -> Vec<&Agent> {
+        fn rank(a: &Agent) -> u8 {
+            match (a.state, a.unseen) {
+                (AgentState::Waiting, _) => 0,
+                (AgentState::Working | AgentState::Compacting, _) => 1,
+                (AgentState::Idle, true) => 2,
+                (AgentState::Idle, false) => 3,
+                (AgentState::Unknown, _) => 4,
+                (AgentState::Exited, _) => 5,
+            }
+        }
+        let mut agents: Vec<&Agent> = self.agents.iter().collect();
+        // The id breaks a tie, so two records that changed in the same second keep one order
+        // between renders rather than swapping places.
+        agents.sort_by(|a, b| {
+            rank(a)
+                .cmp(&rank(b))
+                .then_with(|| b.last_activity_at.cmp(&a.last_activity_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        agents
+    }
+
+    /// The number in the top bar: agents with a red dot across every project.
+    pub fn red_dot_count(&self) -> usize {
+        self.agents.iter().filter(|a| a.needs_you()).count()
+    }
+
+    /// An agent id; or a workspace (id, handle, name or branch) holding exactly one live
+    /// agent; or `workspace/tab` when it holds more (architecture spec section 7).
+    pub fn resolve_agent_target(&self, target: &str) -> Result<AgentId, ApiError> {
+        if let Ok(id) = target.parse::<AgentId>() {
+            return self.agent(&id).map(|a| a.id.clone()).ok_or_else(|| {
+                ApiError::not_found(format!(
+                    "agent {target} does not exist; run {BIN_NAME} peek"
+                ))
+            });
+        }
+        let (ws, tab) = match self.resolve_workspace(target) {
+            Ok(ws) => (ws, None),
+            // The workspace error is the one to report: `workspace/tab` is the qualified
+            // form, so a target that is neither failed as a workspace name.
+            Err(first) => match target.rsplit_once('/') {
+                Some((w, t)) => (self.resolve_workspace(w).map_err(|_| first)?, Some(t)),
+                None => return Err(first),
+            },
+        };
+        let mut live: Vec<&Agent> = self
+            .agents
+            .iter()
+            .filter(|a| a.state.is_live() && a.workspace == ws)
+            .collect();
+        if let Some(t) = tab {
+            let tab_id = self.resolve_tab(&ws, t)?;
+            live.retain(|a| {
+                a.pane
+                    .as_ref()
+                    .and_then(|p| self.pane_location(p))
+                    .is_some_and(|l| l.tab == tab_id)
+            });
+        }
+        match live.len() {
+            0 => Err(ApiError::not_found(format!(
+                "no live agent in {target}; run {BIN_NAME} peek"
+            ))),
+            1 => Ok(live[0].id.clone()),
+            n => {
+                let tabs: Vec<Option<String>> = live
+                    .iter()
+                    .map(|a| {
+                        a.pane
+                            .as_ref()
+                            .and_then(|p| self.pane_location(p))
+                            .and_then(|l| self.tab(&l.tab))
+                            .map(|t| t.name.clone().unwrap_or_else(|| t.id.to_string()))
+                    })
+                    .collect();
+                let candidates = live
+                    .iter()
+                    .zip(&tabs)
+                    .map(|(a, tab)| {
+                        format!(
+                            "{} {}{}",
+                            a.id,
+                            a.kind,
+                            tab.as_ref()
+                                .map(|t| format!(" in tab {t}"))
+                                .unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                // The example names a tab one of these agents is in, so retyping it works.
+                let qualify = match tabs.iter().flatten().next() {
+                    Some(t) => format!("qualify with the tab, for example \"{target}/{t}\""),
+                    None => "qualify with the tab".to_string(),
+                };
+                Err(ApiError::ambiguous(
+                    format!("{n} agents are in {target}; {qualify}, or use an agent id"),
+                    candidates,
+                ))
+            }
+        }
+    }
+
+    /// After a restart every record that was live is `exited` and resumable (architecture
+    /// spec section 5). Restore is not an exit the agent made, so unseen is left alone.
+    pub fn mark_agents_exited_on_restore(&mut self) {
+        for a in &mut self.agents {
+            if a.state.is_live() {
+                a.state = AgentState::Exited;
+                a.pane = None;
+                a.pid = None;
+                a.source = AgentSource::Restore;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,6 +2053,7 @@ mod tests {
             last_active_seq: 0,
             projects_cursor: None,
             projects_scroll: 0,
+            agents_cursor: None,
             filtering: false,
             input: TextInput::new(""),
             overlay_under: None,
@@ -2950,5 +3454,559 @@ mod tests {
             "a half-typed name must not turn up inside the overlay underneath"
         );
         assert!(!view.filtering, "and neither must a half-typed filter");
+    }
+
+    use crate::model::agent::{AgentEvent, AgentKind, AgentReport, AgentSource, AgentState};
+
+    const T0: &str = "2026-09-04T14:32:00+00:00";
+    const T1: &str = "2026-09-04T14:33:00+00:00";
+
+    fn hook(event: AgentEvent, sid: &str) -> AgentReport {
+        AgentReport {
+            event: Some(event),
+            session_id: Some(sid.into()),
+            transcript_path: Some(PathBuf::from(format!("/t/{sid}.jsonl"))),
+            cwd: Some(PathBuf::from("/Users/pranav/projects/domux")),
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn a_session_start_on_a_fresh_pane_creates_an_idle_record_bound_to_the_pane() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "sid-1"),
+                T0,
+            )
+            .unwrap();
+        assert!(out.created);
+        assert_eq!((out.from, out.to), (AgentState::Unknown, AgentState::Idle));
+        let a = m.agent(&out.agent).unwrap();
+        assert_eq!(a.session_id.as_deref(), Some("sid-1"));
+        assert_eq!(a.pane, Some(pane.clone()));
+        assert_eq!(a.last_pane, Some(pane.clone()));
+        assert_eq!(a.workspace, ws);
+        assert_eq!(a.cwd, PathBuf::from("/Users/pranav/projects/domux"));
+        assert_eq!(a.transcript_path, Some(PathBuf::from("/t/sid-1.jsonl")));
+        assert_eq!(a.source, AgentSource::Hook);
+        assert!(!a.unseen, "starting is not an attention transition");
+        assert_eq!(
+            out.events[0],
+            Event::AgentCreated {
+                agent: out.agent.clone(),
+                kind: AgentKind::Claude,
+                pane: Some(pane.clone()),
+                source: AgentSource::Hook
+            }
+        );
+        assert_eq!(
+            out.events[1],
+            Event::AgentStateChanged {
+                agent: out.agent.clone(),
+                from: AgentState::Unknown,
+                to: AgentState::Idle
+            }
+        );
+        assert_eq!(out.events.len(), 2);
+        assert_eq!(m.pane_location(&pane).unwrap().tab, tab);
+    }
+
+    #[test]
+    fn a_hook_binds_the_observers_unknown_record_instead_of_making_a_second_one() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let (id, events) = m.observe_agent(&pane, AgentKind::Claude, Some(4242), T0);
+        assert_eq!(
+            events,
+            vec![Event::AgentCreated {
+                agent: id.clone(),
+                kind: AgentKind::Claude,
+                pane: Some(pane.clone()),
+                source: AgentSource::Observer
+            }]
+        );
+        assert_eq!(m.agent(&id).unwrap().state, AgentState::Unknown);
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::UserPromptSubmit, "sid-2"),
+                T1,
+            )
+            .unwrap();
+        assert_eq!(out.agent, id);
+        assert!(!out.created);
+        assert_eq!(m.agents.len(), 1);
+        assert_eq!(m.agent(&id).unwrap().session_id.as_deref(), Some("sid-2"));
+        assert_eq!(m.agent(&id).unwrap().state, AgentState::Working);
+        assert_eq!(m.agent(&id).unwrap().pid, Some(4242));
+    }
+
+    #[test]
+    fn waiting_working_to_idle_and_exit_set_unseen_and_report_it_once() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let id = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::UserPromptSubmit, "s"),
+            T0,
+        )
+        .unwrap();
+        let mut waiting = hook(AgentEvent::Notification, "s");
+        waiting.reason = Some("Claude needs your permission to use Bash".into());
+        let out = m
+            .report_agent(&pane, AgentKind::Claude, waiting, T1)
+            .unwrap();
+        assert!(out.events.contains(&Event::AgentUnseenChanged {
+            agent: id.clone(),
+            unseen: true
+        }));
+        assert_eq!(
+            m.agent(&id).unwrap().reason.as_deref(),
+            Some("Claude needs your permission to use Bash")
+        );
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::PreToolUse, "s"),
+                T1,
+            )
+            .unwrap();
+        assert!(
+            !out.events
+                .iter()
+                .any(|e| matches!(e, Event::AgentUnseenChanged { .. })),
+            "still unseen; no second event"
+        );
+        assert!(
+            m.agent(&id).unwrap().unseen,
+            "leaving waiting does not clear unseen"
+        );
+        assert_eq!(
+            m.agent(&id).unwrap().reason,
+            None,
+            "the reason goes with the waiting state"
+        );
+        assert_eq!(
+            m.clear_unseen(&id),
+            vec![Event::AgentUnseenChanged {
+                agent: id.clone(),
+                unseen: false
+            }]
+        );
+        let out = m
+            .report_agent(&pane, AgentKind::Claude, hook(AgentEvent::Stop, "s"), T1)
+            .unwrap();
+        assert_eq!((out.from, out.to), (AgentState::Working, AgentState::Idle));
+        assert!(m.agent(&id).unwrap().unseen, "working to idle");
+        m.clear_unseen_for_pane(&pane);
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionEnd, "s"),
+                T1,
+            )
+            .unwrap();
+        assert_eq!(out.to, AgentState::Exited);
+        assert!(out.events.contains(&Event::AgentExited {
+            agent: id.clone(),
+            pane: Some(pane.clone())
+        }));
+        let a = m.agent(&id).unwrap();
+        assert!(a.unseen && a.pane.is_none() && a.pid.is_none());
+        assert_eq!(
+            a.last_pane,
+            Some(pane.clone()),
+            "the place survives the exit"
+        );
+        assert_eq!(a.last_activity_at, T1);
+    }
+
+    #[test]
+    fn a_new_session_in_the_same_pane_is_a_new_record_and_the_old_one_exits() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let first = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s2"),
+                T1,
+            )
+            .unwrap();
+        assert!(out.created);
+        assert_ne!(out.agent, first);
+        assert_eq!(
+            m.agent(&first).unwrap().state,
+            AgentState::Exited,
+            "one live agent per pane"
+        );
+        assert!(out.events.contains(&Event::AgentExited {
+            agent: first.clone(),
+            pane: Some(pane.clone())
+        }));
+        assert_eq!(m.live_agent_on_pane(&pane).unwrap().id, out.agent);
+    }
+
+    #[test]
+    fn a_session_start_with_an_exited_records_session_id_revives_that_record_and_drops_the_placeholder(
+    ) {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let id = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.set_agent_recap(&id, Some("Migrated the session store".into()));
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "s1"),
+            T0,
+        )
+        .unwrap();
+        let (placeholder, _) = m.observe_agent(&pane, AgentKind::Claude, Some(7), T1);
+        let out = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T1,
+            )
+            .unwrap();
+        assert_eq!(out.agent, id, "the resumed session is the same record");
+        assert!(!out.created);
+        assert!(
+            m.agent(&placeholder).is_none(),
+            "the observer's placeholder is gone"
+        );
+        assert!(out
+            .events
+            .contains(&Event::AgentDismissed { agent: placeholder }));
+        let a = m.agent(&id).unwrap();
+        assert_eq!(a.state, AgentState::Idle);
+        assert_eq!(a.pane, Some(pane));
+        assert_eq!(
+            a.recap.as_deref(),
+            Some("Migrated the session store"),
+            "the recap carries over"
+        );
+    }
+
+    #[test]
+    fn hooks_on_an_exited_record_other_than_session_start_change_nothing() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let id = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "s"),
+            T0,
+        )
+        .unwrap();
+        let out = m
+            .report_agent(&pane, AgentKind::Claude, hook(AgentEvent::Stop, "s"), T1)
+            .unwrap();
+        assert_eq!(out.agent, id);
+        assert_eq!((out.from, out.to), (AgentState::Exited, AgentState::Exited));
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn process_gone_exits_the_record_and_a_report_on_a_missing_pane_is_not_found() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let (id, _) = m.observe_agent(&pane, AgentKind::Codex, Some(9), T0);
+        let events = m.agent_process_gone(&id, T1);
+        assert_eq!(
+            events,
+            vec![
+                Event::AgentStateChanged {
+                    agent: id.clone(),
+                    from: AgentState::Unknown,
+                    to: AgentState::Exited
+                },
+                Event::AgentExited {
+                    agent: id.clone(),
+                    pane: Some(pane.clone())
+                },
+                Event::AgentUnseenChanged {
+                    agent: id.clone(),
+                    unseen: true
+                }
+            ]
+        );
+        let err = m
+            .report_agent(
+                &PaneId("p_0000".into()),
+                AgentKind::Claude,
+                hook(AgentEvent::Stop, "s"),
+                T1,
+            )
+            .unwrap_err();
+        assert_eq!(err.code, crate::api::ErrorCode::NotFound);
+        assert_eq!(
+            err.message,
+            "pane p_0000 does not exist; the hook ran outside a domux pane or the pane closed"
+        );
+    }
+
+    #[test]
+    fn dismiss_removes_only_exited_records_and_clearing_a_workspace_removes_its_records() {
+        let (mut m, ws, _, pane) = model_with_one_tab();
+        let live = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        let err = m.dismiss_agent(&live).unwrap_err();
+        assert_eq!(err.code, crate::api::ErrorCode::Refused);
+        assert_eq!(
+            err.message,
+            format!("agent {live} is idle, not exited; only exited agents can be dismissed")
+        );
+        m.report_agent(
+            &pane,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "s1"),
+            T0,
+        )
+        .unwrap();
+        assert_eq!(
+            m.dismiss_agent(&live).unwrap(),
+            vec![Event::AgentDismissed {
+                agent: live.clone()
+            }]
+        );
+        assert!(m.agents.is_empty());
+        let a = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s2"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        let events = m.remove_agents_of_workspace(&ws);
+        assert_eq!(events, vec![Event::AgentDismissed { agent: a }]);
+        assert!(m.agents.is_empty());
+    }
+
+    #[test]
+    fn sorted_agents_follow_interface_spec_6_7_and_12_28_and_the_count_is_the_red_dots() {
+        let (mut m, ws, _, pane) = model_with_one_tab();
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            let (t, p, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+            let _ = t;
+            ids.push((i, p));
+        }
+        let _ = pane;
+        let mk = |m: &mut Model, p: &PaneId, sid: &str, t: &str| {
+            m.report_agent(p, AgentKind::Claude, hook(AgentEvent::SessionStart, sid), t)
+                .unwrap()
+                .agent
+        };
+        let idle_seen = mk(&mut m, &ids[0].1, "idle-seen", "2026-09-04T14:00:00+00:00");
+        let working_old = mk(
+            &mut m,
+            &ids[1].1,
+            "working-old",
+            "2026-09-04T14:01:00+00:00",
+        );
+        m.report_agent(
+            &ids[1].1,
+            AgentKind::Claude,
+            hook(AgentEvent::UserPromptSubmit, "working-old"),
+            "2026-09-04T14:01:00+00:00",
+        )
+        .unwrap();
+        let working_new = mk(
+            &mut m,
+            &ids[2].1,
+            "working-new",
+            "2026-09-04T14:02:00+00:00",
+        );
+        m.report_agent(
+            &ids[2].1,
+            AgentKind::Claude,
+            hook(AgentEvent::UserPromptSubmit, "working-new"),
+            "2026-09-04T14:05:00+00:00",
+        )
+        .unwrap();
+        let waiting = mk(&mut m, &ids[3].1, "waiting", "2026-09-04T14:03:00+00:00");
+        m.report_agent(
+            &ids[3].1,
+            AgentKind::Claude,
+            hook(AgentEvent::Notification, "waiting"),
+            "2026-09-04T14:03:00+00:00",
+        )
+        .unwrap();
+        let idle_unseen = mk(
+            &mut m,
+            &ids[4].1,
+            "idle-unseen",
+            "2026-09-04T14:04:00+00:00",
+        );
+        m.report_agent(
+            &ids[4].1,
+            AgentKind::Claude,
+            hook(AgentEvent::UserPromptSubmit, "idle-unseen"),
+            "2026-09-04T14:04:00+00:00",
+        )
+        .unwrap();
+        m.report_agent(
+            &ids[4].1,
+            AgentKind::Claude,
+            hook(AgentEvent::Stop, "idle-unseen"),
+            "2026-09-04T14:04:30+00:00",
+        )
+        .unwrap();
+        let exited = mk(&mut m, &ids[5].1, "exited", "2026-09-04T14:06:00+00:00");
+        m.report_agent(
+            &ids[5].1,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionEnd, "exited"),
+            "2026-09-04T14:06:00+00:00",
+        )
+        .unwrap();
+        let (unknown, _) = m.observe_agent(
+            &ids[5].1,
+            AgentKind::Codex,
+            None,
+            "2026-09-04T14:07:00+00:00",
+        );
+        let order: Vec<AgentId> = m.sorted_agents().iter().map(|a| a.id.clone()).collect();
+        assert_eq!(
+            order,
+            vec![
+                waiting,
+                working_new,
+                working_old,
+                idle_unseen,
+                idle_seen,
+                unknown,
+                exited
+            ],
+            "waiting, working by last activity, unseen idle, idle, unknown, exited last"
+        );
+        assert_eq!(
+            m.red_dot_count(),
+            3,
+            "waiting, idle-unseen and the exited one (exit sets unseen)"
+        );
+    }
+
+    #[test]
+    fn resolve_agent_target_accepts_ids_workspaces_and_tab_qualifiers_and_lists_candidates() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        m.rename_tab(&tab, Some("pr1".into())).unwrap();
+        let a = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        assert_eq!(m.resolve_agent_target(a.as_str()).unwrap(), a);
+        assert_eq!(
+            m.resolve_agent_target("main").unwrap(),
+            a,
+            "one live agent in the workspace"
+        );
+        let (t2, p2, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.rename_tab(&t2, Some("tests".into())).unwrap();
+        let b = m
+            .report_agent(
+                &p2,
+                AgentKind::Codex,
+                hook(AgentEvent::SessionStart, "s2"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        let err = m.resolve_agent_target("main").unwrap_err();
+        assert_eq!(err.code, crate::api::ErrorCode::Ambiguous);
+        assert_eq!(
+            err.message,
+            "2 agents are in main; qualify with the tab, for example \"main/pr1\", or use an agent id"
+        );
+        assert_eq!(err.data.unwrap().as_array().unwrap().len(), 2);
+        assert_eq!(m.resolve_agent_target("main/pr1").unwrap(), a);
+        assert_eq!(m.resolve_agent_target("main/tests").unwrap(), b);
+        let err = m.resolve_agent_target("a_ffff").unwrap_err();
+        assert_eq!(err.message, "agent a_ffff does not exist; run domux2 peek");
+        m.report_agent(
+            &p2,
+            AgentKind::Codex,
+            hook(AgentEvent::SessionEnd, "s2"),
+            T0,
+        )
+        .unwrap();
+        assert_eq!(
+            m.resolve_agent_target("main").unwrap(),
+            a,
+            "exited agents are not targets"
+        );
+    }
+
+    #[test]
+    fn restore_marks_live_records_exited_without_touching_unseen() {
+        let (mut m, _, _, pane) = model_with_one_tab();
+        let id = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::UserPromptSubmit, "s"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.mark_agents_exited_on_restore();
+        let a = m.agent(&id).unwrap();
+        assert_eq!(a.state, AgentState::Exited);
+        assert!(a.pane.is_none() && a.pid.is_none());
+        assert_eq!(a.last_pane, Some(pane));
+        assert!(!a.unseen);
+        assert_eq!(a.source, AgentSource::Restore);
     }
 }
