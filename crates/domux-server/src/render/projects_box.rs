@@ -3,7 +3,7 @@
 //! width; nothing else differs, so the two surfaces cannot drift apart.
 
 use crate::facts::FactRegistry;
-use crate::render::list_box::{filter_rows, ListRow};
+use crate::render::list_box::{filter_rows, needs_gap_between, ListRow};
 use crate::render::theme;
 use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
 use domux_core::model::{Model, Project, Workspace, WorkspaceHandle};
@@ -15,6 +15,14 @@ pub const PROJECTS_TITLE: &str = "Projects";
 
 /// Between the branch, the pull request number and the title on line 2.
 const SEP: &str = " · ";
+
+/// How far a workspace sits in from its project header, on every line of the row.
+///
+/// The header is the only thing at the box's left edge, so the eye can find where one
+/// project ends and the next begins without counting blank rows. It is two cells rather than
+/// four because the sidebar has 34 cells of text and a branch line is the widest thing in the
+/// box.
+const INDENT: usize = 2;
 
 /// The fewest cells worth spending on a pull request title. Under this the title is dropped
 /// whole, because a title cut to one syllable and an ellipsis says less than the room it
@@ -56,9 +64,15 @@ pub struct Rows {
 }
 
 /// Every row, in the order drawn: projects alphabetically (interface spec 12.15), `main`
-/// first inside each and then the slots by number, one blank row between workspaces and one
-/// before the next header. `filled` is the key of the row that carries the fill, which is
-/// the cursor when focus is in the box and the current workspace otherwise (5.3).
+/// first inside each and then the slots by number. `filled` is the key of the row that
+/// carries the fill, which is the cursor when focus is in the box and the current workspace
+/// otherwise (5.3).
+///
+/// The blank rows say what belongs to what. One goes before each header, and under it only
+/// where `needs_gap_between` asks for one, so a project's one-line slots read as one block
+/// while a workspace with a branch or a pull request is parted from its neighbours on both
+/// sides. The indent on the workspace rows says the same thing a second way, for a project
+/// whose rows run past the top of the box.
 ///
 /// `filter` is matched without case against the project name, the handle, the name, the
 /// branch and the pull request number; a project whose workspaces all fail it disappears
@@ -80,11 +94,20 @@ pub fn rows(
             out.push(ListRow::blank());
         }
         out.push(header(&project.name, extras.width));
-        for (i, w) in project.workspaces.iter().enumerate() {
-            if i > 0 {
+        // No blank after the header, and none between two workspaces that each say one line.
+        // `needs_gap_between` is the whole rule, and `filter_rows` rebuilds to the same one.
+        let mut first = true;
+        for w in project.workspaces.iter() {
+            let row = workspace_row(project, w, facts, filled, extras);
+            if !first
+                && out
+                    .last()
+                    .is_some_and(|above| needs_gap_between(above, &row))
+            {
                 out.push(ListRow::blank());
             }
-            out.push(workspace_row(project, w, facts, filled, extras));
+            first = false;
+            out.push(row);
         }
     }
     // The box's own filter, not a second one here: `/` keeps the same rows in the sidebar,
@@ -136,22 +159,37 @@ fn workspace_row(
         branch.unwrap_or_default(),
         pr.map(|f| f.text.as_str()).unwrap_or_default(),
     );
+    // The indent is the row's, not the box's, so every line of it moves together and the
+    // text each line has left to spend is what is left after the indent.
+    let inset = Extras {
+        width: extras.width.saturating_sub(INDENT),
+        ..extras
+    };
+    // Line 1 carries the indent itself, because the glyph of an untouched slot lives in it.
     let mut lines = vec![line1(
         w,
         branch,
         pr.is_some(),
         filled == Some(key.as_str()),
-        extras.width,
+        inset.width,
     )];
-    if let Some(line) = line2(w, branch, pr, extras) {
-        lines.push(line);
+    if let Some(line) = line2(w, branch, pr, inset) {
+        lines.push(indented(line));
     }
-    if extras.wide {
+    if inset.wide {
         if let Some(line) = tab_list(w) {
-            lines.push(line);
+            lines.push(indented(line));
         }
     }
     ListRow::selectable(key, filter_text, lines)
+}
+
+/// One line moved in by `INDENT`. A raw span rather than a styled one: it carries no colour
+/// of its own, so the fill's background is the only thing it ever shows.
+fn indented(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 /// What line 1 says, which decides both its colour and how it brightens under the fill.
@@ -167,8 +205,10 @@ enum Line1 {
     Live,
 }
 
-/// The name when there is one, else the handle. An untouched slot takes the hollow glyph
-/// (interface spec 5.2).
+/// The name when there is one, else the handle, behind the row's indent. An untouched slot
+/// takes the hollow glyph (interface spec 5.2), and the glyph hangs in the indent rather than
+/// standing in front of the handle, so every name in the box starts in the same column
+/// whether or not its row is marked. V1's switcher reads this way.
 fn line1(
     w: &Workspace,
     branch: Option<&str>,
@@ -176,17 +216,24 @@ fn line1(
     filled: bool,
     width: usize,
 ) -> Line<'static> {
-    let (kind, text) = if w.is_untouched(branch, has_pr) {
-        (Line1::Untouched, format!("◌ {}", w.handle))
+    let kind = if w.is_untouched(branch, has_pr) {
+        Line1::Untouched
     } else if w.name.is_none() && w.handle == WorkspaceHandle::Main {
-        (Line1::Main, w.display_name())
+        Line1::Main
     } else {
-        (Line1::Live, w.display_name())
+        Line1::Live
     };
-    Line::from(Span::styled(
-        truncate_with_ellipsis(&text, width),
-        line1_style(kind, filled),
-    ))
+    // Both spellings are `INDENT` cells wide, which is what keeps the two kinds of row in
+    // one column.
+    let gutter = match kind {
+        Line1::Untouched => "◌ ".to_string(),
+        _ => " ".repeat(INDENT),
+    };
+    let style = line1_style(kind, filled);
+    Line::from(vec![
+        Span::styled(gutter, style),
+        Span::styled(truncate_with_ellipsis(&w.display_name(), width), style),
+    ])
 }
 
 /// Interface spec 5.2 for the colours and 5.3 for the filled row.

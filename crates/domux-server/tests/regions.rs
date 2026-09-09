@@ -481,7 +481,7 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
     let f = in_the_box(&mut h).await;
     assert!(
-        box_row(&f, 4).contains("workspace-1") && box_row(&f, 6).contains("workspace-2"),
+        box_row(&f, 3).contains("workspace-1") && box_row(&f, 4).contains("workspace-2"),
         "both slots start visible:\n{f}"
     );
 
@@ -490,7 +490,7 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !box_row(f, 6).contains("workspace-2"),
+            |f| !box_row(f, 4).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -510,7 +510,7 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| box_row(f, 6).contains("workspace-2"),
+            |f| box_row(f, 4).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -574,7 +574,7 @@ async fn leaving_the_box_gives_the_sidebar_its_whole_list_back() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !box_row(f, 6).contains("workspace-2"),
+            |f| !box_row(f, 4).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -588,7 +588,7 @@ async fn leaving_the_box_gives_the_sidebar_its_whole_list_back() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| box_row(f, 6).contains("workspace-2"),
+            |f| box_row(f, 4).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -665,13 +665,23 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
 
 /// The box scrolls to keep the cursor in view.
 ///
-/// 11 rows, which leaves the box 8 lines to draw 9 in: on a 24 row screen the whole list fits
-/// and a hard-coded scroll of 0 passes. The field can only be tested under the condition that
-/// makes it matter.
+/// The box scrolls to keep the cursor in view.
+///
+/// A third slot and the shortest screen domux draws on, which leaves the box 7 lines to draw
+/// 8 in: on a 24 row screen the whole list fits and a hard-coded scroll of 0 passes. The
+/// field can only be tested under the condition that makes it matter.
 #[tokio::test]
 async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_row() {
-    let mut h = Harness::start(Config::default(), 120, 11).await;
+    let mut h = Harness::start(Config::default(), 120, 10).await;
     let (_root, _w1, w2) = h.git_project_with_two_slots().await;
+    let project = h
+        .model()
+        .project_of_workspace(&w2)
+        .map(|p| p.id.to_string())
+        .expect("the git project holds the slot");
+    h.api("workspace.create", json!({ "project": project }))
+        .await
+        .expect("a third slot");
     let git_main = h
         .model()
         .project_of_workspace(&w2)
@@ -696,15 +706,15 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
     );
 
     // Down to the last row, which is the other project's `main`.
-    for _ in 0..3 {
+    for _ in 0..4 {
         h.key(h.client.clone(), "j").await;
     }
     let f = h.frame(h.client.clone()).await;
-    // 1 exactly, and not merely "more than 0". The nine lines are a header, `main`, a blank,
-    // two slots with a blank between and after, the next header and its `main`, so the last
-    // row ends on line 9 and the box shows 8: one line has to go. That number is what tells
-    // the compact rows from the switcher's wider ones, which give every workspace a tab list
-    // line and would put the same cursor five lines down.
+    // 1 exactly, and not merely "more than 0". The eight lines are a header, `main`, three
+    // slots, the blank before the next header, that header and its `main`, so the last row
+    // ends on line 8 and the box shows 7: one line has to go. That number is what tells the
+    // compact rows from the switcher's wider ones, which give every workspace a tab list line
+    // and would put the same cursor five lines further down.
     assert_eq!(
         h.model().client(&h.client).unwrap().projects_scroll,
         1,

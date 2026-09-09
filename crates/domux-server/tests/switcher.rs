@@ -60,23 +60,23 @@ async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
         "┌ Projects ────────────────────────────────────────────────┐",
         "{f}"
     );
-    // 60 = "│PROJ " (6) + 53 dashes + "│" (1)
+    // 60 = "│ PROJ " (7) + 51 dashes + " │" (2)
     assert_eq!(
         cols(row(&f, 4), 10, 69),
-        "│PROJ ─────────────────────────────────────────────────────│"
+        "│ PROJ ─────────────────────────────────────────────────── │"
     );
-    // 60 = "│main" (5) + 54 spaces + "│" (1)
+    // 60 = "│" (1) + the pad and the row's indent (3) + "main" (4) + 51 spaces + "│" (1)
     assert_eq!(
         cols(row(&f, 5), 10, 69),
-        "│main                                                      │"
+        "│   main                                                   │"
     );
     // The tab list, which only the switcher's width asks for (interface spec 5.5): the
     // sidebar's `Extras::compact` leaves this line out, so it is what separates the two
     // surfaces and it is the reason the box is five rows and not four.
-    // 60 = "│1" (2) + 57 spaces + "│" (1)
+    // 60 = "│" (1) + the pad and the indent (3) + "1" (1) + 54 spaces + "│" (1)
     assert_eq!(
         cols(row(&f, 6), 10, 69),
-        "│1                                                         │"
+        "│   1                                                      │"
     );
     // 60 = "└" (1) + 58 dashes + "┘" (1)
     assert_eq!(
@@ -114,12 +114,13 @@ async fn the_cursor_starts_on_the_current_workspace_and_the_fill_marks_it() {
     // filled row's own text goes from `main`'s dim `#7f849c` to `text` (interface spec 5.3),
     // which is what splits the band into a styled run and a bare one.
     assert!(
-        f.contains("r5 c11-14 fg=#cdd6f4 bg=#313244"),
-        "main is filled because this client is in it, and its text brightened:\n{f}"
+        f.contains("r5 c12-17 fg=#cdd6f4 bg=#313244"),
+        "main is filled because this client is in it, and its text brightened, \
+         indent and all:\n{f}"
     );
     assert!(
-        f.contains("r5 c15-68 bg=#313244"),
-        "the fill covers the whole inner width, not just the text:\n{f}"
+        f.contains("r5 c11-11 bg=#313244") && f.contains("r5 c18-68 bg=#313244"),
+        "the fill covers the whole inner width, the pads at either end included:\n{f}"
     );
     assert!(
         styles(&f, 6).iter().all(|l| !l.contains("#313244")),
@@ -207,12 +208,12 @@ async fn the_switcher_covers_the_panes_text_and_leaves_the_rest_of_the_screen_wh
     // drew without clearing would show the pane's text in the rest of the line.
     assert_eq!(
         cols(row(&f, 5), 10, 69),
-        "│main                                                      │",
+        "│   main                                                   │",
         "the box's own row, with nothing of the pane left in it:\n{f}"
     );
     assert_eq!(
         cols(row(&f, 6), 10, 69),
-        "│1                                                         │",
+        "│   1                                                      │",
         "{f}"
     );
     assert_eq!(

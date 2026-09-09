@@ -186,8 +186,8 @@ async fn a_filter_that_matches_nothing_names_what_was_searched_for_and_the_way_o
         .await;
     assert_eq!(
         box_row(&f, 4),
-        "No workspace matches \"zzz\". esc clears the filter",
-        "the state and the next action, in the box's first row:\n{f}"
+        " No workspace matches \"zzz\". esc clears the filter",
+        "the state and the next action, in the box's first row, one cell in from the border:\n{f}"
     );
     assert!(
         !box_text(&f).contains("auth cleanup") && !box_text(&f).contains("AUDREY-APP"),
@@ -323,6 +323,10 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
         "the rebound key is what shows:\n{f}"
     );
     assert!(
+        f.contains("X          project.remove"),
+        "and the box's destructive key is in the one place that lists it:\n{f}"
+    );
+    assert!(
         !f.contains("/          list.filter"),
         "and the default it replaced is gone:\n{f}"
     );
@@ -418,14 +422,15 @@ async fn the_switcher_shows_the_tab_list_and_the_sidebar_does_not() {
 
 /// A row too wide for the box is cut inside it, wide graphemes included (interface spec 5.6).
 ///
-/// The name is 40 CJK characters, 80 cells in a box that has 58. `truncate_with_ellipsis`
-/// spends 57 of them, because the 29th wide grapheme would need cells 57 and 58 and only one
-/// is left, so the row is 28 graphemes and an ellipsis and the last cell of the box stays
-/// blank. That blank is the whole point of the assertion: it is the cell an implementation
-/// that measured in characters, or that let a wide grapheme straddle the border, would have
-/// written into. The row is asserted whole rather than sliced because a frame collapses a
-/// wide glyph and its spacer into one character, so counting characters into a row of CJK
-/// lands in the wrong cell - which is the mistake this test exists to catch.
+/// The name is 40 CJK characters, 80 cells in a box that has 58 less its two pads and the
+/// row's two-cell indent, so 54. `truncate_with_ellipsis` spends 53 of them, because the 27th
+/// wide grapheme would need the 54th cell and the one after it, so the row is 26 graphemes
+/// and an ellipsis and the last cell of the text stays blank. That blank is the whole point
+/// of the assertion: it is the cell an implementation that measured in characters, or that
+/// let a wide grapheme straddle the border, would have written into. The row is asserted
+/// whole rather than sliced because a frame collapses a wide glyph and its spacer into one
+/// character, so counting characters into a row of CJK lands in the wrong cell - which is the
+/// mistake this test exists to catch.
 #[tokio::test]
 async fn a_name_of_wide_graphemes_is_cut_inside_the_switchers_box() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
@@ -451,9 +456,9 @@ async fn a_name_of_wide_graphemes_is_cut_inside_the_switchers_box() {
         .expect("the name is on the screen");
     assert_eq!(
         row(&f, y),
-        format!("│         │{}… │         │", "設定".repeat(14)),
-        "28 wide graphemes and an ellipsis fill 57 of the box's 58 cells, and the 58th is\n\
-         left blank because a 29th cannot be half drawn:\n{f}"
+        format!("│         │   {}…  │         │", "設定".repeat(13)),
+        "26 wide graphemes and an ellipsis fill 53 of the row's 54 cells, and the 54th is\n\
+         left blank because a 27th cannot be half drawn:\n{f}"
     );
 }
 
@@ -461,9 +466,11 @@ async fn a_name_of_wide_graphemes_is_cut_inside_the_switchers_box() {
 /// (interface spec 5.6 and 12.16).
 ///
 /// The row builder's ordering has unit tests of its own. What only a real frame can answer is
-/// which width the switcher hands it: the box is 58 cells here, so the title has 29 to live in
-/// and loses one to the ellipsis. A switcher that passed the sidebar's 36, or the screen's 80,
-/// or the box's outer 60, cuts the title somewhere else and this row changes.
+/// which width the switcher hands it: the box is 58 cells here, less two pads and the row's
+/// two-cell indent, so the branch, the number and their separators take 29 of the 54 that are
+/// left and the title has 25 to live in, one of which goes to the ellipsis. A switcher that
+/// passed the sidebar's 34, or the screen's 80, or the box's outer 60, cuts the title
+/// somewhere else and this row changes.
 ///
 /// The branch, the number and the title are three separate facts of three different lengths,
 /// so the one that was shortened is named by the row rather than inferred from it.
@@ -506,7 +513,7 @@ async fn the_switcher_cuts_the_pull_request_title_to_its_own_width_and_never_the
         .expect("the pull request is on the screen");
     assert_eq!(
         row(&f, y),
-        "│         │feat/auth-cleanup · PR#212 · Consolidate the auth middlew…│         │",
+        "│         │   feat/auth-cleanup · PR#212 · Consolidate the auth mid… │         │",
         "the title takes what the branch and the number leave and loses its tail:\n{f}"
     );
 
@@ -528,7 +535,7 @@ async fn the_switcher_cuts_the_pull_request_title_to_its_own_width_and_never_the
         .expect("the pull request is on the screen");
     assert_eq!(
         cells(&row(&f, y), 0, 37),
-        "│feat/auth-cleanup · PR#212          │",
+        "│   feat/auth-cleanup · PR#212       │",
         "and the sidebar drops the title whole rather than shortening it:\n{f}"
     );
 }
