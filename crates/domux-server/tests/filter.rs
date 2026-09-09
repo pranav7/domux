@@ -751,6 +751,15 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
         more_row(&f),
         "and the overlay says the rest of it did not fit:\n{f}"
     );
+    // A blank row under the block, so it reads as its own table rather than running into the
+    // leader table below it. The pane ordering pins the blank on the other side of the block,
+    // and the two are separate lines of code: the mutant for this one survived a sweep with
+    // only that assertion in the suite.
+    assert_eq!(
+        row(&f, row_holding(&f, "client.detach") - 1).trim_matches(|c| c == ' ' || c == '\u{2502}'),
+        "",
+        "the block ends with a blank row before the leader table:\n{f}"
+    );
 
     // The sidebar's box, reached with no overlay in the way, gets the same answer.
     h.key(h.client.clone(), "Esc").await;
