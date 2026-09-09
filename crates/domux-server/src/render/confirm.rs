@@ -40,11 +40,16 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
         .chain(std::iter::once(display_width(&question.title)))
         .max()
         .unwrap_or(0) as u16;
-    let area = overlay::centred_area(
-        widest.saturating_add(CHROME),
-        question.lines.len() as u16 + 2,
-        buf,
+    // The width first, on its own, because the height depends on it: a line too long for the
+    // screen becomes two rows, so the rows cannot be counted until the box is as wide as it is
+    // going to get. `centred_area` is asked twice for that reason and its width answer does
+    // not depend on the height it is passed.
+    let wide_enough = overlay::centred_area(widest.saturating_add(CHROME), 3, buf);
+    let lines = wrapped(
+        question.lines,
+        wide_enough.width.saturating_sub(CHROME) as usize,
     );
+    let area = overlay::centred_area(wide_enough.width, lines.len() as u16 + 2, buf);
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -65,7 +70,7 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
     );
     let width = inner.width.saturating_sub(2) as usize;
     let last_x = inner.x + inner.width.saturating_sub(1);
-    for (i, line) in question.lines.iter().enumerate() {
+    for (i, line) in lines.iter().enumerate() {
         if i as u16 >= inner.height {
             break;
         }
@@ -92,6 +97,68 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
     // The screen behind reads as being behind it (interface spec 7.1). After the drawing,
     // so the box itself is what `keep` keeps rather than something the box then undoes.
     overlay::dim(buf, &[area]);
+}
+
+/// Breaks each line to `width` columns so a sentence too long for the box becomes two rows
+/// rather than losing its tail to an ellipsis.
+///
+/// **Why this is here rather than solved by shorter copy.** The delete box is the tight one:
+/// its sentence is a fixed 57 columns plus the branch name, against a budget of 112 at a 120
+/// column screen, so it clips at a 55 character branch. Real branch names in this program
+/// already reach 53. Shortening the copy moved that ceiling and did not remove it, and a
+/// ceiling two characters above what the author types is not a guarantee. What is lost when it
+/// clips is the end of the sentence, which on a delete is the branch and the tab count.
+///
+/// Only a line of one span is broken. A line of several is a keys row, built from short pieces
+/// to fit, and breaking it would have to carry each piece's style across the break for no gain.
+/// A blank line has no spans at all and passes through as itself, which is what keeps the
+/// spacing the box was written with.
+///
+/// A word longer than the row stays on its own row and `put_within` gives it an ellipsis. That
+/// is the worktree path on the identity line, which has no spaces to break on: the deferral is
+/// deliberate and measured at roughly 110 characters of path, and the title still names the
+/// slot.
+fn wrapped(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for line in lines {
+        let [span] = &line.spans[..] else {
+            out.push(line);
+            continue;
+        };
+        let rows = broken(&span.content, width);
+        if rows.is_empty() {
+            out.push(Line::default());
+            continue;
+        }
+        for row in rows {
+            out.push(Line::from(Span::styled(row, span.style)));
+        }
+    }
+    out
+}
+
+/// `text` in rows of at most `width` columns, broken on spaces.
+fn broken(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    for word in text.split(' ').filter(|w| !w.is_empty()) {
+        if row.is_empty() {
+            row.push_str(word);
+        } else if display_width(&row) + 1 + display_width(word) <= width {
+            row.push(' ');
+            row.push_str(word);
+        } else {
+            rows.push(std::mem::take(&mut row));
+            row.push_str(word);
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
 }
 
 /// The copy for one question, or `None` when there is nothing to ask about: a project the
@@ -231,11 +298,19 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    /// A project holding one slot, at a root as long as a real one.
+    /// A project holding one slot, at a path as long as a real one.
     ///
-    /// The path is realistic rather than `/p` because one of the tests below is about the box
-    /// fitting a 120 column screen, and a two-character root would let it pass on a width no
-    /// reader will ever have.
+    /// **The `path` is load-bearing and the `root` is not**, and both halves of that are
+    /// measured rather than reasoned. Shortening `path` to `/p/w1` kills two tests here,
+    /// because it is what the identity line shows. Putting `root` back to `/p` kills nothing,
+    /// because `relative_to` only feeds `DeletionCopy::removes`, which is the long form the
+    /// CLI prints and this box never draws; the harness covers that form against real paths.
+    /// So the root is a plausible parent for the path rather than a value any test depends on.
+    ///
+    /// This comment has been wrong twice, which is why it now carries its evidence. It first
+    /// said a two-character root would let the width test pass at a width no reader has; the
+    /// reviewer disproved that by running it. It then said the root buys the identity line;
+    /// that is the `path`. Both were guesses about a fixture, written in the shape of reasons.
     ///
     /// The path and the root are literals and nothing here touches a filesystem: the box is
     /// composed on the core task, so it reads the model and the facts and never asks git.
@@ -450,31 +525,73 @@ mod tests {
         );
     }
 
-    /// Nothing in either box is cut at the width the harness calls a terminal.
+    /// A branch name as long as the ones this program really produces.
     ///
-    /// `confirm::draw` does not wrap: it draws one `Line` per row and `put_within` clips what
-    /// does not fit, so a sentence longer than the box loses its tail to an ellipsis. That is
-    /// survivable in a list and not survivable here, where the tail is the half of the
-    /// sentence that says what happens to the branch. 120 columns is the width every harness
-    /// test in this milestone attaches at, so it is the width this has to hold at.
+    /// 66 columns. The branch that prompted the measurement,
+    /// `claude/PROJ-1482-rework-the-workspace-branch-provider`, is 53, and the delete box
+    /// clipped at 55 before it wrapped: the shortened copy moved the ceiling to two characters
+    /// above what the author already types. A synthetic name would prove less than this one.
+    const A_LONG_BRANCH: &str = "claude/PROJ-1482-rework-the-workspace-branch-provider-and-cache";
+
+    /// Neither box loses a word at the width the harness calls a terminal, with a branch name
+    /// long enough to have clipped before `wrapped` existed.
+    ///
+    /// Two assertions, because "no ellipsis" alone would pass on a box that dropped a line
+    /// rather than breaking it: the sentences are rebuilt from the rows and matched whole, so
+    /// what is checked is that every word arrived somewhere.
+    ///
+    /// 120 columns is the width every harness test in this milestone attaches at.
     #[test]
-    fn neither_box_is_cut_at_a_hundred_and_twenty_columns() {
+    fn neither_box_loses_a_word_at_a_hundred_and_twenty_columns() {
         let (model, id) = model_with_a_slot();
         let mut facts = FactRegistry::new();
         facts.set(
             domux_core::facts::FactKey::workspace(&id, domux_core::facts::FACT_BRANCH),
-            Some(branch_fact("feat/auth-cleanup")),
+            Some(branch_fact(A_LONG_BRANCH)),
         );
-        for kind in [
-            ConfirmKind::DeleteWorkspace(id.clone()),
-            ConfirmKind::ClearWorkspace(id.clone()),
-        ] {
-            let text = drawn_at(&model, &facts, &kind, 120);
-            assert!(
-                !text.contains('\u{2026}'),
-                "a confirmation lost words to the box's edge:\n{text}"
-            );
-        }
+        let delete = drawn_at(
+            &model,
+            &facts,
+            &ConfirmKind::DeleteWorkspace(id.clone()),
+            120,
+        );
+        assert!(
+            !delete.contains('\u{2026}'),
+            "the delete box lost words to its edge:\n{delete}"
+        );
+        assert!(
+            reflowed(&delete).contains(&format!(
+                "Removes the worktree, the local branch {A_LONG_BRANCH} and closes 0 tabs."
+            )),
+            "and the sentence is all there, across however many rows it took:\n{delete}"
+        );
+
+        let clear = drawn_at(&model, &facts, &ConfirmKind::ClearWorkspace(id), 120);
+        assert!(
+            !clear.contains('\u{2026}'),
+            "the clear box lost words to its edge:\n{clear}"
+        );
+        assert!(
+            reflowed(&clear).contains(
+                "Throws away every commit, change and untracked file in it and puts its \
+                 branch back at its base."
+            ),
+            "and so is this one:\n{clear}"
+        );
+    }
+
+    /// The box's rows joined back into one string, so a sentence that was broken across two of
+    /// them can be matched whole.
+    fn reflowed(drawn: &str) -> String {
+        let words: Vec<&str> = drawn
+            .lines()
+            .flat_map(|l| {
+                l.trim_matches('@')
+                    .trim_matches(|c: char| !c.is_alphanumeric() && c != ' ')
+                    .split_whitespace()
+            })
+            .collect();
+        words.join(" ")
     }
 
     /// A workspace the model no longer holds asks nothing rather than drawing a box about it,
