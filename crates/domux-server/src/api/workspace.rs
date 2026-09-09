@@ -3,9 +3,9 @@
 use super::{ok, Ctx};
 use crate::core::{slot_claim, CoreJob};
 use domux_core::api::{
-    Ack, ApiError, Event, WorkspaceClearParams, WorkspaceCreateParams, WorkspaceDeleteParams,
-    WorkspaceFocusParams, WorkspaceInfo, WorkspaceListParams, WorkspaceRenameParams,
-    WorkspaceTargetParams,
+    Ack, AgentResumeResult, ApiError, Event, WorkspaceClearParams, WorkspaceCreateParams,
+    WorkspaceDeleteParams, WorkspaceFocusParams, WorkspaceInfo, WorkspaceListParams,
+    WorkspaceRenameParams, WorkspaceResumeResult, WorkspaceTargetParams,
 };
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
 use domux_core::ids::{ProjectId, WorkspaceId};
@@ -643,14 +643,50 @@ fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
     ok(Ack { ok: true })
 }
 
-/// The stub the roadmap's 5.7 table names. M3 replaces it with the real resume, which puts
-/// an agent back in the pane it was working in.
+/// Every exited record in the workspace, resumed: its relaunch line typed into the pane it
+/// last ran in, in the order the Agents box lists them (newest first).
 ///
-/// It refuses without looking at its target on purpose: resolving a workspace first would
-/// answer `not_found` for a bad target and `unavailable` for a good one, which reads as a
-/// method that half works. There is nothing here to work.
-pub fn resume(_ctx: &mut Ctx, _p: WorkspaceTargetParams) -> Result<Value, ApiError> {
-    Err(ApiError::unavailable("resume arrives with agents in M3"))
+/// Failures are collected rather than fatal (plan assumption 29). One Codex record in a
+/// workspace must not stop the Claude records beside it from coming back, and the reader has to
+/// be told which ones did not, so both halves of the answer travel: `resumed` is what was typed
+/// and `skipped` is one line per record with the reason (principle 9).
+///
+/// Every refusal is `agent::plan_resume`'s, which is what `agent.resume` refuses with too, so a
+/// record skipped here and the same record named on its own give the same reason in the same
+/// words. Nothing about resuming one agent is repeated here.
+pub fn resume(ctx: &mut Ctx, p: WorkspaceTargetParams) -> Result<Value, ApiError> {
+    let workspace = ctx.resolve_workspace_param(p.workspace.as_deref())?;
+    // Read out as ids before the loop, because the loop writes to the panes through `ctx` and
+    // cannot hold a borrow of the model across that.
+    let exited: Vec<domux_core::ids::AgentId> = ctx
+        .model
+        .sorted_agents()
+        .into_iter()
+        .filter(|a| a.workspace == workspace && !a.state.is_live())
+        .map(|a| a.id.clone())
+        .collect();
+    let mut resumed = Vec::new();
+    let mut skipped = Vec::new();
+    for agent in exited {
+        match super::agent::plan_resume(ctx, &agent) {
+            Ok((command, pane)) => {
+                match ctx.write_to_pane(&pane, format!("{command}\r").as_bytes()) {
+                    Ok(()) => resumed.push(AgentResumeResult {
+                        agent,
+                        pane,
+                        command,
+                    }),
+                    // A pane with no terminal is a record that cannot be resumed like any other, so
+                    // it joins the skipped list instead of ending the run. `plan_resume` has already
+                    // refused the pane the model does not hold; this is the narrower case of a pane
+                    // the model holds whose process failed to start.
+                    Err(e) => skipped.push(format!("{agent}: {}", e.message)),
+                }
+            }
+            Err(e) => skipped.push(format!("{agent}: {}", e.message)),
+        }
+    }
+    ok(WorkspaceResumeResult { resumed, skipped })
 }
 
 impl Ctx<'_> {

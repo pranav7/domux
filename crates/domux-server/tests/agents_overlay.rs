@@ -6,7 +6,6 @@
 //! frame's own style dump. And an assertion that something is **absent** passes on a blank
 //! frame, so every one of those stands beside a positive assertion on the same frame.
 
-use domux_core::api::ErrorCode;
 use domux_core::config::Config;
 use domux_core::ids::PaneId;
 use domux_core::model::agent::{AgentKind, AgentState};
@@ -423,10 +422,13 @@ async fn an_exited_row_names_the_configured_resume_key() {
 }
 
 /// Enter on an exited row runs `agent.resume` and keeps the overlay open: resume is not a
-/// navigation, so leaving the list is wrong (assumption 28). Task 18 builds that method and it
-/// answers `unavailable` until then, so the code word is what pins which method the row
-/// reached; Task 18 replaces it with the result. What it must never reach is `agent.focus`,
-/// which refuses an exited record.
+/// navigation, so leaving the list is wrong (assumption 28). Which method the row reached is
+/// pinned by the result, which carries the command `agent.resume` typed; what it must never
+/// reach is `agent.focus`, which refuses an exited record.
+///
+/// This test read the refusal `agent.resume` answered before Task 18 built it, and pinned the
+/// code word to say which method the row had reached. `agent_resume.rs` owns the resuming; what
+/// is still this file's is that the row goes to that method and that the list stays up.
 #[tokio::test]
 async fn enter_on_an_exited_row_reaches_resume_and_leaves_the_overlay_open() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
@@ -435,18 +437,28 @@ async fn enter_on_an_exited_row_reaches_resume_and_leaves_the_overlay_open() {
     open_overlay(&mut h).await;
     let exited = h.agents().await[0].id.clone();
     assert_eq!(h.agents().await[0].state, AgentState::Exited);
-    let err = h.api("list.activate", json!({})).await.unwrap_err();
+    let out = h.api("list.activate", json!({})).await.unwrap();
     assert_eq!(
-        err.code,
-        ErrorCode::Unavailable,
-        "the row reached agent.resume, which Task 18 builds: {err}"
+        out["agent"],
+        exited.to_string(),
+        "the row reached agent.resume, with the record under the cursor: {out}"
     );
     assert!(
-        !err.message.contains("has exited"),
-        "and not agent.focus, which refuses an exited record: {err}"
+        out["command"]
+            .as_str()
+            .expect("the result carries the command")
+            .contains("claude --resume 'c1'"),
+        "and it resumed that record's own session: {out}"
     );
     let f = h.frame(h.client.clone()).await;
     assert!(f.contains("┌ Agents"), "the overlay stayed open:\n{f}");
+    // Over the API, so nothing else composed this frame. A key gets one from `Core::key`
+    // whatever the handler did, and every other test of this footer presses one; here the
+    // result line is only on the screen because setting it marked the view (principle 8).
+    assert!(
+        f.contains("Resumed claude in "),
+        "and the footer carries the result, with no key to have redrawn it:\n{f}"
+    );
     let view = h.model().client(&h.client).unwrap().clone();
     assert_eq!(view.overlay, Some(Overlay::Agents));
     assert_eq!(view.agents_cursor, Some(exited), "the cursor did not move");

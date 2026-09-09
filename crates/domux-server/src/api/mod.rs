@@ -133,6 +133,40 @@ impl Ctx<'_> {
         crate::render::tab_workpanel(self.model, tab, UNVIEWED_SIZE)
     }
 
+    /// Types bytes into a pane's shell, as if they had been typed at the keyboard.
+    ///
+    /// In place rather than through a list the core drains afterwards. `pending_spawns` and
+    /// `pending_kills` exist because starting and killing a process needs the core's spawner;
+    /// a write needs nothing a handler does not already hold, and a second mechanism for it
+    /// would be a second place to look for where a pane's input comes from.
+    ///
+    /// One lookup and one message for every handler that types into a pane, so `pane.send_text`
+    /// and `agent.resume` cannot come to disagree about what a pane with no terminal is called.
+    pub fn write_to_pane(&mut self, pane: &PaneId, bytes: &[u8]) -> Result<(), ApiError> {
+        let runtime = self
+            .panes
+            .get_mut(pane)
+            .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
+        runtime.write(bytes);
+        Ok(())
+    }
+
+    /// Puts one line of result in the calling client's hint row or footer (interface spec 7.3
+    /// and 12.12).
+    ///
+    /// The rule itself is `core::set_pill`, which `Core::set_pill` also calls: this is that
+    /// pill from inside a handler, where `Core::set_pill` is the same one for an answer that
+    /// arrives after the handler has returned. A call with no client draws nothing, which is
+    /// the honest outcome - a pill is a place on a screen, and a caller with no screen has
+    /// already been answered by its reply.
+    pub fn set_pill(&mut self, text: String, ok: bool) {
+        let at = self.deps.clock.now().to_rfc3339();
+        let client = self.client.clone();
+        if crate::core::set_pill(self.model, client.as_ref(), text, ok, &at) {
+            self.view_dirty = true;
+        }
+    }
+
     /// A pane as the API reports it. `cols` and `rows` are its emulator's, which is the
     /// screen its program believes it has, so a pane with no runtime reports 0x0 rather
     /// than a size nothing is drawing.
@@ -180,9 +214,10 @@ impl Ctx<'_> {
 /// again, and it is what stops one of those methods from reaching the cut-over unbuilt and
 /// unnoticed.
 ///
-/// `workspace.resume` is the one refusal that is off the register on purpose: Task 19 gave it
-/// a real handler, `api::workspace::resume`, which answers in words about agents rather than
-/// in the register's, so neither direction looks at it.
+/// `workspace.resume` was never on the register and never needed to come off it. M2 gave it a
+/// handler that refused in its own words about agents rather than in the register's, and M3
+/// replaced that handler with the real resume; both directions key off the words "is not built
+/// yet", so a method that refuses in words of its own stays off either way.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
     match method {
@@ -248,9 +283,7 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         AgentReport(p) => agent::report(ctx, p),
         AgentFocus(p) => agent::focus(ctx, p),
         AgentDismiss(p) => agent::dismiss(ctx, p),
-        AgentResume(_) => Err(ApiError::unavailable(
-            "agent.resume arrives with resuming exited records in M3 and is not built yet",
-        )),
+        AgentResume(p) => agent::resume(ctx, p),
         AgentSend(_) => Err(ApiError::unavailable(
             "agent.send arrives with messaging in M4 and is not built yet",
         )),

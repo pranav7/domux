@@ -10,6 +10,7 @@
 //! keys are on.
 
 use super::{ok, Ctx};
+use crate::agents::context::place_of;
 use crate::render::agents_box::{self, RowForm};
 use crate::render::list_box::{filter_rows, scroll_to_show, ListRow};
 use crate::render::projects_box::{self, Extras};
@@ -18,7 +19,7 @@ use domux_core::api::{
 };
 use domux_core::ids::{AgentId, ClientId, WorkspaceId};
 use domux_core::model::agent::AgentState;
-use domux_core::model::{Focus, Overlay, RegionKind};
+use domux_core::model::{Focus, Model, Overlay, RegionKind};
 use ratatui::layout::Rect;
 use serde_json::Value;
 
@@ -313,25 +314,49 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// would be a line that never runs. A switch that refuses leaves the overlay where it was,
 /// which is what a reader who pressed Enter on a record that has just gone should see.
 ///
-/// An exited record is `agent.resume`, which Task 18 owns. It is reached through `dispatch`
-/// rather than by calling a handler, because the handler is the one thing here that does not
-/// exist yet: routing through the method name means the row reaches whatever `agent.resume`
-/// is, today's refusal or tomorrow's resume, with nothing to edit here in between. The overlay
-/// stays open on that path, because resume is not a navigation and the reader is meant to see
-/// the result of what they pressed (principle 8).
+/// An exited record is `agent.resume`, reached through `dispatch` rather than by calling the
+/// handler, so the row reaches whatever `agent.resume` is with nothing to edit here in between.
+/// The overlay stays open on that path (plan assumption 28), because resume is not a navigation:
+/// the reader is still looking at the list, and the row they pressed on is still exited until the
+/// resumed session reports its first hook.
+///
+/// So the overlay's footer is where the result goes, and it is the one thing this adds to either
+/// method. Nothing else on the screen changes: a resume types a line into a pane the reader
+/// cannot see from here, and a refusal changes nothing at all, so without a line in the footer
+/// Enter on an exited row would look like a key that did nothing (principle 8). The pill is set
+/// here rather than in `agent::resume`, because a caller with a command line has its answer in
+/// the reply and does not need one written on somebody's screen; the same reason `input`'s name
+/// box sets the pill for `workspace.rename` rather than the handler doing it.
 fn activate_agent(ctx: &mut Ctx, client: &ClientId, agent: AgentId) -> Result<Value, ApiError> {
     let exited = ctx
         .model
         .agent(&agent)
         .is_some_and(|a| a.state == AgentState::Exited);
     if exited {
-        return super::dispatch(
+        let done = super::dispatch(
             Method::AgentResume(AgentResumeParams {
                 agent: Some(agent.to_string()),
                 client: Some(client.clone()),
             }),
             ctx,
         );
+        match &done {
+            // The kind and the place are read back out of the record rather than out of the
+            // result, which carries the pane and the command: the footer says which agent came
+            // back and where it is, and a shell line is not that.
+            Ok(_) => {
+                let model: &Model = ctx.model;
+                // The record is there: `agent.resume` just read it, and nothing removes one.
+                if let Some(said) = model
+                    .agent(&agent)
+                    .map(|a| format!("Resumed {} in {}", a.kind, place_of(model, a)))
+                {
+                    ctx.set_pill(said, true);
+                }
+            }
+            Err(e) => ctx.set_pill(e.message.clone(), false),
+        }
+        return done;
     }
     super::agent::focus(
         ctx,

@@ -1,12 +1,16 @@
 //! `agent.*`: the records namespace. `agents.*` (Task 14) opens the overlay that lists them.
 
 use super::{ok, Ctx};
+// `crate::agents::resume` is named in full below rather than imported: the handler in this
+// file is called `resume` too, and one of the two would have to be renamed to something it is
+// not.
 use crate::agents::{context, hooks, manifests::RecapSource};
 use domux_core::api::{
     Ack, AgentInfo, AgentListParams, AgentListResult, AgentReportParams, AgentReportResult,
-    AgentSelfParams, AgentTargetParams, ApiError, FocusResult,
+    AgentResumeParams, AgentResumeResult, AgentSelfParams, AgentTargetParams, ApiError,
+    FocusResult,
 };
-use domux_core::ids::AgentId;
+use domux_core::ids::{AgentId, PaneId};
 use domux_core::model::agent::{Agent, AgentEvent, AgentState};
 use domux_core::model::{AgentReportOutcome, Model};
 use domux_core::names::BIN_NAME;
@@ -244,6 +248,100 @@ pub fn focus(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
         .map(|c| c.focus.clone())
         .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
     ok(FocusResult { focus })
+}
+
+/// Types the agent's relaunch line into a shell in the pane it last ran in (architecture spec
+/// section 5). One function; Enter on an exited row of either Agents box calls it too.
+///
+/// Nothing here changes the record. It stays exited until the session that starts reports its
+/// own `SessionStart`, which is what brings it back, so a line that was typed and a shell that
+/// never ran it are the same state in the list. That is the honest answer: domux typed a
+/// command, it did not start an agent, and only the hook can say one is running (principle 4).
+///
+/// Nothing here clears the record's dot either. The dot means "something changed since you last
+/// looked", and what changed about this record is that it exited - which is still true after the
+/// line is typed and stays true until the hook says the session is back.
+pub fn resume(ctx: &mut Ctx, p: AgentResumeParams) -> Result<Value, ApiError> {
+    // `AgentResumeParams` carries no pane, so this is the target or the calling client's
+    // cursor. A record is resumed by name or by the row you are looking at; the pane you happen
+    // to be typing in does not name one, because the record that would answer for it is the
+    // live agent there and a live agent is exactly what this refuses.
+    let id = resolve(
+        ctx,
+        &AgentTargetParams {
+            agent: p.agent,
+            pane: None,
+            client: p.client,
+        },
+    )?;
+    let (command, pane) = plan_resume(ctx, &id)?;
+    // One carriage return, which is what Enter sends: the shell reads the whole thing as one
+    // line and runs it, and the line is in the history afterwards.
+    ctx.write_to_pane(&pane, format!("{command}\r").as_bytes())?;
+    ok(AgentResumeResult {
+        agent: id,
+        pane,
+        command,
+    })
+}
+
+/// The line and the pane to type it into, or the reason there is neither. Shared with
+/// `workspace.resume`, which collects these refusals instead of stopping at one.
+///
+/// The order of the four refusals is the order the reader can act on them. A live record is
+/// asking for the wrong verb. A kind that does not resume in V2.0 cannot be helped by anything
+/// the reader does, so it is next, and it comes before the session id because a Codex record
+/// with no session id has two reasons and only one of them is worth reading. A missing session
+/// id is fixable by installing the hooks, which the message says. A pane that is gone is last,
+/// because it is the only one where the line exists and there is nowhere to put it.
+pub(crate) fn plan_resume(ctx: &Ctx, id: &AgentId) -> Result<(String, PaneId), ApiError> {
+    let agent = ctx.model.agent(id).ok_or_else(|| {
+        ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
+    })?;
+    // Refused rather than not found, and it names the verb that does work: the record is
+    // there, it is just already running. The mirror image of `focus`, which refuses an exited
+    // record and names this one.
+    if agent.state.is_live() {
+        return Err(ApiError::refused(format!(
+            "agent {id} is {}, not exited; open it with {BIN_NAME} agent focus {id}",
+            agent.state
+        )));
+    }
+    let manifest = ctx
+        .agents
+        .manifests
+        .for_kind(agent.kind)
+        .ok_or_else(|| ApiError::internal(format!("no manifest for {}", agent.kind)))?;
+    if manifest.resume_command.is_none() {
+        return Err(ApiError::unavailable(format!(
+            "{} {}",
+            agent.kind,
+            crate::agents::resume::RESUME_UNAVAILABLE
+        )));
+    }
+    let session = agent.session_id.as_deref().ok_or_else(|| {
+        ApiError::unavailable(format!(
+            "this agent has no session id, so there is nothing to resume; it was seen by the observer and never reported a hook. Run {BIN_NAME} install {} to install the hooks",
+            agent.kind
+        ))
+    })?;
+    // `last_pane` and not `pane`: an exited record has no pane, and the point of resume is to
+    // put the agent back where it was working.
+    let pane = agent.last_pane.clone().ok_or_else(|| {
+        ApiError::not_found(
+            "this agent never ran in a pane domux knows, so there is nowhere to type the line",
+        )
+    })?;
+    if ctx.model.pane(&pane).is_none() {
+        return Err(ApiError::not_found(format!(
+            "pane {pane} is gone; open a pane and run the command yourself"
+        )));
+    }
+    let command =
+        crate::agents::resume::resume_line(manifest, session, &agent.cwd).ok_or_else(|| {
+            ApiError::internal("the manifest carries a resume command and no process name")
+        })?;
+    Ok((command, pane))
 }
 
 /// Removes an exited record from the list. `Model::dismiss_agent` refuses a live one.

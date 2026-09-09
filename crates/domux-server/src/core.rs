@@ -11,6 +11,7 @@ use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use chrono::{DateTime, Local};
 use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
+use domux_core::config::ResumeMode;
 use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
@@ -545,11 +546,58 @@ impl Core {
         for pane in core.model.all_pane_ids() {
             core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
         }
+        core.resume_agents_on_start();
         core.pending_events.push(Event::ServerStarted {
             version: domux_core::VERSION.into(),
             socket: core.socket_path.clone(),
         });
         Ok(core)
+    }
+
+    /// `[resume] agents = "auto"`: every record the server starts holding gets its relaunch line
+    /// typed into its pane (architecture spec section 5). `manual` is the default and this does
+    /// nothing.
+    ///
+    /// At start only, and not on every attach (plan assumption 30). A reader who attaches a
+    /// second terminal to a running server has not asked for anything to be relaunched, and
+    /// resuming on attach would type a second `claude --resume` into a pane where the first one
+    /// is already running.
+    ///
+    /// Every record the model holds, with no filter of its own. `state_file::restore` exits
+    /// every live record it reads - the server stopped, so whatever those sessions were doing
+    /// they are not doing now - so at this point there is nothing but exited records to offer,
+    /// and a filter here would be a second answer to "can this be resumed" that no input could
+    /// ever disagree with. `agent::plan_resume` is that one answer, and it refuses a live record
+    /// the same way it refuses a kind that does not resume.
+    ///
+    /// This runs after the pane loop above because the line goes into a shell, and until each
+    /// pane has been spawned there is no shell to type into.
+    ///
+    /// It goes through `dispatch` rather than calling the handler, so `auto` and a reader
+    /// pressing Enter are one operation and nothing about resuming can be true of one and not
+    /// the other. A refusal is logged and skipped: one record whose kind does not resume must
+    /// not stop the ones that do, the same rule `workspace.resume` follows.
+    fn resume_agents_on_start(&mut self) {
+        if self.config.config.resume.agents != ResumeMode::Auto {
+            return;
+        }
+        let records: Vec<AgentId> = self
+            .model
+            .sorted_agents()
+            .into_iter()
+            .map(|a| a.id.clone())
+            .collect();
+        for agent in records {
+            // No client: nothing has attached yet, so there is no screen for a pill and no
+            // caller waiting for a reply. The log line is the whole record of a refusal here.
+            let method = Method::AgentResume(domux_core::api::AgentResumeParams {
+                agent: Some(agent.to_string()),
+                client: None,
+            });
+            if let Err(e) = self.dispatch(method, None) {
+                tracing::info!(agent = %agent, "not resumed at start: {}", e.message);
+            }
+        }
     }
 
     /// Records whose path is gone are removed at start, before any pane is spawned, and the
@@ -1670,19 +1718,18 @@ impl Core {
         api::ok(domux_core::api::Ack { ok: true })
     }
 
-    /// Puts one line of result in a client's hint row or footer, green when it worked and red
-    /// when it did not (interface spec 7.3 and 12.12). Stamped from the core's clock, which
-    /// is the same clock `tick` measures its age against.
+    /// Puts one line of result in a client's hint row or footer (interface spec 7.3 and 12.12),
+    /// stamped from the core's clock, which is the same clock `tick` measures its age against.
     ///
-    /// A call with no client draws nothing, and that is the honest outcome: a pill is a place
-    /// on a screen, and a caller with no screen has already been answered by its reply.
+    /// This is the pill for an answer that arrives back on the core task: a finished job, or a
+    /// key whose result `input` reads. `Ctx::set_pill` is the same pill from inside a handler,
+    /// and both go through `core::set_pill` so the two cannot come to disagree about where a
+    /// pill lands or when the view has changed.
     pub fn set_pill(&mut self, client: Option<&ClientId>, text: String, ok: bool) {
         let at = self.deps.clock.now().to_rfc3339();
-        let Some(view) = client.and_then(|c| self.model.client_mut(c)) else {
-            return;
-        };
-        view.pill = Some(Pill { text, ok, at });
-        self.view_dirty = true;
+        if set_pill(&mut self.model, client, text, ok, &at) {
+            self.view_dirty = true;
+        }
     }
 
     /// Drops every pill that has been showing for longer than `PILL_SECONDS`, so a result
@@ -2818,6 +2865,36 @@ pub(crate) fn agents_view(
     }
 }
 
+/// Puts one line of result in a client's hint row or footer, green when it worked and red when
+/// it did not (interface spec 7.3 and 12.12). True when a client took it, which is when the view
+/// changed.
+///
+/// A rule over the model rather than a method, because a pill is set from two sides of the same
+/// message: a handler, which holds the model through its `Ctx` and is gone before the next
+/// message arrives, and the core, which sets one for a finished job or a key's refusal.
+/// `Ctx::set_pill` and `Core::set_pill` are the two wrappers, and each supplies the clock it
+/// has.
+///
+/// A call with no client draws nothing, and that is the honest outcome: a pill is a place on a
+/// screen, and a caller with no screen has already been answered by its reply.
+pub fn set_pill(
+    model: &mut Model,
+    client: Option<&ClientId>,
+    text: String,
+    ok: bool,
+    at: &str,
+) -> bool {
+    let Some(view) = client.and_then(|c| model.client_mut(c)) else {
+        return false;
+    };
+    view.pill = Some(Pill {
+        text,
+        ok,
+        at: at.to_string(),
+    });
+    true
+}
+
 /// The `client` parameter of a view method, when the request carried one.
 fn param_client(method: &Method) -> Option<ClientId> {
     use Method::*;
@@ -3287,13 +3364,15 @@ mod tests {
     /// has no way to know that from the outside, which is the failure this register exists to
     /// prevent.
     ///
-    /// `workspace.resume` is not here and was not built: Task 19 gave it a real handler that
-    /// answers `unavailable` with "resume arrives with agents in M3". Both directions key off
-    /// the words "is not built yet", so a method that refuses in its own words has to stay
-    /// off: direction A asserts that message on everything listed here, and direction B only
-    /// scans arms in `dispatch` that carry it.
+    /// `workspace.resume` was never here. M2 gave it a handler that refused in its own words,
+    /// "resume arrives with agents in M3", and M3 replaced that with the real resume. Both
+    /// directions key off the words "is not built yet", so a method that refuses in words of its
+    /// own has to stay off: direction A asserts that message on everything listed here, and
+    /// direction B only scans arms in `dispatch` that carry it.
+    ///
+    /// Task 18 built `agent.resume`, the last of the ten M3 fills, so what is left is exactly
+    /// the three verbs M4 fills.
     const STILL_UNBUILT: &[(&str, &str)] = &[
-        ("agent.resume", "{}"),
         ("agent.send", r#"{"text": "hello"}"#),
         ("agent.read", "{}"),
         ("agent.wait", "{}"),

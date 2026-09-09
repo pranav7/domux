@@ -127,11 +127,7 @@ pub fn resize(ctx: &mut Ctx, p: PaneResizeParams) -> Result<Value, ApiError> {
 /// Writes the text as typed. `\n` becomes `\r`, which is what Enter sends.
 pub fn send_text(ctx: &mut Ctx, p: PaneSendTextParams) -> Result<Value, ApiError> {
     let pane = ctx.resolve_pane_param(p.pane.as_deref())?;
-    let rt = ctx
-        .panes
-        .get_mut(&pane)
-        .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
-    rt.write(p.text.replace('\n', "\r").as_bytes());
+    ctx.write_to_pane(&pane, p.text.replace('\n', "\r").as_bytes())?;
     seen_by_input(ctx, &pane);
     ok(Ack { ok: true })
 }
