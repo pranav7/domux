@@ -161,6 +161,10 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
             "no workspace is under the cursor; move it with the list keys",
         ));
     };
+    // `client` describes the request; it is not what steers it. `workspace::focus` reads the
+    // acting client from `Ctx::view`, which is already this one - the pressing client for a
+    // key and the `client` param for an API call - so the field is filled in truthfully and
+    // nothing here depends on it.
     super::workspace::focus(
         ctx,
         WorkspaceFocusParams {

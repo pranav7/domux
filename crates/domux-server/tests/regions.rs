@@ -694,9 +694,15 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
         h.key(h.client.clone(), "j").await;
     }
     let f = h.frame(h.client.clone()).await;
-    assert!(
-        h.model().client(&h.client).unwrap().projects_scroll > 0,
-        "the cursor left the view, so the box scrolled:\n{f}"
+    // 1 exactly, and not merely "more than 0". The nine lines are a header, `main`, a blank,
+    // two slots with a blank between and after, the next header and its `main`, so the last
+    // row ends on line 9 and the box shows 8: one line has to go. That number is what tells
+    // the compact rows from the switcher's wider ones, which give every workspace a tab list
+    // line and would put the same cursor five lines down.
+    assert_eq!(
+        h.model().client(&h.client).unwrap().projects_scroll,
+        1,
+        "the cursor left the view, so the box scrolled by exactly what it had to:\n{f}"
     );
     assert!(
         f.contains("PROJ"),
@@ -823,5 +829,105 @@ async fn a_key_in_the_box_clears_the_last_result() {
     assert!(
         h.model().client(&h.client).unwrap().pill.is_none(),
         "the key cleared it:\n{f}"
+    );
+}
+
+/// A filter that drops the row the cursor was on leaves the box with no fill. Enter then has
+/// nothing to open, and the next step starts at the top of what is left rather than at the
+/// row the cursor happened to name.
+///
+/// The client is in the plain folder's `main`, which is the last row in the list and the only
+/// one this filter drops: with the cursor anywhere else the filter would keep it and the
+/// question would not arise.
+#[tokio::test]
+async fn a_step_after_the_filter_drops_the_cursor_starts_at_the_top() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
+    let git_main = h
+        .model()
+        .project_of_workspace(&_w1)
+        .and_then(|p| p.workspaces.first().map(|w| w.id.clone()))
+        .expect("the git project holds main");
+    in_the_box(&mut h).await;
+    let here = cursor(&h);
+    assert_eq!(
+        here,
+        Some(proj_main(&h.model())),
+        "the cursor is on the row the filter is about to drop"
+    );
+
+    h.key(h.client.clone(), "/").await;
+    h.type_text(h.client.clone(), "audrey-app").await;
+    h.key(h.client.clone(), "Enter").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !box_row(f, 8).contains("PROJ"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(cursor(&h), here, "the filter did not move the cursor:\n{f}");
+
+    let err = h
+        .api("list.activate", json!({}))
+        .await
+        .expect_err("the cursor names a row the box is not drawing");
+    assert_eq!(err.code, domux_core::api::ErrorCode::NotFound, "{err}");
+    assert!(err.message.contains("under the cursor"), "{err}");
+
+    h.key(h.client.clone(), "j").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        cursor(&h),
+        Some(git_main),
+        "and a step lands on the first row that is left, not on the last one"
+    );
+}
+
+/// The filter row belongs to the box, so a sidebar whose box does not have the keys shows the
+/// keys and not `Filter ›`.
+///
+/// Hiding the sidebar hands the keys back without closing the filter field, so showing it
+/// again is the one way to reach a drawn sidebar with `filtering` set and the keys on a pane.
+/// Every other way out of the box goes through `focus.pane`, which closes the field.
+#[tokio::test]
+async fn the_filter_row_belongs_to_the_box_and_not_to_the_sidebar() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    in_the_box(&mut h).await;
+    h.key(h.client.clone(), "/").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| row(f, 23).contains("Filter"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(filter(&h), (String::new(), true), "{f}");
+
+    h.api("sidebar.hide", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    h.api("sidebar.show", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Projects"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        matches!(focus(&h), Focus::Pane(_)),
+        "hiding the box gave the keys back:\n{f}"
+    );
+    assert!(
+        h.model().client(&h.client).unwrap().filtering,
+        "and left the field open, which is what makes this the discriminating state"
+    );
+    assert!(
+        row(&f, 23).contains("hide") && !row(&f, 23).contains("Filter"),
+        "so the row shows the sidebar's keys:\n{}",
+        row(&f, 23)
     );
 }
