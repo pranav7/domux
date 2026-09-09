@@ -26,6 +26,12 @@ pub struct Model {
     #[serde(skip)]
     pub clients: Vec<ClientView>,
     pub last_workspace: Option<WorkspaceId>,
+    /// The state a new client's sidebar starts in. Every `sidebar.toggle` updates it
+    /// (roadmap decision 4). This is a deliberate exception to "per-client state is not
+    /// persisted": a layout toggle that forgets itself on every attach is a daily
+    /// irritation.
+    #[serde(default)]
+    pub sidebar_open: bool,
     #[serde(skip, default = "default_idgen")]
     idgen: IdGen,
     /// Counts client inputs so `most_recent_client` has an order. Not persisted.
@@ -74,6 +80,7 @@ impl PartialEq for Model {
             projects,
             clients,
             last_workspace,
+            sidebar_open,
             idgen: _,
             activity_seq: _,
             retired: _,
@@ -81,6 +88,7 @@ impl PartialEq for Model {
         *projects == other.projects
             && *clients == other.clients
             && *last_workspace == other.last_workspace
+            && *sidebar_open == other.sidebar_open
     }
 }
 
@@ -129,6 +137,12 @@ pub struct Project {
     pub workspaces: Vec<Workspace>,
 }
 
+/// The refusal `main` earns, in one spelling. `Model::remove_workspace` is the last guard
+/// and `api::workspace::delete` is the first, and a reader who met one and then the other
+/// must not be told two different things (principle 10).
+pub const MAIN_CANNOT_BE_DELETED: &str =
+    "main is the project's checkout and cannot be deleted; delete a workspace-N slot instead";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceHandle {
@@ -142,6 +156,30 @@ impl fmt::Display for WorkspaceHandle {
             WorkspaceHandle::Main => f.write_str("main"),
             WorkspaceHandle::Slot(n) => write!(f, "workspace-{n}"),
         }
+    }
+}
+
+impl WorkspaceHandle {
+    /// True when `text` reads as a handle: `main`, or `workspace-` and a number, in any case
+    /// and ignoring surrounding space. That is exactly what the handle pass of
+    /// `Model::resolve_workspace_with` can match, so a name that answers true here could
+    /// never resolve to the workspace it was given to: the handle pass runs first and returns
+    /// the workspace whose handle it is.
+    ///
+    /// The grammar, not the handles a model happens to hold. A name checked against today's
+    /// handles would be legal until someone made that slot, and nothing would look again.
+    ///
+    /// The round trip through `Display` is what settles the edge cases: `workspace-01` parses
+    /// as a number but no handle prints it, so nothing could match it and it is a perfectly
+    /// good name.
+    pub fn reads_as_handle(text: &str) -> bool {
+        let text = text.trim().to_ascii_lowercase();
+        if text == WorkspaceHandle::Main.to_string() {
+            return true;
+        }
+        text.strip_prefix("workspace-")
+            .and_then(|n| n.parse::<u32>().ok())
+            .is_some_and(|n| WorkspaceHandle::Slot(n).to_string() == text)
     }
 }
 
@@ -159,6 +197,24 @@ impl Workspace {
     /// The name when set, else the handle (architecture spec: a name replaces its handle).
     pub fn display_name(&self) -> String {
         self.name.clone().unwrap_or_else(|| self.handle.to_string())
+    }
+
+    /// V1's `isEmptySlot` rule (`picker.go`), adapted: a slot with no name, no pull
+    /// request, no agent and a branch equal to its handle draws as one line in the Projects
+    /// box (interface spec 5.2 and 12.23). `main` is never one. An unknown branch is not one
+    /// either: absent is not "equal to the handle" (principle 4).
+    ///
+    /// M3 adds "no agent" with a third argument; two are what M2 can know.
+    pub fn is_untouched(&self, branch: Option<&str>, has_pr: bool) -> bool {
+        self.handle != WorkspaceHandle::Main
+            && self.name.is_none()
+            && !has_pr
+            && branch == Some(self.handle.to_string().as_str())
+    }
+
+    /// True when the branch line would only repeat what line 1 already says.
+    pub fn branch_is_handle(&self, branch: &str) -> bool {
+        branch == self.handle.to_string()
     }
 }
 
@@ -178,6 +234,11 @@ pub struct Tab {
 /// sidebar; M1 declares the constant so the name exists where the contract puts it.
 pub const SIDEBAR_WIDTH: u16 = 38;
 
+/// The narrowest screen that still gets the sidebar: 38 for the sidebar, 1 for the gap,
+/// 80 for one useful pane, 1 spare (interface spec 12.1). Below this the sidebar hides
+/// itself for that client and the top bar returns; the remembered state does not change.
+pub const SIDEBAR_MIN_COLS: u16 = 120;
+
 /// A leader chord in progress: the leader was pressed and the next key resolves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Chord {
@@ -194,6 +255,11 @@ pub struct ClientView {
     pub tab: TabId,
     pub focus: Focus,
     pub sidebar_open: bool,
+    /// This client asked for the sidebar on a screen too narrow to show it on its own, so the
+    /// width rule does not apply here: `leader b` shows it at any width (interface spec 12.1).
+    /// Cleared when the sidebar is hidden, because there is then nothing left to override.
+    #[serde(default)]
+    pub sidebar_forced: bool,
     pub overlay: Option<Overlay>,
     pub chord: Option<Chord>,
     /// The filter text of a list overlay: the switcher in M2, the agents overlay in M3.
@@ -204,7 +270,134 @@ pub struct ClientView {
     /// The model's activity counter at this client's last input.
     #[serde(default)]
     pub last_active_seq: u64,
+    /// The row the keys act on while focus is in the Projects box. `None` means the fill is
+    /// the current row: the workspace this client is in (domain model, section 3.3).
+    #[serde(default)]
+    pub projects_cursor: Option<WorkspaceId>,
+    /// The first visible line inside the Projects box, so scrolling moves as little as it
+    /// can when the cursor leaves the view.
+    #[serde(default)]
+    pub projects_scroll: u16,
+    /// True while `/` is being typed into. `filter` holds the text either way.
+    #[serde(default)]
+    pub filtering: bool,
+    /// The text an open overlay is editing: the name box in M2.
+    #[serde(default)]
+    pub input: TextInput,
+    /// The overlay this one was opened over, so Esc returns to it (interface spec 12.7).
+    #[serde(default)]
+    pub overlay_under: Option<Overlay>,
+    /// The last result of an action, shown in the hint row or the footer.
+    #[serde(default)]
+    pub pill: Option<Pill>,
 }
+
+impl ClientView {
+    /// Whether this client draws the sidebar now.
+    ///
+    /// Two bits, not one (interface spec 12.1). `sidebar_open` is the remembered intent, and
+    /// it is the server's: `leader b` flips it and every client follows. The auto-hide is
+    /// this client's own, and it is an override rather than part of the intent, so a screen
+    /// that grew wide again shows the sidebar the reader never closed. `sidebar_forced` is
+    /// the reader overriding the override: they asked for it on a narrow screen and got it.
+    ///
+    /// One bit cannot carry this, because it cannot tell "hidden because the screen is
+    /// narrow" from "hidden because you said so", and those come back differently.
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_open && (self.size.cols >= SIDEBAR_MIN_COLS || self.sidebar_forced)
+    }
+
+    /// Opens `overlay` over whatever is open, keeping one level underneath.
+    pub fn push_overlay(&mut self, overlay: Overlay) {
+        self.overlay_under = self.overlay.take();
+        self.overlay = Some(overlay);
+    }
+
+    /// Closes the top overlay and returns the one that is open now.
+    pub fn pop_overlay(&mut self) -> Option<Overlay> {
+        self.overlay = self.overlay_under.take();
+        self.input = TextInput::new("");
+        self.filtering = false;
+        self.overlay.clone()
+    }
+
+    /// Where the keys go once `pop_overlay` has run: the overlay it uncovered, or `fallback`
+    /// when it uncovered nothing. Never a frame with the keys in a region nothing on the
+    /// screen marks (principle 2).
+    ///
+    /// The switcher is named rather than lumped in with `Overlay`, because the region is what
+    /// says which key table the reader is holding and the switcher's box has one of its own.
+    /// Answered here rather than at each of the three callers - `api::focus::pane`,
+    /// `api::switcher::close` and `input::close_overlay` - which wrote the same match out
+    /// three times.
+    ///
+    /// The fallback is the caller's because the three ask two different questions, and only
+    /// where nothing is left underneath. Closing an overlay gives the keys back to whatever
+    /// had them, so `?` in a box comes back to the box: `focus_returning_from_overlay`.
+    /// `focus.pane` is a request to leave, and Esc in the sidebar's box returns to the pane
+    /// you left (interface spec 5.4), so it passes `focus_on_pane`. The difference is one
+    /// case, and it is spelled at the call rather than guessed here.
+    pub fn focus_after_pop(&self, fallback: Focus) -> Focus {
+        match &self.overlay {
+            Some(Overlay::Switcher) => Focus::Region(RegionKind::Switcher),
+            Some(_) => Focus::Region(RegionKind::Overlay),
+            None => fallback,
+        }
+    }
+
+    /// The pane, or the focus this view already has when it has no pane to go to.
+    pub fn focus_on_pane(&self, pane: Option<PaneId>) -> Focus {
+        match pane {
+            Some(p) => Focus::Pane(p),
+            None => self.focus.clone(),
+        }
+    }
+
+    /// Where the keys go when an overlay closes over no other: back to the box that had them
+    /// while it was open, and to the pane when there is no such box.
+    ///
+    /// `api::client::help` keeps a box's region while the help is over it, so this is what
+    /// makes `?` in the sidebar's Projects box come back to the box, the same way `?` over the
+    /// switcher comes back to the switcher. Half of that rule would be worse than either
+    /// whole: a reader who learns one surface would be surprised by the other.
+    ///
+    /// `sidebar_visible` earns its place. A client narrowed below `SIDEBAR_MIN_COLS` while the
+    /// help was open has no box left to come back to, and the keys would land in a region
+    /// nothing on the screen marks (principle 2).
+    ///
+    /// Only `SidebarProjects`: the switcher's box is an overlay and `focus_after_pop` answers
+    /// for it above, and M3's Agents boxes join this when they exist. They are left out rather
+    /// than written ahead, because nothing in M2 can put the keys there, so the arm could not
+    /// be tested and its mutant could never die.
+    pub fn focus_returning_from_overlay(&self, pane: Option<PaneId>) -> Focus {
+        if matches!(self.focus, Focus::Region(RegionKind::SidebarProjects))
+            && self.sidebar_visible()
+        {
+            return self.focus.clone();
+        }
+        self.focus_on_pane(pane)
+    }
+}
+
+/// A one-line result in the hint row or the footer: green when it worked, red when it was
+/// refused (interface spec 7.3).
+///
+/// Interface spec 12.12 says it clears on the next key in a box or after `PILL_SECONDS`.
+/// Only the second half is built: `Core::expire_pills` drops a pill on the tick that takes it
+/// past `PILL_SECONDS`, and no key clears one. `Core.notes`, which shares these two rows and
+/// is described as clearing "like a pill", is the other way round - `Core::clear_notes_read_by`
+/// clears it on the first key in a box and nothing ages it out. So the two behave differently
+/// today despite reading as one rule, and this comment says which is which rather than
+/// describing the rule neither of them fully implements.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Pill {
+    pub text: String,
+    pub ok: bool,
+    /// RFC 3339, from the server's clock.
+    pub at: String,
+}
+
+pub const PILL_SECONDS: u64 = 6;
 
 /// Where a pane lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +422,7 @@ impl Model {
             projects: Vec::new(),
             clients: Vec::new(),
             last_workspace: None,
+            sidebar_open: false,
             idgen: IdGen::from_seed(seed),
             activity_seq: 0,
             retired: VecDeque::new(),
@@ -309,13 +503,20 @@ impl Model {
         }) || self.clients.iter().any(|c| c.id.as_str() == id)
     }
 
-    /// Registers a plain folder as a project with its `main` workspace and no tabs. The
-    /// name is the folder's last path component. Returns no events in M1 (`project.added`
-    /// is an M2 event), and fails only when the id space is full.
-    pub fn add_folder_project(
+    /// Registers a project at `root` with its `main` workspace and no tabs. The project's
+    /// name is the folder's last path component, and its `main` workspace is the checkout at
+    /// `root` itself.
+    ///
+    /// Fallible for one reason: `next_id` is. It reports a full id space rather than
+    /// reissuing a live id, so every caller of it propagates.
+    ///
+    /// Private, and it reports no events: the two public constructors below differ only in
+    /// the kind they pass and the events they report, and this is everything they share.
+    fn add_project(
         &mut self,
-        root: PathBuf,
-    ) -> Result<(ProjectId, WorkspaceId, Vec<Event>), ApiError> {
+        root: &Path,
+        kind: ProjectKind,
+    ) -> Result<(ProjectId, WorkspaceId, String), ApiError> {
         let name = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -324,14 +525,14 @@ impl Model {
         let wid = WorkspaceId(self.next_id("w")?);
         self.projects.push(Project {
             id: pid.clone(),
-            name,
-            root: root.clone(),
-            kind: ProjectKind::Folder,
+            name: name.clone(),
+            root: root.to_path_buf(),
+            kind,
             workspaces: vec![Workspace {
                 id: wid.clone(),
                 handle: WorkspaceHandle::Main,
                 name: None,
-                path: root,
+                path: root.to_path_buf(),
                 tabs: Vec::new(),
                 last_tab: None,
             }],
@@ -339,6 +540,16 @@ impl Model {
         if self.last_workspace.is_none() {
             self.last_workspace = Some(wid.clone());
         }
+        Ok((pid, wid, name))
+    }
+
+    /// Registers a plain folder as a project. Returns no events in M1 (`project.added` is an
+    /// M2 event), and fails only when the id space is full.
+    pub fn add_folder_project(
+        &mut self,
+        root: PathBuf,
+    ) -> Result<(ProjectId, WorkspaceId, Vec<Event>), ApiError> {
+        let (pid, wid, _) = self.add_project(&root, ProjectKind::Folder)?;
         Ok((pid, wid, Vec::new()))
     }
 
@@ -908,15 +1119,388 @@ impl Model {
         }
     }
 
-    pub fn root_of(&self, path: &Path) -> Option<&Project> {
-        self.projects.iter().find(|p| p.root == path)
+    /// Registers a git repository as a project with its `main` workspace. `default_branch`
+    /// is the short name `origin/HEAD` points at, falling back to `main`; the server reads
+    /// it with `git::default_branch` before calling this.
+    ///
+    /// It does not check whether a project is registered at `root` already, and registering
+    /// one twice gives two projects. `project.add` is what makes that idempotent, by asking
+    /// `project_at` first: it is the caller that has resolved the canonical path, and one
+    /// rule belongs in one place.
+    ///
+    /// Fallible for the reason `add_folder_project` is: `next_id` is.
+    pub fn add_git_project(
+        &mut self,
+        root: PathBuf,
+        default_branch: String,
+    ) -> Result<(ProjectId, WorkspaceId, Vec<Event>), ApiError> {
+        let (pid, wid, name) = self.add_project(&root, ProjectKind::Git { default_branch })?;
+        Ok((
+            pid.clone(),
+            wid,
+            vec![Event::ProjectAdded {
+                project: pid,
+                name,
+                root,
+            }],
+        ))
+    }
+
+    /// A project already registered at `root`, so `project.add` is idempotent.
+    pub fn project_at(&self, root: &Path) -> Option<&Project> {
+        self.projects.iter().find(|p| p.root == root)
+    }
+
+    pub fn project(&self, id: &ProjectId) -> Option<&Project> {
+        self.projects.iter().find(|p| &p.id == id)
+    }
+
+    pub fn project_mut(&mut self, id: &ProjectId) -> Option<&mut Project> {
+        self.projects.iter_mut().find(|p| &p.id == id)
+    }
+
+    pub fn project_of_workspace_mut(&mut self, id: &WorkspaceId) -> Option<&mut Project> {
+        self.projects
+            .iter_mut()
+            .find(|p| p.workspaces.iter().any(|w| &w.id == id))
+    }
+
+    /// The lowest N at or above 1 that no slot in this project holds and that `spoken_for`
+    /// does not name. Numbers a delete freed come back; a number a live slot holds never
+    /// moves (architecture spec 2).
+    ///
+    /// `spoken_for` is how the server adds the numbers a create has already chosen but not
+    /// yet recorded. The model learns a slot when that create's job finishes, and the choice
+    /// is made when the call arrives, so without it two creates in flight both pick this
+    /// same number and both try to build it (decision record 0006). A caller with nothing in
+    /// flight passes `|_| false`.
+    pub fn lowest_free_slot(
+        &self,
+        project: &ProjectId,
+        spoken_for: impl Fn(u32) -> bool,
+    ) -> Result<u32, ApiError> {
+        let p = self
+            .project(project)
+            .ok_or_else(|| ApiError::not_found(format!("no project with id {project}")))?;
+        let taken: Vec<u32> = p
+            .workspaces
+            .iter()
+            .filter_map(|w| match w.handle {
+                WorkspaceHandle::Slot(n) => Some(n),
+                WorkspaceHandle::Main => None,
+            })
+            .collect();
+        Ok((1u32..)
+            .find(|n| !taken.contains(n) && !spoken_for(*n))
+            .expect("u32 is not exhausted"))
+    }
+
+    /// Adds the record for a slot whose worktree already exists on disk. `project.add` calls
+    /// it for the worktrees it discovers and `workspace.create` for the one it just made.
+    pub fn add_slot(
+        &mut self,
+        project: &ProjectId,
+        slot: u32,
+        path: PathBuf,
+    ) -> Result<(WorkspaceId, Vec<Event>), ApiError> {
+        // `next_id` is fallible, so this needs `?`. It also has to run before `project_mut`
+        // borrows the model mutably.
+        let wid = WorkspaceId(self.next_id("w")?);
+        let p = self
+            .project_mut(project)
+            .ok_or_else(|| ApiError::not_found(format!("no project with id {project}")))?;
+        if p.workspaces
+            .iter()
+            .any(|w| w.handle == WorkspaceHandle::Slot(slot))
+        {
+            return Err(ApiError::conflict(format!(
+                "workspace-{slot} already exists in {}",
+                p.name
+            )));
+        }
+        p.workspaces.push(Workspace {
+            id: wid.clone(),
+            handle: WorkspaceHandle::Slot(slot),
+            name: None,
+            path: path.clone(),
+            tabs: Vec::new(),
+            last_tab: None,
+        });
+        p.workspaces.sort_by_key(|w| match w.handle {
+            WorkspaceHandle::Main => 0,
+            WorkspaceHandle::Slot(n) => n,
+        });
+        let project = project.clone();
+        Ok((
+            wid.clone(),
+            vec![Event::WorkspaceCreated {
+                project,
+                workspace: wid,
+                handle: format!("workspace-{slot}"),
+                path,
+            }],
+        ))
+    }
+
+    /// Sets or clears a workspace's name. An empty or blank name clears it and the handle
+    /// comes back (architecture spec 2).
+    pub fn rename_workspace(
+        &mut self,
+        id: &WorkspaceId,
+        name: Option<String>,
+    ) -> Result<Vec<Event>, ApiError> {
+        let w = self
+            .workspace_mut(id)
+            .ok_or_else(|| ApiError::not_found(format!("no workspace with id {id}")))?;
+        let trimmed = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        if w.name == trimmed {
+            return Ok(Vec::new());
+        }
+        w.name = trimmed.clone();
+        Ok(vec![Event::WorkspaceRenamed {
+            workspace: id.clone(),
+            name: trimmed,
+        }])
+    }
+
+    /// Removes a slot's record. Refuses `main`. The caller has already removed the worktree,
+    /// or found the path gone (`prune_workspace`).
+    pub fn remove_workspace(
+        &mut self,
+        id: &WorkspaceId,
+    ) -> Result<(WorkspaceHandle, Vec<Event>), ApiError> {
+        self.remove_workspace_inner(id, false)
+    }
+
+    /// The same, marked as a prune so subscribers can tell a deletion from a workspace whose
+    /// path went away underneath (architecture spec 5).
+    pub fn prune_workspace(
+        &mut self,
+        id: &WorkspaceId,
+    ) -> Result<(WorkspaceHandle, Vec<Event>), ApiError> {
+        self.remove_workspace_inner(id, true)
+    }
+
+    fn remove_workspace_inner(
+        &mut self,
+        id: &WorkspaceId,
+        pruned: bool,
+    ) -> Result<(WorkspaceHandle, Vec<Event>), ApiError> {
+        let w = self
+            .workspace(id)
+            .ok_or_else(|| ApiError::not_found(format!("no workspace with id {id}")))?;
+        if w.handle == WorkspaceHandle::Main {
+            return Err(ApiError::refused(MAIN_CANNOT_BE_DELETED));
+        }
+        let handle = w.handle;
+        // Every id that is about to stop existing, collected before the removal. Removing a
+        // workspace takes its tabs and panes with it without going through `close_tab` and
+        // `close_pane`, which is where those ids would normally be retired, so this path
+        // retires them itself. Skipping that reopens exactly the stale-id aliasing
+        // `retired` exists to prevent: a client still holding a closed pane's id would find
+        // it pointing at a different pane after the id came back around.
+        let doomed = Self::ids_under_workspace(w);
+        let project = self
+            .project_of_workspace(id)
+            .expect("a workspace has a project")
+            .id
+            .clone();
+        let p = self
+            .project_of_workspace_mut(id)
+            .expect("a workspace has a project");
+        p.workspaces.retain(|w| &w.id != id);
+        if self.last_workspace.as_ref() == Some(id) {
+            self.last_workspace = self.first_workspace();
+        }
+        for gone in doomed {
+            self.retire(gone);
+        }
+        Ok((
+            handle,
+            vec![Event::WorkspaceDeleted {
+                project,
+                workspace: id.clone(),
+                handle: handle.to_string(),
+                pruned,
+            }],
+        ))
+    }
+
+    /// The workspace's own id and every tab and pane id under it, as strings. Used by the
+    /// removal paths to retire what they delete.
+    fn ids_under_workspace(w: &Workspace) -> Vec<String> {
+        let mut ids = vec![w.id.to_string()];
+        for t in &w.tabs {
+            ids.push(t.id.to_string());
+            ids.extend(t.layout.panes().iter().map(|p| p.id.to_string()));
+        }
+        ids
+    }
+
+    /// Removes a project and every workspace record under it. The folder and its worktrees
+    /// stay on disk (interface spec 12.8).
+    pub fn remove_project(&mut self, id: &ProjectId) -> Result<Vec<Event>, ApiError> {
+        let p = self
+            .project(id)
+            .ok_or_else(|| ApiError::not_found(format!("no project with id {id}")))?;
+        let name = p.name.clone();
+        let gone: Vec<WorkspaceId> = p.workspaces.iter().map(|w| w.id.clone()).collect();
+        // The project id, and every workspace, tab and pane id under it. Same reason as
+        // `remove_workspace_inner`: this path bypasses the close paths that retire.
+        let mut doomed = vec![id.to_string()];
+        for w in &p.workspaces {
+            doomed.extend(Self::ids_under_workspace(w));
+        }
+        self.projects.retain(|p| &p.id != id);
+        if self
+            .last_workspace
+            .as_ref()
+            .is_some_and(|w| gone.contains(w))
+        {
+            self.last_workspace = self.first_workspace();
+        }
+        for doomed_id in doomed {
+            self.retire(doomed_id);
+        }
+        Ok(vec![Event::ProjectRemoved {
+            project: id.clone(),
+            name,
+        }])
+    }
+
+    /// Every workspace of one project, in handle order. The Projects box and
+    /// `workspace.list` walk this.
+    ///
+    /// Written through `project` so the returned iterator borrows only the model: the
+    /// project is looked up before the iterator is built, and `project`'s own lifetime does
+    /// not have to outlive the walk.
+    pub fn workspaces_of<'a>(&'a self, project: &ProjectId) -> impl Iterator<Item = &'a Workspace> {
+        self.project(project)
+            .into_iter()
+            .flat_map(|p| p.workspaces.iter())
+    }
+
+    /// Id, handle, name, then branch, in that order (architecture spec section 2). The
+    /// branch pass needs the facts, so the server passes them in; this signature takes the
+    /// branch of each workspace as a lookup so `domux-core` stays free of the registry.
+    pub fn resolve_workspace_with(
+        &self,
+        target: &str,
+        branch_of: &dyn Fn(&WorkspaceId) -> Option<String>,
+    ) -> Result<WorkspaceId, ApiError> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err(ApiError::invalid_params(
+                "name a workspace: an id, a handle such as workspace-1, a name, or a branch",
+            ));
+        }
+        let all: Vec<&Workspace> = self
+            .projects
+            .iter()
+            .flat_map(|p| p.workspaces.iter())
+            .collect();
+        if let Some(w) = all.iter().find(|w| w.id.as_str() == target) {
+            return Ok(w.id.clone());
+        }
+        for pass in 0..3 {
+            let hits: Vec<&&Workspace> = all
+                .iter()
+                .filter(|w| match pass {
+                    0 => w.handle.to_string().eq_ignore_ascii_case(target),
+                    1 => w
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(target)),
+                    _ => branch_of(&w.id).is_some_and(|b| b == target),
+                })
+                .collect();
+            match hits.len() {
+                0 => continue,
+                1 => return Ok(hits[0].id.clone()),
+                _ => {
+                    let names: Vec<String> = hits
+                        .iter()
+                        .filter_map(|w| self.project_of_workspace(&w.id))
+                        .map(|p| p.name.clone())
+                        .collect();
+                    let ids: Vec<String> = hits.iter().map(|w| w.id.to_string()).collect();
+                    let count = if names.len() == 2 {
+                        "two".to_string()
+                    } else {
+                        names.len().to_string()
+                    };
+                    // `ambiguous(message, candidates)` puts the ids in `data` itself, as a
+                    // bare array. There is no `with_data`.
+                    return Err(ApiError::ambiguous(
+                        format!(
+                            "{target} is in {count} projects: {}; name the project or use an id",
+                            names.join(", ")
+                        ),
+                        ids,
+                    ));
+                }
+            }
+        }
+        Err(ApiError::not_found(format!(
+            "no workspace called {target}; run {BIN_NAME} workspace list to see them"
+        )))
+    }
+
+    /// The common case: no branch facts, so id, handle and name only.
+    pub fn resolve_workspace(&self, target: &str) -> Result<WorkspaceId, ApiError> {
+        self.resolve_workspace_with(target, &|_| None)
+    }
+
+    /// The project an id or a name names. Ids first, then names without case, which is the
+    /// order `resolve_workspace_with` uses and for the same reason: an id is exact, so a
+    /// project someone named `pr_8f2a` cannot shadow the project with that id.
+    ///
+    /// Two projects can share a name - the name is the folder's last component, and two
+    /// checkouts of the same repository in different parents have the same one - so a name
+    /// that matches twice answers `ambiguous` with the ids rather than picking the first.
+    pub fn resolve_project(&self, target: &str) -> Result<ProjectId, ApiError> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err(ApiError::invalid_params("name a project: an id or a name"));
+        }
+        if let Some(p) = self.projects.iter().find(|p| p.id.as_str() == target) {
+            return Ok(p.id.clone());
+        }
+        let hits: Vec<&Project> = self
+            .projects
+            .iter()
+            .filter(|p| p.name.eq_ignore_ascii_case(target))
+            .collect();
+        match hits.len() {
+            1 => Ok(hits[0].id.clone()),
+            0 => Err(ApiError::not_found(format!(
+                "no project called {target}; run {BIN_NAME} project list to see them"
+            ))),
+            _ => Err(ApiError::ambiguous(
+                format!(
+                    "{} projects are called {target}: {}; use an id",
+                    hits.len(),
+                    hits.iter()
+                        .map(|p| p.root.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                hits.iter().map(|p| p.id.to_string()).collect(),
+            )),
+        }
+    }
+
+    /// Sets the remembered sidebar state and answers with it.
+    pub fn set_sidebar_open(&mut self, open: bool) -> bool {
+        self.sidebar_open = open;
+        self.sidebar_open
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::Event;
+    use crate::api::{ErrorCode, Event};
     use std::path::PathBuf;
 
     fn model_with_one_tab() -> (Model, WorkspaceId, TabId, PaneId) {
@@ -957,10 +1541,17 @@ mod tests {
             tab: tab.clone(),
             focus: Focus::Pane(pane.clone()),
             sidebar_open: false,
+            sidebar_forced: false,
             overlay: None,
             chord: None,
             filter: String::new(),
             last_active_seq: 0,
+            projects_cursor: None,
+            projects_scroll: 0,
+            filtering: false,
+            input: TextInput::new(""),
+            overlay_under: None,
+            pill: None,
         }
     }
 
@@ -1573,5 +2164,789 @@ mod tests {
             assert!(seen.insert(t.0));
             assert!(seen.insert(p.0));
         }
+    }
+
+    fn git_model() -> (Model, ProjectId, WorkspaceId) {
+        let mut m = Model::new(7);
+        let (pid, main, _) = m
+            .add_git_project(PathBuf::from("/repo/audrey-app"), "main".into())
+            .unwrap();
+        (m, pid, main)
+    }
+
+    #[test]
+    fn a_git_project_takes_its_name_from_the_folder_and_starts_with_main_only() {
+        let (m, pid, main) = git_model();
+        let p = m.project(&pid).unwrap();
+        assert_eq!(p.name, "audrey-app");
+        assert_eq!(
+            p.kind,
+            ProjectKind::Git {
+                default_branch: "main".into()
+            }
+        );
+        assert_eq!(
+            p.workspaces.len(),
+            1,
+            "a slot is created only on workspace.create"
+        );
+        assert_eq!(p.workspaces[0].id, main);
+        assert_eq!(p.workspaces[0].handle, WorkspaceHandle::Main);
+        assert_eq!(p.workspaces[0].path, PathBuf::from("/repo/audrey-app"));
+    }
+
+    /// Registering the same root twice is not refused here. `project.add` answers that, by
+    /// asking `project_at` before it calls this; the model would otherwise hold the same
+    /// rule twice, and the canonical path a root resolves to is only known once the git job
+    /// has run. So the absence of a refusal below is the design, not an oversight.
+    #[test]
+    fn add_git_project_reports_project_added_and_registers_the_root() {
+        let mut m = Model::new(7);
+        let (pid, _, events) = m
+            .add_git_project(PathBuf::from("/repo/audrey-app"), "main".into())
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![Event::ProjectAdded {
+                project: pid,
+                name: "audrey-app".into(),
+                root: PathBuf::from("/repo/audrey-app")
+            }]
+        );
+        assert!(m.project_at(&PathBuf::from("/repo/audrey-app")).is_some());
+    }
+
+    #[test]
+    fn slots_take_the_lowest_free_number_and_never_renumber() {
+        let (mut m, pid, _) = git_model();
+        assert_eq!(m.lowest_free_slot(&pid, |_| false).unwrap(), 1);
+        let (w1, _) = m
+            .add_slot(
+                &pid,
+                1,
+                PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-1"),
+            )
+            .unwrap();
+        let (w2, _) = m
+            .add_slot(
+                &pid,
+                2,
+                PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-2"),
+            )
+            .unwrap();
+        assert_eq!(m.lowest_free_slot(&pid, |_| false).unwrap(), 3);
+        m.remove_workspace(&w1).unwrap();
+        assert_eq!(
+            m.lowest_free_slot(&pid, |_| false).unwrap(),
+            1,
+            "a freed number comes back"
+        );
+        assert_eq!(
+            m.workspace(&w2).unwrap().handle,
+            WorkspaceHandle::Slot(2),
+            "the survivor keeps its number"
+        );
+        assert!(
+            m.add_slot(&pid, 2, PathBuf::from("/x")).is_err(),
+            "a taken number is refused"
+        );
+    }
+
+    /// A number a create has chosen but not yet recorded is skipped, and the search carries
+    /// on past it rather than stopping at the number after it.
+    ///
+    /// The model holds slot 2 and `spoken_for` names 1, so the three implementations that
+    /// could be here give three different answers: ignoring `spoken_for` says 1, adding one
+    /// to the lowest free number says 2, and looking at both says 3. A fixture where the
+    /// model held nothing could not tell the first two apart from the third.
+    #[test]
+    fn a_slot_number_another_call_has_spoken_for_is_skipped() {
+        let (mut m, pid, _) = git_model();
+        m.add_slot(
+            &pid,
+            2,
+            PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-2"),
+        )
+        .unwrap();
+        assert_eq!(m.lowest_free_slot(&pid, |n| n == 1).unwrap(), 3);
+        assert_eq!(
+            m.lowest_free_slot(&pid, |_| false).unwrap(),
+            1,
+            "and nothing spoken for leaves the number free"
+        );
+    }
+
+    #[test]
+    fn removing_main_is_refused_and_removing_a_slot_reports_the_event() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m
+            .add_slot(
+                &pid,
+                1,
+                PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-1"),
+            )
+            .unwrap();
+        let err = m.remove_workspace(&main).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Refused);
+        assert_eq!(
+            err.message,
+            "main is the project's checkout and cannot be deleted; delete a workspace-N slot instead"
+        );
+        let (handle, events) = m.remove_workspace(&w1).unwrap();
+        assert_eq!(handle, WorkspaceHandle::Slot(1));
+        assert_eq!(
+            events,
+            vec![Event::WorkspaceDeleted {
+                project: pid,
+                workspace: w1,
+                handle: "workspace-1".into(),
+                pruned: false
+            }]
+        );
+    }
+
+    #[test]
+    fn removing_a_workspace_retires_its_id_and_every_id_under_it() {
+        // Stale-id aliasing is what `retire` exists to prevent, and a workspace removal takes
+        // its tabs and panes with it without going through the tab and pane close paths that
+        // normally do the retiring. So this path retires them itself.
+        let (mut m, pid, _) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let (tab, pane, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
+        m.remove_workspace(&w1).unwrap();
+        for id in [w1.as_str(), tab.as_str(), pane.as_str()] {
+            assert!(
+                m.retired.iter().any(|r| r == id),
+                "{id} must not be reissued"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_a_project_retires_its_id_and_every_id_under_it() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let (tab, pane, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
+        m.remove_project(&pid).unwrap();
+        for id in [
+            pid.as_str(),
+            main.as_str(),
+            w1.as_str(),
+            tab.as_str(),
+            pane.as_str(),
+        ] {
+            assert!(
+                m.retired.iter().any(|r| r == id),
+                "{id} must not be reissued"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_workspace_takes_an_id_a_handle_a_name_or_a_branch_in_that_order() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m
+            .add_slot(
+                &pid,
+                1,
+                PathBuf::from("/repo/audrey-app/.domux/worktrees/workspace-1"),
+            )
+            .unwrap();
+        m.rename_workspace(&w1, Some("auth cleanup".into()))
+            .unwrap();
+        assert_eq!(m.resolve_workspace(w1.as_str()).unwrap(), w1);
+        assert_eq!(m.resolve_workspace("workspace-1").unwrap(), w1);
+        assert_eq!(m.resolve_workspace("auth cleanup").unwrap(), w1);
+        assert_eq!(m.resolve_workspace("main").unwrap(), main);
+        assert_eq!(
+            m.resolve_workspace("AUTH CLEANUP").unwrap(),
+            w1,
+            "names match without case"
+        );
+        let err = m.resolve_workspace("nope").unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert_eq!(
+            err.message,
+            "no workspace called nope; run domux2 workspace list to see them"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_target_lists_its_candidates() {
+        let mut m = Model::new(7);
+        let (a, _, _) = m
+            .add_git_project(PathBuf::from("/repo/one"), "main".into())
+            .unwrap();
+        let (b, _, _) = m
+            .add_git_project(PathBuf::from("/repo/two"), "main".into())
+            .unwrap();
+        let (wa, _) = m
+            .add_slot(
+                &a,
+                1,
+                PathBuf::from("/repo/one/.domux/worktrees/workspace-1"),
+            )
+            .unwrap();
+        let (wb, _) = m
+            .add_slot(
+                &b,
+                1,
+                PathBuf::from("/repo/two/.domux/worktrees/workspace-1"),
+            )
+            .unwrap();
+        let err = m.resolve_workspace("workspace-1").unwrap_err();
+        assert_eq!(err.code, ErrorCode::Ambiguous);
+        assert_eq!(
+            err.message,
+            "workspace-1 is in two projects: one, two; name the project or use an id"
+        );
+        // M1's `ApiError::ambiguous(message, candidates)` puts the candidate ids in `data` as a
+        // bare array. That is the wire shape every ambiguous error already has, so M2 matches it
+        // rather than wrapping the array in an object for this one call site.
+        assert_eq!(
+            err.data.unwrap(),
+            serde_json::json!([wa.as_str(), wb.as_str()])
+        );
+        assert_eq!(
+            m.resolve_workspace("main").unwrap_err().code,
+            ErrorCode::Ambiguous
+        );
+    }
+
+    #[test]
+    fn naming_a_workspace_reports_it_and_an_empty_name_clears_it() {
+        let (mut m, pid, _) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let events = m
+            .rename_workspace(&w1, Some("  auth cleanup  ".into()))
+            .unwrap();
+        assert_eq!(
+            m.workspace(&w1).unwrap().name.as_deref(),
+            Some("auth cleanup"),
+            "names are trimmed"
+        );
+        assert_eq!(
+            events,
+            vec![Event::WorkspaceRenamed {
+                workspace: w1.clone(),
+                name: Some("auth cleanup".into())
+            }]
+        );
+        m.rename_workspace(&w1, Some("   ".into())).unwrap();
+        assert_eq!(m.workspace(&w1).unwrap().name, None, "whitespace is empty");
+        assert_eq!(
+            m.workspace(&w1).unwrap().display_name(),
+            "workspace-1",
+            "the handle comes back"
+        );
+        m.rename_workspace(&w1, None).unwrap();
+        assert_eq!(m.workspace(&w1).unwrap().name, None);
+    }
+
+    #[test]
+    fn an_untouched_slot_has_no_name_no_pull_request_and_a_branch_equal_to_its_handle() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let w = m.workspace(&w1).unwrap();
+        assert!(w.is_untouched(Some("workspace-1"), false));
+        assert!(
+            !w.is_untouched(Some("feat/x"), false),
+            "a renamed branch touches it"
+        );
+        assert!(
+            !w.is_untouched(Some("workspace-1"), true),
+            "a pull request touches it"
+        );
+        assert!(
+            !w.is_untouched(None, false),
+            "an unknown branch is not an untouched slot"
+        );
+        m.rename_workspace(&w1, Some("auth cleanup".into()))
+            .unwrap();
+        assert!(
+            !m.workspace(&w1)
+                .unwrap()
+                .is_untouched(Some("workspace-1"), false),
+            "a name touches it"
+        );
+        assert!(
+            !m.workspace(&main)
+                .unwrap()
+                .is_untouched(Some("main"), false),
+            "main is never an untouched slot"
+        );
+    }
+
+    #[test]
+    fn removing_a_project_takes_its_workspaces_and_reports_one_event() {
+        let (mut m, pid, _) = git_model();
+        m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let events = m.remove_project(&pid).unwrap();
+        assert_eq!(
+            events,
+            vec![Event::ProjectRemoved {
+                project: pid,
+                name: "audrey-app".into()
+            }]
+        );
+        assert!(m.projects.is_empty());
+        assert_eq!(
+            m.last_workspace, None,
+            "the pointer into a removed project is cleared"
+        );
+    }
+
+    #[test]
+    fn removing_a_project_leaves_a_last_workspace_in_another_project_alone() {
+        // `remove_project` moves `last_workspace` only when it pointed into the project
+        // being removed. An unconditional reset passes every other test in this module and
+        // still moves the user: working in another project's `workspace-1`, they remove a
+        // project they are not in, and their next attach lands in that other project's
+        // `main` instead of the slot they left, with nothing said about it.
+        let (mut m, a, _) = git_model();
+        let (b, b_main, _) = m
+            .add_git_project(PathBuf::from("/repo/other"), "main".into())
+            .unwrap();
+        let (b_w1, _) = m.add_slot(&b, 1, PathBuf::from("/other/w1")).unwrap();
+
+        m.last_workspace = Some(b_w1.clone());
+        m.remove_project(&a).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(b_w1),
+            "a pointer into a project that survives is not moved"
+        );
+
+        let (c, c_main, _) = m
+            .add_git_project(PathBuf::from("/repo/third"), "main".into())
+            .unwrap();
+        m.last_workspace = Some(c_main);
+        m.remove_project(&c).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(b_main),
+            "and a pointer into the removed project moves to a workspace that is still there"
+        );
+    }
+
+    #[test]
+    fn the_sidebar_state_lives_on_the_model_and_hides_itself_on_a_narrow_screen() {
+        let mut m = Model::new(7);
+        assert!(!m.sidebar_open, "a fresh model starts with the top bar");
+        // `assert_eq!(.., true)` is what the plan wrote; clippy's `bool_assert_comparison`
+        // is denied in CI, so this says the same thing the way the lint asks for, and says
+        // it in both directions so a setter that ignored its argument would be caught.
+        assert!(
+            m.set_sidebar_open(true),
+            "it answers with the state it just set"
+        );
+        assert!(m.sidebar_open);
+        assert!(!m.set_sidebar_open(false));
+        assert!(!m.sidebar_open);
+        m.set_sidebar_open(true);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (tab, pane, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let mut view = client("c_0001", &ws, &tab, &pane);
+        view.sidebar_open = true;
+        view.size = Size {
+            cols: 120,
+            rows: 24,
+        };
+        assert!(view.sidebar_visible());
+        view.size = Size {
+            cols: 119,
+            rows: 24,
+        };
+        assert!(
+            !view.sidebar_visible(),
+            "below SIDEBAR_MIN_COLS the sidebar hides itself"
+        );
+        assert!(
+            view.sidebar_open,
+            "auto-hide never changes the remembered state"
+        );
+        view.sidebar_open = false;
+        view.size = Size {
+            cols: 200,
+            rows: 50,
+        };
+        assert!(
+            !view.sidebar_visible(),
+            "a sidebar you hid stays hidden at any width"
+        );
+    }
+
+    #[test]
+    fn an_overlay_pushed_over_another_one_comes_back_when_it_closes() {
+        let mut m = Model::new(7);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (tab, pane, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let mut view = client("c_0001", &ws, &tab, &pane);
+        view.push_overlay(Overlay::Switcher);
+        view.push_overlay(Overlay::NameWorkspace(ws.clone()));
+        assert_eq!(view.overlay, Some(Overlay::NameWorkspace(ws.clone())));
+        assert_eq!(view.overlay_under, Some(Overlay::Switcher));
+        assert_eq!(
+            view.pop_overlay(),
+            Some(Overlay::Switcher),
+            "the switcher is open again"
+        );
+        assert_eq!(view.overlay, Some(Overlay::Switcher));
+        assert_eq!(view.overlay_under, None);
+        assert_eq!(view.pop_overlay(), None);
+        assert_eq!(view.overlay, None);
+    }
+
+    /// Where the keys go after a pop, for every shape of stack. `Switcher` and not `Overlay`
+    /// for a switcher that comes back, because the region is what says which key table the
+    /// reader is holding and `render::overlay::draw_help` reads it to decide which table to
+    /// list first.
+    ///
+    /// The `NameWorkspace` case is the one that separates the first two arms: both leave an
+    /// overlay open, and an implementation answering `Overlay` for either would pass a
+    /// fixture that only ever uncovered a switcher.
+    #[test]
+    fn the_keys_go_to_what_a_pop_uncovers_and_the_switcher_is_named_as_a_box() {
+        let mut m = Model::new(7);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (tab, pane, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let mut view = client("c_0001", &ws, &tab, &pane);
+
+        view.push_overlay(Overlay::Switcher);
+        view.push_overlay(Overlay::Help);
+        view.pop_overlay();
+        assert_eq!(
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
+            Focus::Region(RegionKind::Switcher),
+            "a switcher that comes back is a box, not any old modal"
+        );
+
+        view.push_overlay(Overlay::NameWorkspace(ws.clone()));
+        view.push_overlay(Overlay::Help);
+        view.pop_overlay();
+        assert_eq!(
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
+            Focus::Region(RegionKind::Overlay),
+            "a name box has no key table of its own"
+        );
+
+        view.pop_overlay();
+        view.pop_overlay();
+        assert_eq!(view.overlay, None);
+        assert_eq!(
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
+            Focus::Pane(pane.clone()),
+            "with nothing left the keys go back to the pane"
+        );
+        let before = view.focus.clone();
+        assert_eq!(
+            view.focus_after_pop(view.focus_on_pane(None)),
+            before,
+            "and a client with no pane keeps the focus it had rather than losing it"
+        );
+    }
+
+    /// A box is a region with its own `[keys.list]` table; `Overlay` is every modal that has
+    /// none. Derived over every variant, so a variant added later is not silently a box.
+    #[test]
+    fn every_region_but_overlay_is_a_box() {
+        for kind in [
+            RegionKind::Switcher,
+            RegionKind::AgentsOverlay,
+            RegionKind::SidebarProjects,
+            RegionKind::SidebarAgents,
+        ] {
+            assert!(kind.is_box(), "{kind:?} holds a list of its own");
+        }
+        assert!(!RegionKind::Overlay.is_box());
+    }
+
+    /// The cases are derived from `Display` rather than written out beside it, so a change to
+    /// how a handle prints cannot leave this test agreeing with the old spelling.
+    ///
+    /// `workspace-01` and `workspace-+1` are the interesting refusals: both parse as the
+    /// number one, and neither is a handle, because no handle prints them and so the handle
+    /// pass of `resolve_workspace_with` could never match them. Someone may name a workspace
+    /// either.
+    #[test]
+    fn a_string_reads_as_a_handle_exactly_when_some_handle_prints_it() {
+        for handle in [
+            WorkspaceHandle::Main,
+            WorkspaceHandle::Slot(1),
+            WorkspaceHandle::Slot(42),
+        ] {
+            let printed = handle.to_string();
+            assert!(WorkspaceHandle::reads_as_handle(&printed), "{printed}");
+            assert!(
+                WorkspaceHandle::reads_as_handle(&printed.to_uppercase()),
+                "the handle pass ignores case, so this must too: {printed}"
+            );
+            assert!(
+                WorkspaceHandle::reads_as_handle(&format!("  {printed} ")),
+                "the resolver trims its target, so this must too: {printed}"
+            );
+        }
+        for name in [
+            "auth cleanup",
+            "workspace",
+            "workspace-",
+            "workspace-01",
+            "workspace-+1",
+            "workspace-x",
+            "workspace-1a",
+            "mainline",
+            "",
+        ] {
+            assert!(!WorkspaceHandle::reads_as_handle(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn removing_a_workspace_moves_last_workspace_off_it() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let (w2, _) = m.add_slot(&pid, 2, PathBuf::from("/w2")).unwrap();
+        m.last_workspace = Some(w1.clone());
+        m.remove_workspace(&w1).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(main.clone()),
+            "a pointer into the removed workspace names a workspace that is gone"
+        );
+        m.remove_workspace(&w2).unwrap();
+        assert_eq!(
+            m.last_workspace,
+            Some(main),
+            "removing another workspace leaves it alone"
+        );
+    }
+
+    #[test]
+    fn slots_read_in_handle_order_whatever_order_they_were_added_in() {
+        let (mut m, pid, _) = git_model();
+        m.add_slot(&pid, 2, PathBuf::from("/w2")).unwrap();
+        m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let (other, _, _) = m
+            .add_git_project(PathBuf::from("/repo/other"), "main".into())
+            .unwrap();
+        m.add_slot(&other, 1, PathBuf::from("/other/w1")).unwrap();
+
+        let handles: Vec<String> = m
+            .workspaces_of(&pid)
+            .map(|w| w.handle.to_string())
+            .collect();
+        assert_eq!(
+            handles,
+            vec!["main", "workspace-1", "workspace-2"],
+            "the Projects box reads this order straight out of the model, so the model holds it"
+        );
+        assert_eq!(
+            m.workspaces_of(&other).count(),
+            2,
+            "another project's workspaces are its own"
+        );
+
+        let missing = ProjectId("pr_0000".into());
+        assert_eq!(m.workspaces_of(&missing).count(), 0);
+        assert_eq!(
+            m.lowest_free_slot(&missing, |_| false).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            m.add_slot(&missing, 1, PathBuf::from("/x"))
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_answers_with_a_handle_before_a_name_and_a_name_before_a_branch() {
+        // The three passes only differ where two of them match different workspaces, which
+        // is the state this builds: the slot is named `main` while another workspace has
+        // that handle, and then named after another workspace's branch.
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        m.rename_workspace(&w1, Some("main".into())).unwrap();
+        assert_eq!(m.resolve_workspace("main").unwrap(), main);
+
+        m.rename_workspace(&w1, Some("feature".into())).unwrap();
+        let branch_of =
+            |id: &WorkspaceId| Some(if id == &main { "feature" } else { "feat/auth" }.to_string());
+        assert_eq!(
+            m.resolve_workspace_with("feature", &branch_of).unwrap(),
+            w1,
+            "a name answers before a branch"
+        );
+        assert_eq!(
+            m.resolve_workspace_with("feat/auth", &branch_of).unwrap(),
+            w1,
+            "and a branch answers when neither a handle nor a name matches"
+        );
+        assert_eq!(
+            m.resolve_workspace("feat/auth").unwrap_err().code,
+            ErrorCode::NotFound,
+            "resolve_workspace knows no branches, so it cannot match one"
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_trims_its_target_and_refuses_an_empty_one() {
+        let (m, _, main) = git_model();
+        assert_eq!(m.resolve_workspace("  main  ").unwrap(), main);
+        for target in ["", "   "] {
+            let err = m.resolve_workspace(target).unwrap_err();
+            assert_eq!(err.code, ErrorCode::InvalidParams);
+            assert_eq!(
+                err.message,
+                "name a workspace: an id, a handle such as workspace-1, a name, or a branch"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_project_takes_an_id_before_a_name_and_ignores_case() {
+        let mut m = Model::new(3);
+        let (one, _, _) = m
+            .add_git_project(PathBuf::from("/code/audrey-app"), "main".into())
+            .unwrap();
+        let (two, _, _) = m.add_folder_project(PathBuf::from("/code/notes")).unwrap();
+        assert_eq!(m.resolve_project(one.as_str()).unwrap(), one);
+        assert_eq!(m.resolve_project("  AUDREY-app ").unwrap(), one);
+        assert_eq!(m.resolve_project("notes").unwrap(), two);
+        // An id is exact, so a project someone named after another project's id is not what
+        // that id resolves to.
+        m.project_mut(&two).unwrap().name = one.to_string();
+        assert_eq!(
+            m.resolve_project(one.as_str()).unwrap(),
+            one,
+            "the id wins over a name that spells it"
+        );
+    }
+
+    #[test]
+    fn resolve_project_refuses_an_empty_target_a_missing_one_and_a_shared_name() {
+        let mut m = Model::new(3);
+        let empty = m.resolve_project("  ").unwrap_err();
+        assert_eq!(empty.code, ErrorCode::InvalidParams);
+        assert_eq!(empty.message, "name a project: an id or a name");
+        let missing = m.resolve_project("audrey-app").unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
+        assert_eq!(
+            missing.message,
+            "no project called audrey-app; run domux2 project list to see them"
+        );
+        // Two checkouts of one repository under different parents have the same name, which
+        // is the folder's last component.
+        let (one, _, _) = m
+            .add_git_project(PathBuf::from("/work/audrey-app"), "main".into())
+            .unwrap();
+        let (two, _, _) = m
+            .add_git_project(PathBuf::from("/spike/audrey-app"), "main".into())
+            .unwrap();
+        let shared = m.resolve_project("audrey-app").unwrap_err();
+        assert_eq!(shared.code, ErrorCode::Ambiguous);
+        assert_eq!(
+            shared.message,
+            "2 projects are called audrey-app: /work/audrey-app, /spike/audrey-app; use an id"
+        );
+        assert_eq!(
+            shared.data,
+            Some(serde_json::json!([one.to_string(), two.to_string()])),
+            "the candidates are the ids, so the caller can name one"
+        );
+    }
+
+    #[test]
+    fn naming_a_workspace_the_name_it_already_has_reports_nothing() {
+        let (mut m, pid, _) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        m.rename_workspace(&w1, Some("auth cleanup".into()))
+            .unwrap();
+        assert_eq!(
+            m.rename_workspace(&w1, Some(" auth cleanup ".into()))
+                .unwrap(),
+            Vec::<Event>::new(),
+            "a name that did not change is not something to tell subscribers about"
+        );
+        assert_eq!(
+            m.rename_workspace(&w1, None).unwrap(),
+            vec![Event::WorkspaceRenamed {
+                workspace: w1.clone(),
+                name: None
+            }]
+        );
+        assert_eq!(
+            m.rename_workspace(&w1, None).unwrap(),
+            Vec::<Event>::new(),
+            "and clearing a name that is already clear is not either"
+        );
+        assert_eq!(
+            m.rename_workspace(&WorkspaceId("w_0000".into()), None)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn pruning_a_workspace_says_the_path_went_away_rather_than_that_someone_deleted_it() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        assert_eq!(
+            m.prune_workspace(&main).unwrap_err().code,
+            ErrorCode::Refused,
+            "main is refused on this path too"
+        );
+        let (handle, events) = m.prune_workspace(&w1).unwrap();
+        assert_eq!(handle, WorkspaceHandle::Slot(1));
+        assert_eq!(
+            events,
+            vec![Event::WorkspaceDeleted {
+                project: pid,
+                workspace: w1.clone(),
+                handle: "workspace-1".into(),
+                pruned: true
+            }]
+        );
+        assert!(m.workspace(&w1).is_none());
+        assert!(m.retired.iter().any(|r| r == w1.as_str()));
+    }
+
+    #[test]
+    fn a_branch_repeats_line_one_only_when_it_equals_the_handle() {
+        let (mut m, pid, main) = git_model();
+        let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
+        let w = m.workspace(&w1).unwrap();
+        assert!(w.branch_is_handle("workspace-1"));
+        assert!(!w.branch_is_handle("feat/x"));
+        assert!(
+            !w.branch_is_handle("main"),
+            "that is another workspace's handle"
+        );
+        assert!(m.workspace(&main).unwrap().branch_is_handle("main"));
+        m.rename_workspace(&w1, Some("auth cleanup".into()))
+            .unwrap();
+        assert!(
+            m.workspace(&w1).unwrap().branch_is_handle("workspace-1"),
+            "a name does not change which branch the branch line would repeat"
+        );
+    }
+
+    #[test]
+    fn closing_an_overlay_clears_what_was_being_typed_into_it() {
+        let (_m, ws, tab, pane) = model_with_one_tab();
+        let mut view = client("c_0001", &ws, &tab, &pane);
+        view.push_overlay(Overlay::Switcher);
+        view.filtering = true;
+        view.push_overlay(Overlay::NameWorkspace(ws.clone()));
+        view.input = TextInput::new("auth cleanup");
+        view.pop_overlay();
+        assert_eq!(
+            view.input,
+            TextInput::new(""),
+            "a half-typed name must not turn up inside the overlay underneath"
+        );
+        assert!(!view.filtering, "and neither must a half-typed filter");
     }
 }

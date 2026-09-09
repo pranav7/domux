@@ -22,6 +22,8 @@ pub enum Route {
     Overlay,
     Chord,
     Global(Action),
+    /// A focused region handled it, or swallowed it. See `list_key`.
+    Region,
     Pane,
 }
 
@@ -83,8 +85,22 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
         return Route::Global(action);
     }
 
-    // 4. The focus target. A pane in copy mode handles the key itself; a pane whose child
-    //    exited (terminal.remain_on_exit) closes on Enter and swallows other keys.
+    // 4. The focus target, which is a region or a pane.
+    //
+    //    The region is read here rather than beside the overlay and the chord above, because
+    //    step 3 may have just moved it: `C-h` is a global binding and entering the box is what
+    //    it does.
+    if core
+        .model
+        .client(client)
+        .is_some_and(|view| matches!(view.focus, Focus::Region(_)))
+    {
+        list_key(core, client, key);
+        return Route::Region;
+    }
+
+    //    A pane in copy mode handles the key itself; a pane whose child exited
+    //    (terminal.remain_on_exit) closes on Enter and swallows other keys.
     //
     //    Copy mode first, and on an exited pane too (ruled 2026-09-07). While it is open the
     //    bar reads `⏎ copy · esc leave`, and with the exited branch ahead of it Esc did
@@ -149,9 +165,63 @@ fn forward_to_pane(core: &mut Core, client: &ClientId, key: &KeyEvent) {
     }
 }
 
+/// Step 4 of the routing for a focused box: the `[keys.list]` table (interface spec section
+/// 10). The switcher's overlay arm calls this too, so one table serves the sidebar's box and
+/// the overlay, and M3's agents overlay joins them without a third copy.
+///
+/// A key the table does not name stops here. That is what "the focus target receives the
+/// key" means for a region: the box has the keys, so an unbound one does nothing rather than
+/// reaching a pane the reader is not typing into. Only the three claimants ahead of step 4 -
+/// an open overlay, a chord, and a global binding - take a key out of the box.
+pub fn list_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    // A key in the box clears the last result (interface spec 12.12).
+    view.pill = None;
+    let filtering = view.filtering;
+    // No `view_dirty` here or in `filter_key`. `Core::key` sets it after every key, because
+    // every key gets a frame (principle 8), so a second setter would be a second cause for
+    // the same redraw and neither could be tested apart from the other.
+    if filtering {
+        return filter_key(core, client, key);
+    }
+    let Some(action) = core.config.keymap.list_for(&key).cloned() else {
+        return;
+    };
+    core.run_action(client, &action);
+}
+
+/// While `/` is open the box filters as you type; Esc clears the filter and closes it, Enter
+/// keeps the filter and closes it, and the rows follow either way (interface spec 12.10).
+///
+/// The table is not read here, so a letter bound to an action types that letter instead of
+/// running it: `/` opens a text field, and a text field that ran `j` as a command could not
+/// match a workspace whose name has a `j` in it.
+fn filter_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    match key.key {
+        Key::Escape => {
+            view.filter.clear();
+            view.filtering = false;
+        }
+        Key::Enter => view.filtering = false,
+        Key::Backspace => {
+            view.filter.pop();
+        }
+        Key::Char(c) if !key.mods.intersects(Mods::CTRL | Mods::ALT) => view.filter.push(c),
+        // Every other key, and a chorded letter: the filter is a text field, and a key it has
+        // no meaning for does nothing rather than closing it or reaching a pane.
+        _ => {}
+    }
+}
+
 /// Keys inside an overlay. The prompt edits its input; Enter saves, Esc cancels. The help
 /// overlay closes on Esc, `q` or `?`. A confirmation acts on `y` and cancels on anything
-/// else. Closing returns focus to the pane.
+/// else. Closing returns the keys to the overlay underneath, or to the pane when there is
+/// none: see `close_overlay`.
 fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
     let Some(overlay) = core
         .model
@@ -176,7 +246,7 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                         name: Some(input.text),
                         client: Some(client.clone()),
                     });
-                    let _ = core.dispatch(method, Some(client.clone()));
+                    let _ = core.dispatch_from_key(method, Some(client.clone()));
                     return;
                 }
                 Key::Backspace => input.backspace(),
@@ -191,27 +261,166 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             }
             set_prompt(core, client, PromptKind::TabName { tab, input });
         }
-        // `y` and nothing else closes the tab. Any other key cancels rather than waiting for
-        // one of two right answers: the safe outcome is the one a stray keystroke should
-        // reach, and a reader who typed something else has already stopped reading the
-        // question. Esc and `n` are in that set, and are what the bar offers.
         Overlay::Confirm(ConfirmKind::CloseTab(tab)) => {
             close_overlay(core, client);
-            if matches!(key.key, Key::Char('y') | Key::Char('Y')) {
+            if confirmed(&key) {
                 let method = Method::TabClose(domux_core::api::TabTargetParams {
                     tab: Some(tab.to_string()),
                     client: Some(client.clone()),
                 });
-                let _ = core.dispatch(method, Some(client.clone()));
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
             }
         }
-        Overlay::Switcher
-        | Overlay::Agents
-        | Overlay::NameWorkspace(_)
-        | Overlay::Confirm(ConfirmKind::DeleteWorkspace(_) | ConfirmKind::RemoveProject(_))
-        | Overlay::Usage => {
-            // M1 never opens these. M2 to M4 add their key handling here.
+        // The switcher's box is the sidebar's box, so its keys are the sidebar's keys: one
+        // `[keys.list]` table, one function, two surfaces (interface spec 5.4).
+        Overlay::Switcher => list_key(core, client, key),
+        // The same rule as the tab above, and the keys the box itself offers:
+        // `y remove project    esc keep project` (interface spec 7.3).
+        //
+        // All three confirmations are opened with `push_overlay`, so all three are closed with
+        // `close_overlay`, which pops one overlay: what `push_overlay` covers, `pop_overlay`
+        // uncovers. Before Task 20 that call cleared the top overlay and left `overlay_under`
+        // where it stood, which did not merely fail to restore what was underneath, it
+        // stranded it. That was invisible for `project.remove`, whose only way here is a key,
+        // and a key reaches `run_action` only when no overlay is open. Task 18's `X` inside
+        // the Projects box is the first caller to open a confirmation over the switcher, and
+        // Task 20 made the close correct for it.
+        Overlay::Confirm(ConfirmKind::RemoveProject(project)) => {
+            close_overlay(core, client);
+            if confirmed(&key) {
+                let method = Method::ProjectRemove(domux_core::api::ProjectRemoveParams {
+                    project: project.to_string(),
+                    yes: true,
+                });
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
+            }
         }
+        // `y` re-dispatches the method with the consent it was asked for and every other key
+        // keeps the workspace, so a held key cannot confirm a delete by accident
+        // (principle 10). The id is what goes back, not the handle or the name:
+        // `resolve_workspace_with` answers an id first, so a workspace named while the
+        // question was open is still the workspace the question was about.
+        //
+        // `force` is not passed. Consent to delete a slot is not consent to throw away
+        // commits that were never pushed, and the job's refusal names the state and what to
+        // do about it.
+        Overlay::Confirm(ConfirmKind::DeleteWorkspace(workspace)) => {
+            close_overlay(core, client);
+            if confirmed(&key) {
+                let method = Method::WorkspaceDelete(domux_core::api::WorkspaceDeleteParams {
+                    workspace: workspace.to_string(),
+                    yes: true,
+                    force: false,
+                });
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
+            }
+        }
+        Overlay::Confirm(ConfirmKind::ClearWorkspace(workspace)) => {
+            close_overlay(core, client);
+            if confirmed(&key) {
+                let method = Method::WorkspaceClear(domux_core::api::WorkspaceClearParams {
+                    workspace: Some(workspace.to_string()),
+                    yes: true,
+                });
+                let _ = core.dispatch_from_key(method, Some(client.clone()));
+            }
+        }
+        // The name box (interface spec 7.1). `ClientView::input` holds the text it is
+        // editing and the overlay carries the workspace it names, so the box acts on the slot
+        // its own title shows however it was opened: `leader N` from the workspace, or `n` on
+        // the row under the cursor.
+        Overlay::NameWorkspace(id) => {
+            // A key in the box clears the last result (interface spec 12.12), the rule
+            // `list_key` follows for the same reason: a pill answers the key before this one.
+            if let Some(view) = core.model.client_mut(client) {
+                view.pill = None;
+            }
+            match key.key {
+                // `close_top_overlay` rather than `close_overlay`. Both pop one level since
+                // Task 20, so neither strands what is underneath, and `n` on a row opens this
+                // box over the switcher which has to come back. The difference is the route:
+                // this one dispatches `focus.pane`, so where the keys land is decided by the
+                // handler that owns that question rather than by a second copy of it here.
+                Key::Escape => close_top_overlay(core, client),
+                Key::Enter => save_name(core, client, &id),
+                _ => edit_name(core, client, &key),
+            }
+        }
+        Overlay::Agents | Overlay::Usage => {
+            // M3 adds the agents overlay and M4 the usage one. Task 18 took the workspace
+            // confirmations out of here and Task 15 took the name box.
+        }
+    }
+}
+
+/// Closes the top overlay and gives the keys back to whatever the frame then marks: the
+/// overlay this one was opened over (interface spec 12.7), or the pane.
+///
+/// `api::focus::pane` is that operation, and the `[keys.list]` table already binds Esc in the
+/// switcher to it, so the name box closes by the same rule rather than by a second copy of it.
+fn close_top_overlay(core: &mut Core, client: &ClientId) {
+    let params = domux_core::api::ClientParams {
+        client: Some(client.clone()),
+    };
+    let _ = core.dispatch_from_key(Method::FocusPane(params), Some(client.clone()));
+}
+
+/// Enter in the name box: save what was typed, close the box, and say what happened.
+///
+/// The name goes through `workspace.rename` and not through `Model::rename_workspace`, so the
+/// key, the CLI and the API reach one handler: the guard there that refuses a name reading as
+/// a handle cannot be reachable by one of them and not the others.
+///
+/// The box closes only when the rename worked. A refusal names something to change about the
+/// name, and closing would take the name away with the question, so the box stays open with
+/// what was typed still in it and the refusal takes its hint row (interface spec 12.12).
+fn save_name(core: &mut Core, client: &ClientId, workspace: &domux_core::ids::WorkspaceId) {
+    let (Some(name), Some(handle)) = (
+        core.model.client(client).map(|v| v.input.text.clone()),
+        core.model
+            .workspace(workspace)
+            .map(|w| w.handle.to_string()),
+    ) else {
+        // The client detached, or the workspace went away while its box was open. There is
+        // nothing to save and nobody to tell, which is the answer `render::name_box::draw`
+        // gives the same state.
+        return;
+    };
+    let params = domux_core::api::WorkspaceRenameParams {
+        workspace: Some(workspace.to_string()),
+        name: Some(name.clone()),
+        client: Some(client.clone()),
+    };
+    match core.dispatch_from_key(Method::WorkspaceRename(params), Some(client.clone())) {
+        Ok(_) => {
+            close_top_overlay(core, client);
+            let name = name.trim();
+            let text = if name.is_empty() {
+                format!("Cleared the name on {handle}")
+            } else {
+                format!("Named {handle} {name}")
+            };
+            core.set_pill(Some(client), text, true);
+        }
+        Err(e) => core.set_pill(Some(client), e.message, false),
+    }
+}
+
+/// The keys a text field has: the caret moves, a character goes in, and every other key does
+/// nothing rather than closing the box or reaching the pane behind it. `filter_key` answers
+/// the filter's field by the same rule.
+fn edit_name(core: &mut Core, client: &ClientId, key: &KeyEvent) {
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    match key.key {
+        Key::Backspace => view.input.backspace(),
+        Key::Left => view.input.left(),
+        Key::Right => view.input.right(),
+        Key::Home => view.input.home(),
+        Key::End => view.input.end(),
+        Key::Char(c) if !key.mods.intersects(Mods::CTRL | Mods::ALT) => view.input.insert(c),
+        _ => {}
     }
 }
 
@@ -221,12 +430,30 @@ fn set_prompt(core: &mut Core, client: &ClientId, prompt: PromptKind) {
     }
 }
 
+/// `y` acts and every other key cancels, in one place for all four questions.
+///
+/// Not "wait for one of two right answers": the safe outcome is the one a stray keystroke
+/// should reach, and a reader who typed something else has already stopped reading the
+/// question (principle 10). Esc and `n` are in that set, and are what the box offers.
+fn confirmed(key: &KeyEvent) -> bool {
+    matches!(key.key, Key::Char('y') | Key::Char('Y'))
+}
+
+/// Closes the overlay that has the keys and gives them back to what was under it: the
+/// overlay it was opened over (interface spec 12.7), or the pane.
+///
+/// One overlay, not the whole stack. `?` over the switcher has to come back to the switcher,
+/// and `view.overlay = None` would not merely fail to restore it, it would strand it in
+/// `overlay_under` where nothing draws it and nothing closes it.
+///
+/// Where the keys land is `ClientView::focus_after_pop`, which `api::focus::pane` and
+/// `api::switcher::close` also call. The three had written the same match out three times.
 fn close_overlay(core: &mut Core, client: &ClientId) {
     let focused = core.focused_pane(client);
     if let Some(view) = core.model.client_mut(client) {
-        view.overlay = None;
-        if let Some(p) = focused {
-            view.focus = Focus::Pane(p);
-        }
+        view.pop_overlay();
+        // The box that had the keys keeps them when nothing else is left underneath.
+        let back = view.focus_returning_from_overlay(focused);
+        view.focus = view.focus_after_pop(back);
     }
 }

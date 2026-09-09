@@ -27,8 +27,25 @@ pub enum RegionKind {
     Overlay,
 }
 
+impl RegionKind {
+    /// Whether this region is a box, which is a region with its own `[keys.list]` table, as
+    /// against `Overlay`, which is every modal that has no table of its own.
+    ///
+    /// The line is the one this enum's own comment draws, named so that a reader can ask the
+    /// question rather than restate the list. `render::overlay::draw_help` asks it to decide
+    /// which key table the reader is holding, and gets the same answer for the switcher's box
+    /// and the sidebar's box because it is one question.
+    pub fn is_box(self) -> bool {
+        !matches!(self, RegionKind::Overlay)
+    }
+}
+
 /// A one-line text input with a caret, for prompts. Pure, so every edit has a unit test.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// `Default` is the empty input, which is what `TextInput::new("")` builds. `ClientView`
+/// needs it: its `input` field is `#[serde(default)]` so a state file written before the
+/// field existed still reads back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TextInput {
     pub text: String,
     /// Caret position in chars.
@@ -79,7 +96,7 @@ pub enum PromptKind {
     TabName { tab: TabId, input: TextInput },
 }
 
-/// What a confirmation asks about. M1 opens `CloseTab`; M2 opens the other two.
+/// What a confirmation asks about. M1 opens `CloseTab`; M2 opens the other three.
 ///
 /// Adjacently tagged, for the reason `Focus` is: an internally tagged enum cannot represent a
 /// newtype variant holding a string, and serde fails at runtime rather than at compile time -
@@ -89,6 +106,7 @@ pub enum PromptKind {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ConfirmKind {
     CloseTab(TabId),
+    ClearWorkspace(WorkspaceId),
     DeleteWorkspace(WorkspaceId),
     RemoveProject(ProjectId),
 }
@@ -129,6 +147,7 @@ mod tests {
             }),
             Overlay::NameWorkspace(WorkspaceId("w_0001".into())),
             Overlay::Confirm(ConfirmKind::CloseTab(TabId("t_0001".into()))),
+            Overlay::Confirm(ConfirmKind::ClearWorkspace(WorkspaceId("w_0001".into()))),
             Overlay::Confirm(ConfirmKind::DeleteWorkspace(WorkspaceId("w_0001".into()))),
             Overlay::Confirm(ConfirmKind::RemoveProject(ProjectId("p_0001".into()))),
             Overlay::Usage,
@@ -146,6 +165,7 @@ mod tests {
                 // added to the list above, or this stops compiling.
                 Overlay::Confirm(c) => match c {
                     ConfirmKind::CloseTab(_)
+                    | ConfirmKind::ClearWorkspace(_)
                     | ConfirmKind::DeleteWorkspace(_)
                     | ConfirmKind::RemoveProject(_) => {}
                 },

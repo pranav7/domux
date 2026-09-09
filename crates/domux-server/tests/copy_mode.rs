@@ -562,3 +562,43 @@ async fn the_leader_inside_copy_mode_shows_the_chord_rather_than_the_copy_keys()
         "{f}"
     );
 }
+
+/// The wheel hits the pane the reader sees under the pointer, and the sidebar shifts every
+/// pane box 39 columns right. Hit testing and drawing have to read the same rectangle: if
+/// hit testing kept the sidebar-less one, a scroll over the sidebar would scroll a pane and
+/// a scroll over the left pane would land on whatever sits 39 columns further left.
+#[tokio::test]
+async fn wheel_scroll_finds_the_pane_under_the_pointer_beside_an_open_sidebar() {
+    let mut h = Harness::start(Config::default(), 120, 14).await;
+    h.api(
+        "sidebar.show",
+        serde_json::json!({"client": h.client.as_str()}),
+    )
+    .await
+    .unwrap();
+    let left = pane_with_lines(&mut h, 20).await;
+    h.api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .unwrap();
+    h.frame(h.client.clone()).await;
+
+    // Column 5 is inside the sidebar, which belongs to no pane.
+    h.scroll(h.client.clone(), 5, 5, 3).await;
+    h.frame(h.client.clone()).await;
+    assert!(
+        !h.model().pane(&left).unwrap().copy_mode,
+        "a scroll over the sidebar scrolls nothing"
+    );
+
+    // Column 45 is inside the left pane's box, which starts at column 39.
+    h.scroll(h.client.clone(), 45, 5, 3).await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(" copy "),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(h.model().pane(&left).unwrap().copy_mode, "{f}");
+    assert_eq!(h.focused_pane(h.client.clone()), left);
+}

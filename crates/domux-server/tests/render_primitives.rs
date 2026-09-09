@@ -290,10 +290,17 @@ fn model_with_clients(
             tab: tab.clone(),
             focus: Focus::Pane(pane.clone()),
             sidebar_open: false,
+            sidebar_forced: false,
             overlay: None,
             chord: None,
             filter: String::new(),
             last_active_seq: 0,
+            projects_cursor: None,
+            projects_scroll: 0,
+            filtering: false,
+            input: domux_core::model::TextInput::new(""),
+            overlay_under: None,
+            pill: None,
         });
     }
     (model, tab)
@@ -334,12 +341,14 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
     let panes = HashMap::new();
     let (buffer, _) = compose(&RenderInput {
         model: &model,
+        facts: &domux_server::facts::FactRegistry::new(),
         panes: &panes,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
         now: chrono::Local::now(),
         config_error: None,
         hint: None,
+        notes: &[],
     });
     assert_eq!(buffer.area, Rect::new(0, 0, 40, 10));
     assert_eq!(
@@ -372,12 +381,14 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
     let panes = HashMap::new();
     let (buffer, _) = compose(&RenderInput {
         model: &model,
+        facts: &domux_server::facts::FactRegistry::new(),
         panes: &panes,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
         now: chrono::Local::now(),
         config_error: None,
         hint: None,
+        notes: &[],
     });
     let top = row(&buffer, 1);
     assert_eq!(top.chars().nth(39), Some('┐'), "{top:?}");
@@ -386,5 +397,85 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
             .chars()
             .all(|c| c == ' '),
         "everything past the smallest client's width is blank: {top:?}"
+    );
+}
+
+/// The tab row's background reaches the cell under a wide grapheme's second half.
+///
+/// `boxed::put_within` patches a cell's style, so a run with no background of its own keeps
+/// whatever the row was filled with - except for a wide grapheme, where it calls
+/// `Cell::reset()` on the trailing cell first and clears the fill. That is why the row's
+/// background is a parameter of `TabRow::draw` rather than left to the patch.
+///
+/// Asserted on the composed buffer, which is the general statement and not a fallback: the
+/// renderer's promise is that the row it drew has one background all the way across, and
+/// that is true whatever the transport does with it.
+///
+/// The hole does reach a client, by a path that is worth naming because two earlier attempts
+/// at this comment named the wrong one. It is not the diff: `Buffer::diff` never yields a
+/// wide grapheme's trailing cell, whether or not the cell changed. It is
+/// `ClientConn::take_frame`, which has two branches - when `needs_full` is set it sends
+/// every cell of the buffer rather than a diff, and that is the first frame after an attach,
+/// every resize, and every frame dropped because the channel was full.
+#[test]
+fn a_wide_grapheme_in_a_tab_name_leaves_no_hole_in_the_top_bar() {
+    use domux_core::model::ClientView;
+    use domux_server::render::{compose, RenderInput};
+    use std::collections::HashMap;
+
+    // Wide enough that the tab row keeps both cells: at 40 columns the clock takes most of
+    // the row and the tab that is not current is elided away, taking the wide name with it.
+    let (mut model, tab) = model_with_clients(&[(
+        "c_one",
+        Size {
+            cols: 120,
+            rows: 24,
+        },
+    )]);
+    // A second tab, so tab 1 is not the current one and its cell takes the row's background
+    // rather than the accent fill, which sets its own and would cover the hole.
+    let ws = model
+        .client(&domux_core::ids::ClientId("c_one".into()))
+        .unwrap()
+        .workspace
+        .clone();
+    model
+        .rename_tab(&tab, Some("日".into()))
+        .expect("tab 1 takes a wide name");
+    let (second, _, _) = model
+        .create_tab(&ws, std::path::PathBuf::from("/tmp/proj"))
+        .unwrap();
+    let view = ClientView {
+        tab: second,
+        ..model
+            .client(&domux_core::ids::ClientId("c_one".into()))
+            .unwrap()
+            .clone()
+    };
+    let panes = HashMap::new();
+    let (buffer, _) = compose(&RenderInput {
+        model: &model,
+        panes: &panes,
+        view: &view,
+        keymap: &domux_core::keymap::Keymap::defaults(),
+        facts: &domux_server::facts::FactRegistry::new(),
+        now: chrono::Local::now(),
+        config_error: None,
+        hint: None,
+        notes: &[],
+    });
+    let mantle = ratatui::style::Color::Rgb(0x18, 0x18, 0x25);
+    let wide = (0..120u16)
+        .find(|x| buffer[(*x, 0u16)].symbol() == "日")
+        .expect("the wide tab name is on the bar");
+    assert_eq!(
+        buffer[(wide, 0u16)].bg,
+        mantle,
+        "the cell the glyph starts in"
+    );
+    assert_eq!(
+        buffer[(wide + 1, 0u16)].bg,
+        mantle,
+        "and the cell under its second half, which `put_within` had reset"
     );
 }

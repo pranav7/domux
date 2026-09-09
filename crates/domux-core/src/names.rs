@@ -13,6 +13,15 @@ pub const SOCKET_FILE_NAME: &str = "domux2.sock";
 /// The name of the socket directory under `/tmp` when `XDG_RUNTIME_DIR` is unset: `domux2-<uid>`.
 pub const SOCKET_DIR_PREFIX: &str = "domux2-";
 
+/// V1's state directory name, for `import v1` to read V1's session files from. It is spelled
+/// apart from `STATE_DIR_NAME` because the two are the same word only after the M3 cut-over,
+/// and this one must not follow that rename: it names V1's directory, not V2's.
+///
+/// Nothing in V2 writes under this directory.
+pub const V1_STATE_DIR_NAME: &str = "domux";
+/// Where V1 keeps one JSON file per session, under its state directory.
+pub const V1_SESSIONS_DIR_NAME: &str = "sessions";
+
 #[cfg(test)]
 mod tests {
     use super::BIN_NAME;

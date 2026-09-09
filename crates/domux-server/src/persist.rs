@@ -12,7 +12,7 @@ pub const DEBOUNCE: Duration = Duration::from_millis(100);
 /// `path` with `suffix` appended to the whole file name, so `state.json` gives
 /// `state.json.tmp`. `Path::with_extension` would replace `json` rather than keep it, which
 /// is only the same thing while every caller's file happens to be named `<stem>.json`.
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+pub fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = OsString::from(path.as_os_str());
     name.push(suffix);
     PathBuf::from(name)

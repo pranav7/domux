@@ -1,6 +1,7 @@
 //! The control API's wire types: errors, events, and (Task 8) requests, responses and methods.
 
-use crate::ids::{ClientId, PaneId, TabId, WorkspaceId};
+use crate::facts::FactKey;
+use crate::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use crate::keymap::Action;
 use crate::model::{Direction, Focus, RegionKind};
 use crate::names::BIN_NAME;
@@ -56,6 +57,24 @@ impl ApiError {
             data: Some(Value::from(candidates)),
         }
     }
+    /// A destructive operation asking for consent. `question` names the object and its
+    /// consequence; `removes` and `keeps` are the lists a caller prints under it. The
+    /// message is the whole thing in one sentence for a caller that only shows messages,
+    /// and `data` is the same content structured for one that can lay it out.
+    pub fn needs_confirmation(
+        question: impl Into<String>,
+        removes: Vec<String>,
+        keeps: Vec<String>,
+    ) -> ApiError {
+        let question = question.into();
+        ApiError {
+            code: ErrorCode::Refused,
+            message: format!("{question} Answer with --yes"),
+            data: Some(
+                serde_json::json!({ "confirmation": question, "removes": removes, "keeps": keeps }),
+            ),
+        }
+    }
     pub fn invalid_params(m: impl Into<String>) -> ApiError {
         ApiError::new(ErrorCode::InvalidParams, m)
     }
@@ -91,6 +110,51 @@ pub enum Event {
     ClientDetached { client: ClientId },
     #[serde(rename = "config.reloaded")]
     ConfigReloaded { error: Option<String> },
+    // The project, workspace, switcher, sidebar and list events of M2.
+    #[serde(rename = "project.added")]
+    ProjectAdded {
+        project: ProjectId,
+        name: String,
+        root: PathBuf,
+    },
+    #[serde(rename = "project.removed")]
+    ProjectRemoved { project: ProjectId, name: String },
+    #[serde(rename = "workspace.created")]
+    WorkspaceCreated {
+        project: ProjectId,
+        workspace: WorkspaceId,
+        handle: String,
+        path: PathBuf,
+    },
+    #[serde(rename = "workspace.cleared")]
+    WorkspaceCleared {
+        workspace: WorkspaceId,
+        base: String,
+    },
+    #[serde(rename = "workspace.deleted")]
+    WorkspaceDeleted {
+        project: ProjectId,
+        workspace: WorkspaceId,
+        handle: String,
+        /// True when the workspace record went because its path was gone, not because
+        /// someone deleted it.
+        pruned: bool,
+    },
+    #[serde(rename = "workspace.renamed")]
+    WorkspaceRenamed {
+        workspace: WorkspaceId,
+        name: Option<String>,
+    },
+    #[serde(rename = "workspace.switched")]
+    WorkspaceSwitched {
+        client: ClientId,
+        workspace: WorkspaceId,
+        tab: TabId,
+    },
+    #[serde(rename = "fact.updated")]
+    FactUpdated { key: FactKey, present: bool },
+    #[serde(rename = "sidebar.toggled")]
+    SidebarToggled { client: ClientId, open: bool },
     #[serde(rename = "tab.created")]
     TabCreated { workspace: WorkspaceId, tab: TabId },
     #[serde(rename = "tab.renamed")]
@@ -117,47 +181,54 @@ pub enum Event {
     PaneZoomed { tab: TabId, pane: Option<PaneId> },
 }
 
-impl Event {
-    /// The event names of this build, in declaration order. Used by `events.subscribe`
-    /// filters and by the schema.
-    pub const NAMES: &'static [&'static str] = &[
-        "server.started",
-        "server.stopping",
-        "client.attached",
-        "client.detached",
-        "config.reloaded",
-        "tab.created",
-        "tab.renamed",
-        "tab.closed",
-        "tab.selected",
-        "pane.spawned",
-        "pane.exited",
-        "pane.closed",
-        "pane.focused",
-        "pane.resized",
-        "pane.zoomed",
-    ];
+/// Builds `Event::NAMES` and `Event::name` from one list, so a variant cannot exist
+/// without a name to answer with. The match has no catch-all: a variant added to `Event`
+/// above without a line added here fails to compile with "non-exhaustive patterns"
+/// instead of quietly leaving `events.subscribe` unable to filter on it.
+macro_rules! event_names {
+    ( $( $pat:pat => $name:literal ),* $(,)? ) => {
+        impl Event {
+            /// The event names of this build, in declaration order. Used by
+            /// `events.subscribe` filters and by the schema.
+            pub const NAMES: &'static [&'static str] = &[ $( $name, )* ];
 
-    pub fn name(&self) -> &'static str {
-        match self {
-            Event::ServerStarted { .. } => "server.started",
-            Event::ServerStopping => "server.stopping",
-            Event::ClientAttached { .. } => "client.attached",
-            Event::ClientDetached { .. } => "client.detached",
-            Event::ConfigReloaded { .. } => "config.reloaded",
-            Event::TabCreated { .. } => "tab.created",
-            Event::TabRenamed { .. } => "tab.renamed",
-            Event::TabClosed { .. } => "tab.closed",
-            Event::TabSelected { .. } => "tab.selected",
-            Event::PaneSpawned { .. } => "pane.spawned",
-            Event::PaneExited { .. } => "pane.exited",
-            Event::PaneClosed { .. } => "pane.closed",
-            Event::PaneFocused { .. } => "pane.focused",
-            Event::PaneResized { .. } => "pane.resized",
-            Event::PaneZoomed { .. } => "pane.zoomed",
+            pub fn name(&self) -> &'static str {
+                match self {
+                    $( $pat => $name, )*
+                }
+            }
         }
-    }
+    };
+}
 
+event_names! {
+    Event::ServerStarted { .. } => "server.started",
+    Event::ServerStopping => "server.stopping",
+    Event::ClientAttached { .. } => "client.attached",
+    Event::ClientDetached { .. } => "client.detached",
+    Event::ConfigReloaded { .. } => "config.reloaded",
+    Event::ProjectAdded { .. } => "project.added",
+    Event::ProjectRemoved { .. } => "project.removed",
+    Event::WorkspaceCreated { .. } => "workspace.created",
+    Event::WorkspaceCleared { .. } => "workspace.cleared",
+    Event::WorkspaceDeleted { .. } => "workspace.deleted",
+    Event::WorkspaceRenamed { .. } => "workspace.renamed",
+    Event::WorkspaceSwitched { .. } => "workspace.switched",
+    Event::FactUpdated { .. } => "fact.updated",
+    Event::SidebarToggled { .. } => "sidebar.toggled",
+    Event::TabCreated { .. } => "tab.created",
+    Event::TabRenamed { .. } => "tab.renamed",
+    Event::TabClosed { .. } => "tab.closed",
+    Event::TabSelected { .. } => "tab.selected",
+    Event::PaneSpawned { .. } => "pane.spawned",
+    Event::PaneExited { .. } => "pane.exited",
+    Event::PaneClosed { .. } => "pane.closed",
+    Event::PaneFocused { .. } => "pane.focused",
+    Event::PaneResized { .. } => "pane.resized",
+    Event::PaneZoomed { .. } => "pane.zoomed",
+}
+
+impl Event {
     /// True when `filter` (a list of names or `ns.*` globs) admits this event. An empty
     /// filter admits everything.
     pub fn matches(&self, filter: &[String]) -> bool {
@@ -286,6 +357,16 @@ pub struct TabCreateParams {
     pub client: Option<ClientId>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
+    /// The tab's name, for a caller that already knows it. `None` leaves the tab with its
+    /// number, which is what every key and every other caller wants.
+    ///
+    /// It exists because `tab.rename` resolves its target inside the calling client's
+    /// workspace, so a caller with no view cannot name a tab it just made somewhere else,
+    /// and because a name is not always an afterthought: in V1's session file a window and
+    /// its name are one fact, and splitting them into two calls is V2's artefact rather
+    /// than something the caller meant (found by Task 23).
+    #[serde(default)]
+    pub name: Option<String>,
 }
 impl Params for TabCreateParams {}
 
@@ -531,6 +612,14 @@ pub struct TabInfo {
     /// 1-based position in the workspace.
     pub index: usize,
     pub name: Option<String>,
+    /// Where the tab's focused pane is, as the server last read it. That is the directory
+    /// the tab was opened at until its shell moves, and the shell's own directory after,
+    /// because the server polls it from the pane rather than recording where it started.
+    ///
+    /// Without this field a tab's directory can only be read through `pane.list`, which
+    /// resolves its target inside the calling client's workspace, so nothing could ask
+    /// where a tab is unless it was already looking at it (found by Task 23).
+    pub cwd: PathBuf,
     pub panes: Vec<PaneId>,
     pub focused: PaneId,
     pub zoomed: Option<PaneId>,
@@ -653,6 +742,247 @@ methods! {
     FocusLast = "focus.last": ClientParams => FocusResult,
     FocusRegion = "focus.region": FocusRegionParams => FocusResult,
     FocusPane = "focus.pane": ClientParams => FocusResult,
+    ProjectList = "project.list": NoParams => Vec<ProjectInfo>,
+    ProjectAdd = "project.add": ProjectAddParams => ProjectAdded,
+    ProjectRemove = "project.remove": ProjectRemoveParams => Ack,
+    WorkspaceList = "workspace.list": WorkspaceListParams => Vec<WorkspaceInfo>,
+    WorkspaceCreate = "workspace.create": WorkspaceCreateParams => WorkspaceCreated,
+    WorkspaceClear = "workspace.clear": WorkspaceClearParams => Ack,
+    WorkspaceDelete = "workspace.delete": WorkspaceDeleteParams => Ack,
+    WorkspaceRename = "workspace.rename": WorkspaceRenameParams => Ack,
+    WorkspaceClearName = "workspace.clear_name": WorkspaceTargetParams => Ack,
+    WorkspaceFocus = "workspace.focus": WorkspaceFocusParams => WorkspaceInfo,
+    WorkspaceResume = "workspace.resume": WorkspaceTargetParams => Ack,
+    SwitcherOpen = "switcher.open": ClientParams => Ack,
+    SwitcherClose = "switcher.close": ClientParams => Ack,
+    SidebarToggle = "sidebar.toggle": ClientParams => SidebarResult,
+    SidebarShow = "sidebar.show": ClientParams => SidebarResult,
+    SidebarHide = "sidebar.hide": ClientParams => SidebarResult,
+    ListDown = "list.down": ClientParams => Ack,
+    ListUp = "list.up": ClientParams => Ack,
+    ListActivate = "list.activate": ClientParams => Ack,
+    ListFilter = "list.filter": ClientParams => Ack,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectAddParams {
+    pub path: String,
+    #[serde(default)]
+    pub client: Option<ClientId>,
+}
+impl Params for ProjectAddParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(ProjectAddParams {
+            path: arg::<String>(args, 0, "path")?,
+            client: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRemoveParams {
+    pub project: String,
+    #[serde(default)]
+    pub yes: bool,
+}
+impl Params for ProjectRemoveParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(ProjectRemoveParams {
+            project: arg::<String>(args, 0, "project")?,
+            yes: false,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceListParams {
+    #[serde(default)]
+    pub project: Option<String>,
+}
+impl Params for WorkspaceListParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceListParams {
+            project: args.first().cloned(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCreateParams {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub client: Option<ClientId>,
+}
+impl Params for WorkspaceCreateParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceCreateParams {
+            project: args.first().cloned(),
+            base: args.get(1).cloned(),
+            client: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceClearParams {
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub yes: bool,
+}
+impl Params for WorkspaceClearParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceClearParams {
+            workspace: args.first().cloned(),
+            yes: false,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceDeleteParams {
+    pub workspace: String,
+    #[serde(default)]
+    pub yes: bool,
+    #[serde(default)]
+    pub force: bool,
+}
+impl Params for WorkspaceDeleteParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceDeleteParams {
+            workspace: arg::<String>(args, 0, "workspace")?,
+            yes: false,
+            force: false,
+        })
+    }
+}
+
+/// `None` opens the name box in the calling view; `Some("")` clears the name. The same
+/// rule as M1's `tab.rename` (M1 assumption 15).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceRenameParams {
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub client: Option<ClientId>,
+}
+// `leader N` binds `workspace.rename` with no arguments, which must mean "open the name box
+// here": no workspace, no name. Arguments become the name, joined, exactly as `tab.rename`
+// does it.
+impl Params for WorkspaceRenameParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceRenameParams {
+            workspace: None,
+            name: if args.is_empty() {
+                None
+            } else {
+                Some(args.join(" "))
+            },
+            client: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTargetParams {
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+// One optional positional target: `leader n` passes none and means "this workspace".
+impl Params for WorkspaceTargetParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceTargetParams {
+            workspace: args.first().cloned(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceFocusParams {
+    pub workspace: String,
+    #[serde(default)]
+    pub client: Option<ClientId>,
+}
+// A required positional target, through M1's `arg` helper so a missing one reports which
+// argument it was.
+impl Params for WorkspaceFocusParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(WorkspaceFocusParams {
+            workspace: arg::<String>(args, 0, "workspace")?,
+            client: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectInfo {
+    pub id: ProjectId,
+    pub name: String,
+    pub root: PathBuf,
+    pub kind: String,
+    pub default_branch: Option<String>,
+    pub workspaces: usize,
+}
+
+/// `adopted` lists the handles of the worktrees `project.add` found on disk, so the CLI's
+/// `open` subcommand can say `added audrey-app with workspace-1, workspace-2`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectAdded {
+    pub project: ProjectId,
+    pub workspace: WorkspaceId,
+    pub name: String,
+    pub root: PathBuf,
+    pub kind: String,
+    pub adopted: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceInfo {
+    pub id: WorkspaceId,
+    pub project: ProjectId,
+    pub handle: String,
+    pub name: Option<String>,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub pr: Option<String>,
+    pub pr_state: Option<String>,
+    pub tabs: usize,
+}
+
+/// What `workspace.create` answers with. `WorkspaceInfo` cannot serve: a create has two
+/// facts of its own that no other call has, and neither may be guessed later. `base` is the
+/// ref the slot was branched from, and `setup` is what `worktree.conf` did, `None` when the
+/// project has no `worktree.conf` at all (principle 4: absent, not "linked 0, copied 0").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceCreated {
+    pub id: WorkspaceId,
+    pub project: ProjectId,
+    pub handle: String,
+    pub path: PathBuf,
+    pub branch: String,
+    pub base: String,
+    pub setup: Option<String>,
+    pub tabs: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SidebarResult {
+    pub open: bool,
+    pub visible: bool,
 }
 
 #[cfg(test)]
@@ -689,6 +1019,26 @@ mod tests {
         "focus.last",
         "focus.region",
         "focus.pane",
+        "project.list",
+        "project.add",
+        "project.remove",
+        "workspace.list",
+        "workspace.create",
+        "workspace.clear",
+        "workspace.delete",
+        "workspace.rename",
+        "workspace.clear_name",
+        "workspace.focus",
+        "workspace.resume",
+        "switcher.open",
+        "switcher.close",
+        "sidebar.toggle",
+        "sidebar.show",
+        "sidebar.hide",
+        "list.down",
+        "list.up",
+        "list.activate",
+        "list.filter",
     ];
 
     #[test]
@@ -736,7 +1086,12 @@ mod tests {
     #[test]
     fn every_default_keymap_action_resolves_to_a_method() {
         let km = crate::keymap::Keymap::defaults();
-        for b in km.bindings.iter().chain(km.global.iter()) {
+        for b in km
+            .bindings
+            .iter()
+            .chain(km.global.iter())
+            .chain(km.list.iter())
+        {
             Method::from_action(&b.action)
                 .unwrap_or_else(|e| panic!("{} -> {}: {e}", b.key, b.action));
         }
@@ -798,6 +1153,32 @@ mod tests {
             ("focus.last", serde_json::json!({})),
             ("focus.region", serde_json::json!({"region": "overlay"})),
             ("focus.pane", serde_json::json!({})),
+            ("project.list", serde_json::json!({})),
+            ("project.add", serde_json::json!({"path": "/x"})),
+            ("project.remove", serde_json::json!({"project": "p"})),
+            ("workspace.list", serde_json::json!({})),
+            ("workspace.create", serde_json::json!({"project": "p"})),
+            ("workspace.clear", serde_json::json!({"workspace": "w"})),
+            ("workspace.delete", serde_json::json!({"workspace": "w"})),
+            (
+                "workspace.rename",
+                serde_json::json!({"workspace": "w", "name": "x"}),
+            ),
+            (
+                "workspace.clear_name",
+                serde_json::json!({"workspace": "w"}),
+            ),
+            ("workspace.focus", serde_json::json!({"workspace": "w"})),
+            ("workspace.resume", serde_json::json!({"workspace": "w"})),
+            ("switcher.open", serde_json::json!({})),
+            ("switcher.close", serde_json::json!({})),
+            ("sidebar.toggle", serde_json::json!({})),
+            ("sidebar.show", serde_json::json!({})),
+            ("sidebar.hide", serde_json::json!({})),
+            ("list.down", serde_json::json!({})),
+            ("list.up", serde_json::json!({})),
+            ("list.activate", serde_json::json!({})),
+            ("list.filter", serde_json::json!({})),
         ];
         assert_eq!(cases.len(), EXPECTED_METHOD_NAMES.len());
         for (name, mut params) in cases {
@@ -808,6 +1189,340 @@ mod tests {
             let err = Method::from_request(name, params).unwrap_err();
             assert_eq!(err.code, ErrorCode::InvalidParams, "{name}");
             assert!(err.message.contains("unknown field"), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_confirmation_refusal_carries_the_same_content_in_the_message_and_the_data() {
+        let e = ApiError::needs_confirmation(
+            "Delete workspace-1? Removes the worktree and the local branch and closes 2 tabs.",
+            vec![
+                "the worktree at .domux/worktrees/workspace-1".into(),
+                "the local branch workspace-1".into(),
+            ],
+            vec!["the remote branch and any pull request".into()],
+        );
+        assert_eq!(e.code, ErrorCode::Refused);
+        assert!(e.message.ends_with(" Answer with --yes"), "{}", e.message);
+        let data = e.data.unwrap();
+        assert_eq!(
+            data["confirmation"],
+            "Delete workspace-1? Removes the worktree and the local branch and closes 2 tabs."
+        );
+        assert_eq!(data["removes"][1], "the local branch workspace-1");
+        assert_eq!(data["keeps"][0], "the remote branch and any pull request");
+    }
+
+    #[test]
+    fn every_m2_method_parses_from_its_name_and_answers_to_it() {
+        // One params object per method, because the params structs deny unknown fields: a
+        // single blob of every key would be rejected by the methods that take none.
+        let cases = [
+            ("project.list", serde_json::json!({})),
+            ("project.add", serde_json::json!({"path": "/x"})),
+            ("project.remove", serde_json::json!({"project": "p"})),
+            ("workspace.list", serde_json::json!({})),
+            ("workspace.create", serde_json::json!({"project": "p"})),
+            ("workspace.clear", serde_json::json!({"workspace": "w"})),
+            ("workspace.delete", serde_json::json!({"workspace": "w"})),
+            (
+                "workspace.rename",
+                serde_json::json!({"workspace": "w", "name": "x"}),
+            ),
+            (
+                "workspace.clear_name",
+                serde_json::json!({"workspace": "w"}),
+            ),
+            ("workspace.focus", serde_json::json!({"workspace": "w"})),
+            ("workspace.resume", serde_json::json!({"workspace": "w"})),
+            ("switcher.open", serde_json::json!({})),
+            ("switcher.close", serde_json::json!({})),
+            ("sidebar.toggle", serde_json::json!({})),
+            ("sidebar.show", serde_json::json!({})),
+            ("sidebar.hide", serde_json::json!({})),
+            ("list.down", serde_json::json!({})),
+            ("list.up", serde_json::json!({})),
+            ("list.activate", serde_json::json!({})),
+            ("list.filter", serde_json::json!({})),
+        ];
+        for (name, params) in cases {
+            assert!(
+                Method::NAMES.contains(&name),
+                "{name} is missing from Method::NAMES"
+            );
+            let m = Method::from_request(name, params).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            assert_eq!(m.name(), name);
+        }
+    }
+
+    #[test]
+    fn every_m2_method_also_parses_from_a_keybinding_action() {
+        // `from_action` goes through `Params::from_args`, which every params type in the table
+        // has to implement for the macro to compile at all. This pins the arguments each one
+        // takes from a key.
+        let cases: [(&str, &[&str]); 20] = [
+            ("project.list", &[]),
+            ("project.add", &["/x"]),
+            ("project.remove", &["audrey-app"]),
+            ("workspace.list", &[]),
+            ("workspace.create", &["audrey-app"]),
+            ("workspace.clear", &[]),
+            ("workspace.delete", &["workspace-1"]),
+            ("workspace.rename", &[]),
+            ("workspace.clear_name", &[]),
+            ("workspace.focus", &["workspace-1"]),
+            ("workspace.resume", &[]),
+            ("switcher.open", &[]),
+            ("switcher.close", &[]),
+            ("sidebar.toggle", &[]),
+            ("sidebar.show", &[]),
+            ("sidebar.hide", &[]),
+            ("list.down", &[]),
+            ("list.up", &[]),
+            ("list.activate", &[]),
+            ("list.filter", &[]),
+        ];
+        for (name, args) in cases {
+            let action = Action {
+                method: name.to_string(),
+                args: args.iter().map(|a| a.to_string()).collect(),
+            };
+            let m = Method::from_action(&action).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            assert_eq!(m.name(), name);
+        }
+        // The two that need an argument say which one is missing rather than inventing a target.
+        for name in [
+            "workspace.delete",
+            "workspace.focus",
+            "project.add",
+            "project.remove",
+        ] {
+            let action = Action {
+                method: name.to_string(),
+                args: Vec::new(),
+            };
+            assert_eq!(
+                Method::from_action(&action).unwrap_err().code,
+                ErrorCode::InvalidParams,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_rename_takes_an_optional_name_the_way_tab_rename_does() {
+        let open = Method::from_request("workspace.rename", serde_json::json!({})).unwrap();
+        assert!(
+            matches!(&open, Method::WorkspaceRename(p) if p.name.is_none()),
+            "no name opens the name box"
+        );
+        let clear =
+            Method::from_request("workspace.rename", serde_json::json!({"name": ""})).unwrap();
+        assert!(
+            matches!(&clear, Method::WorkspaceRename(p) if p.name.as_deref() == Some("")),
+            "an empty name clears"
+        );
+    }
+
+    #[test]
+    fn destructive_methods_default_to_keeping_data() {
+        let del = Method::from_request(
+            "workspace.delete",
+            serde_json::json!({"workspace": "workspace-1"}),
+        )
+        .unwrap();
+        assert!(
+            matches!(&del, Method::WorkspaceDelete(p) if !p.yes && !p.force),
+            "delete confirms unless told not to"
+        );
+        let rm = Method::from_request(
+            "project.remove",
+            serde_json::json!({"project": "audrey-app"}),
+        )
+        .unwrap();
+        assert!(matches!(&rm, Method::ProjectRemove(p) if !p.yes));
+    }
+
+    #[test]
+    fn every_m2_event_has_a_name_and_serializes_with_it() {
+        let events = vec![
+            Event::ProjectAdded {
+                project: ProjectId("pr_1".into()),
+                name: "x".into(),
+                root: PathBuf::from("/x"),
+            },
+            Event::ProjectRemoved {
+                project: ProjectId("pr_1".into()),
+                name: "x".into(),
+            },
+            Event::WorkspaceCreated {
+                project: ProjectId("pr_1".into()),
+                workspace: WorkspaceId("w_1".into()),
+                handle: "workspace-1".into(),
+                path: PathBuf::from("/x"),
+            },
+            Event::WorkspaceCleared {
+                workspace: WorkspaceId("w_1".into()),
+                base: "origin/main".into(),
+            },
+            Event::WorkspaceDeleted {
+                project: ProjectId("pr_1".into()),
+                workspace: WorkspaceId("w_1".into()),
+                handle: "workspace-1".into(),
+                pruned: false,
+            },
+            Event::WorkspaceRenamed {
+                workspace: WorkspaceId("w_1".into()),
+                name: Some("auth cleanup".into()),
+            },
+            Event::WorkspaceSwitched {
+                client: ClientId("c_1".into()),
+                workspace: WorkspaceId("w_1".into()),
+                tab: TabId("t_1".into()),
+            },
+            Event::FactUpdated {
+                key: FactKey::workspace(&WorkspaceId("w_1".into()), crate::facts::FACT_PR),
+                present: true,
+            },
+            Event::SidebarToggled {
+                client: ClientId("c_1".into()),
+                open: true,
+            },
+        ];
+        for e in &events {
+            assert!(
+                Event::NAMES.contains(&e.name()),
+                "{} is missing from Event::NAMES",
+                e.name()
+            );
+            let value = serde_json::to_value(e).unwrap();
+            assert_eq!(value["event"], e.name());
+        }
+        assert_eq!(
+            serde_json::to_value(&events[7]).unwrap()["key"],
+            "w_1/pr",
+            "a fact key is a string on the wire"
+        );
+    }
+
+    /// The compile-time guard `event_names!` gives: this is the runtime half, pinning that
+    /// every M1 and M2 variant actually round-trips through `NAMES`, not just that the
+    /// macro's match is exhaustive. Kept as one list so a new variant that is missing from
+    /// here (as opposed to missing from `event_names!`, which fails to compile) is still
+    /// caught: this test is the fallback for whichever half of the guard a change slips past.
+    #[test]
+    fn every_known_event_variant_is_reachable_through_names() {
+        let samples = vec![
+            Event::ServerStarted {
+                version: "0".into(),
+                socket: PathBuf::from("/s"),
+            },
+            Event::ServerStopping,
+            Event::ClientAttached {
+                client: ClientId("c_1".into()),
+            },
+            Event::ClientDetached {
+                client: ClientId("c_1".into()),
+            },
+            Event::ConfigReloaded { error: None },
+            Event::ProjectAdded {
+                project: ProjectId("pr_1".into()),
+                name: "x".into(),
+                root: PathBuf::from("/x"),
+            },
+            Event::ProjectRemoved {
+                project: ProjectId("pr_1".into()),
+                name: "x".into(),
+            },
+            Event::WorkspaceCreated {
+                project: ProjectId("pr_1".into()),
+                workspace: WorkspaceId("w_1".into()),
+                handle: "workspace-1".into(),
+                path: PathBuf::from("/x"),
+            },
+            Event::WorkspaceCleared {
+                workspace: WorkspaceId("w_1".into()),
+                base: "origin/main".into(),
+            },
+            Event::WorkspaceDeleted {
+                project: ProjectId("pr_1".into()),
+                workspace: WorkspaceId("w_1".into()),
+                handle: "workspace-1".into(),
+                pruned: false,
+            },
+            Event::WorkspaceRenamed {
+                workspace: WorkspaceId("w_1".into()),
+                name: None,
+            },
+            Event::WorkspaceSwitched {
+                client: ClientId("c_1".into()),
+                workspace: WorkspaceId("w_1".into()),
+                tab: TabId("t_1".into()),
+            },
+            Event::FactUpdated {
+                key: FactKey::workspace(&WorkspaceId("w_1".into()), crate::facts::FACT_PR),
+                present: true,
+            },
+            Event::SidebarToggled {
+                client: ClientId("c_1".into()),
+                open: true,
+            },
+            Event::TabCreated {
+                workspace: WorkspaceId("w_1".into()),
+                tab: TabId("t_1".into()),
+            },
+            Event::TabRenamed {
+                tab: TabId("t_1".into()),
+                name: None,
+            },
+            Event::TabClosed {
+                workspace: WorkspaceId("w_1".into()),
+                tab: TabId("t_1".into()),
+            },
+            Event::TabSelected {
+                client: ClientId("c_1".into()),
+                tab: TabId("t_1".into()),
+            },
+            Event::PaneSpawned {
+                tab: TabId("t_1".into()),
+                pane: PaneId("p_1234".into()),
+                cwd: PathBuf::from("/x"),
+            },
+            Event::PaneExited {
+                pane: PaneId("p_1234".into()),
+                status: None,
+            },
+            Event::PaneClosed {
+                tab: TabId("t_1".into()),
+                pane: PaneId("p_1234".into()),
+            },
+            Event::PaneFocused {
+                tab: TabId("t_1".into()),
+                pane: PaneId("p_1234".into()),
+            },
+            Event::PaneResized {
+                pane: PaneId("p_1234".into()),
+                cols: 80,
+                rows: 24,
+            },
+            Event::PaneZoomed {
+                tab: TabId("t_1".into()),
+                pane: None,
+            },
+        ];
+        assert_eq!(
+            samples.len(),
+            Event::NAMES.len(),
+            "a variant was added to Event without a sample here, or NAMES grew without a \
+             matching variant; event_names! already refuses to compile the first way, so a \
+             mismatch here is the second"
+        );
+        for e in &samples {
+            assert!(
+                Event::NAMES.contains(&e.name()),
+                "{} is missing from Event::NAMES",
+                e.name()
+            );
         }
     }
 
@@ -881,6 +1596,98 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&pane).unwrap(),
             r#"{"id":"p_1234","tab":"t_5678","cwd":"/tmp","command":"sh","title":null,"pid":42,"focused":true,"zoomed":false,"copy_mode":true,"cols":80,"rows":24}"#
+        );
+    }
+
+    /// The M2 results, the same way `result_fields_match_the_wire_contract` pins M1's: one
+    /// full literal string per struct. Params are pinned elsewhere by `deny_unknown_fields`
+    /// seeing real request JSON; a result is never sent back through it, so nothing else in
+    /// this file would notice a renamed, reordered, dropped or newly added field. `setup`
+    /// and `name` are asserted as `null` on purpose, not omitted: an absent key and a `null`
+    /// key are different wire shapes, and `WorkspaceCreated.setup` in particular exists to
+    /// say "no worktree.conf at all" (principle 4), which only holds if the key is there.
+    #[test]
+    fn every_m2_result_serializes_with_the_field_names_the_contract_names() {
+        let project = ProjectInfo {
+            id: ProjectId("pr_1".into()),
+            name: "audrey-app".into(),
+            root: PathBuf::from("/x"),
+            kind: "git".into(),
+            default_branch: Some("main".into()),
+            workspaces: 2,
+        };
+        assert_eq!(
+            serde_json::to_string(&project).unwrap(),
+            r#"{"id":"pr_1","name":"audrey-app","root":"/x","kind":"git","default_branch":"main","workspaces":2}"#
+        );
+
+        let added = ProjectAdded {
+            project: ProjectId("pr_1".into()),
+            workspace: WorkspaceId("w_1".into()),
+            name: "audrey-app".into(),
+            root: PathBuf::from("/x"),
+            kind: "git".into(),
+            adopted: vec!["workspace-1".into()],
+        };
+        assert_eq!(
+            serde_json::to_string(&added).unwrap(),
+            r#"{"project":"pr_1","workspace":"w_1","name":"audrey-app","root":"/x","kind":"git","adopted":["workspace-1"]}"#
+        );
+
+        let workspace = WorkspaceInfo {
+            id: WorkspaceId("w_1".into()),
+            project: ProjectId("pr_1".into()),
+            handle: "workspace-1".into(),
+            name: None,
+            path: PathBuf::from("/x"),
+            branch: Some("workspace-1".into()),
+            pr: Some("PR#212".into()),
+            pr_state: Some("OPEN".into()),
+            tabs: 1,
+        };
+        assert_eq!(
+            serde_json::to_string(&workspace).unwrap(),
+            r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","name":null,"path":"/x","branch":"workspace-1","pr":"PR#212","pr_state":"OPEN","tabs":1}"#
+        );
+        // The same row with nothing observed about it. The literal above sets every fact, so
+        // on its own it says nothing about how an absent one is written, which is the half
+        // this test's doc comment is about: a workspace with no pull request answers `null`,
+        // not a key that is not there. `serde_json`'s `Index` returns `Value::Null` for a
+        // missing key too, so a caller reading `row["pr"]` cannot tell them apart and the
+        // shape has to be pinned here, on the string.
+        let unobserved = WorkspaceInfo {
+            branch: None,
+            pr: None,
+            pr_state: None,
+            ..workspace
+        };
+        assert_eq!(
+            serde_json::to_string(&unobserved).unwrap(),
+            r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","name":null,"path":"/x","branch":null,"pr":null,"pr_state":null,"tabs":1}"#
+        );
+
+        let created = WorkspaceCreated {
+            id: WorkspaceId("w_1".into()),
+            project: ProjectId("pr_1".into()),
+            handle: "workspace-1".into(),
+            path: PathBuf::from("/x"),
+            branch: "workspace-1".into(),
+            base: "origin/main".into(),
+            setup: None,
+            tabs: 1,
+        };
+        assert_eq!(
+            serde_json::to_string(&created).unwrap(),
+            r#"{"id":"w_1","project":"pr_1","handle":"workspace-1","path":"/x","branch":"workspace-1","base":"origin/main","setup":null,"tabs":1}"#
+        );
+
+        let sidebar = SidebarResult {
+            open: true,
+            visible: false,
+        };
+        assert_eq!(
+            serde_json::to_string(&sidebar).unwrap(),
+            r#"{"open":true,"visible":false}"#
         );
     }
 

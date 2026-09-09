@@ -1,0 +1,13 @@
+{
+  "name": "audrey-app-workspace-1",
+  "root": "/repo/audrey-app/.domux/worktrees/workspace-1",
+  "todo_path": "/state/by-path/%2Frepo%2Faudrey-app%2F.domux%2Fworktrees%2Fworkspace-1.md",
+  "label": "reviewer",
+  "workspace": "occupied",
+  "windows": [
+    { "index": 1, "name": "comments", "cwd": "/repo/audrey-app/.domux/worktrees/workspace-1", "agent": "" },
+    { "index": 2, "name": "server", "cwd": "/repo/audrey-app/.domux/worktrees/workspace-1/frontend", "agent": "" }
+  ],
+  "created_at": "2026-08-01T09:12:00+01:00",
+  "updated_at": "2026-09-04T18:40:11+01:00"
+}

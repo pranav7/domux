@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub struct Config {
     pub keys: KeysConfig,
     pub terminal: TerminalConfig,
+    pub worktrees: WorktreesConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +41,14 @@ pub struct TerminalConfig {
     pub shell: Option<String>,
     pub scrollback: usize,
     pub remain_on_exit: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorktreesConfig {
+    /// The ref a new slot branches from and a cleared slot resets to. `None` means detect
+    /// it per project from `origin/HEAD`, falling back to `main` (architecture spec 2).
+    pub base: Option<String>,
 }
 
 impl TerminalConfig {
@@ -85,6 +94,10 @@ impl Default for KeysConfig {
                 (",", "tab.rename"),
                 ("d", "client.detach"),
                 ("?", "help"),
+                ("s", "switcher.open"),
+                ("b", "sidebar.toggle"),
+                ("N", "workspace.rename"),
+                ("n", "workspace.clear_name"),
             ]),
             global: map(&[
                 ("C-h", "focus.left"),
@@ -96,9 +109,19 @@ impl Default for KeysConfig {
                 ("S-Right", "pane.resize right 2"),
             ]),
             passthrough: PassthroughConfig::default(),
-            // Keys inside the Projects and Agents boxes. Empty in M1: M2 and M3 add the
-            // actions they implement (roadmap section 5.5).
-            list: BTreeMap::new(),
+            // Keys inside the Projects box, with no leader (interface spec section 10).
+            // M3 adds "Tab" = "focus.next_region" with the Agents box it crosses to.
+            list: map(&[
+                ("j", "list.down"),
+                ("k", "list.up"),
+                ("Down", "list.down"),
+                ("Up", "list.up"),
+                ("Enter", "list.activate"),
+                ("Esc", "focus.pane"),
+                ("/", "list.filter"),
+                ("?", "help"),
+                ("n", "workspace.rename"),
+            ]),
         }
     }
 }
@@ -164,7 +187,7 @@ pub struct Parsed {
     pub warnings: Vec<ConfigWarning>,
 }
 
-pub const KNOWN_TABLES: &[&str] = &["keys", "terminal"];
+pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees"];
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "keys",
@@ -172,6 +195,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ),
     ("keys.passthrough", &["commands", "keys"]),
     ("terminal", &["shell", "scrollback", "remain_on_exit"]),
+    ("worktrees", &["base"]),
 ];
 
 impl Config {
@@ -217,6 +241,7 @@ impl Config {
         let config = Config {
             keys,
             terminal: user.terminal,
+            worktrees: user.worktrees,
         };
         Ok(Parsed { config, warnings })
     }
@@ -415,12 +440,39 @@ mod tests {
         assert_eq!(c.terminal.scrollback, 10000);
         assert!(!c.terminal.remain_on_exit);
         assert_eq!(c.terminal.shell, None);
-        assert!(c.keys.list.is_empty(), "the list table arrives with M2");
+        // M2 adds the switcher, sidebar and workspace name keys; the agents overlay stays
+        // unbound until M3.
+        assert_eq!(
+            c.keys.bindings.get("s").map(String::as_str),
+            Some("switcher.open")
+        );
+        assert_eq!(
+            c.keys.bindings.get("b").map(String::as_str),
+            Some("sidebar.toggle")
+        );
+        assert_eq!(
+            c.keys.bindings.get("N").map(String::as_str),
+            Some("workspace.rename")
+        );
+        assert_eq!(
+            c.keys.bindings.get("n").map(String::as_str),
+            Some("workspace.clear_name")
+        );
         assert!(
-            !c.keys.bindings.contains_key("s")
-                && !c.keys.bindings.contains_key("b")
-                && !c.keys.bindings.contains_key("a"),
-            "switcher, sidebar and agents overlay keys arrive with their milestones"
+            !c.keys.bindings.contains_key("a"),
+            "agents overlay arrives with M3"
+        );
+        assert_eq!(
+            c.keys.list.get("Enter").map(String::as_str),
+            Some("list.activate")
+        );
+        assert_eq!(
+            c.keys.list.get("Esc").map(String::as_str),
+            Some("focus.pane")
+        );
+        assert!(
+            !c.keys.list.contains_key("Tab"),
+            "Tab crosses nothing until M3 adds the Agents box"
         );
     }
 
@@ -588,15 +640,46 @@ mod tests {
     #[test]
     fn unknown_tables_and_keys_are_kept_as_warnings_not_errors() {
         let parsed =
-            Config::parse("[worktrees]\nbase = \"origin/main\"\n[terminal]\ncolour = \"x\"\n")
-                .unwrap();
+            Config::parse("[bogus]\nbase = \"origin/main\"\n[terminal]\ncolour = \"x\"\n").unwrap();
         assert_eq!(parsed.warnings.len(), 2);
-        assert!(parsed.warnings.iter().any(|w| w.0 == "unknown table [worktrees] (line 1) is ignored until the milestone that reads it"), "{:?}", parsed.warnings);
+        assert!(
+            parsed.warnings.iter().any(|w| w.0
+                == "unknown table [bogus] (line 1) is ignored until the milestone that reads it"),
+            "{:?}",
+            parsed.warnings
+        );
         assert!(
             parsed
                 .warnings
                 .iter()
                 .any(|w| w.0 == "unknown key terminal.colour (line 4) is ignored"),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn worktrees_base_parses_and_defaults_to_absent() {
+        let parsed = Config::parse("").unwrap();
+        assert_eq!(
+            parsed.config.worktrees.base, None,
+            "no base means detect it from origin/HEAD"
+        );
+        let parsed = Config::parse("[worktrees]\nbase = \"origin/develop\"\n").unwrap();
+        assert_eq!(
+            parsed.config.worktrees.base.as_deref(),
+            Some("origin/develop")
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn an_unknown_key_under_worktrees_warns_with_its_line_and_keeps_the_rest() {
+        let parsed = Config::parse("[worktrees]\nbase = \"origin/main\"\ndepth = 1\n").unwrap();
+        assert_eq!(parsed.config.worktrees.base.as_deref(), Some("origin/main"));
+        assert_eq!(parsed.warnings.len(), 1);
+        assert!(
+            parsed.warnings[0].0.contains("depth"),
             "{:?}",
             parsed.warnings
         );

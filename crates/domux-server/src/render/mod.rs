@@ -1,8 +1,15 @@
-//! Composes one client's frame: the top bar, then the tab's pane boxes.
+//! Composes one client's frame: the top bar over the tab's pane boxes, or, when the sidebar
+//! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
 pub mod boxed;
+pub mod confirm;
+pub mod list_box;
+pub mod name_box;
 pub mod overlay;
 pub mod pane_box;
+pub mod projects_box;
+pub mod sidebar;
+pub mod switcher;
 pub mod tab_row;
 pub mod theme;
 pub mod top_bar;
@@ -23,7 +30,7 @@ use domux_core::ids::PaneId;
 use domux_core::ids::TabId;
 use domux_core::keymap::Keymap;
 use domux_core::model::layout::solve;
-use domux_core::model::{ClientView, Focus, Model, Overlay};
+use domux_core::model::{ClientView, Focus, Model, Overlay, SIDEBAR_WIDTH};
 use domux_core::proto::CursorState;
 use domux_term::{Emulator, Size};
 use ratatui::buffer::Buffer;
@@ -35,6 +42,10 @@ pub const MIN_ROWS: u16 = 10;
 
 pub struct RenderInput<'a> {
     pub model: &'a Model,
+    /// What domux observed about each workspace. The Projects box reads a branch and a pull
+    /// request from here; a fact that did not arrive draws as absent, never as a guess
+    /// (principle 4).
+    pub facts: &'a crate::facts::FactRegistry,
     pub panes: &'a HashMap<PaneId, PaneRuntime>,
     pub view: &'a ClientView,
     pub keymap: &'a Keymap,
@@ -44,6 +55,22 @@ pub struct RenderInput<'a> {
     /// end's priority order, so the whole hint is passed rather than its text: see
     /// `top_bar::right_end`.
     pub hint: Option<&'a Hint>,
+    /// What the start-up prune took away, for the switcher's footer and the sidebar's hint
+    /// row. Empty in every frame after the reader's first key in a box. See `note_line`.
+    pub notes: &'a [String],
+}
+
+/// The one line a list of notes prints as, or `None` when there is nothing to say.
+///
+/// One function for both rows: the footer and the hint row draw it in their own widths and
+/// their own styles, but a note cannot read one way in the switcher and another in the
+/// sidebar. Two prunes join with the separator the hint rows already use, so a start that
+/// took two records away says both rather than the first and a count.
+pub fn note_line(notes: &[String]) -> Option<String> {
+    if notes.is_empty() {
+        return None;
+    }
+    Some(notes.join(" · "))
 }
 
 impl<'a> RenderInput<'a> {
@@ -64,14 +91,24 @@ impl<'a> RenderInput<'a> {
     }
 }
 
-/// The workpanel: everything under the top bar.
-pub fn workpanel_area(size: Size) -> domux_core::model::Rect {
+/// The panes' rectangle on a screen of `size`, with or without the sidebar beside it.
+///
+/// One column of gap between the sidebar and the workpanel (interface spec 12.18), so the
+/// pane boxes never share a column with the sidebar's border.
+pub fn workpanel_of(size: Size, sidebar: bool) -> domux_core::model::Rect {
+    let x = if sidebar { SIDEBAR_WIDTH + 1 } else { 0 };
     domux_core::model::Rect {
-        x: 0,
+        x,
         y: 1,
-        width: size.cols,
+        width: size.cols.saturating_sub(x),
         height: size.rows.saturating_sub(1),
     }
+}
+
+/// One client's workpanel: under the top bar when the sidebar is hidden, right of the
+/// sidebar and under the tab row when it is shown.
+pub fn workpanel_area(view: &ClientView) -> domux_core::model::Rect {
+    workpanel_of(view.size, view.sidebar_visible())
 }
 
 /// One client's whole screen: the top bar over the tab's pane boxes.
@@ -97,7 +134,14 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
         }
         return (buf, None);
     }
-    top_bar::draw(input, &mut buf);
+    // With the sidebar shown there is no full-width top bar: the tab row sits on the panes
+    // with the right end's pieces at its end (interface spec 4.2).
+    if input.view.sidebar_visible() {
+        sidebar::draw(input, &mut buf);
+        tab_row::draw_workpanel_row(input, &mut buf);
+    } else {
+        top_bar::draw(input, &mut buf);
+    }
     let cursor = draw_panes(input, &mut buf);
     overlay::draw(input, &mut buf);
     // An overlay other than the prompt covers the pane the cursor is in, so the outer terminal
@@ -110,32 +154,57 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
     (buf, cursor)
 }
 
-/// The size of the smallest client that draws panes on `tab`.
+/// Whether this client draws pane boxes at all. A screen under the minimum shows only the
+/// size notice, so it has no claim on a pane box or its PTY.
+fn draws_panes(view: &ClientView) -> bool {
+    view.size.cols >= MIN_COLS && view.size.rows >= MIN_ROWS
+}
+
+/// The smallest workpanel among the clients that draw panes on `tab`, or `None` when no
+/// client draws it.
 ///
-/// Every client that reaches the pane renderer on a tab draws the same boxes, sized for the
-/// smallest of them, and the larger ones leave the rest of the screen blank. A smaller screen
-/// shows only the size notice, so it has no claim on a pane box or its PTY. If no client draws
-/// panes, use at least the minimum as the fallback: a caller without a current pane size gets a
-/// sane size rather than the tiny notice screen.
-pub fn smallest_size(model: &Model, tab: &TabId, fallback: Size) -> Size {
-    let mut size: Option<Size> = None;
-    for c in model
+/// Only the width and the height are agreed on. Where the rectangle sits is each client's
+/// own business: two clients that disagree about the sidebar draw the same boxes at
+/// different columns, and the larger screen leaves the rest blank.
+fn smallest_among(model: &Model, tab: &TabId) -> Option<domux_core::model::Rect> {
+    let mut area: Option<domux_core::model::Rect> = None;
+    for view in model
         .clients
         .iter()
-        .filter(|c| &c.tab == tab && c.size.cols >= MIN_COLS && c.size.rows >= MIN_ROWS)
+        .filter(|view| &view.tab == tab && draws_panes(view))
     {
-        let s = size.get_or_insert(c.size);
-        s.cols = s.cols.min(c.size.cols);
-        s.rows = s.rows.min(c.size.rows);
+        let theirs = workpanel_area(view);
+        match &mut area {
+            None => area = Some(theirs),
+            Some(area) => {
+                area.width = area.width.min(theirs.width);
+                area.height = area.height.min(theirs.height);
+            }
+        }
     }
-    size.unwrap_or(Size {
-        cols: fallback.cols.max(MIN_COLS),
-        rows: fallback.rows.max(MIN_ROWS),
+    area
+}
+
+/// The workpanel every client on `tab` agrees on when no particular client is asking: the
+/// size a PTY on that tab takes.
+///
+/// When no client draws the tab, `fallback` shapes it, raised to at least the minimum: a
+/// caller without a current pane size gets a sane size rather than the tiny notice screen.
+/// The fallback is not an upper bound on the clients - a client wider than it still draws
+/// its own width - so it never shrinks a pane that something is actually drawing.
+pub fn tab_workpanel(model: &Model, tab: &TabId, fallback: Size) -> domux_core::model::Rect {
+    smallest_among(model, tab).unwrap_or_else(|| {
+        workpanel_of(
+            Size {
+                cols: fallback.cols.max(MIN_COLS),
+                rows: fallback.rows.max(MIN_ROWS),
+            },
+            false,
+        )
     })
 }
 
-/// The size this client's pane boxes are laid out in: the smallest client's, and never
-/// larger than the client's own screen.
+/// The same rectangle at `view`'s own position, and never larger than `view`'s own screen.
 ///
 /// The second clamp is load-bearing. `Boxed::render` and `render_grid` index the buffer
 /// without checking their area against it, so an area past its edge panics rather than
@@ -144,17 +213,23 @@ pub fn smallest_size(model: &Model, tab: &TabId, fallback: Size) -> Size {
 /// clamps that. When the rendering view is one of `model.clients` the smallest is already
 /// no larger, but `compose` is public and a caller can pass a view the model does not hold,
 /// in which case a larger client on the tab would otherwise size this buffer's boxes.
-fn drawn_size(input: &RenderInput, tab: &TabId) -> Size {
-    let smallest = smallest_size(input.model, tab, input.view.size);
-    Size {
-        cols: smallest.cols.min(input.view.size.cols),
-        rows: smallest.rows.min(input.view.size.rows),
-    }
+pub fn smallest_workpanel(
+    model: &Model,
+    tab: &TabId,
+    view: &ClientView,
+) -> domux_core::model::Rect {
+    let here = workpanel_area(view);
+    let mut area = smallest_among(model, tab).unwrap_or(here);
+    area.x = here.x;
+    area.y = here.y;
+    area.width = area.width.min(here.width);
+    area.height = area.height.min(here.height);
+    area
 }
 
 pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<CursorState> {
     let tab = input.model.tab(&input.view.tab)?;
-    let area = workpanel_area(drawn_size(input, &tab.id));
+    let area = smallest_workpanel(input.model, &tab.id, input.view);
     let focused_pane = input.focused_pane();
     let mut cursor = None;
     for (pane_id, rect) in solve(&tab.layout, area, tab.zoomed.as_ref()) {
@@ -238,19 +313,186 @@ fn flag(
 mod tests {
     use super::*;
 
+    use domux_core::ids::ClientId;
+    use domux_core::model::TextInput;
+    use domux_core::proto::Capabilities;
+
+    /// A client on `tab` with a screen of `cols` x `rows` and its remembered sidebar state.
+    fn view(id: &str, tab: &str, cols: u16, rows: u16, sidebar_open: bool) -> ClientView {
+        ClientView {
+            id: ClientId(id.to_string()),
+            size: Size { cols, rows },
+            caps: Capabilities::default(),
+            workspace: domux_core::ids::WorkspaceId("w_0001".into()),
+            tab: TabId(tab.to_string()),
+            focus: Focus::Pane(PaneId("p_0001".into())),
+            sidebar_open,
+            sidebar_forced: false,
+            overlay: None,
+            chord: None,
+            filter: String::new(),
+            last_active_seq: 0,
+            projects_cursor: None,
+            projects_scroll: 0,
+            filtering: false,
+            input: TextInput::new(""),
+            overlay_under: None,
+            pill: None,
+        }
+    }
+
+    fn model_with(views: Vec<ClientView>) -> Model {
+        let mut m = Model::new(1);
+        m.clients = views;
+        m
+    }
+
     #[test]
     fn the_workpanel_starts_under_the_top_bar_and_keeps_the_full_width() {
-        let area = workpanel_area(Size { cols: 80, rows: 24 });
+        let area = workpanel_of(Size { cols: 80, rows: 24 }, false);
         assert_eq!((area.x, area.y), (0, 1));
         assert_eq!((area.width, area.height), (80, 23));
+    }
+
+    /// 38 columns of sidebar, then one column of gap, so the panes start at 39 and a
+    /// 120-column screen leaves them 81 (interface spec 12.18).
+    #[test]
+    fn the_sidebar_and_its_gap_push_the_workpanel_to_column_39() {
+        let area = workpanel_of(
+            Size {
+                cols: 120,
+                rows: 24,
+            },
+            true,
+        );
+        assert_eq!((area.x, area.y), (39, 1));
+        assert_eq!((area.width, area.height), (81, 23));
     }
 
     /// A screen one row tall has no room under the top bar. `saturating_sub` gives an empty
     /// workpanel rather than wrapping to 65535 rows.
     #[test]
     fn a_screen_with_no_room_under_the_top_bar_gets_an_empty_workpanel() {
-        let area = workpanel_area(Size { cols: 80, rows: 0 });
+        let area = workpanel_of(Size { cols: 80, rows: 0 }, false);
         assert_eq!(area.height, 0);
+    }
+
+    /// Nothing narrower than the sidebar ever draws it, but the arithmetic must not wrap if
+    /// a caller asks anyway.
+    #[test]
+    fn a_screen_narrower_than_the_sidebar_gets_an_empty_workpanel() {
+        let area = workpanel_of(Size { cols: 10, rows: 24 }, true);
+        assert_eq!(area.width, 0);
+    }
+
+    /// The remembered state alone does not draw the sidebar: the screen has to be wide
+    /// enough too, and at 119 columns it is not (interface spec 12.1).
+    #[test]
+    fn a_view_takes_the_sidebar_rectangle_only_while_the_sidebar_is_visible() {
+        assert_eq!(
+            workpanel_area(&view("c_0001", "t_0001", 120, 24, true)).x,
+            39
+        );
+        assert_eq!(
+            workpanel_area(&view("c_0001", "t_0001", 119, 24, true)).x,
+            0
+        );
+        assert_eq!(
+            workpanel_area(&view("c_0001", "t_0001", 119, 24, true)).width,
+            119,
+            "the auto-hidden sidebar gives its columns back to the panes"
+        );
+        assert_eq!(
+            workpanel_area(&view("c_0001", "t_0001", 120, 24, false)).x,
+            0
+        );
+    }
+
+    #[test]
+    fn a_tab_no_client_draws_takes_the_fallback_raised_to_the_minimum() {
+        let m = model_with(Vec::new());
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
+        assert_eq!((area.x, area.width, area.height), (0, 80, 23));
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 4, rows: 2 });
+        assert_eq!(
+            (area.width, area.height),
+            (40, 9),
+            "raised to the 40x10 minimum, not adopted as a 4x2 screen"
+        );
+    }
+
+    /// The fallback shapes the rectangle only when nothing draws the tab. A client wider
+    /// than it keeps its own width, or every pane on a tab nobody asked about first would
+    /// be squeezed to 80 columns.
+    #[test]
+    fn the_fallback_never_shrinks_a_tab_a_client_does_draw() {
+        let m = model_with(vec![view("c_0001", "t_0001", 200, 50, false)]);
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
+        assert_eq!((area.width, area.height), (200, 49));
+    }
+
+    #[test]
+    fn the_smallest_client_on_the_tab_sizes_the_workpanel() {
+        let m = model_with(vec![
+            view("c_0001", "t_0001", 200, 50, false),
+            view("c_0002", "t_0001", 100, 30, false),
+        ]);
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
+        assert_eq!((area.width, area.height), (100, 29));
+    }
+
+    /// A screen under the minimum shows only the size notice, so it draws no pane box and
+    /// has no claim on one.
+    #[test]
+    fn a_client_too_small_to_draw_panes_does_not_size_them() {
+        let m = model_with(vec![
+            view("c_0001", "t_0001", 120, 40, false),
+            view("c_0002", "t_0001", 20, 5, false),
+        ]);
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
+        assert_eq!((area.width, area.height), (120, 39));
+    }
+
+    #[test]
+    fn a_client_on_another_tab_does_not_size_this_one() {
+        let m = model_with(vec![
+            view("c_0001", "t_0001", 200, 50, false),
+            view("c_0002", "t_0002", 41, 11, false),
+        ]);
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
+        assert_eq!((area.width, area.height), (200, 49));
+    }
+
+    /// Two clients that disagree about the sidebar draw boxes of one size, each at its own
+    /// columns: the wider screen leaves the rest blank rather than moving its boxes.
+    #[test]
+    fn the_agreed_workpanel_sits_at_the_asking_clients_own_columns() {
+        let asking = view("c_0001", "t_0001", 120, 24, true);
+        let m = model_with(vec![
+            asking.clone(),
+            view("c_0002", "t_0001", 200, 50, false),
+        ]);
+        let area = smallest_workpanel(&m, &TabId("t_0001".into()), &asking);
+        assert_eq!((area.x, area.y), (39, 1), "this client's own position");
+        assert_eq!(
+            (area.width, area.height),
+            (81, 23),
+            "the smaller client's size"
+        );
+        let other = view("c_0002", "t_0001", 200, 50, false);
+        let area = smallest_workpanel(&m, &TabId("t_0001".into()), &other);
+        assert_eq!((area.x, area.width), (0, 81));
+    }
+
+    /// `compose` is public and a caller can pass a view the model does not hold. The boxes
+    /// are still clamped to that view's own screen, because `Boxed::render` indexes the
+    /// buffer without checking and an area past its edge panics rather than clips.
+    #[test]
+    fn a_view_the_model_does_not_hold_still_clamps_to_its_own_screen() {
+        let m = model_with(vec![view("c_0001", "t_0001", 200, 50, false)]);
+        let stranger = view("c_0009", "t_0001", 60, 20, false);
+        let area = smallest_workpanel(&m, &TabId("t_0001".into()), &stranger);
+        assert_eq!((area.width, area.height), (60, 19));
     }
 
     #[test]

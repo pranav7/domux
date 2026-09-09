@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "saved_at": "2026-09-05T10:00:00+01:00",
+  "sidebar_open": true,
+  "last_workspace": "w_c3a1",
+  "projects": [
+    {
+      "id": "pr_19f0",
+      "name": "audrey-app",
+      "root": "/Users/pranav/projects/audrey/audrey-app",
+      "kind": { "kind": "git", "default_branch": "main" },
+      "workspaces": [
+        {
+          "id": "w_0001",
+          "handle": "main",
+          "name": null,
+          "path": "/Users/pranav/projects/audrey/audrey-app",
+          "tabs": [
+            {
+              "id": "t_41b2",
+              "name": "pr1",
+              "layout": { "node": "leaf", "kind": "terminal", "id": "p_8f2a", "cwd": "/Users/pranav/projects/audrey/audrey-app" },
+              "focused": "p_8f2a",
+              "zoomed": null,
+              "last_focused": null
+            }
+          ],
+          "last_tab": "t_41b2"
+        },
+        {
+          "id": "w_c3a1",
+          "handle": { "slot": 1 },
+          "name": "auth cleanup",
+          "path": "/Users/pranav/projects/audrey/audrey-app/.domux/worktrees/workspace-1",
+          "tabs": [],
+          "last_tab": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "atlas-feature",
+  "root": "/repo/atlas/.domux/worktrees/feature-x",
+  "label": "spike",
+  "workspace": "occupied",
+  "windows": [
+    { "index": 1, "name": "spike", "cwd": "/repo/atlas/.domux/worktrees/feature-x", "agent": "" }
+  ],
+  "created_at": "2026-07-08T12:00:00+01:00",
+  "updated_at": "2026-09-01T12:00:00+01:00"
+}

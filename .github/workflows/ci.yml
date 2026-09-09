@@ -23,6 +23,10 @@ jobs:
           - os: ubuntu-24.04-arm    # aarch64
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
+    # A test that hangs rather than failing is not hypothetical here: a helper waiting on a
+    # deadline that stops being checked never returns, and a test binary has no way to report
+    # "this did not finish". Without this the job runs to GitHub's default of six hours.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -42,9 +46,13 @@ jobs:
       - run: cargo build --workspace --locked
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --locked
+        # Also bounded at the step, so a hang is reported as "the tests did not finish"
+        # rather than as a job cancelled with no step named.
+        timeout-minutes: 10
 
   cross-macos-x86_64:
     runs-on: macos-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

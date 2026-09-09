@@ -25,10 +25,28 @@ fn info(ctx: &Ctx, ws: &WorkspaceId, tab: &TabId) -> Result<TabInfo, ApiError> {
                 domux_core::names::BIN_NAME
             ))
         })?;
+    // A tab's directory is its focused pane's. `focused` always names a pane of this tab's
+    // own layout: every path that builds a tab puts one there, and `state_file::restore`
+    // refuses a saved file where it does not, which
+    // `a_tab_focusing_a_pane_outside_its_layout_is_refused` pins. So no input reaches the
+    // `None`, and this is an argument rather than a test because nothing can produce the
+    // state. Written out rather than left as an `expect`, and reported rather than filled in
+    // with an empty path, which a reader would take for a tab at the filesystem root.
+    let cwd = ctx
+        .model
+        .pane(&t.focused)
+        .map(|p| p.cwd.clone())
+        .ok_or_else(|| {
+            ApiError::internal(format!(
+                "tab {tab} focuses pane {} and no such pane exists",
+                t.focused
+            ))
+        })?;
     Ok(TabInfo {
         id: t.id.clone(),
         index: i + 1,
         name: t.name.clone(),
+        cwd,
         panes: t.layout.pane_ids(),
         focused: t.focused.clone(),
         zoomed: t.zoomed.clone(),
@@ -79,6 +97,15 @@ pub fn create(ctx: &mut Ctx, p: TabCreateParams) -> Result<Value, ApiError> {
         .unwrap_or_default();
     let (tab, pane, events) = ctx.model.create_tab(&ws, cwd)?;
     ctx.events.extend(events);
+    // Through the same `Model::rename_tab` that `tab.rename` calls, so there is one
+    // implementation of what naming a tab means and two callers of it. In particular a name
+    // that reads as a tab number is accepted here exactly as `tab.rename` accepts it today:
+    // neither path guards it, and one path guarding alone would make the same string legal
+    // or illegal depending on which call the author reached it by.
+    if let Some(name) = p.name.clone() {
+        let events = ctx.model.rename_tab(&tab, Some(name))?;
+        ctx.events.extend(events);
+    }
     ctx.pending_spawns.push(pane);
     ctx.view_dirty = true;
     if let Ok(client) = ctx.view() {

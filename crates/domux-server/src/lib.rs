@@ -4,6 +4,8 @@ pub mod api;
 pub mod client;
 pub mod copy_mode;
 pub mod core;
+pub mod facts;
+pub mod git;
 pub mod input;
 pub mod log;
 pub mod pane;
@@ -11,14 +13,18 @@ pub mod persist;
 pub mod process;
 pub mod render;
 pub mod socket;
+pub mod subprocess;
 pub mod testing;
+pub mod worktree_conf;
 
 use crate::core::{Core, CoreMsg};
+use crate::facts::FactProvider;
 use crate::pane::PtySpawner;
 use crate::process::ProcessInspector;
 use anyhow::Context;
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use domux_core::config::{Config, ConfigError};
+use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::PaneId;
 use domux_core::keymap::Keymap;
 use domux_core::model::Model;
@@ -145,6 +151,9 @@ pub struct ServerOptions {
     /// The implicit plain-folder project (M1). Ignored when `state.json` already has one.
     pub project_root: PathBuf,
     pub deps: CoreDeps,
+    /// Who observes the facts. A real server passes `facts::default_providers()`; a test
+    /// passes its own list, so no test shells out to git or `gh`.
+    pub providers: Vec<Arc<dyn FactProvider>>,
 }
 
 pub struct ServerHandle {
@@ -159,6 +168,10 @@ pub struct ServerHandle {
     /// just before `snapshot` in the same batch, so a pane visible in the model always has
     /// a size here.
     pub pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
+    /// Every fact the core currently holds, published beside `snapshot` for the same
+    /// reason: the harness (and, later, a control API method) reads it rather than
+    /// reaching into the core task, which owns all mutable state.
+    pub facts: Arc<Mutex<HashMap<FactKey, Fact>>>,
     core: tokio::task::JoinHandle<()>,
     persist: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
@@ -190,6 +203,7 @@ impl Server {
         let socket_path = opts.socket_path.clone();
         let snapshot = Arc::new(Mutex::new(Model::new(opts.deps.id_seed)));
         let pane_sizes = Arc::new(Mutex::new(HashMap::new()));
+        let facts = Arc::new(Mutex::new(HashMap::new()));
         let core = Core::new(
             opts,
             core_tx.clone(),
@@ -197,6 +211,7 @@ impl Server {
             &state_file,
             snapshot.clone(),
             pane_sizes.clone(),
+            facts.clone(),
         )?;
         let listener = socket::listen(&socket_path, core_tx.clone()).await?;
         let tick_tx = core_tx.clone();
@@ -215,6 +230,7 @@ impl Server {
             socket_path,
             snapshot,
             pane_sizes,
+            facts,
             core,
             persist,
             listener,

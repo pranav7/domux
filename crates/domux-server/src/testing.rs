@@ -8,7 +8,8 @@ use crate::process::{FakeInspector, ForegroundProcess, ProcessInspector};
 use crate::{load_config, CoreDeps, FixedClock, LoadedConfig, Server, ServerHandle, ServerOptions};
 use domux_core::api::{ApiError, Request, Response};
 use domux_core::config::Config;
-use domux_core::ids::{ClientId, PaneId, TabId};
+use domux_core::facts::{Fact, FactKey};
+use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::{KeyName, Keymap};
 use domux_core::model::Model;
 use domux_core::proto::{
@@ -24,6 +25,7 @@ use ratatui::style::{Color as RColor, Modifier};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -34,6 +36,34 @@ use tokio::sync::mpsc;
 /// that a loaded machine does not fail the test, short enough that a hang is a failure with
 /// a message rather than a stuck CI job.
 const SETTLE: Duration = Duration::from_secs(5);
+
+/// Runs `f` on its own thread and fails, rather than hanging, when it does not finish inside
+/// `limit`. `what` names the call in the failure.
+///
+/// For the synchronous tests whose regression is a hang and not a wrong answer: a test binary
+/// has no way to report "this never finished", so a lost bound would stall the whole suite
+/// silently instead of failing one test. The same reasoning as the outer `tokio::time::timeout`
+/// around `wait_for_fact` in `tests/facts_harness.rs`, for code that is not async.
+///
+/// A thread that outlives its limit is left running: joining it is the hang this avoids. The
+/// test harness ends the process when the run is over.
+pub fn finishes_within<T: Send + 'static>(
+    limit: Duration,
+    what: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(value) => value,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("{what} did not finish within {limit:?}")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+    }
+}
 
 pub struct HarnessOptions {
     pub config: Config,
@@ -46,6 +76,9 @@ pub struct HarnessOptions {
     pub project_root: Option<PathBuf>,
     /// What the fake inspector reports as every pane's foreground command. Default `sh`.
     pub foreground: Option<String>,
+    /// Who observes the facts. Default empty, matching `ServerOptions.providers`: a test
+    /// asks for a provider by name here rather than shelling out to git or `gh` by default.
+    pub providers: Vec<Arc<dyn crate::facts::FactProvider>>,
 }
 
 impl HarnessOptions {
@@ -58,6 +91,7 @@ impl HarnessOptions {
             state_dir: None,
             project_root: None,
             foreground: None,
+            providers: Vec::new(),
         }
     }
 }
@@ -80,12 +114,17 @@ pub struct Harness {
     pub spawner: Option<Arc<FakeSpawner>>,
     pub inspector: Arc<FakeInspector>,
     _tmp: tempfile::TempDir,
+    /// Temp directories the harness made on a caller's behalf, kept alive until it drops:
+    /// `git_project` hands back a path inside one, and a caller that had to bind the temp
+    /// directory itself would be one `let _` away from a repository deleted mid-test.
+    kept: Vec<tempfile::TempDir>,
     state_dir: PathBuf,
     project_root: PathBuf,
     socket: PathBuf,
     config: Config,
     cols: u16,
     rows: u16,
+    providers: Vec<Arc<dyn crate::facts::FactProvider>>,
 }
 
 impl Harness {
@@ -129,12 +168,14 @@ impl Harness {
             spawner,
             inspector,
             _tmp: tmp,
+            kept: Vec::new(),
             state_dir,
             project_root,
             socket,
             config,
             cols: opts.cols,
             rows: opts.rows,
+            providers: opts.providers,
         };
         h.start_server().await;
         h.client = h.attach(opts.cols, opts.rows).await;
@@ -160,6 +201,7 @@ impl Harness {
             state_dir: self.state_dir.clone(),
             config: loaded,
             project_root: self.project_root.clone(),
+            providers: self.providers.clone(),
             deps: CoreDeps {
                 spawner,
                 inspector,
@@ -438,6 +480,43 @@ impl Harness {
             .clone()
     }
 
+    /// The fact at `key` as of the last batch the core finished, published beside the model
+    /// (see `ServerHandle::facts`). `None` when the fact is absent, whether because no
+    /// provider has answered yet or because the last answer was absence.
+    pub fn fact(&self, key: &FactKey) -> Option<Fact> {
+        self.server
+            .as_ref()
+            .expect("server")
+            .facts
+            .lock()
+            .unwrap()
+            .get(key)
+            .cloned()
+    }
+
+    /// Polls the published fact at `key` until `pred` holds, or panics after `timeout` with
+    /// the last value seen. A fact takes at least one tick to arrive (Task 8's providers run
+    /// off the core, on an interval), so a test that wants one waits for it here rather than
+    /// sleeping a guessed-at duration and hoping the provider was faster.
+    pub async fn wait_for_fact(
+        &self,
+        key: &FactKey,
+        pred: impl Fn(Option<&Fact>) -> bool,
+        timeout: Duration,
+    ) -> Option<Fact> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let fact = self.fact(key);
+            if pred(fact.as_ref()) {
+                return fact;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("condition on {key} not met within {timeout:?}; last fact: {fact:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     pub fn focused_pane(&self, client: ClientId) -> PaneId {
         let m = self.model();
         m.client_tab(&client)
@@ -458,6 +537,20 @@ impl Harness {
             .get(pane)
             .copied()
             .unwrap_or_else(|| panic!("no pane {pane}"))
+    }
+
+    /// Whether the server still holds a runtime for `pane`: its PTY and its emulator.
+    /// Published beside the model, so call `frame` first when the change you want to see
+    /// was only just requested. A pane whose record has gone but whose runtime has not is a
+    /// process nothing will ever close.
+    pub fn pane_is_running(&self, pane: &PaneId) -> bool {
+        self.server
+            .as_ref()
+            .expect("server")
+            .pane_sizes
+            .lock()
+            .unwrap()
+            .contains_key(pane)
     }
 
     pub fn current_tab(&self, client: ClientId) -> TabId {
@@ -547,6 +640,92 @@ impl Harness {
 
     fn core_tx(&self) -> mpsc::Sender<CoreMsg> {
         self.server.as_ref().expect("server").core_tx.clone()
+    }
+
+    /// Registers a temporary git repository as a project and returns its root.
+    ///
+    /// The repository has an origin, one commit and `origin/HEAD` set, so
+    /// `git::default_branch` resolves rather than falling back. The temp directory it lives
+    /// in is kept by the harness, so a caller does not have to bind one to keep the
+    /// repository alive for the length of the test.
+    ///
+    /// `git_project_with_two_slots` builds slots on top of this one.
+    pub async fn git_project(&mut self, default_branch: &str) -> PathBuf {
+        let (tmp, repo) = repo_with_origin(default_branch);
+        self.kept.push(tmp);
+        self.api(
+            "project.add",
+            serde_json::json!({ "path": repo.to_str().expect("a temp path is utf-8") }),
+        )
+        .await
+        .expect("project.add");
+        repo
+    }
+
+    /// A git project with `workspace-1` and `workspace-2` made through `workspace.create`,
+    /// so the worktrees on disk and the records in the model are the ones the server itself
+    /// would have built. Returns the project root and the two workspace ids, in slot order.
+    ///
+    /// It runs two real creates, so it fetches and adds two worktrees: a test that only needs
+    /// a project should call `git_project`.
+    pub async fn git_project_with_two_slots(&mut self) -> (PathBuf, WorkspaceId, WorkspaceId) {
+        let root = self.git_project("main").await;
+        // By id, not by name: the harness always holds a second project of its own, and a
+        // create that named neither would build its slot in whichever one the first client
+        // happens to be looking at.
+        let canonical = root.canonicalize().expect("the project root is there");
+        let project = self
+            .model()
+            .project_at(&canonical)
+            .map(|p| p.id.to_string())
+            .expect("git_project registered the repository");
+        let mut made = Vec::new();
+        for _ in 0..2 {
+            let created = self
+                .api(
+                    "workspace.create",
+                    serde_json::json!({ "project": project }),
+                )
+                .await;
+            made.push(created);
+        }
+        let ids: Vec<WorkspaceId> = made
+            .into_iter()
+            .map(|created| {
+                let created = created.expect("workspace.create");
+                WorkspaceId(
+                    created["id"]
+                        .as_str()
+                        .expect("a create answers with an id")
+                        .to_string(),
+                )
+            })
+            .collect();
+        (root, ids[0].clone(), ids[1].clone())
+    }
+
+    /// The first pane of a workspace's first tab, for a test that reads what was typed into a
+    /// workspace that is not the client's.
+    ///
+    /// Waits for the tab: a create answers its caller from inside the batch that made the
+    /// workspace, so the snapshot this reads can be one batch behind the answer.
+    pub async fn first_pane_of(&mut self, workspace: &str) -> PaneId {
+        let id = WorkspaceId(workspace.to_string());
+        let deadline = tokio::time::Instant::now() + SETTLE;
+        loop {
+            let found = self
+                .model()
+                .workspace(&id)
+                .and_then(|w| w.tabs.first().map(|t| t.focused.clone()));
+            if let Some(pane) = found {
+                return pane;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "workspace {workspace} had no tab within {SETTLE:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Stops the server (persisting) and drops every client. The state dir stays.
@@ -659,4 +838,80 @@ pub fn shape_name(shape: CursorShape) -> &'static str {
         CursorShape::Underline => "underline",
         CursorShape::Bar => "bar",
     }
+}
+
+/// Temporary git repositories for tests. Here rather than in `tests/support` so the harness
+/// and the tests that drive it build repositories the same way; `tests/support/mod.rs`
+/// re-exports these.
+/// Runs git and returns its trimmed stdout, panicking with stderr on failure.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A commit with one file, so a repository has history to branch from.
+pub fn commit(dir: &Path, name: &str, body: &str) {
+    std::fs::write(dir.join(name), body).unwrap();
+    git(dir, &["add", name]);
+    git(dir, &["commit", "-q", "-m", &format!("Add {name}")]);
+}
+
+/// A bare origin and a clone of it with one commit on `branch` and `origin/HEAD` set, which
+/// is what `git::default_branch` reads. Returns the temp dir (keep it alive) and the clone.
+pub fn repo_with_origin(branch: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let origin = tmp.path().join("origin.git");
+    let work = tmp.path().join("audrey-app");
+    std::fs::create_dir_all(&origin).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    // Every other git call in these tests names its directory with `-C`. This one takes the
+    // repository as an argument instead, so it is given an explicit working directory as well:
+    // without one it would run in the test binary's own directory, inside a real checkout. A
+    // bare init that failed would surface later as a confusing push error, so read its status
+    // rather than dropping it.
+    let status = Command::new("git")
+        .current_dir(tmp.path())
+        .args(["init", "-q", "--bare", "-b", branch])
+        .arg(&origin)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git init --bare in {}", origin.display());
+    git(&work, &["init", "-q", "-b", branch]);
+    git(&work, &["config", "user.email", "test@example.com"]);
+    git(&work, &["config", "user.name", "domux test"]);
+    // The author's own git configuration reaches these repositories otherwise, and a global
+    // `commit.gpgsign` would have these tests try to sign, a global `core.hooksPath` would run
+    // that machine's hooks inside them. Repository configuration wins over global for every
+    // command against this repository, including the ones that go through `git::run` and the
+    // ones that run in its worktrees, so the isolation belongs here and not in production code.
+    let no_hooks = tmp.path().join("no-hooks");
+    git(
+        &work,
+        &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
+    );
+    git(&work, &["config", "commit.gpgsign", "false"]);
+    // The push below runs origin's receive hooks, so origin needs the same.
+    git(
+        &origin,
+        &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
+    );
+    commit(&work, "README.md", "hello\n");
+    git(
+        &work,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git(&work, &["push", "-q", "-u", "origin", branch]);
+    git(&work, &["remote", "set-head", "origin", branch]);
+    (tmp, work)
 }

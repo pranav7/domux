@@ -35,6 +35,7 @@ async fn start_with_config(config: &str) -> (domux_server::ServerHandle, tempfil
         state_dir: dir.path().join("state"),
         config: load_config(&dir.path().join(config)),
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
@@ -316,6 +317,7 @@ async fn a_broken_config_is_reported_and_the_server_still_starts() {
         state_dir: dir.path().join("state"),
         config: loaded,
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
@@ -375,6 +377,7 @@ async fn a_shell_that_exits_immediately_has_bounded_respawns_and_keeps_the_serve
         state_dir: dir.path().join("state"),
         config,
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -467,6 +470,7 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         state_dir: dir.path().join("state"),
         config: load_config(&dir.path().join("none.toml")),
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -484,8 +488,16 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         );
         tokio::task::yield_now().await;
     }
-    // Past the immediate window, so the next batch clears the counter.
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    // Past the immediate window, and past a tick as well. The counter is cleared by
+    // `reset_respawn_guards_for_surviving_panes`, which runs from `Core::after_batch`, so
+    // waiting for the pane to get old is not enough on its own: a batch has to run between
+    // the pane passing `IMMEDIATE_EXIT` and the exit below arriving. The periodic tick is
+    // one second, so sleeping a full tick past the two second window guarantees a batch
+    // instead of relying on incidental traffic to land in the gap. Waiting only 2100ms left
+    // a 100ms gap and failed on a loaded runner, which read as "the replacements stopped at
+    // 5 of 7". The deadline below cannot recover from it: once the exit is handled with the
+    // guard still set, the allowance is spent and no amount of waiting spawns the rest.
+    tokio::time::sleep(Duration::from_millis(3200)).await;
     spawner.exit_through.store(usize::MAX, Ordering::SeqCst);
     let surviving_pane = spawner.inner.requests().last().unwrap().pane.clone();
     server
@@ -541,6 +553,7 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
         state_dir: dir.path().join("state"),
         config,
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -631,6 +644,7 @@ async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded()
         state_dir: dir.path().join("state"),
         config: load_config(&config_path),
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -781,6 +795,7 @@ async fn a_pane_that_is_not_the_workspaces_last_does_not_spend_the_respawn_allow
         state_dir: dir.path().join("state"),
         config: load_config(&dir.path().join("none.toml")),
         project_root: project,
+        providers: Vec::new(),
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -847,9 +862,13 @@ async fn server_stop_replies_before_the_server_stops() {
     server.stop().await;
 }
 
-/// A region that parses but has no M1 behaviour answers `Unavailable`, which is a different
+/// A region that parses but has no behaviour yet answers `Unavailable`, which is a different
 /// arm from the `NotFound` an unknown method name or an absent client gets. The client is
 /// attached first so the call gets past `Ctx::view`, which is the `NotFound` path.
+///
+/// The agents overlay and not the switcher: M2 built the switcher and the sidebar's box, and
+/// those two now answer `Refused` when the thing they name is not on the screen, which is the
+/// third arm and not this one.
 #[tokio::test]
 async fn a_region_that_arrives_in_a_later_milestone_returns_unavailable() {
     let (server, _dir) = start().await;
@@ -865,7 +884,7 @@ async fn a_region_that_arrives_in_a_later_milestone_returns_unavailable() {
     let response = call(
         &server.socket_path,
         "focus.region",
-        serde_json::json!({"region": "switcher"}),
+        serde_json::json!({"region": "agents_overlay"}),
     )
     .await;
     assert_eq!(
