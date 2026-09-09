@@ -722,33 +722,10 @@ async fn clearing_a_name_with_no_target_clears_the_one_the_view_is_in() {
     );
 }
 
-/// A call with no name at all is the reader asking to be prompted, and the name box that
-/// asks is not built yet. It must refuse rather than read "no name" as "a blank name", which
-/// would clear the name of the workspace the reader was about to name.
-#[tokio::test]
-async fn naming_a_workspace_with_no_name_refuses_and_leaves_the_name_alone() {
-    let mut h = Harness::start(Config::default(), 80, 24).await;
-    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
-    let client = h.client.clone();
-    h.api(
-        "workspace.rename",
-        json!({"workspace": w1.as_str(), "name": "auth cleanup"}),
-    )
-    .await
-    .unwrap();
-    let _ = h.frame(client.clone()).await;
-
-    let err = h
-        .api("workspace.rename", json!({"workspace": w1.as_str()}))
-        .await
-        .unwrap_err();
-
-    assert_eq!(err.code, ErrorCode::Unavailable);
-    assert_eq!(
-        h.model().workspace(&w1).unwrap().name.as_deref(),
-        Some("auth cleanup")
-    );
-}
+// A call with no name at all is the reader asking to be prompted, and Task 15 built the box
+// that asks: `renaming_with_no_name_opens_the_box_and_changes_nothing` in `tests/name_box.rs`
+// took over from the test that stood here, which pinned the refusal this file's `rename` gave
+// while that box did not exist.
 
 /// A target resolves by its branch too, which is what lets a call from a shell on
 /// `feat/auth-cleanup` name its workspace without an id.

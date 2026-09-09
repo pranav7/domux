@@ -325,9 +325,102 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                 let _ = core.dispatch_from_key(method, Some(client.clone()));
             }
         }
-        Overlay::Agents | Overlay::NameWorkspace(_) | Overlay::Usage => {
-            // M1 never opens these. M3 and M4 add their key handling here.
+        // The name box (interface spec 7.1). `ClientView::input` holds the text it is
+        // editing and the overlay carries the workspace it names, so the box acts on the slot
+        // its own title shows however it was opened: `leader N` from the workspace, or `n` on
+        // the row under the cursor.
+        Overlay::NameWorkspace(id) => {
+            // A key in the box clears the last result (interface spec 12.12), the rule
+            // `list_key` follows for the same reason: a pill answers the key before this one.
+            if let Some(view) = core.model.client_mut(client) {
+                view.pill = None;
+            }
+            match key.key {
+                // `close_top_overlay` rather than `close_overlay`. Both pop one level since
+                // Task 20, so neither strands what is underneath, and `n` on a row opens this
+                // box over the switcher which has to come back. The difference is the route:
+                // this one dispatches `focus.pane`, so where the keys land is decided by the
+                // handler that owns that question rather than by a second copy of it here.
+                Key::Escape => close_top_overlay(core, client),
+                Key::Enter => save_name(core, client, &id),
+                _ => edit_name(core, client, &key),
+            }
         }
+        Overlay::Agents | Overlay::Usage => {
+            // M3 adds the agents overlay and M4 the usage one. Task 18 took the workspace
+            // confirmations out of here and Task 15 took the name box.
+        }
+    }
+}
+
+/// Closes the top overlay and gives the keys back to whatever the frame then marks: the
+/// overlay this one was opened over (interface spec 12.7), or the pane.
+///
+/// `api::focus::pane` is that operation, and the `[keys.list]` table already binds Esc in the
+/// switcher to it, so the name box closes by the same rule rather than by a second copy of it.
+fn close_top_overlay(core: &mut Core, client: &ClientId) {
+    let params = domux_core::api::ClientParams {
+        client: Some(client.clone()),
+    };
+    let _ = core.dispatch_from_key(Method::FocusPane(params), Some(client.clone()));
+}
+
+/// Enter in the name box: save what was typed, close the box, and say what happened.
+///
+/// The name goes through `workspace.rename` and not through `Model::rename_workspace`, so the
+/// key, the CLI and the API reach one handler: the guard there that refuses a name reading as
+/// a handle cannot be reachable by one of them and not the others.
+///
+/// The box closes only when the rename worked. A refusal names something to change about the
+/// name, and closing would take the name away with the question, so the box stays open with
+/// what was typed still in it and the refusal takes its hint row (interface spec 12.12).
+fn save_name(core: &mut Core, client: &ClientId, workspace: &domux_core::ids::WorkspaceId) {
+    let (Some(name), Some(handle)) = (
+        core.model.client(client).map(|v| v.input.text.clone()),
+        core.model
+            .workspace(workspace)
+            .map(|w| w.handle.to_string()),
+    ) else {
+        // The client detached, or the workspace went away while its box was open. There is
+        // nothing to save and nobody to tell, which is the answer `render::name_box::draw`
+        // gives the same state.
+        return;
+    };
+    let params = domux_core::api::WorkspaceRenameParams {
+        workspace: Some(workspace.to_string()),
+        name: Some(name.clone()),
+        client: Some(client.clone()),
+    };
+    match core.dispatch_from_key(Method::WorkspaceRename(params), Some(client.clone())) {
+        Ok(_) => {
+            close_top_overlay(core, client);
+            let name = name.trim();
+            let text = if name.is_empty() {
+                format!("Cleared the name on {handle}")
+            } else {
+                format!("Named {handle} {name}")
+            };
+            core.set_pill(Some(client), text, true);
+        }
+        Err(e) => core.set_pill(Some(client), e.message, false),
+    }
+}
+
+/// The keys a text field has: the caret moves, a character goes in, and every other key does
+/// nothing rather than closing the box or reaching the pane behind it. `filter_key` answers
+/// the filter's field by the same rule.
+fn edit_name(core: &mut Core, client: &ClientId, key: &KeyEvent) {
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    match key.key {
+        Key::Backspace => view.input.backspace(),
+        Key::Left => view.input.left(),
+        Key::Right => view.input.right(),
+        Key::Home => view.input.home(),
+        Key::End => view.input.end(),
+        Key::Char(c) if !key.mods.intersects(Mods::CTRL | Mods::ALT) => view.input.insert(c),
+        _ => {}
     }
 }
 
