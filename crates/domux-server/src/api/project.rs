@@ -163,7 +163,8 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
         .collect();
     ctx.events.extend(ctx.model.remove_project(&project)?);
     ctx.pending_kills.extend(doomed);
-    reseat_stranded_clients(ctx);
+    let moved = reseat_stranded_clients(ctx.model);
+    ctx.events.extend(moved);
     // Belt, and deliberately unpinned: `apply_side_effects` marks the view whenever it
     // killed anything, and a project always has at least one pane to kill, so no test can
     // tell this line from its absence. It stays because the day a project has no pane -
@@ -181,29 +182,37 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
 /// to send keys to (principle 2). With no project left there is nowhere to move it, and it
 /// is left where it is: `render::draw_panes` draws no panes for a tab the model does not
 /// hold, which is the honest picture of a domux with nothing in it.
-fn reseat_stranded_clients(ctx: &mut Ctx) {
-    let landing = ctx
-        .model
+///
+/// Over the model rather than over a `Ctx`, because `workspace.delete` strands a client the
+/// same way and answers from the core's `Deleted` arm, where there is no `Ctx`. One rule,
+/// one implementation.
+pub fn reseat_stranded_clients(
+    model: &mut domux_core::model::Model,
+) -> Vec<domux_core::api::Event> {
+    let landing = model
         .projects
         .iter()
         .flat_map(|p| p.workspaces.iter())
         .flat_map(|w| w.tabs.first())
         .map(|t| t.id.clone())
         .next();
-    let Some(tab) = landing else { return };
-    let stranded: Vec<domux_core::ids::ClientId> = ctx
-        .model
+    let Some(tab) = landing else {
+        return Vec::new();
+    };
+    let stranded: Vec<domux_core::ids::ClientId> = model
         .clients
         .iter()
-        .filter(|view| ctx.model.workspace(&view.workspace).is_none())
+        .filter(|view| model.workspace(&view.workspace).is_none())
         .map(|view| view.id.clone())
         .collect();
+    let mut events = Vec::new();
     for client in stranded {
-        match ctx.model.select_tab(&client, &tab) {
-            Ok(events) => ctx.events.extend(events),
+        match model.select_tab(&client, &tab) {
+            Ok(more) => events.extend(more),
             Err(e) => tracing::error!("could not seat client {client} on tab {tab}: {}", e.message),
         }
     }
+    events
 }
 
 /// What `project.add` answers with: the project as it now stands, and what this call

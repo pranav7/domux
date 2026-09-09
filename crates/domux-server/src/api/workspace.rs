@@ -3,13 +3,17 @@
 use super::{ok, Ctx};
 use crate::core::{slot_claim, CoreJob};
 use domux_core::api::{
-    Ack, ApiError, Event, WorkspaceCreateParams, WorkspaceFocusParams, WorkspaceInfo,
-    WorkspaceListParams, WorkspaceRenameParams, WorkspaceTargetParams,
+    Ack, ApiError, Event, WorkspaceClearParams, WorkspaceCreateParams, WorkspaceDeleteParams,
+    WorkspaceFocusParams, WorkspaceInfo, WorkspaceListParams, WorkspaceRenameParams,
+    WorkspaceTargetParams,
 };
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
 use domux_core::ids::{ProjectId, WorkspaceId};
-use domux_core::model::{Focus, Overlay, ProjectKind, RegionKind, WorkspaceHandle};
+use domux_core::model::{
+    ConfirmKind, Focus, Overlay, ProjectKind, RegionKind, WorkspaceHandle, MAIN_CANNOT_BE_DELETED,
+};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 /// Makes the next slot of a project: a worktree at the lowest free number, on a fresh branch
 /// from the base, with the project's `worktree.conf` applied to it.
@@ -266,6 +270,279 @@ pub fn clear_name(ctx: &mut Ctx, p: WorkspaceTargetParams) -> Result<Value, ApiE
     let target = ctx.resolve_workspace_param(p.workspace.as_deref())?;
     let events = ctx.model.rename_workspace(&target, None)?;
     ctx.events.extend(events);
+    ctx.view_dirty = true;
+    ok(Ack { ok: true })
+}
+
+/// Why `main` is refused by both destructive operations: it is the project's own checkout,
+/// so clearing it would reset the author's own work and deleting it would take the
+/// repository (architecture spec: "path = project root; can't be cleared or deleted").
+///
+/// The delete wording is `domux_core::model::MAIN_CANNOT_BE_DELETED` and not a copy of it:
+/// `Model::remove_workspace` refuses the same thing, and one refusal spelled in two places
+/// is one refusal that can come to say two things.
+const CLEAR_REFUSES_MAIN: &str =
+    "main is the project's checkout and cannot be cleared; clear a workspace-N slot instead";
+
+/// `1 tab` or `2 tabs`, so the question a reader is asked reads as a sentence.
+fn tabs_phrase(count: usize) -> String {
+    match count {
+        1 => "1 tab".to_string(),
+        n => format!("{n} tabs"),
+    }
+}
+
+/// The branch a delete would remove, as a noun phrase, from the one thing that can know it.
+///
+/// `None` is the branch provider not having answered yet. It says "its local branch" rather
+/// than naming the handle, because the handle is a record and the branch is a fact: a slot
+/// checked out on `feat/auth-cleanup` still has the handle `workspace-1`, and a question
+/// that named the handle would promise to delete a branch this call is not going to touch
+/// (principle 4).
+fn branch_phrase(branch: Option<&str>) -> String {
+    match branch {
+        Some(b) => format!("the local branch {b}"),
+        None => "its local branch".to_string(),
+    }
+}
+
+/// Where a slot sits inside its project, which is what the question calls it. The absolute
+/// path is what the overlay's identity line shows; a caller that named the workspace already
+/// knows the project, so the sentence uses the short form.
+fn relative_to(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// The words `workspace.delete` asks its question in, on either surface. One builder, so the
+/// confirmation on the screen and the one a shell prints cannot drift apart (principle 10,
+/// interface spec 7.3 and 12.22).
+pub struct DeletionCopy {
+    /// `Delete auth cleanup?`, the confirmation's title and the question's first sentence.
+    pub title: String,
+    /// Where the slot is, in full. The one line that tells two `workspace-1`s apart, which
+    /// is why it is the absolute path and not the short form the sentence uses.
+    pub identity: String,
+    /// `Removes the worktree at .domux/worktrees/workspace-1 and the local branch
+    /// workspace-1 and closes 1 tab.`
+    pub removes: String,
+    /// What domux does not reach. Nothing here talks to a remote.
+    pub keeps: &'static str,
+    /// The same content as lists, for `ApiError::needs_confirmation`.
+    pub removes_list: Vec<String>,
+    pub keeps_list: Vec<String>,
+}
+
+impl DeletionCopy {
+    /// The whole question in one sentence, for a caller that shows messages rather than
+    /// laying out lists.
+    pub fn question(&self) -> String {
+        format!("{} {} {}", self.title, self.removes, self.keeps)
+    }
+}
+
+pub const DELETE_KEEPS: &str = "The remote branch and any pull request stay.";
+
+/// The copy for one delete, from the five things it depends on.
+pub fn deletion_copy(
+    name: &str,
+    root: &Path,
+    path: &Path,
+    branch: Option<&str>,
+    tabs: usize,
+) -> DeletionCopy {
+    let relative = relative_to(root, path);
+    let worktree = format!("the worktree at {relative}");
+    let branch = branch_phrase(branch);
+    DeletionCopy {
+        title: format!("Delete {name}?"),
+        identity: path.display().to_string(),
+        removes: format!(
+            "Removes {worktree} and {branch} and closes {}.",
+            tabs_phrase(tabs)
+        ),
+        keeps: DELETE_KEEPS,
+        removes_list: vec![worktree, branch],
+        keeps_list: vec!["the remote branch and any pull request".to_string()],
+    }
+}
+
+/// The words `workspace.clear` asks its question in. Only the overlay asks it: a caller with
+/// a command line is refused by the job, which is the only thing that can know whether there
+/// is anything in the slot to lose.
+pub struct ClearCopy {
+    pub title: String,
+    pub identity: String,
+    pub removes: String,
+    pub keeps: &'static str,
+}
+
+/// The base is not named. Resolving it reads `origin/HEAD`, which is a git call and does not
+/// belong on the core task, and a question that guessed `origin/main` would be a fact nobody
+/// observed (principle 4). The files git ignores are named because that is where a project's
+/// `worktree.conf` setup puts `.env`, and `git::clean` is `-fd` for exactly that reason.
+pub const CLEAR_KEEPS: &str = "The slot, its number, its name and the files git ignores stay.";
+
+pub fn clear_copy(name: &str, root: &Path, path: &Path) -> ClearCopy {
+    ClearCopy {
+        title: format!("Clear {name}?"),
+        identity: path.display().to_string(),
+        removes: format!(
+            "Throws away every commit, change and untracked file in the worktree at {} and puts its branch back at its base.",
+            relative_to(root, path)
+        ),
+        keeps: CLEAR_KEEPS,
+    }
+}
+
+/// Everything both destructive handlers read off the model before they queue anything.
+///
+/// One reader, because the two must agree about which workspace, which branch and which
+/// project they are acting on. `verb` is the word the `main` refusal uses, so the two
+/// refusals differ only where they should.
+fn target_of(
+    ctx: &Ctx,
+    workspace: Option<&str>,
+    refuses_main: &str,
+) -> Result<(WorkspaceId, Doomed), ApiError> {
+    let target = ctx.resolve_workspace_param(workspace)?;
+    // Unreachable: `resolve_workspace_param` answers with the id of a workspace the model
+    // holds, and nothing runs between the two. Written out rather than left as an `expect`
+    // in a handler that removes worktrees, and rather than left silent, so the next reader
+    // can tell a considered choice from an oversight.
+    let w = ctx
+        .model
+        .workspace(&target)
+        .ok_or_else(|| ApiError::not_found(format!("no workspace with id {target}")))?;
+    if w.handle == WorkspaceHandle::Main {
+        return Err(ApiError::refused(refuses_main));
+    }
+    let doomed = Doomed {
+        name: w.display_name(),
+        path: w.path.clone(),
+        tabs: w.tabs.len(),
+        // What the branch provider observed, not what the handle is called. `None` means it
+        // has not answered; the job reads the branch itself before it removes anything.
+        branch: ctx
+            .facts
+            .get(&FactKey::workspace(&target, FACT_BRANCH))
+            .map(|f| f.text.clone()),
+        root: ctx
+            .model
+            .project_of_workspace(&target)
+            .map(|p| p.root.clone())
+            .ok_or_else(|| ApiError::not_found(format!("workspace {target} is in no project")))?,
+        base: ctx.config.config.worktrees.base.clone(),
+    };
+    Ok((target, doomed))
+}
+
+/// What a destructive handler read, in the shape both the copy and the job need.
+struct Doomed {
+    name: String,
+    root: PathBuf,
+    path: PathBuf,
+    tabs: usize,
+    branch: Option<String>,
+    base: Option<String>,
+}
+
+/// Puts a slot back where it started: its branch at the base, nothing uncommitted, nothing
+/// untracked. The slot, its number, its name and its tabs stay (architecture spec, M2 row).
+///
+/// **It does not ask when there is nothing to lose.** Whether there is anything to lose is
+/// `git::is_dirty`, which shells out, so the question cannot be asked here: the job checks
+/// and refuses. That is the difference from `delete`, which always asks - a delete takes the
+/// slot itself, so even a pristine one is a change the caller may not have meant (interface
+/// spec 12.22 says so for delete and says nothing about clear).
+///
+/// A key press has no `--yes` to add, so from a key it asks on the screen first, every time.
+/// The alternative would be a red pill telling a reader with no command line to use a flag.
+pub fn clear(ctx: &mut Ctx, p: WorkspaceClearParams) -> Result<Value, ApiError> {
+    let (target, doomed) = target_of(ctx, p.workspace.as_deref(), CLEAR_REFUSES_MAIN)?;
+    if ctx.from_key && !p.yes {
+        return ask(ctx, ConfirmKind::ClearWorkspace(target));
+    }
+    ctx.jobs.push(CoreJob::ClearWorkspace {
+        workspace: target,
+        name: doomed.name,
+        root: doomed.root,
+        path: doomed.path,
+        base: doomed.base,
+        yes: p.yes,
+    });
+    ctx.defer_reply = true;
+    // Discarded: `defer_reply` means the job's answer is the caller's answer. A key press has
+    // no caller waiting and reads this as "the key did what it says", which is true - the
+    // work has started, and a failure reaches the hint row from `Core::answer`.
+    ok(Ack { ok: true })
+}
+
+/// Removes a slot: the worktree, its local branch and its record, with every tab and pane
+/// under it (interface spec 7.3, 12.22).
+///
+/// It asks first on whichever surface the caller is on, and it asks every time: a key opens
+/// the confirmation overlay, and a caller with a command line is refused with the question
+/// and told to add `--yes`. Both refusals leave the model and the disk exactly as they found
+/// them.
+///
+/// **The branch that goes is the one the branch provider observed**, not the one the handle
+/// is named after. Nothing stops the author checking out `feat/auth-cleanup` in a slot, and
+/// deleting `workspace-1` there would delete the wrong branch and report that it had deleted
+/// the right one. When no fact has arrived the job reads the branch with `git::branch_of`,
+/// on the blocking task where that call belongs.
+pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError> {
+    let (target, doomed) = target_of(ctx, Some(&p.workspace), MAIN_CANNOT_BE_DELETED)?;
+    if !p.yes {
+        if ctx.from_key {
+            return ask(ctx, ConfirmKind::DeleteWorkspace(target));
+        }
+        let copy = deletion_copy(
+            &doomed.name,
+            &doomed.root,
+            &doomed.path,
+            doomed.branch.as_deref(),
+            doomed.tabs,
+        );
+        // `needs_confirmation` appends "Answer with --yes" to the message and puts the same
+        // content in `data` as lists, so the sentence and the lists cannot disagree.
+        return Err(ApiError::needs_confirmation(
+            copy.question(),
+            copy.removes_list,
+            copy.keeps_list,
+        ));
+    }
+    ctx.jobs.push(CoreJob::DeleteWorkspace {
+        workspace: target,
+        name: doomed.name,
+        root: doomed.root,
+        path: doomed.path,
+        base: doomed.base,
+        force: p.force,
+    });
+    ctx.defer_reply = true;
+    // Discarded, for the reason `clear` gives above.
+    ok(Ack { ok: true })
+}
+
+/// Puts the question on the screen the key was pressed on and gives it the keys.
+///
+/// `push_overlay`, not an assignment: the switcher is the one place a destructive key can be
+/// pressed while something else is open, and the reader has to get back to it
+/// (interface spec 12.7). `input::pop_confirmation` is the other half.
+fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
+    let client = ctx.view()?;
+    // Before the overlay, not after it: a call naming a client that is not attached must
+    // change nothing rather than half of it.
+    let Some(view) = ctx.model.client_mut(&client) else {
+        return Err(ApiError::not_found(format!(
+            "client {client} is not attached"
+        )));
+    };
+    view.push_overlay(Overlay::Confirm(kind));
+    view.focus = Focus::Region(RegionKind::Overlay);
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

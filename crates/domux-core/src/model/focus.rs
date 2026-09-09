@@ -83,7 +83,7 @@ pub enum PromptKind {
     TabName { tab: TabId, input: TextInput },
 }
 
-/// What a confirmation asks about. M1 opens `CloseTab`; M2 opens the other two.
+/// What a confirmation asks about. M1 opens `CloseTab`; M2 opens the other three.
 ///
 /// Adjacently tagged, for the reason `Focus` is: an internally tagged enum cannot represent a
 /// newtype variant holding a string, and serde fails at runtime rather than at compile time -
@@ -93,6 +93,7 @@ pub enum PromptKind {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ConfirmKind {
     CloseTab(TabId),
+    ClearWorkspace(WorkspaceId),
     DeleteWorkspace(WorkspaceId),
     RemoveProject(ProjectId),
 }
@@ -133,6 +134,7 @@ mod tests {
             }),
             Overlay::NameWorkspace(WorkspaceId("w_0001".into())),
             Overlay::Confirm(ConfirmKind::CloseTab(TabId("t_0001".into()))),
+            Overlay::Confirm(ConfirmKind::ClearWorkspace(WorkspaceId("w_0001".into()))),
             Overlay::Confirm(ConfirmKind::DeleteWorkspace(WorkspaceId("w_0001".into()))),
             Overlay::Confirm(ConfirmKind::RemoveProject(ProjectId("p_0001".into()))),
             Overlay::Usage,
@@ -150,6 +152,7 @@ mod tests {
                 // added to the list above, or this stops compiling.
                 Overlay::Confirm(c) => match c {
                     ConfirmKind::CloseTab(_)
+                    | ConfirmKind::ClearWorkspace(_)
                     | ConfirmKind::DeleteWorkspace(_)
                     | ConfirmKind::RemoveProject(_) => {}
                 },

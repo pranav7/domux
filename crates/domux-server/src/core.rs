@@ -78,7 +78,6 @@ pub enum CoreMsg {
 
 /// Work that shells out. It runs on a blocking task; the API reply, when there is one,
 /// travels with it, so the caller waits and the core does not (decision record 0006).
-/// Task 18 adds the clear and delete variants.
 pub enum CoreJob {
     /// Everything `project.add` needs from git and the filesystem, read off the core task.
     ReadProject { path: String },
@@ -93,6 +92,35 @@ pub enum CoreJob {
         branch: String,
         base: Option<String>,
     },
+    /// Puts a slot back at its base: `git reset --hard` and `git clean -fd` in its worktree.
+    /// The model is not touched, so nothing here comes back but the base it reset to.
+    ClearWorkspace {
+        workspace: WorkspaceId,
+        /// What the refusal and the pill call the slot. The job runs off the core task and
+        /// cannot read the model, so the display name travels with it.
+        name: String,
+        root: PathBuf,
+        path: PathBuf,
+        /// `[worktrees] base`, not the ref it resolves to: `git::base_ref` reads
+        /// `origin/HEAD`, which is a fork.
+        base: Option<String>,
+        /// False means "refuse if there is anything in the slot to lose". Only
+        /// `git::is_dirty` can answer that, and it shells out, so the gate is here.
+        yes: bool,
+    },
+    /// Removes a slot's worktree and its local branch. The record goes in the `Deleted` arm,
+    /// on the core task, after the work on disk has all worked.
+    DeleteWorkspace {
+        workspace: WorkspaceId,
+        name: String,
+        root: PathBuf,
+        path: PathBuf,
+        base: Option<String>,
+        /// False means "refuse a dirty slot". `git worktree remove` has a force of its own
+        /// for modified and untracked files, but it does not see commits that were never
+        /// pushed, so `git::is_dirty` in front of it is the only guard against those.
+        force: bool,
+    },
 }
 
 impl CoreJob {
@@ -103,6 +131,14 @@ impl CoreJob {
         match self {
             CoreJob::ReadProject { .. } => None,
             CoreJob::CreateWorkspace { project, slot, .. } => Some(slot_claim(project, *slot)),
+            // Neither chooses anything. Both are told which workspace to act on and both read
+            // the world as they find it, and the core task serialises the arms that write the
+            // model, so a second call cannot act on a stale answer (decision record 0006).
+            // Two deletes of one slot do overlap in git, and the second one loses: its
+            // `git worktree remove` fails and its arm never runs, which is loud and changes
+            // nothing. A claim would make that a `busy` refusal instead; it is not built,
+            // because nothing is corrupted by the answer that arrives today.
+            CoreJob::ClearWorkspace { .. } | CoreJob::DeleteWorkspace { .. } => None,
         }
     }
 }
@@ -141,6 +177,19 @@ pub enum JobOutcome {
         branch: String,
         base: String,
         setup: Option<Setup>,
+    },
+    /// The slot `ClearWorkspace` reset, and the ref it was reset to. The base comes back
+    /// rather than being worked out again here: `git::base_ref` resolved it on the job.
+    Cleared {
+        workspace: WorkspaceId,
+        name: String,
+        base: String,
+    },
+    /// The slot `DeleteWorkspace` removed from disk. Its record is still in the model when
+    /// this arrives; the arm is what takes it.
+    Deleted {
+        workspace: WorkspaceId,
+        name: String,
     },
     Failed {
         message: String,
@@ -1049,6 +1098,14 @@ impl Core {
                 base,
                 setup,
             } => self.workspace_created(client.clone(), project, slot, path, branch, base, setup),
+            JobOutcome::Cleared {
+                workspace,
+                name,
+                base,
+            } => self.workspace_cleared(client.clone(), workspace, name, base),
+            JobOutcome::Deleted { workspace, name } => {
+                self.workspace_deleted(client.clone(), workspace, name)
+            }
         };
         self.answer(result, reply, client);
     }
@@ -1117,6 +1174,59 @@ impl Core {
             setup: summary,
             tabs,
         })
+    }
+
+    /// `workspace.clear`'s model change, which is none: the slot's record, its number, its
+    /// name and its tabs are what a clear keeps, and the work all happened on disk.
+    ///
+    /// The event still goes out, because a subscriber cannot see the disk: `workspace.cleared`
+    /// carries the base the slot was put back at, which is the one thing about the reset that
+    /// was decided rather than given.
+    fn workspace_cleared(
+        &mut self,
+        client: Option<ClientId>,
+        workspace: WorkspaceId,
+        name: String,
+        base: String,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.pending_events
+            .push(Event::WorkspaceCleared { workspace, base });
+        self.set_pill(client.as_ref(), format!("Cleared {name}"), true);
+        api::ok(domux_core::api::Ack { ok: true })
+    }
+
+    /// `workspace.delete`'s model change: the panes' processes, then the record.
+    ///
+    /// The worktree and the branch are already gone when this runs, so nothing here can leave
+    /// a half-deleted workspace. `Model::remove_workspace` is what takes the record, and it
+    /// retires the workspace id and every tab and pane id under it (architecture spec 5):
+    /// nothing here retires anything itself, because one place owns that.
+    ///
+    /// The panes are collected before the record goes. `remove_workspace` takes the tabs and
+    /// the panes with it without passing through `close_pane`, so nothing else would ever kill
+    /// these PTYs and the processes would outlive the slot on screen - the same reasoning
+    /// `api::project::remove` gives for a project.
+    fn workspace_deleted(
+        &mut self,
+        client: Option<ClientId>,
+        workspace: WorkspaceId,
+        name: String,
+    ) -> Result<serde_json::Value, ApiError> {
+        let doomed: Vec<PaneId> = self
+            .model
+            .workspace(&workspace)
+            .map(|w| w.tabs.iter().flat_map(|t| t.layout.pane_ids()).collect())
+            .unwrap_or_default();
+        let (_handle, events) = self.model.remove_workspace(&workspace)?;
+        self.pending_events.extend(events);
+        // A client that was in the slot is now pointing at a workspace the model does not
+        // hold, which no frame and no view method can answer for (principle 2). Same rule and
+        // same code as `project.remove`, which strands clients the same way.
+        let moved = api::project::reseat_stranded_clients(&mut self.model);
+        self.pending_events.extend(moved);
+        self.apply_side_effects(Vec::new(), doomed, Vec::new());
+        self.set_pill(client.as_ref(), format!("Deleted {name}"), true);
+        api::ok(domux_core::api::Ack { ok: true })
     }
 
     /// Puts one line of result in a client's hint row or footer, green when it worked and red
@@ -1821,7 +1931,140 @@ fn run_job(job: CoreJob) -> JobOutcome {
             branch,
             base,
         } => create_workspace(project, root, slot, path, branch, base),
+        CoreJob::ClearWorkspace {
+            workspace,
+            name,
+            root,
+            path,
+            base,
+            yes,
+        } => clear_workspace(workspace, name, &root, &path, base, yes),
+        CoreJob::DeleteWorkspace {
+            workspace,
+            name,
+            root,
+            path,
+            base,
+            force,
+        } => delete_workspace(workspace, name, &root, &path, base, force),
     }
+}
+
+/// A git command that did not work, as an outcome. `unavailable` rather than `internal`:
+/// git ran and said no, or could not be started, and neither is a fault in domux's own
+/// reasoning.
+fn unavailable(e: crate::git::GitError) -> JobOutcome {
+    JobOutcome::Failed {
+        message: e.to_string(),
+        code: ErrorCode::Unavailable,
+    }
+}
+
+/// V1's `resetGitWorkspace`: the slot's branch back at the base, and every untracked file
+/// gone. The slot, its number, its name, its record and its tabs are untouched.
+///
+/// The dirty gate is here rather than in the handler because only `git::is_dirty` can answer
+/// it and it shells out. Every step that can refuse runs before anything is thrown away.
+///
+/// **The branch is read here, not taken from the branch fact**, and both jobs do it. Two
+/// reasons, and the second decides it. A slot's handle is `workspace-1` and the branch it was
+/// made on has the same name, but nothing stops the author checking out `feat/auth-cleanup`
+/// in it, so the handle cannot be used: acting on it would reset or delete a branch the
+/// worktree is not on and report that it had done the right thing (principle 4). And a fact
+/// is an observation with a time to live - up to 30 seconds for the branch - while this is
+/// the observation that is true at the moment of the reset or the delete. `git::is_dirty`
+/// measures `base..branch`, so a stale name would have the guard weigh one branch while the
+/// action destroyed another; they read one answer because they read it from here.
+///
+/// The confirmation still names the fact, because it is composed on the core task where no
+/// git command may run. The two can only disagree if the author changes branch between being
+/// asked and answering, and the job then acts on where the worktree really is.
+fn clear_workspace(
+    workspace: WorkspaceId,
+    name: String,
+    root: &Path,
+    path: &Path,
+    base: Option<String>,
+    yes: bool,
+) -> JobOutcome {
+    let branch = match crate::git::branch_of(path) {
+        Ok(branch) => branch,
+        Err(e) => return unavailable(e),
+    };
+    let base = crate::git::base_ref(root, base.as_deref());
+    if !yes {
+        match crate::git::is_dirty(path, &branch, &base) {
+            Ok(true) => {
+                return JobOutcome::Failed {
+                    message: format!(
+                        "{name} has uncommitted or unpushed changes; clear it with --yes to throw them away"
+                    ),
+                    code: ErrorCode::Refused,
+                }
+            }
+            Ok(false) => {}
+            // Not "there is nothing to lose". A guard that could not run has not passed
+            // (principle 4), and the answer it was guarding throws work away.
+            Err(e) => return unavailable(e),
+        }
+    }
+    if let Err(e) = crate::git::reset_to_base(path, &branch, &base) {
+        return unavailable(e);
+    }
+    if let Err(e) = crate::git::clean(path) {
+        return unavailable(e);
+    }
+    JobOutcome::Cleared {
+        workspace,
+        name,
+        base,
+    }
+}
+
+/// The worktree and the local branch of one slot, in that order, and nothing until every
+/// guard has passed.
+///
+/// `git worktree remove` refuses a worktree holding modified or untracked files on its own,
+/// and `force` turns that off. What it never sees is a slot holding a week of commits that
+/// were never pushed: those go with the branch and nothing brings them back, so
+/// `git::is_dirty` in front of it is the only guard against that (`git.rs` says the same at
+/// the declaration). Both are behind the one `force` the caller passed, so a reader who said
+/// "delete it anyway" says it once.
+fn delete_workspace(
+    workspace: WorkspaceId,
+    name: String,
+    root: &Path,
+    path: &Path,
+    base: Option<String>,
+    force: bool,
+) -> JobOutcome {
+    // Read, not taken from the fact: `clear_workspace` above says why, and the reason is the
+    // same one both jobs turn on.
+    let branch = match crate::git::branch_of(path) {
+        Ok(branch) => branch,
+        Err(e) => return unavailable(e),
+    };
+    if !force {
+        let base = crate::git::base_ref(root, base.as_deref());
+        match crate::git::is_dirty(path, &branch, &base) {
+            Ok(true) => {
+                return JobOutcome::Failed {
+                    message: format!(
+                        "{name} has uncommitted or unpushed changes; delete it with --force or commit and push first"
+                    ),
+                    code: ErrorCode::Refused,
+                }
+            }
+            Ok(false) => {}
+            // Same reasoning as the clear above, and it matters more here: the answer this
+            // guards is a worktree and a branch that nothing brings back.
+            Err(e) => return unavailable(e),
+        }
+    }
+    if let Err(e) = crate::git::worktree_remove(root, path, &branch, force) {
+        return unavailable(e);
+    }
+    JobOutcome::Deleted { workspace, name }
 }
 
 /// V1's `provisionWorkspace`, in its order: the worktree on a fresh branch from the base,
@@ -2430,8 +2673,6 @@ mod tests {
     /// leave: direction A asserts that message on everything listed here, and direction B
     /// only scans arms in `dispatch` that carry it.
     const STILL_UNBUILT: &[(&str, &str)] = &[
-        ("workspace.clear", r#"{"workspace":"w"}"#),
-        ("workspace.delete", r#"{"workspace":"w"}"#),
         ("list.down", "{}"),
         ("list.up", "{}"),
         ("list.activate", "{}"),
@@ -2741,6 +2982,154 @@ mod tests {
         )
         .unwrap();
         assert!(core.view_dirty);
+    }
+
+    /// A project with one slot and a client in it, for the destructive handlers.
+    ///
+    /// `add_slot` is the right way in: it is what registers a worktree that already exists,
+    /// and the path is inside the test's own temporary directory, which is the only place
+    /// anything in this file is ever allowed to point a delete at.
+    fn a_slot(core: &mut Core, dir: &Path) -> WorkspaceId {
+        let project = core
+            .model
+            .projects
+            .first()
+            .map(|p| p.id.clone())
+            .expect("the project root is registered as a project");
+        let (ws, _) = core
+            .model
+            .add_slot(&project, 1, dir.join("workspace-1"))
+            .expect("a fresh model has the number free");
+        ws
+    }
+
+    fn delete_question(core: &mut Core) -> String {
+        let method = Method::from_request(
+            "workspace.delete",
+            serde_json::json!({ "workspace": "workspace-1" }),
+        )
+        .expect("workspace.delete takes these params");
+        core.dispatch(method, None)
+            .expect_err("a delete with no consent is a question")
+            .message
+    }
+
+    /// The question names the branch the branch provider observed, not the one the handle is
+    /// named after.
+    ///
+    /// The fact is set directly rather than fetched. A harness cannot reach this: its clock
+    /// is fixed, so a branch fact that has arrived once is never due again and cannot be made
+    /// to change, and racing a checkout against the provider's first tick is a test that
+    /// inverts its own verdict when it flakes. The cost is that the scenario is asserted
+    /// rather than exercised; what the fact is read for is one line in the handler, and the
+    /// job that acts on the branch reads git instead (`branch_now`).
+    ///
+    /// The slot is put on `feat/auth-cleanup` because a slot whose branch equals its handle
+    /// cannot tell "the fact" from "the handle": both answer `workspace-1`.
+    #[test]
+    fn the_delete_question_names_the_branch_that_was_observed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let _client = attached(&mut core);
+        let ws = a_slot(&mut core, dir.path());
+        core.facts.set(
+            FactKey::workspace(&ws, domux_core::facts::FACT_BRANCH),
+            Some(a_fact("feat/auth-cleanup", None)),
+        );
+        let question = delete_question(&mut core);
+        assert!(
+            question.contains("and the local branch feat/auth-cleanup and"),
+            "{question}"
+        );
+    }
+
+    /// And with no fact it names none. A question that said "the local branch workspace-1"
+    /// would promise to delete a branch nothing had looked at (principle 4).
+    ///
+    /// The pair is the point: with only the test above, an implementation that always printed
+    /// the fact and one that fell back to the handle are indistinguishable.
+    #[test]
+    fn the_delete_question_names_no_branch_when_none_was_observed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let _client = attached(&mut core);
+        let _ws = a_slot(&mut core, dir.path());
+        let question = delete_question(&mut core);
+        assert!(
+            question.contains("and its local branch and"),
+            "the branch is spoken of without being named: {question}"
+        );
+        assert!(
+            !question.contains("the local branch workspace-1"),
+            "and the handle is not offered as one: {question}"
+        );
+    }
+
+    /// A confirmation opened from inside the switcher goes back to the switcher, on `esc` and
+    /// on `y` alike, rather than leaving it stranded under a closed overlay.
+    ///
+    /// The switcher is set directly because no input reaches this yet: inside the switcher
+    /// only the key bound to `focus.pane` is read until Task 14 lands `[keys.list]`, and a
+    /// leader chord cannot start while any overlay is open. The mechanism is the real one -
+    /// `api::workspace::ask` pushes and `input::pop_confirmation` pops - and this is the only
+    /// way to ask the question at all. The cost is that the scenario is asserted rather than
+    /// exercised.
+    ///
+    /// Both keys, because they leave by different lines: `esc` pops and stops, `y` pops and
+    /// then dispatches, and a pop written into one of the two is a switcher that survives
+    /// being declined and vanishes on being accepted.
+    #[tokio::test]
+    async fn a_confirmation_over_the_switcher_goes_back_to_the_switcher() {
+        for key in ['y', 'n'] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut core = core(dir.path());
+            let client = attached(&mut core);
+            let ws = a_slot(&mut core, dir.path());
+            core.model
+                .client_mut(&client)
+                .expect("attached")
+                .push_overlay(Overlay::Switcher);
+
+            core.run_action(
+                &client,
+                &domux_core::keymap::Action {
+                    method: "workspace.delete".into(),
+                    args: vec!["workspace-1".into()],
+                },
+            );
+            assert_eq!(
+                core.model.client(&client).unwrap().overlay,
+                Some(Overlay::Confirm(ConfirmKind::DeleteWorkspace(ws.clone()))),
+                "the question is on top"
+            );
+            assert_eq!(
+                core.model.client(&client).unwrap().overlay_under,
+                Some(Overlay::Switcher),
+                "and the switcher is under it, not gone"
+            );
+
+            crate::input::route_key(
+                &mut core,
+                &client,
+                domux_term::KeyEvent {
+                    key: domux_term::Key::Char(key),
+                    mods: domux_term::Mods::empty(),
+                    action: domux_term::KeyAction::Press,
+                },
+            );
+            let view = core.model.client(&client).unwrap();
+            assert_eq!(
+                view.overlay,
+                Some(Overlay::Switcher),
+                "{key} puts the reader back where the question was asked"
+            );
+            assert_eq!(view.overlay_under, None, "{key} left nothing stranded");
+            assert_eq!(
+                view.focus,
+                Focus::Region(RegionKind::Overlay),
+                "{key} left the keys in the box that is still open"
+            );
+        }
     }
 
     /// Fetched at the instant every test core's clock reads, so it is inside its time to

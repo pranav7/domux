@@ -220,14 +220,15 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ProjectAdd(p) => project::add(ctx, p),
         ProjectRemove(p) => project::remove(ctx, p),
         WorkspaceCreate(p) => workspace::create(ctx, p),
+        WorkspaceClear(p) => workspace::clear(ctx, p),
+        WorkspaceDelete(p) => workspace::delete(ctx, p),
         WorkspaceList(p) => workspace::list(ctx, p),
         WorkspaceFocus(p) => workspace::focus(ctx, p),
         WorkspaceRename(p) => workspace::rename(ctx, p),
         WorkspaceClearName(p) => workspace::clear_name(ctx, p),
         WorkspaceResume(p) => workspace::resume(ctx, p),
-        // --- M2 stubs: placeholders for Tasks 14 to 18, not real handlers. ---
-        WorkspaceClear(_) | WorkspaceDelete(_)
-        | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
+        // --- M2 stubs: placeholders for Task 14, not real handlers. ---
+        ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
             Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
         }
     }
