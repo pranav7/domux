@@ -317,8 +317,15 @@ impl ClientView {
 }
 
 /// A one-line result in the hint row or the footer: green when it worked, red when it was
-/// refused (interface spec 7.3). It clears on the next key in a box or after
-/// `PILL_SECONDS` (interface spec 12.12).
+/// refused (interface spec 7.3).
+///
+/// Interface spec 12.12 says it clears on the next key in a box or after `PILL_SECONDS`.
+/// Only the second half is built: `Core::expire_pills` drops a pill on the tick that takes it
+/// past `PILL_SECONDS`, and no key clears one. `Core.notes`, which shares these two rows and
+/// is described as clearing "like a pill", is the other way round - `Core::clear_notes_read_by`
+/// clears it on the first key in a box and nothing ages it out. So the two behave differently
+/// today despite reading as one rule, and this comment says which is which rather than
+/// describing the rule neither of them fully implements.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pill {
     pub text: String,

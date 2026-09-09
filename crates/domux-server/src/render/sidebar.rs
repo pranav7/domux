@@ -118,6 +118,18 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         );
         return;
     }
+    // What the start-up prune took away, over the keys and under the pill, the same order the
+    // switcher's footer draws these three in (`overlay::footer`).
+    if let Some(note) = crate::render::note_line(input.notes) {
+        put(
+            buf,
+            area.x + 1,
+            area.y,
+            &truncate_with_ellipsis(&note, area.width.saturating_sub(2) as usize),
+            Style::default().fg(theme::TEXT),
+        );
+        return;
+    }
     // The keys as configured, never the default spelling (principle 3). A key the reader has
     // rebound to nothing drops out of the row rather than naming a key that does nothing.
     let focused = matches!(input.view.focus, Focus::Region(RegionKind::SidebarProjects));
@@ -222,6 +234,7 @@ mod tests {
             now: chrono::Local::now(),
             config_error: None,
             hint: None,
+            notes: &[],
         };
         draw(&input, buf);
     }
@@ -242,6 +255,7 @@ mod tests {
             now: chrono::Local::now(),
             config_error: None,
             hint: None,
+            notes: &[],
         };
         draw(&input, buf);
     }
@@ -274,6 +288,7 @@ mod tests {
             now: chrono::Local::now(),
             config_error: None,
             hint: None,
+            notes: &[],
         };
         hint_row(&input, area, buf);
     }

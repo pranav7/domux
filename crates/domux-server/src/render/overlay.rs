@@ -187,6 +187,23 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
         put_within(buf, cx, y, last_x, "  esc clear", word_style);
         return;
     }
+    // What the start-up prune took away, over the keys: the keys are the same on every frame
+    // and the note is on this one only. Under the pill and under the filter, which are both
+    // answers to something the reader just did, where a note is about what happened before
+    // they arrived. The filter cannot in fact be open with a note showing - typing `/` is a
+    // key in a box and clears the notes - so that half of the order is a statement of intent
+    // rather than a case any input reaches today.
+    if let Some(note) = crate::render::note_line(input.notes) {
+        put_within(
+            buf,
+            x,
+            y,
+            last_x,
+            &truncate_with_ellipsis(&note, width),
+            base.fg(theme::TEXT),
+        );
+        return;
+    }
     let mut cx = x;
     for (action, label) in hints {
         // A key the reader has rebound to nothing drops out of the row rather than naming a
@@ -441,6 +458,7 @@ mod tests {
             now: chrono::Local::now(),
             config_error: None,
             hint: None,
+            notes: &[],
         };
         footer(&input, hints, area, buf);
     }

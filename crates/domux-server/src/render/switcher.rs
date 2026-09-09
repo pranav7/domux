@@ -169,6 +169,7 @@ mod tests {
             now: chrono::Local::now(),
             config_error: None,
             hint: None,
+            notes: &[],
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         draw(&input, &mut buf);
@@ -341,6 +342,7 @@ mod tests {
             now: chrono::Local::now(),
             config_error: None,
             hint: None,
+            notes: &[],
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);
