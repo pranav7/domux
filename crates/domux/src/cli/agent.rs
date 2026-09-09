@@ -87,11 +87,10 @@ pub async fn run(cmd: AgentCmd) -> anyhow::Result<()> {
 /// `agent report --agent <kind>`: the payload on standard input, the pane from the environment.
 ///
 /// Once the arguments have parsed, it never fails and never writes to standard error. Outside a
-/// domux pane there is nothing to
-/// report, and a server that is not listening has nothing to report to; the same hook lines run
-/// under V1's tmux panes until the cut-over, and a hook that fails is an interruption in the
-/// agent's session (M3 plan assumption 17). Every other failure is silent for the same reason:
-/// a hook is not a place a person reads an error.
+/// domux pane there is nothing to report, and a server that is not listening has nothing to
+/// report to; the same hook lines run under V1's tmux panes until the cut-over, and a hook that
+/// fails is an interruption in the agent's session (M3 plan assumption 17). Every other failure
+/// is silent for the same reason: a hook is not a place a person reads an error.
 pub async fn report(kind: AgentKind) -> anyhow::Result<()> {
     let Some(pane) = location::pane_from_env() else {
         return Ok(());
@@ -224,12 +223,15 @@ fn resumed_line(r: &AgentResumeResult) -> String {
     format!("{} in {}: {}", r.agent, r.pane, r.command)
 }
 
-/// `send [agent] [text]`. The handler arrives in M4; the subcommand is here now because the
-/// `SessionStart` block names it, and a command a message promises has to reach an answer that
-/// says when it works rather than clap's "unrecognized subcommand" (principle 9).
-///
-/// An empty message travels as one. The rule that refuses it belongs in the handler, where the
-/// key and the API call meet it too, and not in a second copy here.
+// `send`, `read` and `wait`: the three messaging verbs the `SessionStart` block names. Their
+// handlers arrive in M4 and every call answers "is not built yet" until then. The subcommands
+// are here now because that block promises them, and a command a message promises has to reach
+// an answer that says when it works rather than clap's "unrecognized subcommand" (principle 9).
+//
+// Every argument is optional, so a bare verb reaches that answer too. An empty message travels
+// as one: the rule that refuses it belongs in the handler, where the key and the API call meet
+// it as well, and not in a second copy here.
+
 #[derive(Args)]
 pub struct SendCmd {
     /// An agent id, a workspace with one agent, or workspace/tab
