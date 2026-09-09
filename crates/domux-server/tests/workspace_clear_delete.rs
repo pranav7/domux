@@ -550,7 +550,7 @@ async fn a_clear_and_a_delete_each_say_what_they_did_in_the_hint_row() {
 /// `release` carries a commit `main` does not, which is what makes every assertion below able
 /// to fail: a job that discarded the configured base would resolve `origin/HEAD`, land on
 /// `origin/main`, and the file would not be there.
-async fn with_a_configured_base() -> (Harness, std::path::PathBuf, std::path::PathBuf) {
+async fn with_a_configured_base() -> (Harness, tempfile::TempDir, std::path::PathBuf) {
     let (tmp, repo) = support::repo_with_origin("main");
     support::git(&repo, &["checkout", "-q", "-b", "release"]);
     support::commit(&repo, "release-only.md", "released\n");
@@ -574,10 +574,12 @@ async fn with_a_configured_base() -> (Harness, std::path::PathBuf, std::path::Pa
         "the slot came from the base"
     );
     let slot = std::path::PathBuf::from(made["path"].as_str().expect("a create answers a path"));
-    // The harness keeps the repository alive for the length of the test; this one was built
-    // here rather than by `git_project`, so its temp directory is handed back with it.
-    std::mem::forget(tmp);
-    (h, repo, slot)
+    // Handed back, not forgotten. `git_project` gives its temp directory to the harness to
+    // hold; this repository was built here instead, so the caller binds it and the drop that
+    // is `TempDir`'s whole purpose happens when the test ends. An earlier version called
+    // `std::mem::forget` under a comment claiming the harness held it, which leaked a git
+    // repository per run.
+    (h, tmp, slot)
 }
 
 /// A clear puts the slot back at the **configured** base, not at `origin/HEAD`.
@@ -587,7 +589,7 @@ async fn with_a_configured_base() -> (Harness, std::path::PathBuf, std::path::Pa
 /// author can read: it is a hard reset onto a branch they never named, with no question asked.
 #[tokio::test]
 async fn clear_resets_to_the_configured_base_and_not_to_the_default_branch() {
-    let (h, _repo, slot) = with_a_configured_base().await;
+    let (h, _tmp, slot) = with_a_configured_base().await;
     support::commit(&slot, "spike.md", "spike\n");
     api(
         &h,
@@ -610,9 +612,14 @@ async fn clear_resets_to_the_configured_base_and_not_to_the_default_branch() {
 /// `origin/main..workspace-1`, which holds release's own commit, so **every** workspace in such
 /// a project would be born dirty and this delete would be refused. Decision 0007 measured that
 /// exact failure and left the gate to this task.
+///
+/// **It rests on `git::worktree_add` passing `--no-track`**, which is decision 0007's other
+/// half. A slot with an upstream makes `is_dirty` compare `branch@{u}..branch` and never look
+/// at the base at all, so this test would pass whatever base was threaded and the mechanism it
+/// is about would go unexercised. A reader reopening 0007 should come here.
 #[tokio::test]
 async fn a_slot_from_a_configured_base_is_not_born_dirty() {
-    let (h, _repo, slot) = with_a_configured_base().await;
+    let (h, _tmp, slot) = with_a_configured_base().await;
     assert_eq!(
         support::git(&slot, &["status", "--porcelain"]),
         "",
@@ -666,6 +673,71 @@ async fn clearing_and_deleting_a_workspace_each_report_what_they_did() {
     assert_eq!(
         deleted["pruned"], false,
         "somebody asked for this one; a prune is the record going because its path did not"
+    );
+}
+
+/// When the branch that went is not the one the handle names, the result says so.
+///
+/// The reconciliation cannot cover a caller with a command line: `--yes` is a second process
+/// and re-reads the fact, so a shell reader can be told one branch and lose another. The one
+/// lost is always the branch the worktree is really on, so nothing wrong is removed, but the
+/// reader would otherwise never learn which. Naming it in the result is what closes that.
+///
+/// The pair is the point. An untouched slot's branch is named after its handle, so a pill that
+/// always appended it would say `workspace-1` twice and a pill that never did would be
+/// indistinguishable from one that does; only a slot on another branch separates them.
+///
+/// The pill is read off the model rather than the frame, because the claim here is about the
+/// words and the sidebar's hint row is 36 columns: `Deleted workspace-1 · feat/auth-cleanup`
+/// is 39 and arrives on screen with an ellipsis. That cut is `sidebar.rs`'s and
+/// `a_pill_wider_than_the_hint_row_is_cut_to_it` already covers it; asserting the truncated
+/// form here would pin one file's arithmetic inside another file's test. What the frame is
+/// for is the colour, which `a_clear_and_a_delete_each_say_what_they_did_in_the_hint_row`
+/// asserts.
+#[tokio::test]
+async fn the_result_names_the_branch_that_went_when_it_is_not_the_handle() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    support::git(
+        &slot_of(&root, 1),
+        &["checkout", "-q", "-b", "feat/auth-cleanup"],
+    );
+    let pill = |m: &Model| {
+        m.client(&h.client)
+            .and_then(|v| v.pill.as_ref())
+            .map(|p| p.text.clone())
+    };
+
+    api(
+        &h,
+        "workspace.delete",
+        json!({"workspace": "workspace-1", "yes": true}),
+    )
+    .await
+    .unwrap();
+    let m = model_when(&h, "the delete reports", |m| pill(m).is_some()).await;
+    assert_eq!(
+        pill(&m).as_deref(),
+        Some("Deleted workspace-1 · feat/auth-cleanup"),
+        "the branch that really went is named, because the question may not have named it"
+    );
+
+    // And a slot still on its own branch says it once, because the handle already said it.
+    api(
+        &h,
+        "workspace.delete",
+        json!({"workspace": "workspace-2", "yes": true}),
+    )
+    .await
+    .unwrap();
+    let m = model_when(&h, "the second delete reports", |m| {
+        pill(m).is_some_and(|t| t.contains("workspace-2"))
+    })
+    .await;
+    assert_eq!(
+        pill(&m).as_deref(),
+        Some("Deleted workspace-2"),
+        "a branch named after its handle is not news"
     );
 }
 

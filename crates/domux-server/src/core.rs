@@ -123,6 +123,22 @@ pub enum CoreJob {
         /// `None` when no branch fact had arrived, which is when the question said "its local
         /// branch" and promised nothing specific. There is then nothing to reconcile and the
         /// fresh read stands.
+        ///
+        /// **This holds on the key path and not on the shell path**, and the difference is not
+        /// something this field can close. A key asks and is answered in one session, so the
+        /// name the box drew is the name that arrives here. A shell prints the question in one
+        /// process and takes `--yes` in another, so the second call reads the fact again, gets
+        /// whatever it says by then, and has nothing to compare against. The fact's time to
+        /// live is 30 seconds and it refreshes on its own, so that window closes with no
+        /// action from the author.
+        ///
+        /// What that costs is bounded and worth stating exactly: the job always removes the
+        /// branch the worktree is really on, which is the right branch for that worktree, so a
+        /// shell reader can be told one name and lose a different, correct one. That is
+        /// misinformation, not misdeletion. `JobOutcome::Deleted::branch` carries what really
+        /// went so the answer names it, and carrying the name through the shell path would
+        /// mean the refusal printing a command that includes the branch, which adds a
+        /// parameter the command table fixes. Recorded as a follow-up rather than done here.
         expected_branch: Option<String>,
         base: Option<String>,
         /// False means "refuse a dirty slot". `git worktree remove` has a force of its own
@@ -199,6 +215,10 @@ pub enum JobOutcome {
     Deleted {
         workspace: WorkspaceId,
         name: String,
+        /// What was really removed, not what the question proposed. The two can differ for a
+        /// caller with a command line (`CoreJob::DeleteWorkspace::expected_branch`), and a
+        /// reader who is only ever told the proposal has no way to find that out.
+        branch: String,
     },
     Failed {
         message: String,
@@ -1112,9 +1132,11 @@ impl Core {
                 name,
                 base,
             } => self.workspace_cleared(client.clone(), workspace, name, base),
-            JobOutcome::Deleted { workspace, name } => {
-                self.workspace_deleted(client.clone(), workspace, name)
-            }
+            JobOutcome::Deleted {
+                workspace,
+                name,
+                branch,
+            } => self.workspace_deleted(client.clone(), workspace, name, branch),
         };
         self.answer(result, reply, client);
     }
@@ -1220,13 +1242,14 @@ impl Core {
         client: Option<ClientId>,
         workspace: WorkspaceId,
         name: String,
+        branch: String,
     ) -> Result<serde_json::Value, ApiError> {
         let doomed: Vec<PaneId> = self
             .model
             .workspace(&workspace)
             .map(|w| w.tabs.iter().flat_map(|t| t.layout.pane_ids()).collect())
             .unwrap_or_default();
-        let (_handle, events) = self.model.remove_workspace(&workspace)?;
+        let (handle, events) = self.model.remove_workspace(&workspace)?;
         self.pending_events.extend(events);
         // A client that was in the slot is now pointing at a workspace the model does not
         // hold, which no frame and no view method can answer for (principle 2). Same rule and
@@ -1234,7 +1257,16 @@ impl Core {
         let moved = api::project::reseat_stranded_clients(&mut self.model);
         self.pending_events.extend(moved);
         self.apply_side_effects(Vec::new(), doomed, Vec::new());
-        self.set_pill(client.as_ref(), format!("Deleted {name}"), true);
+        // The branch is named only when it is news. A slot's branch is named after its handle,
+        // so for an untouched one this would say `workspace-1` twice; when they differ it is
+        // the one thing the reader could not have worked out, and on the shell path it may not
+        // be the name the question gave them.
+        let said = if branch == handle.to_string() {
+            format!("Deleted {name}")
+        } else {
+            format!("Deleted {name} · {branch}")
+        };
+        self.set_pill(client.as_ref(), said, true);
         api::ok(domux_core::api::Ack { ok: true })
     }
 
@@ -1994,8 +2026,9 @@ fn unavailable(e: crate::git::GitError) -> JobOutcome {
 /// move the slot onto another branch and hard-reset that one, quietly.
 ///
 /// The confirmation still names the fact, because it is composed on the core task where no git
-/// command may run. `CoreJob::DeleteWorkspace::expected_branch` is what keeps the two honest:
-/// the question's answer travels with the job and the job refuses if the worktree has moved.
+/// command may run. `CoreJob::DeleteWorkspace::expected_branch` carries the question's answer
+/// into the job so it can refuse when the worktree has moved, which holds for a key and not for
+/// a shell: see that field for why, and for what it costs.
 fn clear_workspace(
     workspace: WorkspaceId,
     name: String,
@@ -2096,7 +2129,11 @@ fn delete_workspace(
     if let Err(e) = crate::git::worktree_remove(root, path, &branch, force) {
         return unavailable(e);
     }
-    JobOutcome::Deleted { workspace, name }
+    JobOutcome::Deleted {
+        workspace,
+        name,
+        branch,
+    }
 }
 
 /// V1's `provisionWorkspace`, in its order: the worktree on a fresh branch from the base,

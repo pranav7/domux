@@ -103,11 +103,17 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
 /// rather than losing its tail to an ellipsis.
 ///
 /// **Why this is here rather than solved by shorter copy.** The delete box is the tight one:
-/// its sentence is a fixed 57 columns plus the branch name, against a budget of 112 at a 120
-/// column screen, so it clips at a 55 character branch. Real branch names in this program
-/// already reach 53. Shortening the copy moved that ceiling and did not remove it, and a
-/// ceiling two characters above what the author types is not a guarantee. What is lost when it
-/// clips is the end of the sentence, which on a delete is the branch and the tab count.
+/// its sentence is a fixed 58 columns plus the branch name, against a budget of 112 at a 120
+/// column screen, so it clips at a 55 character branch and fits at 54. Real branch names in
+/// this program already reach 53. Shortening the copy moved that ceiling and did not remove
+/// it, and a ceiling two characters above what the author types is not a guarantee. What is
+/// lost when it clips is the end of the sentence, which on a delete is the branch and the tab
+/// count.
+///
+/// The 58 is `closes N tabs`, which is every count but one; `closes 1 tab` is a column
+/// shorter and clips one character later. An earlier version of this paragraph gave 57 beside
+/// a threshold of 55, which cannot both be true, and the inconsistency was checkable from the
+/// paragraph alone.
 ///
 /// Only a line of one span is broken. A line of several is a keys row, built from short pieces
 /// to fit, and breaking it would have to carry each piece's style across the break for no gain.
@@ -205,7 +211,9 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
             // The fact, not a fresh read, because a frame is composed on the core task and no
             // git command may run there. It is what the question promises rather than what the
             // delete will do: the job reads the worktree itself and refuses if the two have
-            // come apart, so the promise is kept without this line having to be current.
+            // come apart. That reconciliation covers this box, because a key is asked and
+            // answered in one session; it does not cover a shell, and
+            // `CoreJob::DeleteWorkspace::expected_branch` says why and what that costs.
             let branch = input
                 .facts
                 .get(&FactKey::workspace(id, FACT_BRANCH))
@@ -593,6 +601,25 @@ mod tests {
             })
             .collect();
         words.join(" ")
+    }
+
+    /// The tab question draws no box here, which is a rule this file states and nothing tested.
+    ///
+    /// M1 asks it in the tab's own cell (`top_bar::draw`), so a box drawn here would put the
+    /// same question on the screen twice. Pre-existing and cheap: the mutation that gives
+    /// `CloseTab` a box of its own survived across twelve test binaries before this.
+    #[test]
+    fn the_tab_question_draws_nothing_because_the_tab_row_asks_it() {
+        let (model, _id) = model_with_a_slot();
+        let text = drawn(
+            &model,
+            &FactRegistry::new(),
+            &ConfirmKind::CloseTab(TabId("t_0001".into())),
+        );
+        assert!(
+            text.lines().all(|l| l.chars().all(|c| c == '@')),
+            "nothing was drawn:\n{text}"
+        );
     }
 
     /// A workspace the model no longer holds asks nothing rather than drawing a box about it,

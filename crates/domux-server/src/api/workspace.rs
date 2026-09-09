@@ -525,9 +525,12 @@ pub fn clear(ctx: &mut Ctx, p: WorkspaceClearParams) -> Result<Value, ApiError> 
 /// may not call git; the job answers the act, on the blocking task, from the worktree as it is
 /// at that moment.
 ///
-/// The two are reconciled rather than left to differ: `expected_branch` carries what the
-/// question named into the job, and the job refuses when the worktree has moved since. So a
-/// reader who consented to losing `feat/auth-cleanup` never loses something else instead.
+/// The two are reconciled where they can be: `expected_branch` carries what the question named
+/// into the job, and the job refuses when the worktree has moved since. **That holds for a key
+/// and not for a shell**, whose `--yes` is a second process with nothing to compare against, so
+/// a shell reader can be told one branch and lose a different one. The one lost is always the
+/// branch the worktree is really on, so this is misinformation rather than misdeletion, and the
+/// result names what went. `CoreJob::DeleteWorkspace::expected_branch` has the whole of it.
 pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError> {
     let (target, doomed) = target_of(ctx, Some(&p.workspace), MAIN_CANNOT_BE_DELETED)?;
     if !p.yes {
