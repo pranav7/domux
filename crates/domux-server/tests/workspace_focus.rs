@@ -831,9 +831,16 @@ async fn switching_workspaces_reaches_the_state_file_while_the_server_is_still_r
     };
     let before_size = h.pane_size(&landing);
     let state = h.state_dir().join("state.json");
-    let before: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&state).expect("state.json")).unwrap();
-    assert_ne!(before["last_workspace"], w1.as_str(), "{before}");
+    // The file may not be there yet. It is written on a debounce after a structural event,
+    // so the writes that making the slots triggered may not have landed. Absent is a
+    // stronger form of this precondition than present with another value, since it means
+    // nothing has persisted a `last_workspace` at all, so both are accepted and neither is
+    // assumed. The assertion after the focus still requires the file to exist and to name
+    // this workspace, which is what the test is for.
+    if let Ok(text) = std::fs::read_to_string(&state) {
+        let before: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_ne!(before["last_workspace"], w1.as_str(), "{before}");
+    }
 
     h.api(
         "workspace.focus",
