@@ -31,6 +31,8 @@ enum Command {
     Pane(cli::pane::PaneCmd),
     /// Print events as they happen, one JSON object per line
     Events(cli::events::EventsCmd),
+    /// Read another tool's state: import v1 creates what V1's sessions describe
+    Import(cli::import::ImportCmd),
 }
 
 /// Errors go to stderr and leave a status of 1, so a script can tell a failure from an
@@ -47,6 +49,7 @@ async fn main() {
         Some(Command::Tab(c)) => cli::tab::run(c).await,
         Some(Command::Pane(c)) => cli::pane::run(c).await,
         Some(Command::Events(c)) => cli::events::run(c).await,
+        Some(Command::Import(c)) => cli::import::run(c).await,
     };
     if let Err(e) = result {
         // The whole chain, so the context and the reason under it both reach the reader:

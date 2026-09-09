@@ -3,7 +3,10 @@
 //! Every public function reads the process environment once. The `_in` variants take an
 //! explicit `Env` so tests and the harness can pin every input.
 
-use crate::names::{CONFIG_DIR_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME};
+use crate::names::{
+    CONFIG_DIR_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME, V1_SESSIONS_DIR_NAME,
+    V1_STATE_DIR_NAME,
+};
 use std::path::PathBuf;
 
 /// The inputs the paths depend on.
@@ -79,6 +82,18 @@ pub fn config_file_in(env: &Env) -> PathBuf {
     }
 }
 
+/// Where V1 keeps its session files, which `import v1` reads and nothing writes.
+///
+/// `DOMUX_STATE_DIR` does not reach it: that variable moves V2's state directory, and V1's
+/// is somewhere else by definition. `import v1 --from` is how a caller reads a copy.
+pub fn v1_sessions_dir_in(env: &Env) -> PathBuf {
+    env.home
+        .join(".local")
+        .join("share")
+        .join(V1_STATE_DIR_NAME)
+        .join(V1_SESSIONS_DIR_NAME)
+}
+
 pub fn socket_path_in(env: &Env) -> PathBuf {
     if let Some(p) = &env.socket_override {
         return p.clone();
@@ -108,6 +123,9 @@ pub fn config_file() -> PathBuf {
 }
 pub fn socket_path() -> PathBuf {
     socket_path_in(&Env::from_process())
+}
+pub fn v1_sessions_dir() -> PathBuf {
+    v1_sessions_dir_in(&Env::from_process())
 }
 
 #[cfg(test)]
@@ -158,6 +176,27 @@ mod tests {
             config_file_override: None,
         };
         assert_eq!(socket_path_in(&env), PathBuf::from("/tmp/x/s.sock"));
+    }
+
+    /// V1's directory is not V2's, and `DOMUX_STATE_DIR` moves only V2's. A build that read
+    /// the override here would point `import v1` at V2's own state directory, where there
+    /// are no session files, and after the M3 cut-over it would point at the directory V2
+    /// writes.
+    #[test]
+    fn the_v1_sessions_directory_is_v1s_own_and_ignores_the_state_dir_override() {
+        let env = Env {
+            home: "/home/u".into(),
+            xdg_runtime_dir: None,
+            uid: 501,
+            socket_override: None,
+            state_dir_override: Some("/scratch/state".into()),
+            config_file_override: None,
+        };
+        assert_eq!(
+            v1_sessions_dir_in(&env),
+            PathBuf::from("/home/u/.local/share/domux/sessions")
+        );
+        assert_ne!(v1_sessions_dir_in(&env), state_dir_in(&env));
     }
 
     #[test]

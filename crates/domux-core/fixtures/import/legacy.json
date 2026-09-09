@@ -1,0 +1,11 @@
+{
+  "name": "audrey-app-workspace-2",
+  "root": "/repo/audrey-app/.baag/worktrees/workspace-2",
+  "label": "release notes",
+  "workspace": "occupied",
+  "windows": [
+    { "index": 1, "name": "notes", "cwd": "/repo/audrey-app/.baag/worktrees/workspace-2", "agent": "codex" }
+  ],
+  "created_at": "2026-03-02T11:00:00+00:00",
+  "updated_at": "2026-06-30T08:15:42+01:00"
+}
