@@ -527,10 +527,11 @@ mod tests {
 
     /// A branch name as long as the ones this program really produces.
     ///
-    /// 66 columns. The branch that prompted the measurement,
-    /// `claude/PROJ-1482-rework-the-workspace-branch-provider`, is 53, and the delete box
-    /// clipped at 55 before it wrapped: the shortened copy moved the ceiling to two characters
-    /// above what the author already types. A synthetic name would prove less than this one.
+    /// 63 columns, which puts the delete sentence at 120 against a budget of 112, so it is
+    /// eight columns past the edge and has to break. The branch that prompted the measurement,
+    /// `claude/PROJ-1482-rework-the-workspace-branch-provider`, is 53 and the box clipped
+    /// above 55, so the shortened copy left two columns of headroom against what the author
+    /// already types. A synthetic name would prove less than this one.
     const A_LONG_BRANCH: &str = "claude/PROJ-1482-rework-the-workspace-branch-provider-and-cache";
 
     /// Neither box loses a word at the width the harness calls a terminal, with a branch name
