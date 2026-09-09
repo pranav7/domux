@@ -4,7 +4,7 @@
 //! The rows come from `render::projects_box`, which the switcher draws from too, so the
 //! sidebar and the switcher cannot show one project two ways.
 
-use crate::render::boxed::put;
+use crate::render::boxed::{put, put_within};
 use crate::render::list_box::ListBox;
 use crate::render::projects_box::{rows, Extras, PROJECTS_TITLE};
 use crate::render::{theme, RenderInput};
@@ -60,10 +60,19 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         false => None,
     }
     .unwrap_or(input.view.workspace.as_str());
+    // The filter is the box's and the box has it only while it has the keys. A box the
+    // reader has left draws its whole list: a shortened one with nothing on the screen to say
+    // why would be a mode with no marker (principle 2), and the hint row below has no room to
+    // carry both the keys and a filter. `api::focus::enter_projects_box` starts a fresh
+    // filter on the way in, so the two halves of the rule meet.
+    let filter = match focused {
+        true => input.view.filter.as_str(),
+        false => "",
+    };
     let built = rows(
         input.model,
         input.facts,
-        &input.view.filter,
+        filter,
         Some(key),
         Extras::compact(area.width.saturating_sub(2)),
     );
@@ -121,6 +130,39 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
     // The keys as configured, never the default spelling (principle 3). A key the reader has
     // rebound to nothing drops out of the row rather than naming a key that does nothing.
     let focused = matches!(input.view.focus, Focus::Region(RegionKind::SidebarProjects));
+    // The filter has the row while `/` is open, the same words the switcher's footer uses,
+    // because a mode with no marker on the screen is a mode the reader cannot see they are in
+    // (principle 2). Spelled out rather than looked up for the reason `overlay::footer` gives:
+    // no action clears the filter, so there is no binding to read.
+    //
+    // Two surfaces write these words. They are one sentence of text rather than a rule, and
+    // the two rows have nothing else in common - this one is 38 cells wide with the sidebar's
+    // background, the other spans the overlay and paints its own - so a shared helper here
+    // would be a shared name for two unrelated layouts.
+    if focused && input.view.filtering {
+        // `put_within` throughout: the text is the reader's own typing and it grows without
+        // limit, so the row's last cell is what stops it rather than a budget computed here.
+        let last_x = area.x + area.width.saturating_sub(2);
+        let mut cx = put_within(buf, area.x + 1, area.y, last_x, "Filter › ", word);
+        cx = put_within(
+            buf,
+            cx,
+            area.y,
+            last_x,
+            &input.view.filter,
+            Style::default().fg(theme::TEXT),
+        );
+        cx = put_within(
+            buf,
+            cx,
+            area.y,
+            last_x,
+            " ",
+            Style::default().add_modifier(Modifier::REVERSED),
+        );
+        put_within(buf, cx, area.y, last_x, "  esc clear", word);
+        return;
+    }
     let pairs: Vec<(String, &str)> = if focused {
         [("list.activate", "open"), ("help", "more")]
             .iter()
@@ -505,14 +547,19 @@ mod tests {
         );
     }
 
-    /// The filter drops the rows it does not match.
+    /// The filter drops the rows it does not match, while the box has the keys.
     ///
-    /// `ClientView::filter` is only written by `list.filter`, which M2 has not built, so
-    /// every harness test leaves it empty and a box that ignored it entirely would pass.
+    /// The focus is set beside the filter because the box applies its filter only while it
+    /// holds the keys: a shortened list under a hint row showing `leader b hide` would be a
+    /// mode with no marker on the screen (principle 2), and there is a second test below for
+    /// that half.
     #[test]
     fn the_filter_drops_the_rows_it_does_not_match() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
-        draw_two(&mut buf, |v, _| v.filter = "workspace-1".into());
+        draw_two(&mut buf, |v, _| {
+            v.filter = "workspace-1".into();
+            v.focus = Focus::Region(RegionKind::SidebarProjects);
+        });
         let rows = box_rows(&buf);
         let text = rows.join("|");
         assert!(
@@ -522,6 +569,23 @@ mod tests {
         assert!(
             text.contains("workspace-1"),
             "and the row that does match is: {rows:?}"
+        );
+    }
+
+    /// The other half: a box the reader has left draws its whole list again.
+    ///
+    /// `api::focus::enter_projects_box` clears the filter on the way back in, so the field is
+    /// never applied by a box that did not take the text; this is what makes that true for
+    /// the window between leaving and returning.
+    #[test]
+    fn the_filter_is_ignored_while_the_keys_are_not_in_the_box() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
+        draw_two(&mut buf, |v, _| v.filter = "workspace-1".into());
+        let rows = box_rows(&buf);
+        let text = rows.join("|");
+        assert!(
+            text.contains("main") && text.contains("workspace-1"),
+            "the keys are in a pane, so every row is drawn: {rows:?}"
         );
     }
 

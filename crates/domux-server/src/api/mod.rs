@@ -4,6 +4,7 @@
 pub mod client;
 pub mod config;
 pub mod focus;
+pub mod list;
 pub mod pane;
 pub mod project;
 pub mod server;
@@ -225,9 +226,12 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         WorkspaceRename(p) => workspace::rename(ctx, p),
         WorkspaceClearName(p) => workspace::clear_name(ctx, p),
         WorkspaceResume(p) => workspace::resume(ctx, p),
-        // --- M2 stubs: placeholders for Tasks 14 to 18, not real handlers. ---
-        WorkspaceClear(_) | WorkspaceDelete(_)
-        | ListDown(_) | ListUp(_) | ListActivate(_) | ListFilter(_) => {
+        ListDown(p) => list::down(ctx, p),
+        ListUp(p) => list::up(ctx, p),
+        ListActivate(p) => list::activate(ctx, p),
+        ListFilter(p) => list::filter(ctx, p),
+        // --- M2 stubs: placeholders for Tasks 16 to 18, not real handlers. ---
+        WorkspaceClear(_) | WorkspaceDelete(_) => {
             Err(ApiError::unavailable(format!("{unbuilt} is not built yet")))
         }
     }

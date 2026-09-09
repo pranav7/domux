@@ -22,6 +22,8 @@ pub enum Route {
     Overlay,
     Chord,
     Global(Action),
+    /// A focused region handled it, or swallowed it. See `list_key`.
+    Region,
     Pane,
 }
 
@@ -81,6 +83,21 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
     if let Some(action) = global {
         core.run_action(client, &action);
         return Route::Global(action);
+    }
+
+    // 4. The focus target. A region handles the key itself, and a pane in copy mode handles
+    //    the key itself; a pane whose child exited (terminal.remain_on_exit) closes on Enter
+    //    and swallows other keys.
+    //
+    //    The region is read here rather than above, because step 3 may have moved it: `C-h`
+    //    is a global binding and entering the box is what it does.
+    if core
+        .model
+        .client(client)
+        .is_some_and(|view| matches!(view.focus, Focus::Region(_)))
+    {
+        list_key(core, client, key);
+        return Route::Region;
     }
 
     // 4. The focus target. A pane in copy mode handles the key itself; a pane whose child
@@ -149,6 +166,59 @@ fn forward_to_pane(core: &mut Core, client: &ClientId, key: &KeyEvent) {
     }
 }
 
+/// Step 4 of the routing for a focused box: the `[keys.list]` table (interface spec section
+/// 10). The switcher's overlay arm calls this too, so one table serves the sidebar's box and
+/// the overlay, and M3's agents overlay joins them without a third copy.
+///
+/// A key the table does not name stops here. That is what "the focus target receives the
+/// key" means for a region: the box has the keys, so an unbound one does nothing rather than
+/// reaching a pane the reader is not typing into. Only the three claimants ahead of step 4 -
+/// an open overlay, a chord, and a global binding - take a key out of the box.
+pub fn list_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    // A key in the box clears the last result (interface spec 12.12).
+    view.pill = None;
+    let filtering = view.filtering;
+    // No `view_dirty` here or in `filter_key`. `Core::key` sets it after every key, because
+    // every key gets a frame (principle 8), so a second setter would be a second cause for
+    // the same redraw and neither could be tested apart from the other.
+    if filtering {
+        return filter_key(core, client, key);
+    }
+    let Some(action) = core.config.keymap.list_for(&key).cloned() else {
+        return;
+    };
+    core.run_action(client, &action);
+}
+
+/// While `/` is open the box filters as you type; Esc clears the filter and closes it, Enter
+/// keeps the filter and closes it, and the rows follow either way (interface spec 12.10).
+///
+/// The table is not read here, so a letter bound to an action types that letter instead of
+/// running it: `/` opens a text field, and a text field that ran `j` as a command could not
+/// match a workspace whose name has a `j` in it.
+fn filter_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    match key.key {
+        Key::Escape => {
+            view.filter.clear();
+            view.filtering = false;
+        }
+        Key::Enter => view.filtering = false,
+        Key::Backspace => {
+            view.filter.pop();
+        }
+        Key::Char(c) if !key.mods.intersects(Mods::CTRL | Mods::ALT) => view.filter.push(c),
+        // Every other key, and a chorded letter: the filter is a text field, and a key it has
+        // no meaning for does nothing rather than closing it or reaching a pane.
+        _ => {}
+    }
+}
+
 /// Keys inside an overlay. The prompt edits its input; Enter saves, Esc cancels. The help
 /// overlay closes on Esc, `q` or `?`. A confirmation acts on `y` and cancels on anything
 /// else. Closing returns focus to the pane.
@@ -205,18 +275,9 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                 let _ = core.dispatch_from_key(method, Some(client.clone()));
             }
         }
-        // Task 14 replaces this with the whole of `[keys.list]`, the routing the sidebar's
-        // box and M3's agents overlay share. Until then only the key bound to `focus.pane`
-        // is read, so the switcher has a way out and it is the configured one (principle 3).
-        Overlay::Switcher => {
-            let action = core.config.keymap.list_for(&key).cloned();
-            if action.is_some_and(|a| a.method == "focus.pane") {
-                let method = Method::SwitcherClose(domux_core::api::ClientParams {
-                    client: Some(client.clone()),
-                });
-                let _ = core.dispatch_from_key(method, Some(client.clone()));
-            }
-        }
+        // The switcher's box is the sidebar's box, so its keys are the sidebar's keys: one
+        // `[keys.list]` table, one function, two surfaces (interface spec 5.4).
+        Overlay::Switcher => list_key(core, client, key),
         // The same rule as the tab above, and the keys the box itself offers:
         // `y remove project    esc keep project` (interface spec 7.3).
         //
