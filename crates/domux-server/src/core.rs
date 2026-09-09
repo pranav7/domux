@@ -372,6 +372,9 @@ pub struct Core {
     /// What domux observed. The core reads it and records answers; the fetching happens on
     /// blocking tasks.
     pub facts: FactRegistry,
+    /// What the agent handlers hold outside the Model: working words, the transcript reader
+    /// and the manifest registry.
+    pub agents: crate::agents::AgentsState,
     /// What the jobs in flight have chosen and not yet written into the model.
     ///
     /// A handler that only reads the model is safe without this, because the core task
@@ -505,6 +508,7 @@ impl Core {
             facts,
             claims: HashSet::new(),
             notes: Vec::new(),
+            agents: crate::agents::AgentsState::default(),
         };
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
@@ -1244,6 +1248,7 @@ impl Core {
             config: &mut self.config,
             deps: &self.deps,
             facts: &self.facts,
+            agents: &mut self.agents,
             core_tx: &self.core_tx,
             socket_path: &self.socket_path,
             state_dir: &self.state_dir,
@@ -3034,7 +3039,6 @@ mod tests {
         ("agent.list", "{}"),
         ("agent.get", "{}"),
         ("agent.self", "{}"),
-        ("agent.report", r#"{"kind": "claude", "payload": {}}"#),
         ("agent.focus", "{}"),
         ("agent.dismiss", "{}"),
         ("agent.resume", "{}"),

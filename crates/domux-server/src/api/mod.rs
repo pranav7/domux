@@ -1,6 +1,7 @@
 //! One handler per method. A keybinding, a CLI subcommand and an API request all arrive
 //! here as a `Method` and leave as a `Value` or an `ApiError`.
 
+pub mod agent;
 pub mod client;
 pub mod config;
 pub mod focus;
@@ -41,6 +42,9 @@ pub struct Ctx<'a> {
     /// What domux observed. A handler reads a fact; it never fetches one, because a fetch
     /// shells out and a handler runs on the core task.
     pub facts: &'a FactRegistry,
+    /// The caches and declarations the agent records need: working words, the transcript
+    /// reader and the manifest registry. Not persisted.
+    pub agents: &'a mut crate::agents::AgentsState,
     pub core_tx: &'a mpsc::Sender<CoreMsg>,
     pub socket_path: &'a PathBuf,
     pub state_dir: &'a PathBuf,
@@ -246,9 +250,7 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         AgentSelf(_) => Err(ApiError::unavailable(
             "agent.self arrives with the agent records in M3 and is not built yet",
         )),
-        AgentReport(_) => Err(ApiError::unavailable(
-            "agent.report arrives with the agent hooks in M3 and is not built yet",
-        )),
+        AgentReport(p) => agent::report(ctx, p),
         AgentFocus(_) => Err(ApiError::unavailable(
             "agent.focus arrives with the agents overlay in M3 and is not built yet",
         )),

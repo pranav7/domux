@@ -6,12 +6,12 @@ use crate::core::CoreMsg;
 use crate::pane::{FakeSpawner, PtySpawner, RealSpawner};
 use crate::process::{FakeInspector, ForegroundProcess, ProcessInspector};
 use crate::{load_config, CoreDeps, FixedClock, LoadedConfig, Server, ServerHandle, ServerOptions};
-use domux_core::api::{ApiError, Request, Response};
+use domux_core::api::{AgentInfo, AgentListResult, AgentReportResult, ApiError, Request, Response};
 use domux_core::config::Config;
 use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::{KeyName, Keymap};
-use domux_core::model::Model;
+use domux_core::model::{AgentKind, Model};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, CursorState, Decoder, FrameDiff, Hello, ServerMsg, WireColor,
     PROTOCOL_VERSION,
@@ -355,6 +355,36 @@ impl Harness {
 
     pub async fn detach(&mut self, client: ClientId) {
         self.send(&client, ClientMsg::Detach).await;
+    }
+
+    /// One hook payload from `pane`, the way the agent report subcommand posts it.
+    pub async fn report(
+        &mut self,
+        pane: PaneId,
+        kind: AgentKind,
+        payload: &str,
+    ) -> AgentReportResult {
+        let payload = serde_json::from_str::<Value>(payload)
+            .unwrap_or_else(|_| Value::String(payload.into()));
+        let value = self
+            .api(
+                "agent.report",
+                serde_json::json!({"pane": pane, "kind": kind, "payload": payload}),
+            )
+            .await
+            .expect("agent.report");
+        serde_json::from_value(value).expect("AgentReportResult")
+    }
+
+    /// Every record in the interface's sort order.
+    pub async fn agents(&mut self) -> Vec<AgentInfo> {
+        let value = self
+            .api("agent.list", serde_json::json!({}))
+            .await
+            .expect("agent.list");
+        serde_json::from_value::<AgentListResult>(value)
+            .expect("AgentListResult")
+            .agents
     }
 
     /// One control API call over a fresh connection.
