@@ -234,6 +234,54 @@ async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_wa
     );
 }
 
+/// The adoption line is said as soon as it is true, which is before the switch: a switch that
+/// cannot happen does not unsay what the add already did.
+///
+/// The client is detached first, so `workspace.focus` has no view to act for and refuses.
+/// That is also what `open` meets when it is typed in a terminal with nothing attached, which
+/// is the case where a reader who was told nothing would never learn that three workspaces
+/// had appeared.
+#[tokio::test]
+async fn open_names_what_it_adopted_even_when_there_is_nobody_to_switch() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_tmp, root) = repo_with_origin("main");
+    for n in [1, 2] {
+        std::fs::create_dir_all(slot_of(&root, n)).expect("make a worktree directory");
+    }
+    let client = h.client.clone();
+    h.detach(client).await;
+    model_when(&h, "the client goes", |m| m.most_recent_client().is_none()).await;
+
+    let opened = run(domux2(&h).args(["open", root.to_str().unwrap()])).await;
+    assert_eq!(opened.code, Some(1), "{}", opened.err);
+    assert!(
+        opened
+            .err
+            .starts_with("Adopted workspace-1, workspace-2.\n"),
+        "the adoption is said first, because it is what already happened: {}",
+        opened.err
+    );
+    assert!(
+        opened.err.contains("no client is attached"),
+        "and then the switch that could not happen: {}",
+        opened.err
+    );
+    let m = model_when(&h, "the project is registered", |m| {
+        m.projects.iter().any(|p| p.name == "audrey-app")
+    })
+    .await;
+    assert_eq!(
+        m.projects
+            .iter()
+            .find(|p| p.name == "audrey-app")
+            .unwrap()
+            .workspaces
+            .len(),
+        3,
+        "main and the two slots it adopted"
+    );
+}
+
 // ---------------------------------------------------------------- name
 
 /// The names one workspace has, read back through `workspace list` rather than polled out of
@@ -481,10 +529,12 @@ async fn a_workspace_holding_work_needs_force_and_keeps_its_work_until_it_gets_o
 #[tokio::test]
 async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
-    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    let (root, w1, _w2) = h.git_project_with_two_slots().await;
     let scratch = slot_of(&root, 1).join("scratch.txt");
     std::fs::write(&scratch, "work").unwrap();
 
+    // Named, with no variable set, so a target that came from the environment would be the
+    // view's own workspace instead.
     let refused = run(domux2(&h).args(["workspace", "clear", "workspace-1"])).await;
     assert_eq!(refused.code, Some(1));
     assert!(
@@ -501,6 +551,22 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
         refused.err
     );
     assert!(scratch.is_file(), "and nothing was thrown away");
+
+    // And with no target named, the variable is what says which workspace. The client is in
+    // the harness's own project, whose `main` a clear refuses by name, so a subcommand that
+    // sent no target would be refused in different words.
+    let from_the_variable = run(domux2(&h)
+        .env("DOMUX_WORKSPACE", w1.as_str())
+        .args(["workspace", "clear"]))
+    .await;
+    assert_eq!(from_the_variable.code, Some(1));
+    assert!(
+        from_the_variable
+            .err
+            .contains("workspace-1 has uncommitted or unpushed changes"),
+        "{}",
+        from_the_variable.err
+    );
 
     run(domux2(&h).args(["workspace", "clear", "workspace-1", "--yes"]))
         .await
