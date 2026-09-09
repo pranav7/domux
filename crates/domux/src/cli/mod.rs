@@ -218,6 +218,78 @@ mod tests {
         assert!(format!("{e:#}").contains("write to stdout"), "{e:#}");
     }
 
+    fn refused(data: Value) -> ApiError {
+        ApiError {
+            code: ErrorCode::Refused,
+            message: "Delete workspace-1? Answer with --yes".to_string(),
+            data: Some(data),
+        }
+    }
+
+    #[test]
+    fn a_question_prints_its_lists_under_their_own_labels() {
+        let e = refused(serde_json::json!({
+            "confirmation": "Delete workspace-1? It goes.",
+            "removes": ["the worktree", "its local branch"],
+            "keeps": ["the remote branch"],
+        }));
+        assert_eq!(
+            question(&e).unwrap(),
+            "Delete workspace-1? It goes.\n\
+             Removes:\n  the worktree\n  its local branch\n\
+             Keeps:\n  the remote branch\n\
+             Run it again with --yes."
+        );
+    }
+
+    /// A label with nothing under it would read as "this removes nothing", which is a fact
+    /// the server did not report. No method in this build sends an empty list, so this is
+    /// the only place the case can be reached: the test goes where the input can.
+    #[test]
+    fn a_list_the_server_left_empty_gets_no_label() {
+        let e = refused(serde_json::json!({
+            "confirmation": "Delete workspace-1? It goes.",
+            "removes": [],
+            "keeps": ["the remote branch"],
+        }));
+        assert_eq!(
+            question(&e).unwrap(),
+            "Delete workspace-1? It goes.\n\
+             Keeps:\n  the remote branch\n\
+             Run it again with --yes."
+        );
+    }
+
+    #[test]
+    fn a_refusal_that_asks_nothing_is_not_a_question() {
+        let mut e = refused(Value::Null);
+        e.data = None;
+        assert_eq!(question(&e), None);
+    }
+
+    /// `ApiError::ambiguous` puts a bare array in `data`, so the lookup has to survive data
+    /// that is not an object at all.
+    #[test]
+    fn an_ambiguous_answer_is_not_a_question() {
+        let mut e = refused(serde_json::json!(["w_1", "w_2"]));
+        e.code = ErrorCode::Ambiguous;
+        assert_eq!(question(&e), None);
+    }
+
+    /// Only a refusal asks. Nothing in this build sends a confirmation under another code,
+    /// and the CLI reads whatever the socket sends it, so the code is checked rather than
+    /// inferred from the shape of `data`.
+    #[test]
+    fn a_confirmation_under_another_code_is_not_a_question() {
+        let mut e = refused(serde_json::json!({
+            "confirmation": "Delete workspace-1? It goes.",
+            "removes": ["the worktree"],
+            "keeps": ["the remote branch"],
+        }));
+        e.code = ErrorCode::NotFound;
+        assert_eq!(question(&e), None);
+    }
+
     #[test]
     fn a_line_that_was_written_says_so() {
         let mut out = Vec::new();

@@ -195,6 +195,44 @@ async fn open_switches_to_main_and_names_the_slots_it_adopted() {
     );
 }
 
+/// `project add` registers a path and prints the record it made on stdout. It is not `open`:
+/// it does not switch, which is the whole of the difference between the two subcommands.
+#[tokio::test]
+async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_was() {
+    let h = Harness::start(Config::default(), 80, 24).await;
+    let dir = tempfile::tempdir().unwrap();
+    let name = dir
+        .path()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let client = h.client.clone();
+    let before = where_the_client_is(&h.model(), &client);
+
+    let added = run(domux2(&h).args(["project", "add", dir.path().to_str().unwrap()]))
+        .await
+        .ok();
+    assert_eq!(added.err, "", "data goes to stdout (principle 12)");
+    let record = added.json();
+    assert_eq!(record["name"], name.as_str(), "{:?}", added.out);
+    assert_eq!(
+        record["kind"], "folder",
+        "a folder with no repository in it"
+    );
+
+    let m = model_when(&h, "the project is registered", |m| {
+        m.projects.iter().any(|p| p.name == name)
+    })
+    .await;
+    assert_eq!(
+        where_the_client_is(&m, &client),
+        before,
+        "add registers; open is the one that switches"
+    );
+}
+
 // ---------------------------------------------------------------- name
 
 /// `workspace name` acts on the workspace `DOMUX_WORKSPACE` holds, and an empty name clears
@@ -249,6 +287,35 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
         m.workspace(&w1).unwrap().name,
         None,
         "an empty name clears it"
+    );
+
+    // `clear-name` is the same operation and reads the same variable. Checked here, where the
+    // client is somewhere else, rather than in the test that pairs it with `leader n`: there
+    // the client sits on this very workspace, so a subcommand that sent no target at all
+    // would reach it anyway.
+    run(domux2(&h)
+        .env("DOMUX_WORKSPACE", w1.as_str())
+        .args(["workspace", "name", "auth cleanup"]))
+    .await
+    .ok();
+    model_when(&h, "the name comes back", |m| {
+        m.workspace(&w1).unwrap().name.is_some()
+    })
+    .await;
+    run(domux2(&h)
+        .env("DOMUX_WORKSPACE", w1.as_str())
+        .args(["workspace", "clear-name"]))
+    .await
+    .ok();
+    let m = model_when(&h, "clear-name clears it", |m| {
+        m.workspace(&w1).unwrap().name.is_none()
+    })
+    .await;
+    assert_eq!(m.workspace(&w1).unwrap().name, None);
+    assert_eq!(
+        m.workspace(&elsewhere).unwrap().name,
+        None,
+        "and it did not reach for the view's workspace"
     );
 }
 
