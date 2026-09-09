@@ -1257,14 +1257,25 @@ impl Core {
         let moved = api::project::reseat_stranded_clients(&mut self.model);
         self.pending_events.extend(moved);
         self.apply_side_effects(Vec::new(), doomed, Vec::new());
-        // The branch is named only when it is news. A slot's branch is named after its handle,
-        // so for an untouched one this would say `workspace-1` twice; when they differ it is
-        // the one thing the reader could not have worked out, and on the shell path it may not
-        // be the name the question gave them.
+        // The branch is named only when it is news, and when it is, it is named **instead of**
+        // the workspace rather than beside it.
+        //
+        // A slot's branch is named after its handle, so for an untouched one naming both would
+        // say `workspace-1` twice. When they differ the branch is the one thing the reader
+        // could not have worked out, and on the shell path it may not even be the name the
+        // question gave them, so it is what this line exists to carry.
+        //
+        // The name is what gives way, because the reader asked to delete that workspace and
+        // already knows which. It has to give way to something: the narrowest hint row this
+        // draws in is the sidebar's, `SIDEBAR_WIDTH` less two, and `Deleted {name} · {branch}`
+        // ran past it and lost the branch to an ellipsis - defeating this line exactly when it
+        // mattered. `Deleted {branch}` fits that row for a branch of 28 columns or less, and a
+        // longer one is cut from its tail rather than removed whole, because it leads.
+        // `the_result_names_the_branch_that_went_when_it_is_not_the_handle` holds both.
         let said = if branch == handle.to_string() {
             format!("Deleted {name}")
         } else {
-            format!("Deleted {name} · {branch}")
+            format!("Deleted {branch}")
         };
         self.set_pill(client.as_ref(), said, true);
         api::ok(domux_core::api::Ack { ok: true })

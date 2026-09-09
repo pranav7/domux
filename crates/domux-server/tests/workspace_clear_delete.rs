@@ -70,6 +70,14 @@ fn slot_of(root: &Path, n: u32) -> std::path::PathBuf {
     root.join(format!(".domux/worktrees/workspace-{n}"))
 }
 
+/// The result line a client is showing, from the model rather than the frame: the frame is
+/// where the cut and the colour are checked, and the words are checked here.
+fn pill(m: &Model, client: &domux_core::ids::ClientId) -> Option<String> {
+    m.client(client)
+        .and_then(|v| v.pill.as_ref())
+        .map(|p| p.text.clone())
+}
+
 fn branches(root: &Path) -> String {
     support::git(root, &["branch", "--list", "--format=%(refname:short)"])
 }
@@ -676,24 +684,22 @@ async fn clearing_and_deleting_a_workspace_each_report_what_they_did() {
     );
 }
 
-/// When the branch that went is not the one the handle names, the result says so.
+/// When the branch that went is not the one the handle names, the result says so, and it fits
+/// the narrowest row it is drawn in.
 ///
 /// The reconciliation cannot cover a caller with a command line: `--yes` is a second process
 /// and re-reads the fact, so a shell reader can be told one branch and lose another. The one
 /// lost is always the branch the worktree is really on, so nothing wrong is removed, but the
-/// reader would otherwise never learn which. Naming it in the result is what closes that.
+/// reader would otherwise never learn which. Naming it in the result is what closes that, and
+/// for a reader at the screen the pill is the only place it is ever said.
 ///
-/// The pair is the point. An untouched slot's branch is named after its handle, so a pill that
-/// always appended it would say `workspace-1` twice and a pill that never did would be
-/// indistinguishable from one that does; only a slot on another branch separates them.
+/// **So the pill has to fit.** An earlier version read `Deleted {name} · {branch}`, which is
+/// 39 columns against a hint row of 36 and arrived with the branch cut off - defeating the fix
+/// exactly where it applies. The name gives way instead: the reader asked to delete that
+/// workspace and knows which one, while the branch is the news.
 ///
-/// The pill is read off the model rather than the frame, because the claim here is about the
-/// words and the sidebar's hint row is 36 columns: `Deleted workspace-1 · feat/auth-cleanup`
-/// is 39 and arrives on screen with an ellipsis. That cut is `sidebar.rs`'s and
-/// `a_pill_wider_than_the_hint_row_is_cut_to_it` already covers it; asserting the truncated
-/// form here would pin one file's arithmetic inside another file's test. What the frame is
-/// for is the colour, which `a_clear_and_a_delete_each_say_what_they_did_in_the_hint_row`
-/// asserts.
+/// Three assertions, because each can fail on its own: the wording when the branch is news,
+/// the wording when it is not, and that the news survives the row it is drawn in.
 #[tokio::test]
 async fn the_result_names_the_branch_that_went_when_it_is_not_the_handle() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
@@ -702,12 +708,7 @@ async fn the_result_names_the_branch_that_went_when_it_is_not_the_handle() {
         &slot_of(&root, 1),
         &["checkout", "-q", "-b", "feat/auth-cleanup"],
     );
-    let pill = |m: &Model| {
-        m.client(&h.client)
-            .and_then(|v| v.pill.as_ref())
-            .map(|p| p.text.clone())
-    };
-
+    api(&h, "sidebar.show", json!({})).await.unwrap();
     api(
         &h,
         "workspace.delete",
@@ -715,14 +716,28 @@ async fn the_result_names_the_branch_that_went_when_it_is_not_the_handle() {
     )
     .await
     .unwrap();
-    let m = model_when(&h, "the delete reports", |m| pill(m).is_some()).await;
+    let client = h.client.clone();
+    let m = model_when(&h, "the delete reports", |m| pill(m, &client).is_some()).await;
     assert_eq!(
-        pill(&m).as_deref(),
-        Some("Deleted workspace-1 · feat/auth-cleanup"),
+        pill(&m, &client).as_deref(),
+        Some("Deleted feat/auth-cleanup"),
         "the branch that really went is named, because the question may not have named it"
     );
+    // Whole, in the sidebar's hint row, which is the narrowest place a pill is drawn: 38
+    // columns of sidebar less two. A cut here would take the branch, which is the whole news.
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Deleted feat/auth-cleanup"),
+            Duration::from_secs(15),
+        )
+        .await;
+    assert!(
+        !f.contains("Deleted feat/auth-clea…"),
+        "and it fits the row rather than arriving cut:\n{f}"
+    );
 
-    // And a slot still on its own branch says it once, because the handle already said it.
+    // And a slot still on its own branch says the workspace, because the branch is not news.
     api(
         &h,
         "workspace.delete",
@@ -731,13 +746,46 @@ async fn the_result_names_the_branch_that_went_when_it_is_not_the_handle() {
     .await
     .unwrap();
     let m = model_when(&h, "the second delete reports", |m| {
-        pill(m).is_some_and(|t| t.contains("workspace-2"))
+        pill(m, &client).is_some_and(|t| t.contains("workspace-2"))
     })
     .await;
     assert_eq!(
-        pill(&m).as_deref(),
+        pill(&m, &client).as_deref(),
         Some("Deleted workspace-2"),
         "a branch named after its handle is not news"
+    );
+}
+
+/// A branch too long for any wording is cut from its tail, not removed.
+///
+/// 36 columns cannot hold `Deleted ` and a 53 column branch, so nothing makes every branch fit
+/// and the honest guarantee is a different one: the news leads, so what a cut takes is the end
+/// of the branch rather than the branch itself. That is the whole reason the name gave way.
+#[tokio::test]
+async fn a_branch_too_long_for_the_hint_row_still_leads_the_result() {
+    let long = "claude/PROJ-1482-rework-the-workspace-branch-provider";
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    support::git(&slot_of(&root, 1), &["checkout", "-q", "-b", long]);
+    api(&h, "sidebar.show", json!({})).await.unwrap();
+
+    api(
+        &h,
+        "workspace.delete",
+        json!({"workspace": "workspace-1", "yes": true}),
+    )
+    .await
+    .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Deleted claude/PROJ-1482"),
+            Duration::from_secs(15),
+        )
+        .await;
+    assert!(
+        f.contains('\u{2026}'),
+        "this one cannot fit, which is what makes the assertion above worth making:\n{f}"
     );
 }
 
