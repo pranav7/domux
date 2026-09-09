@@ -999,6 +999,21 @@ impl Model {
     }
 
     /// Focuses `pane` in its tab. Every client on that tab whose focus is a pane follows.
+    ///
+    /// Focusing the agent's pane clears its dot (interface spec 6.5), and that happens here
+    /// rather than in each caller, because focus reaches a pane through several routes and
+    /// they all end up here.
+    ///
+    /// **The clear runs even when the pane was already focused.** Whether the focused pane
+    /// moved is a different question, and the early return still answers it: a `PaneFocused`
+    /// event for a pane that did not move would tell a subscriber something that did not
+    /// happen. The dot is not about movement. Every caller of this method is a reader act - a
+    /// directional move, `focus.last`, `pane.focus`, `pane.zoom`, a scroll gesture - and none
+    /// of them runs on a timer, so a call naming the pane you are already on is still someone
+    /// asking for that pane. Without this, a dot that arrived while you sat in the pane would
+    /// survive a deliberate focus of it and clear only on the next keystroke. Nothing about
+    /// 6.5's other half is weakened: a dot nobody acted on still survives, because nothing
+    /// calls this without a reader asking.
     pub fn focus_pane(&mut self, pane: &PaneId) -> Result<Vec<Event>, ApiError> {
         let loc = self.pane_location(pane).ok_or_else(|| {
             ApiError::not_found(format!(
@@ -1006,21 +1021,23 @@ impl Model {
             ))
         })?;
         let t = self.tab_mut(&loc.tab).expect("tab exists");
-        if &t.focused == pane {
-            return Ok(Vec::new());
-        }
-        t.last_focused = Some(t.focused.clone());
-        t.focused = pane.clone();
-        let tab_id = loc.tab.clone();
-        for c in &mut self.clients {
-            if c.tab == tab_id && matches!(c.focus, Focus::Pane(_)) {
-                c.focus = Focus::Pane(pane.clone());
+        let mut events = Vec::new();
+        if &t.focused != pane {
+            t.last_focused = Some(t.focused.clone());
+            t.focused = pane.clone();
+            let tab_id = loc.tab.clone();
+            for c in &mut self.clients {
+                if c.tab == tab_id && matches!(c.focus, Focus::Pane(_)) {
+                    c.focus = Focus::Pane(pane.clone());
+                }
             }
+            events.push(Event::PaneFocused {
+                tab: loc.tab,
+                pane: pane.clone(),
+            });
         }
-        Ok(vec![Event::PaneFocused {
-            tab: loc.tab,
-            pane: pane.clone(),
-        }])
+        events.extend(self.clear_unseen_for_pane(pane));
+        Ok(events)
     }
 
     pub fn toggle_zoom(&mut self, tab: &TabId) -> Result<Vec<Event>, ApiError> {
@@ -1319,6 +1336,13 @@ impl Model {
             .expect("a workspace has a project")
             .id
             .clone();
+        // Every record of this workspace goes with it (M3 plan assumption 32). Here rather
+        // than in the handler, because a record naming a workspace the model does not hold
+        // is not a state anything can draw: it has no place line, nothing can focus it and
+        // nothing can resume it. This method and `remove_project` are the only two ways a
+        // workspace leaves the model, so between them the rule cannot be forgotten by a
+        // later caller.
+        let mut events = self.remove_agents_of_workspace(id);
         let p = self
             .project_of_workspace_mut(id)
             .expect("a workspace has a project");
@@ -1329,15 +1353,13 @@ impl Model {
         for gone in doomed {
             self.retire(gone);
         }
-        Ok((
-            handle,
-            vec![Event::WorkspaceDeleted {
-                project,
-                workspace: id.clone(),
-                handle: handle.to_string(),
-                pruned,
-            }],
-        ))
+        events.push(Event::WorkspaceDeleted {
+            project,
+            workspace: id.clone(),
+            handle: handle.to_string(),
+            pruned,
+        });
+        Ok((handle, events))
     }
 
     /// The workspace's own id and every tab and pane id under it, as strings. Used by the
@@ -1376,10 +1398,17 @@ impl Model {
         for doomed_id in doomed {
             self.retire(doomed_id);
         }
-        Ok(vec![Event::ProjectRemoved {
+        // The records of every workspace that went, for the reason `remove_workspace_inner`
+        // gives: this is the other way a workspace leaves the model.
+        let mut events = Vec::new();
+        for w in &gone {
+            events.extend(self.remove_agents_of_workspace(w));
+        }
+        events.push(Event::ProjectRemoved {
             project: id.clone(),
             name,
-        }])
+        });
+        Ok(events)
     }
 
     /// Every workspace of one project, in handle order. The Projects box and

@@ -970,6 +970,7 @@ impl Core {
                         p.emulator.encode_paste(&text, &mut out);
                         p.write(&out);
                     }
+                    self.seen_by_input(&pane);
                 }
             }
             ClientMsg::Resize { cols, rows } => {
@@ -1002,10 +1003,32 @@ impl Core {
 
     /// One key, routed by `input::route_key`. Every key gets a frame: the chord indicator
     /// appearing, an action's result, a hint cleared or replaced (principle 8).
+    ///
+    /// A press the pane took is the reader typing into it, which clears the dot on the agent
+    /// there (interface spec 6.5). Here rather than in `input::forward_to_pane`, because copy
+    /// mode and an exited pane take the key without going through it and a reader in either
+    /// is reading that pane. Presses only: a release arrives after whichever key it belongs
+    /// to and always routes to the pane, so clearing on one would take the dot away for
+    /// `leader a` as well.
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
         self.clear_notes_read_by(client, &key);
-        let _ = crate::input::route_key(self, client, key);
+        let press = key.action != domux_term::KeyAction::Release;
+        let route = crate::input::route_key(self, client, key);
+        if press && route == crate::input::Route::Pane {
+            if let Some(pane) = self.focused_pane(client) {
+                self.seen_by_input(&pane);
+            }
+        }
         self.view_dirty = true;
+    }
+
+    /// Input reached `pane`, so the agent there has been seen (interface spec 6.5). The one
+    /// rule lives in `Model::clear_unseen_for_pane`; this is the core's way of recording what
+    /// it produced, and `api::pane`'s `seen_by_input` is the handler's.
+    fn seen_by_input(&mut self, pane: &PaneId) {
+        let cleared = self.model.clear_unseen_for_pane(pane);
+        self.view_dirty |= !cleared.is_empty();
+        self.pending_events.extend(cleared);
     }
 
     /// Scrolls the pane whose box contains the outer terminal cell. A scroll over chrome,
@@ -1468,8 +1491,18 @@ impl Core {
         })
     }
 
-    /// `workspace.clear`'s model change, which is none: the slot's record, its number, its
-    /// name and its tabs are what a clear keeps, and the work all happened on disk.
+    /// `workspace.clear`'s model change: the agent records of the slot, and nothing else. Its
+    /// record, its number, its name and its tabs are what a clear keeps, and the rest of the
+    /// work all happened on disk.
+    ///
+    /// The records go because a clear puts the slot back at its base, so the work every
+    /// session there was about is gone too (M3 plan assumption 32; the architecture spec says
+    /// an exited record stays "until you dismiss it or clear the workspace").
+    ///
+    /// **Here rather than in `api::workspace::clear`**, which is where the plan put it. That
+    /// handler only queues the job: it does not know yet whether the slot will be reset, and a
+    /// clear the job refuses - a dirty tree without `--yes` is the common one - would have
+    /// taken the records with it and left the work in place.
     ///
     /// The event still goes out, because a subscriber cannot see the disk: `workspace.cleared`
     /// carries the base the slot was put back at, which is the one thing about the reset that
@@ -1481,10 +1514,40 @@ impl Core {
         name: String,
         base: String,
     ) -> Result<serde_json::Value, ApiError> {
+        self.forget_agent_caches_of(&workspace);
+        let gone = self.model.remove_agents_of_workspace(&workspace);
+        self.pending_events.extend(gone);
         self.pending_events
             .push(Event::WorkspaceCleared { workspace, base });
         self.set_pill(client.as_ref(), format!("Cleared {name}"), true);
+        self.view_dirty = true;
         api::ok(domux_core::api::Ack { ok: true })
+    }
+
+    /// Drops the working word and the cached transcript of every record of a workspace that is
+    /// about to lose them. `api::agent::dismiss` does the same for one record and says why: an
+    /// agent id is never reissued, so nothing will ever ask for either again.
+    ///
+    /// Only the caches. The records themselves go through the model, which is where the two
+    /// paths differ: a delete takes them with the workspace, and a clear keeps the workspace.
+    ///
+    /// Called before the removal, so a removal that refuses would release a word a record
+    /// still holds. Nothing observable turns on that: a working word is picked from the agent
+    /// id and comes back the same on the next look (M3 plan assumption 34), and a recap is
+    /// re-read from the transcript.
+    fn forget_agent_caches_of(&mut self, workspace: &WorkspaceId) {
+        let doomed: Vec<(domux_core::ids::AgentId, Option<PathBuf>)> = self
+            .model
+            .agents_in_workspace(workspace)
+            .into_iter()
+            .map(|a| (a.id.clone(), a.transcript_path.clone()))
+            .collect();
+        for (id, transcript) in doomed {
+            self.agents.words.release(&id);
+            if let Some(path) = transcript {
+                self.agents.recaps.forget(&path);
+            }
+        }
     }
 
     /// `workspace.delete`'s model change: the panes' processes, then the record.
@@ -1497,7 +1560,9 @@ impl Core {
     /// The panes are collected before the record goes. `remove_workspace` takes the tabs and
     /// the panes with it without passing through `close_pane`, so nothing else would ever kill
     /// these PTYs and the processes would outlive the slot on screen - the same reasoning
-    /// `api::project::remove` gives for a project.
+    /// `api::project::remove` gives for a project. The agent records go the same way, inside
+    /// `remove_workspace`; only their caches are dropped here, because the model cannot reach
+    /// them.
     fn workspace_deleted(
         &mut self,
         client: Option<ClientId>,
@@ -1510,6 +1575,7 @@ impl Core {
             .workspace(&workspace)
             .map(|w| w.tabs.iter().flat_map(|t| t.layout.pane_ids()).collect())
             .unwrap_or_default();
+        self.forget_agent_caches_of(&workspace);
         let (handle, events) = self.model.remove_workspace(&workspace)?;
         self.pending_events.extend(events);
         // A client that was in the slot is now pointing at a workspace the model does not
@@ -3098,11 +3164,6 @@ mod tests {
     /// off: direction A asserts that message on everything listed here, and direction B only
     /// scans arms in `dispatch` that carry it.
     const STILL_UNBUILT: &[(&str, &str)] = &[
-        ("agent.list", "{}"),
-        ("agent.get", "{}"),
-        ("agent.self", "{}"),
-        ("agent.focus", "{}"),
-        ("agent.dismiss", "{}"),
         ("agent.resume", "{}"),
         ("agent.send", r#"{"text": "hello"}"#),
         ("agent.read", "{}"),

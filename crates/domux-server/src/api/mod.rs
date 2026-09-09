@@ -241,22 +241,12 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         // and ends in the register's words, which is what puts it on `STILL_UNBUILT`: the
         // task that builds one replaces its arm and deletes its line there, and the register
         // fails if either half is forgotten.
-        AgentList(_) => Err(ApiError::unavailable(
-            "agent.list arrives with the agent records in M3 and is not built yet",
-        )),
-        AgentGet(_) => Err(ApiError::unavailable(
-            "agent.get arrives with the agent records in M3 and is not built yet",
-        )),
-        AgentSelf(_) => Err(ApiError::unavailable(
-            "agent.self arrives with the agent records in M3 and is not built yet",
-        )),
+        AgentList(p) => agent::list(ctx, p),
+        AgentGet(p) => agent::get(ctx, p),
+        AgentSelf(p) => agent::self_(ctx, p),
         AgentReport(p) => agent::report(ctx, p),
-        AgentFocus(_) => Err(ApiError::unavailable(
-            "agent.focus arrives with the agents overlay in M3 and is not built yet",
-        )),
-        AgentDismiss(_) => Err(ApiError::unavailable(
-            "agent.dismiss arrives with the agents overlay in M3 and is not built yet",
-        )),
+        AgentFocus(p) => agent::focus(ctx, p),
+        AgentDismiss(p) => agent::dismiss(ctx, p),
         AgentResume(_) => Err(ApiError::unavailable(
             "agent.resume arrives with resuming exited records in M3 and is not built yet",
         )),
