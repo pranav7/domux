@@ -2,13 +2,12 @@
 //! Writing the file is the server's job (`persist.rs`); this module only shapes the bytes.
 
 use crate::ids::WorkspaceId;
-use crate::model::{Model, Project};
+use crate::model::{Agent, Model, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 1 at the end of M1, 2 at M2 (roadmap decision 5). M3 makes it 3, M4 4, each with a
-/// migration and a fixture.
-pub const SCHEMA_VERSION: u32 = 2;
+/// 1 at the end of M1, 2 at M2, 3 at M3 (agent records), 4 at M4.
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
@@ -21,6 +20,9 @@ pub struct StateFile {
     /// version 2.
     #[serde(default)]
     pub sidebar_open: bool,
+    /// M3. Live records are restored as exited (architecture spec section 5).
+    #[serde(default)]
+    pub agents: Vec<Agent>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,8 +50,19 @@ pub fn v1_to_v2(value: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar.
-pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2)];
+/// 2 to 3: the `agents` list appears, empty.
+fn v2_to_v3(v: &mut Value) -> Result<(), String> {
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| "state.json is not an object".to_string())?;
+    obj.entry("agents")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    Ok(())
+}
+
+/// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar; M3 adds
+/// agents.
+pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2), (2, v2_to_v3)];
 
 pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
     StateFile {
@@ -58,6 +71,7 @@ pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
         projects: model.projects.clone(),
         last_workspace: model.last_workspace.clone(),
         sidebar_open: model.sidebar_open,
+        agents: model.agents.clone(),
     }
 }
 
@@ -80,6 +94,15 @@ pub fn restore(file: StateFile) -> Result<Model, StateError> {
             }
         }
     }
+    // A record whose workspace no longer exists (the workspace was cleared or deleted)
+    // is dropped rather than restored dangling. Core has no logging, so this is silent;
+    // the pruned-workspace footer note belongs to the server, as M2 left it.
+    model.agents = file
+        .agents
+        .into_iter()
+        .filter(|a| model.workspace(&a.workspace).is_some())
+        .collect();
+    model.mark_agents_exited_on_restore();
     Ok(model)
 }
 
@@ -385,10 +408,121 @@ mod tests {
                 err,
                 StateError::Newer {
                     found: 9,
-                    supported: 2
+                    supported: SCHEMA_VERSION
                 }
             ),
             "{err}"
         );
+    }
+
+    fn fixture_v3() -> String {
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v3.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn v3_fixture_restores_agents_with_live_ones_exited_and_places_kept() {
+        let file = parse(&fixture_v3()).unwrap();
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert_eq!(file.agents.len(), 2);
+        let model = restore(file).unwrap();
+        let a = model.agent(&crate::ids::AgentId("a_5e21".into())).unwrap();
+        assert_eq!(
+            a.state,
+            crate::model::AgentState::Exited,
+            "it was working when the server stopped"
+        );
+        assert_eq!(a.pane, None);
+        assert_eq!(a.last_pane, Some(crate::ids::PaneId("p_8f2a".into())));
+        assert_eq!(a.name.as_deref(), Some("auth-cleanup"));
+        assert_eq!(
+            a.recap.as_deref(),
+            Some("Replaced three session checks with one guard in auth/middleware.go")
+        );
+        assert!(!a.unseen, "restore does not paint rows red");
+        assert_eq!(a.source, crate::model::AgentSource::Restore);
+        let b = model.agent(&crate::ids::AgentId("a_0b77".into())).unwrap();
+        assert!(
+            b.unseen,
+            "an exit the agent made before the stop stays unseen"
+        );
+        assert_eq!(b.source, crate::model::AgentSource::Hook);
+    }
+
+    #[test]
+    fn v2_and_v1_fixtures_migrate_to_v3_with_no_agents() {
+        let v2 = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v2.json"
+        ))
+        .unwrap();
+        let file = parse(&v2).unwrap();
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert!(file.agents.is_empty());
+        let v1 = fixture();
+        let file = parse(&v1).unwrap();
+        assert_eq!(
+            file.schema_version, SCHEMA_VERSION,
+            "the ladder runs 1 to 2 to 3"
+        );
+        assert!(file.agents.is_empty());
+        restore(file).unwrap();
+    }
+
+    #[test]
+    fn snapshot_carries_agents_and_restore_gives_them_back() {
+        let mut m = Model::new(3);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (_, p, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let report = crate::model::AgentReport {
+            event: Some(crate::model::AgentEvent::SessionStart),
+            session_id: Some("s".into()),
+            transcript_path: None,
+            cwd: None,
+            reason: None,
+        };
+        let id = m
+            .report_agent(
+                &p,
+                crate::model::AgentKind::Claude,
+                report,
+                "2026-09-05T10:00:00Z",
+            )
+            .unwrap()
+            .agent;
+        let file = snapshot(&m, "2026-09-05T10:00:00Z");
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert_eq!(file.agents.len(), 1);
+        let json = to_json(&file);
+        assert!(json.contains("\"agents\""));
+        assert!(
+            !json.contains("\"pid\""),
+            "pid is a fact and is not persisted"
+        );
+        let back = restore(parse(&json).unwrap()).unwrap();
+        assert_eq!(back.agent(&id).unwrap().session_id.as_deref(), Some("s"));
+        assert_eq!(
+            back.agent(&id).unwrap().state,
+            crate::model::AgentState::Exited
+        );
+    }
+
+    #[test]
+    fn a_restored_agent_whose_workspace_is_gone_is_dropped_and_the_rest_kept() {
+        let mut value: Value = serde_json::from_str(&fixture_v3()).unwrap();
+        value["agents"][0]["workspace"] = Value::from("w_dead");
+        let file: StateFile = serde_json::from_value(value).unwrap();
+        assert_eq!(file.agents.len(), 2, "parse itself does not prune");
+        let model = restore(file).unwrap();
+        assert_eq!(
+            model.agents.len(),
+            1,
+            "the record with no workspace is dropped"
+        );
+        assert!(model.agent(&crate::ids::AgentId("a_5e21".into())).is_none());
+        assert!(model.agent(&crate::ids::AgentId("a_0b77".into())).is_some());
     }
 }
