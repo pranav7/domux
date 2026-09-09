@@ -12,6 +12,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc::TryRecvError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -1726,6 +1727,230 @@ async fn resume_prints_the_lines_it_typed_and_the_reasons_it_skipped() {
         said.contains("already took a relaunch line"),
         "the reason, not just the fact: {said}"
     );
+}
+
+/// A fake server that answers every call from `replies`, keyed on the method, and records the
+/// requests it was sent in the order they arrived.
+///
+/// `one_call` answers one request and stops, which cannot pin a subcommand that makes several.
+/// A request is recorded before its answer is written, so the list is complete the moment the
+/// client process has exited.
+fn recording_server(
+    socket: &Path,
+    replies: Vec<(&'static str, serde_json::Value)>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<Mutex<Vec<serde_json::Value>>>,
+) {
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut line = String::new();
+            // The liveness probe connects and sends nothing, so an empty read is not a request.
+            if tokio::io::BufReader::new(r)
+                .read_line(&mut line)
+                .await
+                .unwrap_or(0)
+                == 0
+            {
+                continue;
+            }
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let method = request["method"].as_str().unwrap_or_default().to_string();
+            let body = replies
+                .iter()
+                .find(|(m, _)| *m == method)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| serde_json::json!({ "result": {} }));
+            seen.lock().unwrap().push(request);
+            let mut response = serde_json::json!({ "id": 1 });
+            for (k, v) in body.as_object().unwrap() {
+                response[k] = v.clone();
+            }
+            let _ = w.write_all(format!("{response}\n").as_bytes()).await;
+        }
+    });
+    (handle, recorded)
+}
+
+fn a_workspace(id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "project": "pr_19f0",
+        "handle": id,
+        "name": null,
+        "path": "/repo/audrey-app",
+        "branch": "main",
+        "pr": null,
+        "pr_state": null,
+        "tabs": 1,
+    })
+}
+
+fn nothing_resumed() -> serde_json::Value {
+    serde_json::json!({ "result": { "resumed": [], "skipped": [] } })
+}
+
+/// The resume target is expanded by asking the server what the string names, and a project
+/// reaches every one of its workspaces.
+///
+/// What the CLI decides here is the expansion, so the whole call sequence is read off the wire:
+/// the question it asked, and then one resume per workspace the answer held, in that order.
+#[tokio::test]
+async fn resume_with_a_project_target_resumes_every_workspace_of_that_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let (server, seen) = recording_server(
+        &socket,
+        vec![
+            (
+                "workspace.list",
+                serde_json::json!({ "result": [a_workspace("w_c3a1"), a_workspace("w_7b02")] }),
+            ),
+            ("workspace.resume", nothing_resumed()),
+        ],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env("DOMUX_WORKSPACE", "w_ffff")
+        .env_remove("TMUX")
+        .args(["resume", "audrey-app"])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert!(out.status.success(), "{out:?}");
+    let calls = seen.lock().unwrap().clone();
+    let shape: Vec<(String, serde_json::Value)> = calls
+        .iter()
+        .map(|c| {
+            (
+                c["method"].as_str().unwrap().to_string(),
+                c["params"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({ "project": "audrey-app" })
+            ),
+            (
+                "workspace.resume".to_string(),
+                serde_json::json!({ "workspace": "w_c3a1" })
+            ),
+            (
+                "workspace.resume".to_string(),
+                serde_json::json!({ "workspace": "w_7b02" })
+            ),
+        ],
+        "the target names a project, so every workspace of it is resumed and the environment's \
+         own workspace is not"
+    );
+}
+
+/// A target that names no project is a workspace target, passed through as the reader typed it:
+/// `workspace.resume` resolves a workspace by id, handle, name or branch, and this must not
+/// resolve it a second time.
+#[tokio::test]
+async fn resume_with_a_workspace_target_resumes_only_that_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let (server, seen) = recording_server(
+        &socket,
+        vec![
+            (
+                "workspace.list",
+                serde_json::json!({ "error": {
+                    "code": "not_found",
+                    "message": "no project called workspace-1; run domux2 project list to see them",
+                    "data": null,
+                }}),
+            ),
+            ("workspace.resume", nothing_resumed()),
+        ],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env("DOMUX_WORKSPACE", "w_ffff")
+        .env_remove("TMUX")
+        .args(["resume", "workspace-1"])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert!(out.status.success(), "{out:?}");
+    let calls = seen.lock().unwrap().clone();
+    let shape: Vec<(String, serde_json::Value)> = calls
+        .iter()
+        .map(|c| {
+            (
+                c["method"].as_str().unwrap().to_string(),
+                c["params"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({ "project": "workspace-1" })
+            ),
+            (
+                "workspace.resume".to_string(),
+                serde_json::json!({ "workspace": "workspace-1" })
+            ),
+        ],
+        "one workspace, named as it was typed"
+    );
+}
+
+/// A name two projects share is the reader's to settle. Reading it as a workspace instead would
+/// bury the refusal that says which two it matched, so only `not_found` falls through.
+#[tokio::test]
+async fn resume_with_an_ambiguous_project_name_refuses_rather_than_guessing() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let (server, seen) = recording_server(
+        &socket,
+        vec![
+            (
+                "workspace.list",
+                serde_json::json!({ "error": {
+                    "code": "ambiguous",
+                    "message": "2 projects are called audrey-app: /a/audrey-app, /b/audrey-app; use an id",
+                    "data": ["pr_19f0", "pr_44c1"],
+                }}),
+            ),
+            ("workspace.resume", nothing_resumed()),
+        ],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env_remove("TMUX")
+        .args(["resume", "audrey-app"])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "ambiguous: 2 projects are called audrey-app: /a/audrey-app, /b/audrey-app; use an id\n"
+    );
+    let calls = seen.lock().unwrap().clone();
+    let methods: Vec<&str> = calls
+        .iter()
+        .map(|c| c["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, vec!["workspace.list"], "nothing was resumed");
 }
 
 /// The three messaging verbs the `SessionStart` block names. They are not built until M4, and

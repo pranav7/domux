@@ -3,10 +3,11 @@
 //! Each one is a single API call to the handler a keybinding reaches, so a key, a subcommand
 //! and an API call are one implementation (architecture spec section 8).
 
-use super::{call, call_as, location, print_line};
+use super::{answer, api_error, call, call_as, location, print_line};
+use anyhow::Context;
 use clap::{Args, Subcommand};
 use domux_core::api::{
-    AgentInfo, AgentListResult, AgentReportResult, AgentResumeResult, ProjectInfo, WorkspaceInfo,
+    AgentInfo, AgentListResult, AgentReportResult, AgentResumeResult, ErrorCode, WorkspaceInfo,
     WorkspaceResumeResult,
 };
 use domux_core::model::agent::AgentKind;
@@ -197,20 +198,30 @@ pub async fn resume_target(target: Option<String>) -> anyhow::Result<()> {
 }
 
 /// The workspaces a target names: every workspace of a project when the target is one, and the
-/// target itself otherwise, which the server resolves as a workspace id, handle, name or branch.
+/// target itself otherwise, which `workspace.resume` resolves as a workspace id, handle, name or
+/// branch.
+///
+/// The question "is this string a project" is asked by asking, not answered here.
+/// `workspace.list` takes a project target and puts it through `Model::resolve_project`, whose
+/// rules are an exact id first, then a name without case, and a refusal when a name matches two
+/// projects. A copy of those rules on this side would be a second resolver, and the weaker one
+/// would be the one a reader reaches from a shell.
+///
+/// A target that could name both a project and a workspace is read as the project, because that
+/// is the question asked first. Only `not_found` falls through to the workspace: an ambiguous
+/// project name is the reader's to settle, and reading it as a workspace instead would bury the
+/// refusal that says which two projects it matched.
 async fn expand_target(target: Option<String>) -> anyhow::Result<Vec<Option<String>>> {
     let Some(target) = target else {
         return Ok(vec![location::workspace_from_env()]);
     };
-    let projects: Vec<ProjectInfo> = call_as("project.list", json!({})).await?;
-    let Some(project) = projects
-        .into_iter()
-        .find(|p| p.id.as_str() == target || p.name == target)
-    else {
-        return Ok(vec![Some(target)]);
+    let listed = match answer("workspace.list", json!({ "project": target })).await? {
+        Ok(v) => v,
+        Err(e) if e.code == ErrorCode::NotFound => return Ok(vec![Some(target)]),
+        Err(e) => return Err(api_error(e)),
     };
-    let workspaces: Vec<WorkspaceInfo> =
-        call_as("workspace.list", json!({ "project": project.id })).await?;
+    let workspaces: Vec<WorkspaceInfo> = serde_json::from_value(listed)
+        .context("the server's answer to workspace.list does not match this build")?;
     Ok(workspaces
         .into_iter()
         .map(|w| Some(w.id.to_string()))
