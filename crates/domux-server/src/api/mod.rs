@@ -159,23 +159,25 @@ impl Ctx<'_> {
 /// Every method, one arm each. No catch-all: a method added to the table in
 /// `domux_core::api` fails to compile here until it has a handler.
 ///
-/// Deviation from the M2 task 4 plan (see `fed6573`, which removed the catch-all this
-/// comment used to describe): the M2 stub block below restores that catch-all's exact
-/// wording for the 19 methods Task 4 declares, because the M2 plan assumed the removed
-/// catch-all was still here and predicted these methods would answer `unavailable` at run
-/// time rather than fail to build. Tasks 12 to 19 give each of these a real arm and delete
-/// that method's line from `STILL_UNBUILT` in `crate::core::tests`, which two tests there
-/// enforce from both directions: implementing one without removing it fails
-/// `only_the_expected_m2_methods_still_answer_unavailable`, and a stub added anywhere in
-/// this function - joined into the block below or written as its own arm, here or
-/// elsewhere - without a matching `STILL_UNBUILT` line fails
-/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. When `STILL_UNBUILT` is
-/// empty, this class of M2 gap is closed.
+/// A method declared before its handler answers `unavailable` from a stub arm at the end of
+/// the match, and every such arm is on the register: `STILL_UNBUILT` in
+/// `crate::core::tests`, which two tests there enforce from both directions. Building one
+/// without deleting its line fails `only_the_expected_methods_still_answer_unavailable`, and
+/// a stub added anywhere in this function - joined into an or-pattern or standing alone,
+/// here or elsewhere - without a matching `STILL_UNBUILT` line fails
+/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. Both key off the words
+/// "is not built yet", so a stub's message has to end in them.
 ///
-/// `workspace.resume` was the one method the plan left for M3, and Task 19 gave it a real
-/// arm rather than a stub: `api::workspace::resume` answers `unavailable` in words about
-/// agents instead of the register's "is not built yet", so it is off the register on both
-/// counts. That is the deliberate exception, and it is a handler rather than a line here.
+/// The register is M2's (see `fed6573`, which removed the catch-all that used to answer for
+/// a method with no handler, and `2d4d3a4`, which put those words back as a declared block):
+/// Tasks 12 to 19 emptied it, which was the end state it was built to reach. M3 declares its
+/// thirteen methods in one commit and fills them in over Tasks 10 to 18, so it is carrying
+/// again, and it is what stops one of those methods from reaching the cut-over unbuilt and
+/// unnoticed.
+///
+/// `workspace.resume` is the one refusal that is off the register on purpose: Task 19 gave it
+/// a real handler, `api::workspace::resume`, which answers in words about agents rather than
+/// in the register's, so neither direction looks at it.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
     match method {
@@ -231,48 +233,48 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ListActivate(p) => list::activate(ctx, p),
         ListFilter(p) => list::filter(ctx, p),
         // M3's verbs are declared before their handlers, so every caller reads one shape of
-        // this API from the first commit of the milestone. Each refuses in its own words
-        // until the task that builds it replaces the arm, the way `workspace::resume` has
-        // refused since M2: the verb exists, it does nothing yet, and the answer says when
-        // it starts (principle 9).
+        // this API from the first commit of the milestone. Each names what it is waiting for
+        // and ends in the register's words, which is what puts it on `STILL_UNBUILT`: the
+        // task that builds one replaces its arm and deletes its line there, and the register
+        // fails if either half is forgotten.
         AgentList(_) => Err(ApiError::unavailable(
-            "agent.list arrives with the agent records in M3",
+            "agent.list arrives with the agent records in M3 and is not built yet",
         )),
         AgentGet(_) => Err(ApiError::unavailable(
-            "agent.get arrives with the agent records in M3",
+            "agent.get arrives with the agent records in M3 and is not built yet",
         )),
         AgentSelf(_) => Err(ApiError::unavailable(
-            "agent.self arrives with the agent records in M3",
+            "agent.self arrives with the agent records in M3 and is not built yet",
         )),
         AgentReport(_) => Err(ApiError::unavailable(
-            "agent.report arrives with the agent hooks in M3",
+            "agent.report arrives with the agent hooks in M3 and is not built yet",
         )),
         AgentFocus(_) => Err(ApiError::unavailable(
-            "agent.focus arrives with the agents overlay in M3",
+            "agent.focus arrives with the agents overlay in M3 and is not built yet",
         )),
         AgentDismiss(_) => Err(ApiError::unavailable(
-            "agent.dismiss arrives with the agents overlay in M3",
+            "agent.dismiss arrives with the agents overlay in M3 and is not built yet",
         )),
         AgentResume(_) => Err(ApiError::unavailable(
-            "agent.resume arrives with resuming exited records in M3",
+            "agent.resume arrives with resuming exited records in M3 and is not built yet",
         )),
         AgentSend(_) => Err(ApiError::unavailable(
-            "agent.send arrives with messaging in M4",
+            "agent.send arrives with messaging in M4 and is not built yet",
         )),
         AgentRead(_) => Err(ApiError::unavailable(
-            "agent.read arrives with messaging in M4",
+            "agent.read arrives with messaging in M4 and is not built yet",
         )),
         AgentWait(_) => Err(ApiError::unavailable(
-            "agent.wait arrives with messaging in M4",
+            "agent.wait arrives with messaging in M4 and is not built yet",
         )),
         AgentsOpen(_) => Err(ApiError::unavailable(
-            "agents.open arrives with the agents overlay in M3",
+            "agents.open arrives with the agents overlay in M3 and is not built yet",
         )),
         AgentsClose(_) => Err(ApiError::unavailable(
-            "agents.close arrives with the agents overlay in M3",
+            "agents.close arrives with the agents overlay in M3 and is not built yet",
         )),
         FocusNextRegion(_) => Err(ApiError::unavailable(
-            "focus.next_region arrives with the sidebar's Agents box in M3",
+            "focus.next_region arrives with the sidebar's Agents box in M3 and is not built yet",
         )),
     }
 }

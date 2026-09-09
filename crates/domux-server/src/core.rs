@@ -3011,31 +3011,46 @@ mod tests {
         assert_eq!(core.model.last_workspace, last);
     }
 
-    /// The register `only_the_expected_m2_methods_still_answer_unavailable` and
+    /// The register `only_the_expected_methods_still_answer_unavailable` and
     /// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt` both check against:
-    /// every method Task 4 declared but no task has given a handler yet. When this is empty,
-    /// M2 has closed this class of gap.
+    /// every method declared in `domux_core::api` that no task has given a handler yet, with
+    /// the params to call it by.
     ///
-    /// `workspace.resume` was on this list as the one method left for M3. It is off it now,
-    /// and not because it was built: Task 19 gave it a real handler that answers
-    /// `unavailable` with "resume arrives with agents in M3". Both directions of the register
-    /// key off the words "is not built yet", so a method that refuses in its own words has to
-    /// leave: direction A asserts that message on everything listed here, and direction B
-    /// only scans arms in `dispatch` that carry it.
-    /// **It is empty, and that is the end state this register was built to reach.** Task 14
-    /// took the `list.*` lines and Task 18 took `workspace.clear` and `workspace.delete`, on
-    /// separate branches, so neither saw the block empty on its own; the merge that joined
-    /// them removed the last arm from `api::dispatch` and the `unbuilt` binding with it. Both
-    /// directions still hold and cost nothing: A iterates no methods, and B finds no arm in
-    /// `dispatch` carrying "is not built yet". A method stubbed here later is caught the same
-    /// way it always was.
-    const STILL_UNBUILT: &[(&str, &str)] = &[];
+    /// M2 emptied it, which was the end state it was built to reach, and M3 filled it again:
+    /// Task 5 declares thirteen methods in one commit so that every caller reads one shape of
+    /// the API from the start of the milestone, and Tasks 10 to 18 fill them in one at a
+    /// time. **When M3 finishes this holds exactly `agent.send`, `agent.read` and
+    /// `agent.wait`** - the three verbs M4 fills - **and nothing else.** Anything else still
+    /// on it is a method that would reach the cut-over answering "not built" to a reader who
+    /// has no way to know that from the outside, which is the failure this register exists to
+    /// prevent.
+    ///
+    /// `workspace.resume` is not here and was not built: Task 19 gave it a real handler that
+    /// answers `unavailable` with "resume arrives with agents in M3". Both directions key off
+    /// the words "is not built yet", so a method that refuses in its own words has to stay
+    /// off: direction A asserts that message on everything listed here, and direction B only
+    /// scans arms in `dispatch` that carry it.
+    const STILL_UNBUILT: &[(&str, &str)] = &[
+        ("agent.list", "{}"),
+        ("agent.get", "{}"),
+        ("agent.self", "{}"),
+        ("agent.report", r#"{"kind": "claude", "payload": {}}"#),
+        ("agent.focus", "{}"),
+        ("agent.dismiss", "{}"),
+        ("agent.resume", "{}"),
+        ("agent.send", r#"{"text": "hello"}"#),
+        ("agent.read", "{}"),
+        ("agent.wait", "{}"),
+        ("agents.open", "{}"),
+        ("agents.close", "{}"),
+        ("focus.next_region", "{}"),
+    ];
 
     /// Direction A of the register: implementing one of `STILL_UNBUILT` must fail this test
     /// until the implementer removes that method's line here and from the stub block in
     /// `api::dispatch`, so removal is forced rather than remembered.
     #[test]
-    fn only_the_expected_m2_methods_still_answer_unavailable() {
+    fn only_the_expected_methods_still_answer_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         for (name, params) in STILL_UNBUILT {
             assert!(
@@ -3073,7 +3088,7 @@ mod tests {
     ///
     /// Reads both source files as text and cross-checks the identifiers against the wire
     /// names the `methods!` table gives them, rather than dispatching every method in
-    /// `Method::NAMES` to see which answer `unavailable`: most of the other 28 have side
+    /// `Method::NAMES` to see which answer `unavailable`: most of the others have side
     /// effects (`server.stop` stops the server), so calling them just to observe an error
     /// code is not an option. This is the same move as
     /// `names::tests::nothing_outside_this_file_spells_the_binary_name`: pin the source text
