@@ -16,6 +16,8 @@ pub mod resume;
 /// rest of the `agent.*` namespace in `api::agent`.
 pub use crate::api::agent::report;
 
+use domux_core::api::Event;
+use domux_core::model::agent::AgentState;
 use labels::WorkingWords;
 use manifests::Registry;
 use recap::RecapReader;
@@ -28,6 +30,30 @@ pub struct AgentsState {
     pub manifests: Registry,
     /// Counts up once every `labels::GLYPH_INTERVAL` while an agent works (Task 17).
     pub glyph_tick: u64,
+}
+
+impl AgentsState {
+    /// Frees the working word of every record these events say has stopped working or has
+    /// gone. One rule in one place, because the records a change touches are not only the one
+    /// that was asked about: `Model::report_agent` exits the record it takes a pane from and
+    /// removes a placeholder it resumes over, and both of those held a word if they were
+    /// working. The pool is 186 words and an agent id is never reissued, so a word that is
+    /// not freed is a slot lost for the life of the server.
+    ///
+    /// Driven by the events rather than by the caller's own record, because the events are
+    /// what say which records changed. A caller that released only the record it named is how
+    /// the displaced one was missed.
+    pub fn release_words_of(&mut self, events: &[Event]) {
+        for e in events {
+            match e {
+                Event::AgentStateChanged { agent, to, .. } if *to != AgentState::Working => {
+                    self.words.release(agent)
+                }
+                Event::AgentDismissed { agent } => self.words.release(agent),
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Default for AgentsState {

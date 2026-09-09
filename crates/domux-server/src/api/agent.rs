@@ -53,6 +53,11 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     // Any events it did produce belong to another record it exited on the way, so they
     // travel and the screen changed even when this record did not.
     let changed = applied || !events.is_empty();
+    // Every record these events touched, and not only the one the hook named. A report exits
+    // the record whose pane a new session took, and that record was working and holding a
+    // word a moment ago. Before the early return below, because a hook that changed nothing
+    // about its own record still displaced the other one.
+    ctx.agents.release_words_of(&events);
     ctx.events.extend(events);
     // The Agents box, the agents overlay and the top bar's count all read the records, and
     // nothing turns an event into a redraw, so a report that changed one says so here.
@@ -63,11 +68,6 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
             state: Some(to),
             context: None,
         });
-    }
-
-    // The word is per working agent and is freed the moment the agent stops working.
-    if to != AgentState::Working {
-        ctx.agents.words.release(&agent);
     }
 
     // Recap and session name, re-read on the events the architecture spec names, plus
@@ -255,8 +255,22 @@ pub fn dismiss(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
     let transcript = ctx.model.agent(&id).and_then(|a| a.transcript_path.clone());
     let events = ctx.model.dismiss_agent(&id)?;
     // The word and the transcript were keyed to a record that no longer exists, and an agent
-    // id is never reissued, so nothing will ask for either again.
-    ctx.agents.words.release(&id);
+    // id is never reissued, so nothing will ask for either again. The word goes through the
+    // one rule that reads these events; the transcript is keyed by path, which no event
+    // carries, so it is dropped here.
+    //
+    // **The word half frees nothing today, and it is kept anyway.** `Model::dismiss_agent`
+    // refuses a live record, and every path out of `working` frees the word on the way, so a
+    // record that can be dismissed is one that holds none. The three paths are held by
+    // `a_stop_hook_gives_the_working_word_back_to_the_pool`,
+    // `a_pane_that_exits_gives_back_the_working_words_of_its_agents` and
+    // `a_session_that_takes_a_pane_gives_back_the_word_of_the_one_it_displaced`. The last of
+    // those was a real leak until Task 17, which is the argument for keeping this: the pool is
+    // 186 words, an agent id is never reissued, and a slot lost here is lost for the life of
+    // the server, so a change that makes this path reachable must not depend on someone
+    // remembering to add the release back. `dismissing_a_record_gives_its_working_word_back_
+    // to_the_pool` puts a word in the pool by hand to hold the intent.
+    ctx.agents.release_words_of(&events);
     if let Some(path) = transcript {
         ctx.agents.recaps.forget(&path);
     }

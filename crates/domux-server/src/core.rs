@@ -1579,6 +1579,13 @@ impl Core {
         events
     }
 
+    // `forget_agent_caches` drops a working word and a cached transcript. On a clear only the
+    // transcript is ever there: the filter above takes records whose session is over, and such
+    // a record holds no word, for the reason `api::agent::dismiss` sets out. The word half is
+    // live on the other caller: `forget_agent_caches_of`, which a delete uses, takes every
+    // record of the workspace including a working one, and
+    // `deleting_a_workspace_gives_back_the_working_words_of_its_agents` holds it.
+
     /// Drops the working word and the cached transcript keyed to a record that has just gone.
     /// `api::agent::dismiss` does the same for the record it removes and says why: an agent id
     /// is never reissued, so nothing will ever ask for either again, and the pool of working
@@ -1908,13 +1915,7 @@ impl Core {
         if events.is_empty() {
             return false;
         }
-        for e in &events {
-            if let Event::AgentStateChanged { agent, to, .. } = e {
-                if *to != AgentState::Working {
-                    self.agents.words.release(agent);
-                }
-            }
-        }
+        self.agents.release_words_of(&events);
         self.pending_events.extend(events);
         true
     }
@@ -5163,6 +5164,97 @@ mod tests {
             core.agents.words.in_use(),
             0,
             "the next frame does not take it again"
+        );
+    }
+
+    /// One hook payload from `pane` carrying `session`, for the two records that displace
+    /// each other below.
+    fn hook_session(core: &mut Core, pane: &PaneId, event: &str, session: Option<&str>) {
+        let mut payload = serde_json::json!({ "hook_event_name": event });
+        if let Some(id) = session {
+            payload["session_id"] = serde_json::json!(id);
+        }
+        let method = Method::from_request(
+            "agent.report",
+            serde_json::json!({"pane": pane, "kind": "claude", "payload": payload}),
+        )
+        .expect("agent.report takes these params");
+        core.dispatch(method, None).expect("agent.report");
+    }
+
+    /// A new session on a pane exits the record that was there, and that record was working a
+    /// moment ago, so its word goes back.
+    ///
+    /// The handler used to free the word of the record the hook named and no other, which left
+    /// the displaced one exited and still holding a slot. Nothing on the screen shows it: the
+    /// row draws no word for an exited record either way. The pool is 186 words, so a server
+    /// that runs long enough hands out a word another record already has.
+    #[test]
+    fn a_session_that_takes_a_pane_gives_back_the_word_of_the_one_it_displaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook_session(&mut core, &pane, "UserPromptSubmit", Some("c1"));
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "the first session took a word"
+        );
+
+        hook_session(&mut core, &pane, "UserPromptSubmit", Some("c2"));
+        drawn(&mut core);
+
+        let states: Vec<AgentState> = core.model.agents.iter().map(|a| a.state).collect();
+        assert_eq!(
+            states,
+            vec![AgentState::Exited, AgentState::Working],
+            "the pane changed hands, so one record exited and one is working"
+        );
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "one word for the one working record, and the displaced one gave its own back"
+        );
+    }
+
+    /// The same for the record a resume removes rather than exits. A session-less record the
+    /// observer left on a pane is dropped when the session that owns that pane reports from
+    /// it, and a dropped record frees its word like an exited one.
+    #[test]
+    fn a_resume_that_drops_a_placeholder_gives_back_the_word_it_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, first) = core_with_a_pane(dir.path());
+        let client = attached(&mut core);
+        core.dispatch(
+            Method::from_request("pane.split", serde_json::json!({"dir": "right"}))
+                .expect("pane.split takes these params"),
+            Some(client),
+        )
+        .expect("pane.split");
+        let second = core
+            .model
+            .all_pane_ids()
+            .into_iter()
+            .find(|p| p != &first)
+            .expect("the split made a second pane");
+        hook_session(&mut core, &first, "UserPromptSubmit", Some("c1"));
+        // No session id, so this record is the placeholder the resume below drops.
+        hook_session(&mut core, &second, "UserPromptSubmit", None);
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            2,
+            "two working records, two words"
+        );
+
+        hook_session(&mut core, &second, "UserPromptSubmit", Some("c1"));
+        drawn(&mut core);
+
+        assert_eq!(core.model.agents.len(), 1, "the placeholder was dropped");
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "and it did not take a slot with it"
         );
     }
 
