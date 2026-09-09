@@ -7,6 +7,11 @@
 //! What is in the foreground is not the same question as whether the agent is alive: an agent
 //! running a tool puts that tool in the foreground. So a record exits when its own process id
 //! goes away, never because the foreground changed.
+//!
+//! That holds when the tool is itself an agent. An agent that runs another kind, or its own
+//! kind, still has its own process, and the observer asks about that process rather than
+//! reading the name in front of the pane. Reading the name would exit a live agent's record,
+//! and a hook after that exit changes nothing, so the record would never come back.
 
 use crate::agents::manifests::Registry;
 use crate::process::{ForegroundProcess, ProcessInspector};
@@ -42,18 +47,31 @@ pub fn run(
             .live_agent_on_pane(&p.pane)
             .map(|a| (a.id.clone(), a.kind, a.pid));
         match (seen, live) {
-            // The record on this pane is of the kind in the foreground: bind the process to
-            // it. A record a hook created has no process id until here.
-            (Some((kind, pid)), Some((id, live_kind, _))) if kind == live_kind => {
-                model.set_agent_pid(&id, Some(pid));
-            }
-            // Another kind took the pane. One pane holds at most one live record, so the old
-            // one exits and a new one starts.
-            (Some((kind, pid)), Some((id, _, _))) => {
-                events.extend(model.agent_process_gone(&id, now));
-                let (_, created) = model.observe_agent(&p.pane, kind, Some(pid), now);
-                events.extend(created);
-            }
+            // A known agent is in the foreground and a record already lives on this pane.
+            // Only that record's own process decides what happens: what is in front of the
+            // pane may be a tool the record is running, and a tool can itself be an agent -
+            // an agent that runs another one, or its own kind, is the case that has to
+            // survive here.
+            (Some((kind, pid)), Some((id, live_kind, held))) => match held {
+                // Its own process is gone. The record exits, and the process in front starts
+                // a record of its own rather than taking this one over: the session that
+                // ended keeps its record, and with it its session id and its place in the
+                // list of things that can be resumed.
+                Some(old) if old != pid && !inspector.is_alive(old) => {
+                    events.extend(model.agent_process_gone(&id, now));
+                    let (_, created) = model.observe_agent(&p.pane, kind, Some(pid), now);
+                    events.extend(created);
+                }
+                // A record a hook made, which no tick has bound a process to yet. The process
+                // in front is that agent when it is the same kind. When it is not, it is a
+                // tool the agent is running and there is nothing here to bind: nothing exits
+                // either, because a record with no process id is a record with no evidence of
+                // an exit, and an exit is never guessed.
+                None if kind == live_kind => model.set_agent_pid(&id, Some(pid)),
+                // Its own process is still there, so the record stands as it is. The process
+                // in front is never bound over one that answers.
+                None | Some(_) => {}
+            },
             // An agent is running and nothing has reported on it.
             (Some((kind, pid)), None) => {
                 let (_, created) = model.observe_agent(&p.pane, kind, Some(pid), now);

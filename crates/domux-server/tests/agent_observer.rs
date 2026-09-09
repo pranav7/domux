@@ -183,6 +183,113 @@ async fn a_pane_whose_child_exits_marks_its_agent_exited_while_the_pane_stays() 
     );
 }
 
+/// The case a user hits: claude runs codex through a tool, so another agent's name is in front
+/// of the pane while claude is alive and working. Reading that name as claude's exit would set a
+/// red dot on a running agent, and a later hook on an exited record changes nothing, so the
+/// record would stay dead until the agent was restarted.
+#[tokio::test]
+async fn an_agent_that_runs_another_agent_as_a_tool_keeps_its_record() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let claude = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"PreToolUse","session_id":"s1"}"#,
+    )
+    .await;
+    assert_eq!(one_agent(&mut h).await.state, AgentState::Working);
+    // The tool is codex, which is a kind domux knows. Nothing killed claude.
+    h.set_foreground_for(&pane, Some("codex")).await;
+    tokio::time::sleep(A_TICK * 2).await;
+    let a = one_agent(&mut h).await;
+    assert_eq!(
+        a.state,
+        AgentState::Working,
+        "claude is alive, so the agent in front of the pane is a tool it is running"
+    );
+    assert_eq!(a.kind, AgentKind::Claude);
+    assert_eq!(a.pane.as_ref(), Some(&pane), "it never left its pane");
+    assert_eq!(a.pid, Some(claude), "and it still names its own process");
+    assert!(!a.unseen, "nothing happened, so nothing needs looking at");
+}
+
+/// The same case with the tool being the agent's own kind, which is what `claude -p` in a Bash
+/// tool looks like: the record must keep the process it holds rather than follow the child, or
+/// the child's exit would read as the agent's.
+#[tokio::test]
+async fn an_agent_that_runs_its_own_kind_as_a_tool_keeps_its_own_process() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let parent = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(one_agent(&mut h).await.pid, Some(parent));
+    // A second claude, in front of the pane while the first is alive.
+    let child = h.set_foreground_for(&pane, Some("claude")).await;
+    assert_ne!(child, parent);
+    tokio::time::sleep(A_TICK).await;
+    let a = one_agent(&mut h).await;
+    assert_eq!(
+        a.pid,
+        Some(parent),
+        "the record keeps its own process, not the one in front"
+    );
+    // Now the tool ends and its shell is in front. The record's own process is untouched, so
+    // the child's death is not the agent's.
+    h.kill_process(child).await;
+    h.set_foreground_for(&pane, Some("bash")).await;
+    tokio::time::sleep(A_TICK).await;
+    let a = one_agent(&mut h).await;
+    assert_eq!(a.state, AgentState::Unknown, "still running, still unknown");
+    assert_eq!(a.pane.as_ref(), Some(&pane));
+}
+
+/// An agent that really did go, replaced by a fresh one of the same kind between two ticks. The
+/// old record exits rather than being rebound, so the session that ended keeps its own record.
+#[tokio::test]
+async fn a_restarted_agent_of_the_same_kind_gets_a_record_of_its_own() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let first_pid = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    let first = one_agent(&mut h).await;
+    h.kill_process(first_pid).await;
+    let second_pid = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    let agents = agents(&mut h).await;
+    assert_eq!(agents.len(), 2, "two sessions, two records");
+    let old = agents.iter().find(|a| a.id == first.id).unwrap();
+    assert_eq!(old.state, AgentState::Exited);
+    assert_eq!(old.pane, None);
+    let new = agents.iter().find(|a| a.id != first.id).unwrap();
+    assert_eq!(new.kind, AgentKind::Claude);
+    assert_eq!(new.state, AgentState::Unknown);
+    assert_eq!(new.pid, Some(second_pid));
+    assert_eq!(new.pane.as_ref(), Some(&pane));
+}
+
+/// The two answers disagreeing: the inspector names a process in front of the pane and also says
+/// that process is gone. The observer must not read that as an agent leaving and a new one
+/// arriving, or it would exit and create a record once a second for as long as it lasted.
+#[tokio::test]
+async fn a_process_that_is_named_in_front_and_reported_gone_does_not_multiply_records() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let pid = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    let first = one_agent(&mut h).await;
+    // Still in the foreground, and gone.
+    h.kill_process(pid).await;
+    tokio::time::sleep(A_TICK * 3).await;
+    let a = one_agent(&mut h).await;
+    assert_eq!(a.id, first.id, "the same one record, three ticks later");
+    // And the record is not stuck: the moment the pane stops naming it, it exits.
+    h.set_foreground_for(&pane, Some("zsh")).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(one_agent(&mut h).await.state, AgentState::Exited);
+}
+
 /// A pane closed on purpose, which is a different path from a child that exited: `pane.close`
 /// and `tab.close` change the model themselves and never call the core's `close_pane`, so the
 /// records end on the kill list every one of those paths puts its panes on.
