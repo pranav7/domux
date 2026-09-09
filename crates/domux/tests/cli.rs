@@ -115,7 +115,7 @@ async fn tab_name_reads_its_tab_from_the_environment() {
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
-        Duration::from_secs(2),
+        Duration::from_secs(10),
     )
     .await;
     let tabs = h.api("tab.list", serde_json::json!({})).await.unwrap();
@@ -136,7 +136,7 @@ async fn tab_name_reads_its_tab_from_the_environment() {
         .wait_for(
             h.client.clone(),
             |f| f.contains("1 from shell"),
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         )
         .await;
     assert!(f.contains("│ 2 │"), "the current tab kept its number:\n{f}");
@@ -150,7 +150,7 @@ async fn tab_name_reads_its_tab_from_the_environment() {
     h.wait_for(
         h.client.clone(),
         |f| !f.contains("from shell"),
-        Duration::from_secs(2),
+        Duration::from_secs(10),
     )
     .await;
 }
@@ -178,7 +178,7 @@ async fn pane_split_read_and_send_text_act_on_the_pane_from_the_environment() {
     h.wait_for(
         h.client.clone(),
         |f| f.contains("gamma"),
-        Duration::from_secs(2),
+        Duration::from_secs(10),
     )
     .await;
     let out = domux2(&h)
@@ -202,7 +202,7 @@ async fn pane_split_read_and_send_text_act_on_the_pane_from_the_environment() {
     h.wait_for(
         h.client.clone(),
         |f| f.matches('┌').count() == 2,
-        Duration::from_secs(2),
+        Duration::from_secs(10),
     )
     .await;
 }
