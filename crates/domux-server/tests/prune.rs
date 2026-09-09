@@ -642,6 +642,13 @@ async fn no_pane_is_started_in_a_worktree_that_is_gone() {
 /// What the cache knew about a pruned workspace goes with the record, and what it knew about
 /// the one beside it stays. Without the second half this passes against a prune that forgets
 /// every fact it has.
+///
+/// What this does **not** establish is that the start is what forgot it. `start_due_fetches`
+/// calls `forget_deleted` on every tick, and a tick has run by the time this reads the
+/// published facts, so the two orders are indistinguishable here. The claim that the start
+/// does it, before a tick has had the chance, is carried by
+/// `core::tests::the_start_forgets_a_pruned_workspaces_facts_before_any_tick_runs`, which
+/// reads a `Core` that has never ticked.
 #[tokio::test]
 async fn the_facts_of_a_pruned_workspace_are_forgotten_and_its_neighbour_keeps_its_own() {
     let tmp = tempfile::tempdir().unwrap();

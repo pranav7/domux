@@ -197,6 +197,68 @@ fn shown(fact: Option<&Fact>) -> Option<(&str, Option<&FactState>, Option<&str>)
     fact.map(|f| (f.text.as_str(), f.state.as_ref(), f.url.as_deref()))
 }
 
+/// Whether the filesystem says there is nothing at `path`, as against saying it cannot tell.
+///
+/// `Path::is_dir` is `metadata().map(..).unwrap_or(false)`, so it answers false for a
+/// permission denied on a parent, an `EIO` from a failing disk, a timed-out network mount and
+/// a symlink loop, none of which mean the author's work is gone. `prune_missing_paths` deletes
+/// records on this answer, so it asks the narrower question.
+///
+/// **This is not sufficient on its own, and nothing here should be read as saying it is.** An
+/// external drive that is not mounted gives `NotFound` for every path under its mount point,
+/// and at this layer that is indistinguishable from a directory somebody deleted. Telling the
+/// two apart needs a state on the model for "missing, kept", which is a later milestone's.
+/// Until then what covers the case is the copy `keep_pre_prune_state` leaves behind, so do not
+/// remove that on the strength of this check.
+///
+/// A path that exists but is not a directory is not missing either. Something is there, and
+/// deleting the record of it is the outcome this whole function exists to avoid.
+fn is_missing(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            tracing::warn!(
+                "keeping the record for {}: the filesystem could not answer for it ({e})",
+                path.display()
+            );
+            false
+        }
+        Ok(_) => false,
+    }
+}
+
+/// Copies the state file to `<path>.pruned` before the first record is taken away.
+///
+/// `write_atomic` renames the current file to `.bak` on every write, so `.bak` holds the
+/// pre-prune model for exactly one further write - and `publish_events` treats the prune's own
+/// events as structural, so the first write happens within milliseconds and the attaching
+/// client's `PaneResized` takes the second. `.pruned` is a name nothing rotates, the same
+/// answer `Core::new` already gives a state file it refused to parse (`.rejected`).
+///
+/// A copy and not a rename: the file the server is about to keep writing has to stay where it
+/// is. Each start overwrites the previous `.pruned`, which is the right trade for a start that
+/// only writes one when it is about to delete something.
+///
+/// A failure here does not stop the prune. The model has to match the disk either way, and a
+/// start that refused to correct itself because it could not write a backup would be a server
+/// that will not start.
+fn keep_pre_prune_state(state_file: &Path) {
+    let kept = crate::persist::with_suffix(state_file, ".pruned");
+    match std::fs::copy(state_file, &kept) {
+        Ok(_) => tracing::warn!(
+            "records are about to be pruned; the state as it was is kept at {}",
+            kept.display()
+        ),
+        // Not an error at `warn`: the ordinary way here is a first start, which has no state
+        // file to copy and nothing to prune either.
+        Err(e) => tracing::info!(
+            "the state file at {} was not copied to {} ({e})",
+            state_file.display(),
+            kept.display()
+        ),
+    }
+}
+
 pub struct Core {
     pub model: Model,
     pub panes: HashMap<PaneId, PaneRuntime>,
@@ -255,8 +317,14 @@ pub struct Core {
     /// What the start-up prune took away, in the words the switcher's footer and the
     /// sidebar's hint row print. One list for the server rather than one per client: the
     /// prune runs before any client attaches, so a per-client list would be empty for
-    /// everybody. Cleared by the first key in a box, so a note is read once.
-    pub notes: Vec<String>,
+    /// everybody.
+    ///
+    /// Cleared by the first key in a box, so a note is read once - and because the list is the
+    /// server's, **whichever** client presses that key clears it for every attached client.
+    /// That is the difference from a pill, which is one client's and ages out instead. Two
+    /// readers at two screens therefore share one note, and the first of them to look at a
+    /// list takes it away from the other.
+    notes: Vec<String>,
 }
 
 impl Core {
@@ -363,7 +431,7 @@ impl Core {
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
         // a tab, or `spawn_pane`, which would start a shell in a directory that is not there.
-        core.notes = core.prune_missing_paths();
+        core.notes = core.prune_missing_paths(state_file);
         // The directory the server was started in, when the model holds nothing else. After
         // the prune rather than before it: a state file whose every project has been removed
         // with `rm -rf` prunes down to nothing, and a server with no workspace refuses every
@@ -405,22 +473,53 @@ impl Core {
     /// `if let Ok`: by the time it runs, every surviving `main` has a folder, so the refusal
     /// is unreachable rather than swallowed.
     ///
+    /// That last argument holds **while** a `main` workspace's path is its project's root,
+    /// which only construction guarantees. `add_project` sets the two equal and nothing writes
+    /// either afterwards, so it is true of every state file this build wrote; but
+    /// `state_file::restore` deserializes a `Project` straight from JSON and checks only that
+    /// each tab's focused pane is in its layout, so a hand-edited file where they differ
+    /// reaches the swallowed `if let Ok` and keeps a record it should have taken. If that ever
+    /// becomes reachable, skip `WorkspaceHandle::Main` in the workspace filter and the refusal
+    /// is unreachable by construction here too.
+    ///
     /// Nothing here retires an id. `remove_project` and `prune_workspace` retire every
     /// workspace, tab and pane id they take away, so a prune at start cannot hand an id back
     /// out to a different object later in the session. One place owns that and it is the
     /// model.
-    fn prune_missing_paths(&mut self) -> Vec<String> {
+    ///
+    /// What is lost when this is wrong is not files: `remove_project` leaves the folder and
+    /// its worktrees on disk (interface spec 12.8). It is every **record** - workspace names,
+    /// tab and pane layouts, saved directories, `last_workspace` - and nothing here asks
+    /// first, because at start there is nobody to ask. `project.remove`, which is the same
+    /// deletion asked for deliberately, is guarded by a confirmation and by `--yes`. So this
+    /// path carries three defences instead: it prunes only on `NotFound`, it logs each record
+    /// with its path, and it keeps the pre-prune state file where nothing rotates it.
+    fn prune_missing_paths(&mut self, state_file: &Path) -> Vec<String> {
         let mut notes = Vec::new();
+        // Copied at most once, and only when something is actually about to go, so a clean
+        // start does not rotate a file for nothing. Copying after the project loop still gets
+        // the pre-prune file: nothing writes `state.json` during `Core::new`, because the only
+        // writer is the persistence task and `publish_events` does not run until the batch
+        // loop, after this returns.
+        let mut kept = false;
         let gone_projects: Vec<_> = self
             .model
             .projects
             .iter()
-            .filter(|p| !p.root.is_dir())
-            .map(|p| (p.id.clone(), p.name.clone()))
+            .filter(|p| is_missing(&p.root))
+            .map(|p| (p.id.clone(), p.name.clone(), p.root.clone()))
             .collect();
-        for (id, name) in gone_projects {
+        if !gone_projects.is_empty() {
+            keep_pre_prune_state(state_file);
+            kept = true;
+        }
+        for (id, name, root) in gone_projects {
             if let Ok(events) = self.model.remove_project(&id) {
                 self.pending_events.extend(events);
+                tracing::warn!(
+                    "removing project {name}: {} is not there. The folder and any worktrees under it are left alone",
+                    root.display()
+                );
                 notes.push(format!("Removed {name}: its folder is gone"));
             }
         }
@@ -429,12 +528,16 @@ impl Core {
             .projects
             .iter()
             .flat_map(|p| p.workspaces.iter())
-            .filter(|w| !w.path.is_dir())
-            .map(|w| (w.id.clone(), w.display_name()))
+            .filter(|w| is_missing(&w.path))
+            .map(|w| (w.id.clone(), w.display_name(), w.path.clone()))
             .collect();
-        for (id, name) in gone {
+        if !gone.is_empty() && !kept {
+            keep_pre_prune_state(state_file);
+        }
+        for (id, name, path) in gone {
             if let Ok((_, events)) = self.model.prune_workspace(&id) {
                 self.pending_events.extend(events);
+                tracing::warn!("pruning workspace {name}: {} is not there", path.display());
                 notes.push(format!("Pruned {name}: its worktree is gone"));
             }
         }
@@ -2825,6 +2928,243 @@ mod tests {
     /// The first workspace of the core's implicit project.
     fn first_workspace(core: &Core) -> WorkspaceId {
         core.model.first_workspace().expect("one workspace")
+    }
+
+    /// A model with one project at `root`, holding `main` and one slot at `slot_path`, saved
+    /// as a state file at `<dir>/state.json`. The path back is what a caller varies.
+    fn state_file_with_a_slot_at(dir: &Path, root: &Path, slot_path: &Path) -> (PathBuf, Model) {
+        let mut model = Model::new(7);
+        let (project, _main, _) = model.add_folder_project(root.to_path_buf()).unwrap();
+        model
+            .project_mut(&project)
+            .expect("the project is there")
+            .workspaces
+            .push(domux_core::model::Workspace {
+                id: WorkspaceId("w_5101".into()),
+                handle: domux_core::model::WorkspaceHandle::Slot(1),
+                name: None,
+                path: slot_path.to_path_buf(),
+                tabs: Vec::new(),
+                last_tab: None,
+            });
+        let saved = dir.join("state.json");
+        std::fs::write(
+            &saved,
+            serde_json::to_string(&state_file::snapshot(&model, "2026-09-04T14:32:00+01:00"))
+                .unwrap(),
+        )
+        .unwrap();
+        (saved, model)
+    }
+
+    /// A record is pruned only when the filesystem says there is nothing there, never when it
+    /// says it cannot tell.
+    ///
+    /// A directory with no permissions is the reachable version of this. An unplugged disk and
+    /// a network mount that timed out reach `prune_missing_paths` the same way and cannot be
+    /// built in a test; a `chmod 000` on a parent gives `PermissionDenied` for the path under
+    /// it, which is the same `Err` kind question the code asks. `Path::is_dir`, which this
+    /// replaced, answers false for all four.
+    ///
+    /// The mode goes back before the assertions so the temp directory can still be removed
+    /// when one of them fails.
+    #[test]
+    fn a_record_whose_path_cannot_be_read_is_kept_rather_than_pruned() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        let root = locked.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let (saved, _) = state_file_with_a_slot_at(dir.path(), &root, &root.join("slot"));
+        std::fs::create_dir_all(root.join("slot")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            core.notes.is_empty(),
+            "nothing was said, because nothing was known: {:?}",
+            core.notes
+        );
+        assert_eq!(
+            core.model
+                .projects
+                .iter()
+                .find(|p| p.root == root)
+                .map(|p| p.workspaces.len()),
+            Some(2),
+            "the project and both its workspaces are still there"
+        );
+        assert!(
+            !crate::persist::with_suffix(&saved, ".pruned").exists(),
+            "and no backup was made, because nothing was about to be deleted"
+        );
+    }
+
+    /// A prune keeps the state as it was under a name nothing rotates, so the records it took
+    /// are recoverable by hand.
+    ///
+    /// `.bak` is not that name: `write_atomic` moves the current file into it on every write,
+    /// and the prune's own events make the very next batch structural, so `.bak` holds the
+    /// pre-prune model for one write and the attaching client's `PaneResized` takes the second.
+    #[test]
+    fn a_prune_keeps_the_state_it_started_from_and_a_clean_start_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj-a");
+        std::fs::create_dir_all(&root).unwrap();
+        let (saved, _) = state_file_with_a_slot_at(dir.path(), &root, &root.join("gone"));
+        let before = std::fs::read_to_string(&saved).unwrap();
+        let kept = crate::persist::with_suffix(&saved, ".pruned");
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        assert_eq!(core.notes.len(), 1, "the fixture did prune something");
+        assert_eq!(
+            std::fs::read_to_string(&kept).unwrap(),
+            before,
+            "the file kept aside is the one the server read, before anything was taken from it"
+        );
+        assert!(
+            before.contains("w_5101"),
+            "which is the point: the record that went is still in it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&saved).unwrap(),
+            before,
+            "and it is a copy: the file the server goes on writing is still where it was"
+        );
+
+        // A second start over the corrected state has nothing to prune, so it must not rotate
+        // the backup away. Same directory, so the file it would overwrite is the one above.
+        std::fs::write(
+            &saved,
+            serde_json::to_string(&state_file::snapshot(
+                &core.model,
+                "2026-09-04T14:32:00+01:00",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let again = core_with(dir.path(), Vec::new(), &saved).0;
+        assert!(again.notes.is_empty(), "nothing left to prune");
+        assert_eq!(
+            std::fs::read_to_string(&kept).unwrap(),
+            before,
+            "so the copy from the start that did prune is still the one on disk"
+        );
+    }
+
+    /// A project going takes the same copy aside as a workspace going.
+    ///
+    /// Its own test because the two branches make the copy separately: the project branch
+    /// makes it and sets the flag, and the workspace branch makes it only if the project
+    /// branch did not. A fixture where both kinds go at once exercises the first branch and
+    /// skips the second, so it can never tell whether the second one was there at all - and a
+    /// fixture where only a workspace goes cannot see the first.
+    #[test]
+    fn a_project_that_is_pruned_also_keeps_the_state_it_started_from() {
+        let dir = tempfile::tempdir().unwrap();
+        // Never created, so it is the project's root that is gone rather than a slot's path.
+        let root = dir.path().join("never-made");
+        let (saved, _) = state_file_with_a_slot_at(dir.path(), &root, &root.join("slot"));
+        let before = std::fs::read_to_string(&saved).unwrap();
+        let kept = crate::persist::with_suffix(&saved, ".pruned");
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        assert_eq!(
+            core.notes,
+            vec!["Removed never-made: its folder is gone".to_string()],
+            "the project is what went"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&kept).unwrap(),
+            before,
+            "and the state as it was is kept, the same as when a slot goes"
+        );
+    }
+
+    /// A path that is there but is not a directory is not missing. Something is at that name,
+    /// and deleting the record of it is the outcome the `NotFound` check exists to avoid.
+    ///
+    /// The old probe was `!path.is_dir()`, which answers "prune it" here.
+    #[test]
+    fn a_path_that_is_there_but_is_not_a_directory_is_not_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj-c");
+        std::fs::create_dir_all(&root).unwrap();
+        let slot = root.join("slot");
+        std::fs::write(&slot, "not a directory\n").unwrap();
+        let (saved, _) = state_file_with_a_slot_at(dir.path(), &root, &slot);
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        assert!(
+            core.notes.is_empty(),
+            "nothing was pruned: {:?}",
+            core.notes
+        );
+        assert!(
+            core.model
+                .workspace(&WorkspaceId("w_5101".into()))
+                .is_some(),
+            "the record for the name that is taken is still there"
+        );
+    }
+
+    /// The start forgets a pruned workspace's facts, before any tick has had the chance to.
+    ///
+    /// A unit test because `start_due_fetches` calls `forget_deleted` on every tick, so in the
+    /// harness the tick is a second cause standing in for the call in `Core::new`: the
+    /// interface test named for this passes with the two in either order. Here no tick has run,
+    /// so the only thing that can have dropped the fact is the start.
+    ///
+    /// The neighbour's fact is asserted too. Without it a start that forgot every fact it
+    /// loaded would pass.
+    #[test]
+    fn the_start_forgets_a_pruned_workspaces_facts_before_any_tick_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj-b");
+        std::fs::create_dir_all(&root).unwrap();
+        let (saved, model) = state_file_with_a_slot_at(dir.path(), &root, &root.join("gone"));
+        let kept_workspace = model.first_workspace().expect("main");
+        let pruned = WorkspaceId("w_5101".into());
+        let mut cache = FactRegistry::new();
+        for id in [&kept_workspace, &pruned] {
+            cache.set(
+                FactKey::workspace(id, domux_core::facts::FACT_PR),
+                Some(Fact::new(
+                    "PR#212",
+                    Some(FactState::Open),
+                    FixedClock::at("2026-09-04T14:32:00").0.to_rfc3339(),
+                    Duration::from_secs(600),
+                )),
+            );
+        }
+        cache.save_cache(
+            &crate::facts::pr_cache_path(&dir.path().join("state")),
+            &[domux_core::facts::FACT_PR],
+        );
+
+        let core = core_with(dir.path(), Vec::new(), &saved).0;
+        assert!(
+            core.notes.len() == 1 && core.model.workspace(&pruned).is_none(),
+            "the fixture pruned the workspace the fact is about: {:?}",
+            core.notes
+        );
+        assert!(
+            core.facts
+                .get(&FactKey::workspace(&pruned, domux_core::facts::FACT_PR))
+                .is_none(),
+            "its pull request went with it, at the start rather than at the first tick"
+        );
+        assert!(
+            core.facts
+                .get(&FactKey::workspace(
+                    &kept_workspace,
+                    domux_core::facts::FACT_PR
+                ))
+                .is_some(),
+            "and the workspace that stayed kept what the cache knew about it"
+        );
     }
 
     /// A note names a workspace the way the Projects box does: its name when it has one, and

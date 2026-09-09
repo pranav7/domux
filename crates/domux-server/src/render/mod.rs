@@ -67,10 +67,10 @@ pub struct RenderInput<'a> {
 /// sidebar. Two prunes join with the separator the hint rows already use, so a start that
 /// took two records away says both rather than the first and a count.
 pub fn note_line(notes: &[String]) -> Option<String> {
-    match notes.is_empty() {
-        true => None,
-        false => Some(notes.join(" · ")),
+    if notes.is_empty() {
+        return None;
     }
+    Some(notes.join(" · "))
 }
 
 impl<'a> RenderInput<'a> {
