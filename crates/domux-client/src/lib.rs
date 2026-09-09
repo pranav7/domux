@@ -17,7 +17,7 @@ use crossterm::event::{Event, EventStream, MouseEventKind};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION, SERVER_STOPPED,
 };
-use domux_term::Rgb;
+use domux_term::{Mods, MouseAction, MouseButton, MouseEvent, Rgb};
 use futures::{Stream, StreamExt};
 use ratatui::backend::{Backend, CrosstermBackend};
 use std::future::Future;
@@ -81,6 +81,8 @@ struct Session<B: Backend> {
     backend: B,
     dec: Decoder,
     copy: CopyFn,
+    /// Repeated presses, for the count a double and a triple click are told apart by.
+    clicks: Clicks,
 }
 
 impl<B: Backend> Session<B>
@@ -227,9 +229,20 @@ where
                     row: mouse.row,
                     lines: -WHEEL_LINES,
                 }),
-                // Normal tracking also reports button presses and releases. V2 uses only
-                // wheel position, so clicks, horizontal scroll and motion do nothing.
-                _ => None,
+                MouseEventKind::Down(button) => {
+                    button_event(&mut self.clicks, &mouse, button, MouseAction::Press)
+                }
+                MouseEventKind::Up(button) => {
+                    button_event(&mut self.clicks, &mouse, button, MouseAction::Release)
+                }
+                MouseEventKind::Drag(button) => {
+                    button_event(&mut self.clicks, &mouse, button, MouseAction::Drag)
+                }
+                // Horizontal scroll has nothing to do, and motion with no button held is not
+                // asked for: mode 1003 stays off (decision 0013).
+                MouseEventKind::Moved
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight => None,
             },
             Event::Paste(text) => Some(ClientMsg::Paste(text)),
             // The server answers a resize with a full frame, so the screen starts empty at
@@ -242,6 +255,90 @@ where
             Event::FocusLost => Some(ClientMsg::Focus(false)),
         }
     }
+}
+
+/// How long after a press another press on the same cell is the second of a double click.
+const REPEAT_WINDOW: Duration = Duration::from_millis(400);
+
+/// Counts repeated presses, so the server is told which press of a click sequence it has.
+///
+/// The same cell rather than a distance in pixels: domux has no pixels, and the cell is what
+/// the gesture selects anyway. The count cycles at three, because there is no fourth gesture:
+/// a fourth press starts a new sequence rather than meaning something nothing implements.
+#[derive(Default)]
+struct Clicks {
+    last: Option<(std::time::Instant, u16, u16, u8)>,
+}
+
+impl Clicks {
+    fn press(&mut self, now: std::time::Instant, row: u16, col: u16) -> u8 {
+        let count = match self.last {
+            Some((at, r, c, n))
+                if r == row && c == col && n < 3 && now.duration_since(at) <= REPEAT_WINDOW =>
+            {
+                n + 1
+            }
+            _ => 1,
+        };
+        self.last = Some((now, row, col, count));
+        count
+    }
+
+    /// The count a drag or a release belongs to: the press before it, or one when there was
+    /// none, so a gesture that started before this client attached is a single.
+    fn current(&self) -> u8 {
+        self.last.map(|(_, _, _, n)| n).unwrap_or(1)
+    }
+}
+
+/// One button event at the cell it happened on, or `None` for a button domux has nothing to
+/// do with. The wheel does not come through here: it arrives as its own crossterm kind and
+/// carries a step count rather than a press and a release.
+fn button_event(
+    clicks: &mut Clicks,
+    mouse: &crossterm::event::MouseEvent,
+    button: crossterm::event::MouseButton,
+    action: MouseAction,
+) -> Option<ClientMsg> {
+    let button = match button {
+        crossterm::event::MouseButton::Left => MouseButton::Left,
+        crossterm::event::MouseButton::Middle => MouseButton::Middle,
+        crossterm::event::MouseButton::Right => MouseButton::Right,
+    };
+    let count = match action {
+        MouseAction::Press => clicks.press(std::time::Instant::now(), mouse.row, mouse.column),
+        MouseAction::Drag | MouseAction::Release => clicks.current(),
+    };
+    Some(ClientMsg::Mouse {
+        event: MouseEvent {
+            button,
+            action,
+            mods: mods_of(mouse.modifiers),
+            row: mouse.row,
+            col: mouse.column,
+        },
+        count,
+    })
+}
+
+/// The modifiers a mouse event carried. Keys go through `input::to_key_event`, which has its
+/// own conversion for the modifiers a key can hold; this is the same question for the three
+/// a mouse report can carry.
+fn mods_of(m: crossterm::event::KeyModifiers) -> Mods {
+    let mut mods = Mods::empty();
+    if m.contains(crossterm::event::KeyModifiers::SHIFT) {
+        mods |= Mods::SHIFT;
+    }
+    if m.contains(crossterm::event::KeyModifiers::CONTROL) {
+        mods |= Mods::CTRL;
+    }
+    if m.contains(crossterm::event::KeyModifiers::ALT) {
+        mods |= Mods::ALT;
+    }
+    if m.contains(crossterm::event::KeyModifiers::SUPER) {
+        mods |= Mods::SUPER;
+    }
+    mods
 }
 
 /// The bell the outer terminal rings. A parameter rather than stdout, so a test reads the
@@ -328,6 +425,7 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         backend: CrosstermBackend::new(std::io::stdout()),
         dec: Decoder::default(),
         copy: clipboard::copy,
+        clicks: Clicks::default(),
     };
     let mut events = EventStream::new();
     let mut sigterm = signal(SignalKind::terminate())?;
@@ -359,8 +457,8 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
 mod tests {
     use super::*;
     use crossterm::event::{
-        KeyCode, KeyEvent as CtKey, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
-        MouseEvent,
+        KeyCode, KeyEvent as CtKey, KeyEventKind, KeyEventState, KeyModifiers,
+        MouseButton as CtButton, MouseEvent as CtMouse,
     };
     use domux_core::proto::{CellUpdate, FrameDiff, WireColor, MAX_FRAME};
     use domux_term::{Key, KeyEvent, Mods};
@@ -401,6 +499,7 @@ mod tests {
             backend: TestBackend::new(cols, rows),
             dec: Decoder::default(),
             copy,
+            clicks: Clicks::default(),
         };
         let task = tokio::spawn(async move {
             let outcome = session
@@ -439,7 +538,7 @@ mod tests {
     }
 
     fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
-        Event::Mouse(MouseEvent {
+        Event::Mouse(CtMouse {
             kind,
             column,
             row,
@@ -543,8 +642,10 @@ mod tests {
         events
             .unbounded_send(Ok(mouse(MouseEventKind::ScrollLeft, 7, 4)))
             .unwrap();
+        // Motion with no button held: mode 1003 is not enabled and nothing reads it, so a
+        // terminal that reports it anyway is not turned into a message.
         events
-            .unbounded_send(Ok(mouse(MouseEventKind::Down(MouseButton::Left), 7, 4)))
+            .unbounded_send(Ok(mouse(MouseEventKind::Moved, 7, 4)))
             .unwrap();
         events.unbounded_send(Ok(key('a'))).unwrap();
         expect_frame(
@@ -561,6 +662,82 @@ mod tests {
                 column: 9,
                 row: 6,
                 lines: -WHEEL_LINES,
+            },
+        )
+        .await;
+        drop(server);
+        task.await.unwrap().0.unwrap();
+    }
+
+    /// A drag is a press, motion while the button is held, and a release. All three are
+    /// reported with the cell they happened on, because the server hit-tests that cell.
+    #[tokio::test]
+    async fn a_press_a_drag_and_a_release_are_reported_with_their_cells() {
+        let (events, mut server, task) = running(40, 10, clipboard_works);
+        for (kind, column, row, action) in [
+            (
+                MouseEventKind::Down(CtButton::Left),
+                7,
+                4,
+                MouseAction::Press,
+            ),
+            (
+                MouseEventKind::Drag(CtButton::Left),
+                9,
+                6,
+                MouseAction::Drag,
+            ),
+            (
+                MouseEventKind::Up(CtButton::Left),
+                9,
+                6,
+                MouseAction::Release,
+            ),
+        ] {
+            events.unbounded_send(Ok(mouse(kind, column, row))).unwrap();
+            expect_frame(
+                &mut server,
+                &ClientMsg::Mouse {
+                    event: MouseEvent {
+                        button: MouseButton::Left,
+                        action,
+                        mods: Mods::empty(),
+                        row,
+                        col: column,
+                    },
+                    count: 1,
+                },
+            )
+            .await;
+        }
+        drop(server);
+        task.await.unwrap().0.unwrap();
+    }
+
+    /// The modifiers a mouse report carried reach the server, so a chord over a pane can mean
+    /// something later without the client being changed for it.
+    #[tokio::test]
+    async fn a_button_event_carries_its_modifiers() {
+        let (events, mut server, task) = running(40, 10, clipboard_works);
+        events
+            .unbounded_send(Ok(Event::Mouse(CtMouse {
+                kind: MouseEventKind::Down(CtButton::Right),
+                column: 3,
+                row: 2,
+                modifiers: KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            })))
+            .unwrap();
+        expect_frame(
+            &mut server,
+            &ClientMsg::Mouse {
+                event: MouseEvent {
+                    button: MouseButton::Right,
+                    action: MouseAction::Press,
+                    mods: Mods::CTRL | Mods::SHIFT,
+                    row: 2,
+                    col: 3,
+                },
+                count: 1,
             },
         )
         .await;

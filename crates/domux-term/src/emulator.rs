@@ -1,6 +1,7 @@
 //! The emulator trait: the seam between domux and a terminal emulation library.
 
 use crate::key::KeyEvent;
+use crate::mouse::MouseEvent;
 use crate::types::{Cursor, Grid, Rgb, Size};
 use std::path::PathBuf;
 
@@ -24,6 +25,9 @@ pub enum Mode {
     FocusEvents,
     /// DECSET 1: application cursor keys.
     AppCursor,
+    /// DECSET 9, 1000, 1002 or 1003: the program asked to be told about the mouse, so the
+    /// wheel over its pane is its own rather than copy mode's (decision 0013).
+    MouseTracking,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +98,16 @@ pub trait Emulator: Send {
     /// read failed, with nothing said, is the worst answer this method can give.
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> Option<String>;
 
+    /// The scrollback rows the logical line through `row` covers, inclusive. A line the screen
+    /// did not wrap is that row twice; a line the screen wrapped over three rows is the first
+    /// and the last of them, whichever of the three was asked about.
+    ///
+    /// This is what a triple click selects, and only the emulator can answer it: whether a row
+    /// continues the one above it is a soft-wrap flag on the row, not something the text can be
+    /// measured for. A row the emulator cannot resolve answers as itself, which selects the one
+    /// row the pointer was on rather than nothing.
+    fn logical_line(&self, row: usize) -> (usize, usize);
+
     /// The title the program set with OSC 0 or OSC 2, if any.
     fn title(&self) -> Option<String>;
 
@@ -107,6 +121,11 @@ pub trait Emulator: Send {
 
     /// Appends the focus in or out report when the program enabled mode 1004; nothing otherwise.
     fn encode_focus(&self, focused: bool, out: &mut Vec<u8>);
+
+    /// Appends the mouse report the program asked for, in the tracking mode and format it set,
+    /// or nothing when it asked for no mouse at all. `event` is in the pane's own cells, with
+    /// `row` and `col` counted from the top left of its screen.
+    fn encode_mouse(&mut self, event: &MouseEvent, out: &mut Vec<u8>);
 }
 
 /// Appends `text` with the bracketed paste markers when `bracketed` is set. Reading mode

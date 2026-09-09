@@ -196,17 +196,7 @@ pub fn handle_key(rt: &mut PaneRuntime, key: &KeyEvent) -> CopyOutcome {
     let ctrl = key.mods.contains(Mods::CTRL);
     match (key.key, ctrl) {
         (Key::Escape, _) | (Key::Char('q'), false) => return CopyOutcome::Leave,
-        (Key::Enter, _) => {
-            let Some(anchor) = copy.anchor else {
-                return CopyOutcome::Leave;
-            };
-            let (start, end) = ordered(anchor, copy.abs_cursor(history));
-            return match rt.emulator.text_in_range(start, end) {
-                Some(text) if !text.is_empty() => CopyOutcome::Copy(text),
-                Some(_) => CopyOutcome::NotCopied("nothing to copy: the selection is blank"),
-                None => CopyOutcome::NotCopied("copy failed: the pane could not be read"),
-            };
-        }
+        (Key::Enter, _) => return yank(rt),
         (Key::Char('v'), false) => copy.anchor = Some(copy.abs_cursor(history)),
         (Key::Char('h'), false) | (Key::Left, _) => copy.cursor.1 = copy.cursor.1.saturating_sub(1),
         (Key::Char('l'), false) | (Key::Right, _) => {
@@ -235,6 +225,33 @@ pub fn handle_key(rt: &mut PaneRuntime, key: &KeyEvent) -> CopyOutcome {
     copy.offset = copy.offset.min(history);
     rt.dirty = true;
     CopyOutcome::Continue
+}
+
+/// The pane's selection, as the clipboard would take it. Nothing selected leaves without
+/// copying, as in tmux.
+///
+/// Enter and a release of the pointer both end here, so what a selection copies cannot differ
+/// between the two ways of making one.
+pub fn yank(rt: &mut PaneRuntime) -> CopyOutcome {
+    let history = history(rt);
+    let Some(copy) = rt.copy.as_ref() else {
+        return CopyOutcome::Leave;
+    };
+    let Some(anchor) = copy.anchor else {
+        return CopyOutcome::Leave;
+    };
+    let (start, end) = ordered(anchor, copy.abs_cursor(history));
+    yank_range(rt, start, end)
+}
+
+/// The text between two absolute positions, as the clipboard would take it. A double or triple
+/// click has its two ends already and no anchor to read them from.
+pub fn yank_range(rt: &mut PaneRuntime, start: ScrollbackPos, end: ScrollbackPos) -> CopyOutcome {
+    match rt.emulator.text_in_range(start, end) {
+        Some(text) if !text.is_empty() => CopyOutcome::Copy(text),
+        Some(_) => CopyOutcome::NotCopied("nothing to copy: the selection is blank"),
+        None => CopyOutcome::NotCopied("copy failed: the pane could not be read"),
+    }
 }
 
 /// Moves the cursor by `delta` rows, scrolling the viewport when it would leave the screen.

@@ -4,11 +4,11 @@
 
 use crate::client::HintKind;
 use crate::render::boxed::{put, put_within};
-use crate::render::tab_row::TabRow;
+use crate::render::tab_row::{TabRow, TabTarget};
 use crate::render::{theme, RenderInput};
 use domux_core::ids::TabId;
 use domux_core::model::{ConfirmKind, Focus, Overlay};
-use domux_core::text::{display_width, truncate_to_width};
+use domux_core::text::{display_width, sanitize_for_display, truncate_to_width};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -77,15 +77,9 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         buf[(x, y)].reset();
         buf[(x, y)].set_style(Style::default().bg(bg));
     }
-    let Some(ws) = input.model.workspace(&input.view.workspace) else {
+    let Some(location) = location_label(input) else {
         return;
     };
-    let project = input
-        .model
-        .project_of_workspace(&ws.id)
-        .map(|p| p.name.as_str())
-        .unwrap_or("");
-    let location = format!(" {project} › {} ", ws.display_name());
     let x = put(
         buf,
         area.x,
@@ -96,6 +90,29 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     );
+    let Some(tabs) = tab_row_of(input) else {
+        return;
+    };
+    draw_tabs_and_right(input, &tabs, x, y, right_edge, bg, buf);
+}
+
+/// `project › workspace`, the label the full-width bar opens with. `None` when this client's
+/// workspace is gone, which is when the bar draws nothing at all.
+fn location_label(input: &RenderInput) -> Option<String> {
+    let ws = input.model.workspace(&input.view.workspace)?;
+    let project = input
+        .model
+        .project_of_workspace(&ws.id)
+        .map(|p| p.name.as_str())
+        .unwrap_or("");
+    Some(format!(" {project} › {} ", ws.display_name()))
+}
+
+/// This client's tab row. The full-width bar draws it, the row on the panes draws it, and the
+/// pointer measures it, all from here: three readings of which tab is current, or of which cell
+/// carries the accent fill, could disagree.
+pub fn tab_row_of(input: &RenderInput) -> Option<TabRow> {
+    let ws = input.model.workspace(&input.view.workspace)?;
     let current = ws
         .tabs
         .iter()
@@ -108,8 +125,20 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // Whether the keys go to a pane rather than to a prompt or an overlay. It decides which run
     // of cells is accent-filled: see `tab_row::cell_for`.
     let pane_focus = matches!(input.view.focus, Focus::Pane(_));
-    let tabs = TabRow::new(&ws.tabs, current, prompt, pane_focus);
-    draw_tabs_and_right(input, &tabs, x, y, right_edge, bg, buf);
+    Some(TabRow::new(&ws.tabs, current, prompt, pane_focus))
+}
+
+/// What a click at `column` on the full-width bar's row acts on.
+///
+/// The tab row starts after the location label, so the label is measured by the rule `put` draws
+/// it by: the graphemes it drops are the graphemes `sanitize_for_display` drops. Clamped to the
+/// screen, because a label wider than the screen leaves the tab row no cells and `put` stops at
+/// the edge.
+pub fn bar_tab_hit(input: &RenderInput, column: u16) -> Option<TabTarget> {
+    let right_edge = input.view.size.cols;
+    let label = location_label(input)?;
+    let x = (display_width(&sanitize_for_display(&label)).min(right_edge as usize)) as u16;
+    tab_target_at(input, &tab_row_of(input)?, x, right_edge, column)
 }
 
 /// Shares the cells from `x` up to `x_max` between the tab row and the right end, and draws
@@ -139,21 +168,45 @@ pub fn draw_tabs_and_right(
     bg: Color,
     buf: &mut Buffer,
 ) {
-    let room = x_max.saturating_sub(x).saturating_sub(1) as usize;
     let end = right_end(input);
+    let (tabs_budget, right_x) = share(&end, tabs, x, x_max);
+    tabs.draw(x, y, tabs_budget, bg, buf);
+    draw_pieces(end, right_x, y, x_max, bg, buf);
+}
+
+/// How the run from `x` to `x_max` is shared: the cells the tab row draws in, and the column the
+/// right end starts at.
+///
+/// The drawing asks, and so does the pointer: a click lands on the tab it looks like it lands on
+/// only while the two measure the row by one budget.
+fn share(end: &RightEnd, tabs: &TabRow, x: u16, x_max: u16) -> (usize, u16) {
+    let room = x_max.saturating_sub(x).saturating_sub(1) as usize;
     let wanted: usize = end.pieces.iter().map(|p| display_width(&p.text)).sum();
     let floor = if end.actionable { RIGHT_FLOOR } else { 0 };
     let right = wanted
         .min(room.saturating_sub(tabs.floor() + 1))
         .max(floor.min(wanted).min(room));
-    let tabs_budget = room - right;
     // One cell of the tab row's budget is the gap before the right end, left blank. The tab row
     // fills its budget to the last cell whenever it is cut, so without the gap its own cut mark
     // abuts the right end and the two read as one run of text - at the narrowest widths, two
     // elision marks running together (`indeed…… domux…`).
     let gap = usize::from(right > 0);
-    tabs.draw(x, y, tabs_budget.saturating_sub(gap), bg, buf);
-    draw_pieces(end, x + (room - right) as u16, y, x_max, bg, buf);
+    (
+        (room - right).saturating_sub(gap),
+        x + (room - right) as u16,
+    )
+}
+
+/// What a click at `at_x` on the tab row acts on, or `None` for a cell that acts on nothing.
+pub fn tab_target_at(
+    input: &RenderInput,
+    tabs: &TabRow,
+    x: u16,
+    x_max: u16,
+    at_x: u16,
+) -> Option<TabTarget> {
+    let (budget, _) = share(&right_end(input), tabs, x, x_max);
+    tabs.target_at(x, budget, at_x)
 }
 
 fn draw_pieces(end: RightEnd, x_min: u16, y: u16, x_max: u16, bg: Color, buf: &mut Buffer) {

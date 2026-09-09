@@ -17,7 +17,8 @@ use domux_core::proto::{
     PROTOCOL_VERSION,
 };
 use domux_term::{
-    Attrs, Cell, Color, Cursor, CursorShape, Grid, Key, KeyAction, KeyEvent, Mods, Rgb, Size,
+    Attrs, Cell, Color, Cursor, CursorShape, Grid, Key, KeyAction, KeyEvent, Mods, MouseAction,
+    MouseButton, MouseEvent, Rgb, Size,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -361,6 +362,42 @@ impl Harness {
 
     pub async fn scroll(&mut self, client: ClientId, column: u16, row: u16, lines: i16) {
         self.send(&client, ClientMsg::Scroll { column, row, lines })
+            .await;
+    }
+
+    /// One left button event at a screen cell. `count` is which press of a repeated click this
+    /// is, which the client counts and the server is told: 1, 2 for a double, 3 for a triple.
+    pub async fn mouse(
+        &mut self,
+        client: ClientId,
+        action: MouseAction,
+        column: u16,
+        row: u16,
+        count: u8,
+    ) {
+        self.send(
+            &client,
+            ClientMsg::Mouse {
+                event: MouseEvent {
+                    button: MouseButton::Left,
+                    action,
+                    mods: Mods::empty(),
+                    row,
+                    col: column,
+                },
+                count,
+            },
+        )
+        .await;
+    }
+
+    /// A whole drag: press at the first cell, drag to the second, release there.
+    pub async fn drag(&mut self, client: ClientId, from: (u16, u16), to: (u16, u16)) {
+        self.mouse(client.clone(), MouseAction::Press, from.0, from.1, 1)
+            .await;
+        self.mouse(client.clone(), MouseAction::Drag, to.0, to.1, 1)
+            .await;
+        self.mouse(client, MouseAction::Release, to.0, to.1, 1)
             .await;
     }
 

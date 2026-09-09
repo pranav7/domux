@@ -34,22 +34,11 @@ pub fn projects_area(size: Size) -> Rect {
     )
 }
 
-/// The Projects box in the sidebar's column, with the hint row under it.
-pub fn draw(input: &RenderInput, buf: &mut Buffer) {
-    let size = input.view.size;
-    let area = projects_area(size);
-    // The box's own rectangle first, the way `overlay::frame` clears before drawing its box.
-    // `ListBox` paints its border and the text of each row, and leaves the cells after a row's
-    // text as it found them, so the region has to be cleared by whoever owns it. Today
-    // `compose` hands over a fresh buffer and nothing would show, which is exactly why this is
-    // written down rather than assumed: M3 puts the Agents box in this same column.
-    let right = area.x.saturating_add(area.width).min(buf.area.right());
-    let bottom = area.y.saturating_add(area.height).min(buf.area.bottom());
-    for y in area.y..bottom {
-        for x in area.x..right {
-            buf[(x, y)].reset();
-        }
-    }
+/// The rows the Projects box is showing, and whether the box has the keys.
+///
+/// The drawing asks, and so does the pointer: the row a reader clicks is the row they see only
+/// while the two build one list. Both halves of the filter rule live here for the same reason.
+fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::Rows, bool) {
     let focused = matches!(input.view.focus, Focus::Region(RegionKind::SidebarProjects));
     // The fill marks the row the keys act on: the cursor while focus is in the box, and the
     // workspace this client is in otherwise (domain model, section 3.3). `rows` is given the
@@ -76,6 +65,46 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         Some(key),
         Extras::compact(area.width.saturating_sub(2)),
     );
+    (built, focused)
+}
+
+/// The workspace whose row is at `row` of the screen, or `None` for a header, a blank, the box's
+/// border, the hint row, or a row past the end of the list.
+pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
+    let area = projects_area(input.view.size);
+    let (built, _) = built_rows(input, area);
+    let inner = crate::render::boxed::Boxed::inner_of(area);
+    let scroll = crate::render::list_box::scroll_to_show(
+        &built.rows,
+        built.filled,
+        inner.height,
+        input.view.projects_scroll,
+    );
+    let at = crate::render::list_box::row_at(&built.rows, scroll, inner, row)?;
+    built
+        .rows
+        .get(at)
+        .and_then(|r| r.key.clone())
+        .map(domux_core::ids::WorkspaceId)
+}
+
+/// The Projects box in the sidebar's column, with the hint row under it.
+pub fn draw(input: &RenderInput, buf: &mut Buffer) {
+    let size = input.view.size;
+    let area = projects_area(size);
+    // The box's own rectangle first, the way `overlay::frame` clears before drawing its box.
+    // `ListBox` paints its border and the text of each row, and leaves the cells after a row's
+    // text as it found them, so the region has to be cleared by whoever owns it. Today
+    // `compose` hands over a fresh buffer and nothing would show, which is exactly why this is
+    // written down rather than assumed: M3 puts the Agents box in this same column.
+    let right = area.x.saturating_add(area.width).min(buf.area.right());
+    let bottom = area.y.saturating_add(area.height).min(buf.area.bottom());
+    for y in area.y..bottom {
+        for x in area.x..right {
+            buf[(x, y)].reset();
+        }
+    }
+    let (built, focused) = built_rows(input, area);
     let empty = format!(
         "No projects yet. {} open <path>",
         domux_core::names::BIN_NAME

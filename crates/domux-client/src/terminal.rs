@@ -1,10 +1,11 @@
 //! Raw mode, the alternate screen, wheel, keyboard enhancement, bracketed paste and focus
 //! reports, restored on drop and before a panic message prints (principle 11).
 //!
-//! V2 enables normal mouse tracking only so the outer terminal reports wheel position. The
-//! client ignores clicks and all motion. Alternate scroll stays disabled so an unreported
-//! gesture cannot turn into Up or Down keys for the focused pane. Everything this module
-//! changes has its pair in `write_restore`, and the test holds the two together.
+//! V2 enables button mouse tracking so the outer terminal reports the wheel, the buttons and
+//! motion while a button is held. Motion with no button is not asked for. Alternate scroll
+//! stays disabled so an unreported gesture cannot turn into Up or Down keys for the focused
+//! pane. Everything this module changes has its pair in `write_restore`, and the test holds the
+//! two together.
 
 use anyhow::Result;
 use crossterm::cursor::{SetCursorStyle, Show};
@@ -35,11 +36,12 @@ static PANIC_HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 const SAVE_AND_DISABLE_ALTERNATE_SCROLL: &[u8] = b"\x1b[?1007s\x1b[?1007l";
 const RESTORE_ALTERNATE_SCROLL: &[u8] = b"\x1b[?1007r";
 
-/// Save normal and SGR mouse modes, then enable them. Normal tracking is the narrow terminal
-/// mode that includes wheel position; unlike crossterm's broad mouse command, it does not ask
-/// the terminal for drag or pointer-motion events. Non-wheel events are ignored by the client.
-const SAVE_AND_ENABLE_WHEEL_REPORTING: &[u8] = b"\x1b[?1000s\x1b[?1006s\x1b[?1000h\x1b[?1006h";
-const RESTORE_WHEEL_REPORTING: &[u8] = b"\x1b[?1006r\x1b[?1000r";
+/// Save button tracking and SGR mouse modes, then enable them. Button tracking (1002) is
+/// normal tracking (1000) plus motion while a button is held, which is what a drag is; unlike
+/// crossterm's broad mouse command it does not ask for motion with no button held, and nothing
+/// in domux reads that (decision 0013).
+const SAVE_AND_ENABLE_MOUSE_REPORTING: &[u8] = b"\x1b[?1002s\x1b[?1006s\x1b[?1002h\x1b[?1006h";
+const RESTORE_MOUSE_REPORTING: &[u8] = b"\x1b[?1006r\x1b[?1002r";
 
 /// Holds the terminal settings the client changed. Dropping it puts them back, whether the
 /// client detached, lost the server, was signalled or panicked.
@@ -98,7 +100,7 @@ impl Drop for TerminalGuard {
 fn write_enter(out: &mut impl Write, keyboard_enhancement: bool) -> std::io::Result<()> {
     queue!(out, EnterAlternateScreen)?;
     out.write_all(SAVE_AND_DISABLE_ALTERNATE_SCROLL)?;
-    out.write_all(SAVE_AND_ENABLE_WHEEL_REPORTING)?;
+    out.write_all(SAVE_AND_ENABLE_MOUSE_REPORTING)?;
     queue!(out, EnableBracketedPaste, EnableFocusChange)?;
     if keyboard_enhancement {
         queue!(
@@ -122,7 +124,7 @@ fn write_restore(out: &mut impl Write, keyboard_enhancement: bool) -> std::io::R
         SetCursorStyle::DefaultUserShape,
         Show
     )?;
-    out.write_all(RESTORE_WHEEL_REPORTING)?;
+    out.write_all(RESTORE_MOUSE_REPORTING)?;
     out.write_all(RESTORE_ALTERNATE_SCROLL)?;
     execute!(out, LeaveAlternateScreen)
 }
@@ -168,7 +170,7 @@ mod tests {
         write_restore(&mut out, true).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
-            "\x1b[<1u\x1b[?1004l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1006r\x1b[?1000r\x1b[?1007r\x1b[?1049l"
+            "\x1b[<1u\x1b[?1004l\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1006r\x1b[?1002r\x1b[?1007r\x1b[?1049l"
         );
     }
 
@@ -196,8 +198,8 @@ mod tests {
             ("\x1b[?1004h", "\x1b[?1004l"),
             ("\x1b[?1007s\x1b[?1007l", "\x1b[?1007r"),
             (
-                "\x1b[?1000s\x1b[?1006s\x1b[?1000h\x1b[?1006h",
-                "\x1b[?1006r\x1b[?1000r",
+                "\x1b[?1002s\x1b[?1006s\x1b[?1002h\x1b[?1006h",
+                "\x1b[?1006r\x1b[?1002r",
             ),
             ("\x1b[>1u", "\x1b[<1u"),
         ] {

@@ -990,6 +990,10 @@ impl Core {
                 self.clear_action_hint(&client);
                 self.scroll(&client, column, row, lines);
             }
+            ClientMsg::Mouse { event, count } => {
+                self.clear_action_hint(&client);
+                self.mouse(&client, event, count);
+            }
             ClientMsg::Paste(text) => {
                 if let Some(pane) = self.focused_pane(&client) {
                     if let Some(p) = self.panes.get_mut(&pane) {
@@ -1035,46 +1039,41 @@ impl Core {
         self.view_dirty = true;
     }
 
-    /// Scrolls the pane whose box contains the outer terminal cell. A scroll over chrome,
-    /// unused space, a size notice or an overlay belongs to none. The gesture focuses its pane
-    /// only once there is history to move through.
+    /// Scrolls whatever is under the outer terminal cell: the pane's program when it asked for
+    /// the mouse, and otherwise that pane's copy mode. A scroll over chrome, unused space, a
+    /// size notice or an overlay belongs to none.
     fn scroll(&mut self, client: &ClientId, column: u16, row: u16, lines: i16) {
-        let Some(pane) = self.pane_at(client, column, row) else {
-            return;
-        };
-        let handled = self
-            .panes
-            .get_mut(&pane)
-            .is_some_and(|rt| crate::copy_mode::scroll(rt, lines));
-        if !handled {
-            return;
-        }
-        if let Ok(events) = self.model.focus_pane(&pane) {
-            self.pending_events.extend(events);
-        }
-        self.model.set_pane_copy_mode(&pane, true);
+        crate::mouse::wheel(self, client, column, row, lines);
         self.view_dirty = true;
     }
 
-    fn pane_at(&self, client: &ClientId, column: u16, row: u16) -> Option<PaneId> {
+    /// One pointer button event. Every one gets a frame, for the reason every key does: the
+    /// selection appearing, the focus moving and a hint replacing another are all answers to it
+    /// (principle 8).
+    fn mouse(&mut self, client: &ClientId, event: domux_term::MouseEvent, count: u8) {
+        crate::mouse::button(self, client, event, count);
+        self.view_dirty = true;
+    }
+
+    /// What the cell at `column`, `row` of this client's screen belongs to.
+    ///
+    /// The question is `render::hit_at`'s, and it is asked through the same `RenderInput` the
+    /// frame is drawn from, so a pointer and a frame cannot disagree about what is where. It
+    /// lives here because that input is built from fields the core owns.
+    pub fn hit_at(&self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
         let view = self.model.client(client)?;
-        if view.overlay.is_some()
-            || !matches!(view.focus, Focus::Pane(_))
-            || view.size.cols < render::MIN_COLS
-            || view.size.rows < render::MIN_ROWS
-        {
-            return None;
-        }
-        let tab = self.model.tab(&view.tab)?;
-        // The same rectangle `render::draw_panes` lays the boxes out on, so a cell hits the
-        // pane the reader sees under it.
-        let area = render::smallest_workpanel(&self.model, &tab.id, view);
-        domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
-            .into_iter()
-            .find(|(_, rect)| {
-                column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
-            })
-            .map(|(pane, _)| pane)
+        let input = RenderInput {
+            model: &self.model,
+            facts: &self.facts,
+            panes: &self.panes,
+            view,
+            keymap: &self.config.keymap,
+            now: self.deps.clock.now(),
+            config_error: self.config.error.as_ref(),
+            hint: self.clients.get(client).and_then(|c| c.hint.as_ref()),
+            notes: &self.notes,
+        };
+        render::hit_at(&input, column, row)
     }
 
     /// A note is gone once the reader has been in a box with it on the screen, so it is read
