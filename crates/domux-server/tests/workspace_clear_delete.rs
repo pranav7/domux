@@ -398,6 +398,39 @@ async fn clear_resets_the_branch_and_keeps_the_slot_its_number_and_its_name() {
     assert_eq!(w.tabs.len(), tabs, "and its tabs");
 }
 
+/// A clear resets the branch the worktree is on, and leaves it on that branch.
+///
+/// Same reason as the delete above: with the slot on `workspace-1`, a clear that checked out
+/// the handle and one that read the branch do the same thing. With the slot on
+/// `feat/auth-cleanup`, a clear that used the handle would check `workspace-1` out into it -
+/// the slot would come back on a different branch and the work on `feat/auth-cleanup` would
+/// still be sitting there, unreachable from the slot the author is looking at.
+#[tokio::test]
+async fn clear_resets_the_branch_the_worktree_is_on_not_the_one_the_handle_names() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    let slot = slot_of(&root, 1);
+    support::git(&slot, &["checkout", "-q", "-b", "feat/auth-cleanup"]);
+    support::commit(&slot, "spike.md", "spike\n");
+
+    api(
+        &h,
+        "workspace.clear",
+        json!({"workspace": "workspace-1", "yes": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        support::git(&slot, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "feat/auth-cleanup",
+        "the slot is still on the branch it was on"
+    );
+    assert!(
+        !slot.join("spike.md").exists(),
+        "and that branch is the one that was put back at the base"
+    );
+}
+
 /// `git::clean` is `-fd`, not `-fdx`: the files git ignores are where a project's
 /// `worktree.conf` setup puts `.env` and its friends, and clearing a slot must not undo its
 /// setup.
@@ -447,6 +480,67 @@ async fn a_clean_slot_clears_without_yes() {
         .await
         .expect("a slot with nothing in it has nothing to confirm");
     assert!(slot.is_dir());
+}
+
+/// Each operation says on the screen that it worked, in the words it did it under and in the
+/// green a result gets (interface spec 7.3 and 12.12).
+///
+/// A clear and a delete in one test on purpose: with only one of them, a pill that always
+/// said the same word would pass. And a named slot, so "Cleared auth cleanup" is the sentence
+/// rather than "Cleared workspace-1", which is what the handle would have produced.
+#[tokio::test]
+async fn a_clear_and_a_delete_each_say_what_they_did_in_the_hint_row() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
+    api(
+        &h,
+        "workspace.rename",
+        json!({"workspace": "workspace-1", "name": "auth cleanup"}),
+    )
+    .await
+    .unwrap();
+    // The pill is drawn in the sidebar's hint row and the overlay's footer, so with neither
+    // open this test could not tell an absent pill from an undrawn one.
+    api(&h, "sidebar.show", json!({})).await.unwrap();
+
+    api(
+        &h,
+        "workspace.clear",
+        json!({"workspace": "auth cleanup", "yes": true}),
+    )
+    .await
+    .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Cleared auth cleanup"),
+            Duration::from_secs(15),
+        )
+        .await;
+    // Catppuccin base on green, bold: a result pill, not a plain hint.
+    assert!(
+        f.contains("bold fg=#1e1e2e bg=#a6e3a1"),
+        "and it is green:\n{f}"
+    );
+
+    api(
+        &h,
+        "workspace.delete",
+        json!({"workspace": "auth cleanup", "yes": true}),
+    )
+    .await
+    .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Deleted auth cleanup"),
+            Duration::from_secs(15),
+        )
+        .await;
+    assert!(
+        f.contains("bold fg=#1e1e2e bg=#a6e3a1"),
+        "and so is this:\n{f}"
+    );
 }
 
 // ---------------------------------------------------------------- events
@@ -548,17 +642,25 @@ async fn a_key_bound_to_workspace_delete_asks_in_an_overlay_and_y_deletes() {
     assert!(!slot.exists(), "and the worktree goes with the record");
 }
 
-/// Anything other than `y` closes the question and keeps the workspace: the safe outcome is
-/// the one a stray keystroke reaches (principle 10).
+/// Anything other than `y` closes the question, gives the keys back to the pane and takes the
+/// dimming with it.
+///
+/// **It does not prove the workspace survives**, and the name says so. A delete from a key
+/// queues work on a blocking task, so a test that closes the question and then looks at the
+/// disk is racing the job it means to say never started, and it wins that race whether the
+/// job was queued or not. Measured: `confirmed` forced to `true` - `esc` acting as `y` -
+/// leaves this test green. The half it cannot carry is
+/// `core::tests::esc_on_the_delete_question_starts_no_job_and_y_starts_one`, which watches
+/// for the job itself.
 #[tokio::test]
-async fn a_key_other_than_y_closes_the_delete_question_and_keeps_the_workspace() {
+async fn a_key_other_than_y_closes_the_delete_question() {
     let mut config = Config::default();
     config
         .keys
         .bindings
         .insert("D".into(), "workspace.delete workspace-1".into());
     let mut h = Harness::start(config, 120, 24).await;
-    let (root, w1, _w2) = h.git_project_with_two_slots().await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
 
     h.key(h.client.clone(), "C-a").await;
     h.key(h.client.clone(), "D").await;
@@ -576,8 +678,10 @@ async fn a_key_other_than_y_closes_the_delete_question_and_keeps_the_workspace()
             Duration::from_secs(5),
         )
         .await;
-    assert!(slot_of(&root, 1).is_dir(), "esc keeps the worktree:\n{f}");
-    assert!(h.model().workspace(&w1).is_some(), "and the record");
+    assert!(
+        h.model().workspace(&w1).is_some(),
+        "the record is still there:\n{f}"
+    );
     // With nothing underneath, the keys go back to the pane. Never a frame with the keys in a
     // region nothing on the screen marks (principle 2).
     assert!(
@@ -594,6 +698,50 @@ async fn a_key_other_than_y_closes_the_delete_question_and_keeps_the_workspace()
         !f.lines().any(|l| l.starts_with('r') && l.contains(" dim")),
         "the screen is not dimmed once the question is gone:\n{f}"
     );
+}
+
+/// A key that cannot do what it says still answers, on the screen, in words that name the
+/// state and the next action (principles 8 and 9).
+///
+/// The refusal comes from the job, so this is also the path that proves a dirty slot survives
+/// a keyed delete: the assertion waits for the refusal to arrive rather than racing it.
+#[tokio::test]
+async fn a_key_that_cannot_delete_says_why_on_the_screen() {
+    let mut config = Config::default();
+    config
+        .keys
+        .bindings
+        .insert("D".into(), "workspace.delete workspace-1".into());
+    let mut h = Harness::start(config, 120, 24).await;
+    let (root, w1, _w2) = h.git_project_with_two_slots().await;
+    let slot = slot_of(&root, 1);
+    std::fs::write(slot.join("scratch.txt"), "work").unwrap();
+
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "D").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Delete workspace-1?"),
+        Duration::from_secs(5),
+    )
+    .await;
+    h.key(h.client.clone(), "y").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("has uncommitted or unpushed changes"),
+            Duration::from_secs(15),
+        )
+        .await;
+    assert!(
+        f.contains("commit and push first"),
+        "and it names what to do about it:\n{f}"
+    );
+    assert!(
+        slot.join("scratch.txt").is_file(),
+        "the work is still there"
+    );
+    assert!(h.model().workspace(&w1).is_some(), "and so is the slot");
 }
 
 /// A key bound to `workspace.clear` asks every time, because a key press has no `--yes` to

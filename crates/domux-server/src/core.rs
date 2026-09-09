@@ -3065,6 +3065,67 @@ mod tests {
         );
     }
 
+    /// `esc` on the delete question starts no job, and `y` starts one.
+    ///
+    /// The observable is the job, not the disk. A delete from a key queues work on a blocking
+    /// task and answers nothing, so a harness test that closes the question and then looks at
+    /// the worktree is racing the job it means to say never started - and it wins that race
+    /// either way. Measured: with `input::confirmed` forced to `true`, so `esc` acts as `y`,
+    /// `a_key_other_than_y_closes_the_delete_question` stays green.
+    ///
+    /// `JobFinished` is the message the job sends however it ends, so waiting for one is
+    /// waiting for the mechanism itself. The two halves share one window, which is what makes
+    /// the negative worth anything: if two seconds were not enough for a job to report, the
+    /// `y` half fails rather than the `esc` half passing quietly.
+    ///
+    /// The job runs against a slot path inside this test's own temporary directory that no
+    /// repository was ever built at, so `git rev-parse` refuses immediately and nothing is
+    /// removed anywhere.
+    #[tokio::test]
+    async fn esc_on_the_delete_question_starts_no_job_and_y_starts_one() {
+        for (key, expected) in [('y', true), ('n', false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut core, mut rx) = core_with_providers(dir.path(), Vec::new());
+            let client = attached(&mut core);
+            let _ws = a_slot(&mut core, dir.path());
+            core.run_action(
+                &client,
+                &domux_core::keymap::Action {
+                    method: "workspace.delete".into(),
+                    args: vec!["workspace-1".into()],
+                },
+            );
+            assert!(
+                matches!(
+                    core.model.client(&client).unwrap().overlay,
+                    Some(Overlay::Confirm(ConfirmKind::DeleteWorkspace(_)))
+                ),
+                "the question is open before the answer"
+            );
+            crate::input::route_key(
+                &mut core,
+                &client,
+                domux_term::KeyEvent {
+                    key: domux_term::Key::Char(key),
+                    mods: domux_term::Mods::empty(),
+                    action: domux_term::KeyAction::Press,
+                },
+            );
+            let started = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    match rx.recv().await {
+                        Some(CoreMsg::JobFinished { .. }) => return true,
+                        Some(_) => continue,
+                        None => return false,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false);
+            assert_eq!(started, expected, "{key} started a job: {started}");
+        }
+    }
+
     /// A confirmation opened from inside the switcher goes back to the switcher, on `esc` and
     /// on `y` alike, rather than leaving it stranded under a closed overlay.
     ///

@@ -401,6 +401,10 @@ mod tests {
         );
         assert!(text.contains("Clear workspace-1?"), "{text}");
         assert!(
+            text.contains("/p/.domux/worktrees/workspace-1"),
+            "the identity line says which slot, in full: {text}"
+        );
+        assert!(
             text.contains(
                 "Throws away every commit, change and untracked file in the worktree at \
                  .domux/worktrees/workspace-1 and puts its branch back at its base."
