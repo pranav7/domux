@@ -343,11 +343,12 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
         list > globals && list > passthrough,
         "the box keys come after the leader table, the globals and the passthrough rule:\n{f}"
     );
-    // By action, like the other two tables, and not by key: sorted by key the four named
-    // keys run Down, Enter, Up, j, so `list.down` would come first and `list.activate`
-    // third. Sorted by action `list.activate` comes first, which is the row `Enter` is on.
+    // By action, like the other two tables, and not by key. `Enter` against `Down` is the
+    // pair that separates the two: by action `list.activate` comes before `list.down`, by
+    // key `Down` comes before `Enter`. `Enter` against `j` would pass under either, which is
+    // what this assertion said first and what the mutant caught.
     assert!(
-        f.find("Enter      list.activate") < f.find("j          list.down"),
+        f.find("Enter      list.activate") < f.find("Down       list.down"),
         "the block is sorted by action:\n{f}"
     );
     // A blank row above the heading, so the block reads as its own table rather than as more
