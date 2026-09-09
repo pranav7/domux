@@ -578,9 +578,15 @@ pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError
 fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
     let client = ctx.view()?;
     // Reachable, and tested: `Core::run_action` never checks that the client id it is handed
-    // is attached, so a key press can arrive carrying one the model has dropped. Refusing here
-    // is what stops `Ctx::view`'s fallback to the most recent client from putting a delete
-    // question about somebody else's workspace on the screen of whoever happens to be last.
+    // is attached, so a key press can arrive carrying one the model has dropped.
+    //
+    // It is **not** `Ctx::view`'s fallback that this guards, which an earlier version of this
+    // comment claimed. `view` is `self.client.clone().or_else(most_recent_client)` and
+    // `run_action` always passes `Some(client)`, so on the only path `ask` is reachable from
+    // the `or_else` never evaluates. What the refusal buys is that a lookup miss is answered
+    // instead of passed over: a handler that resolved a dropped id to some other view would
+    // put a question about a workspace nobody named on that reader's screen, and answer `ok`
+    // on behalf of a client that is not there.
     let Some(view) = ctx.model.client_mut(&client) else {
         return Err(ApiError::not_found(format!(
             "client {client} is not attached"

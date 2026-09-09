@@ -3321,8 +3321,12 @@ mod tests {
     ///
     /// The attached client is what makes the second assertion able to fail: with nobody else
     /// attached, "no client was given the question" and "there was no client" are the same
-    /// sentence, and `Ctx::view` falls back to the most recent client, which is exactly the
-    /// wrong answer this guards against.
+    /// sentence. It is the view a wrong answer would land on - a handler that resolved the
+    /// dropped id to some other client would push the question here.
+    ///
+    /// Not `Ctx::view`'s fallback, which an earlier version of this comment named:
+    /// `run_action` always passes `Some(client)`, so the `or_else` never evaluates on this
+    /// path. The mutant this kills is `ask` looking the client up with `most_recent_client`.
     #[test]
     fn a_key_from_a_client_that_is_not_attached_opens_no_question_anywhere() {
         for method in ["workspace.delete", "workspace.clear"] {

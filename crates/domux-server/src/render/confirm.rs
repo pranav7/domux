@@ -105,15 +105,16 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
 /// **Why this is here rather than solved by shorter copy.** The delete box is the tight one:
 /// its sentence is a fixed 58 columns plus the branch name, against a budget of 112 at a 120
 /// column screen, so it clips at a 55 character branch and fits at 54. Real branch names in
-/// this program already reach 53. Shortening the copy moved that ceiling and did not remove
-/// it, and a ceiling two characters above what the author types is not a guarantee. What is
-/// lost when it clips is the end of the sentence, which on a delete is the branch and the tab
-/// count.
+/// this program already reach 53, **one column inside that ceiling**. Shortening the copy
+/// moved the ceiling and did not remove it, and one column of headroom is not a guarantee.
+/// What is lost when it clips is the end of the sentence, which on a delete is the branch and
+/// the tab count.
 ///
-/// The 58 is `closes N tabs`, which is every count but one; `closes 1 tab` is a column
-/// shorter and clips one character later. An earlier version of this paragraph gave 57 beside
-/// a threshold of 55, which cannot both be true, and the inconsistency was checkable from the
-/// paragraph alone.
+/// Every number above is asserted by
+/// `tests::the_delete_sentence_is_fifty_eight_columns_plus_its_branch`, because each one of
+/// them has been wrong here at least once. The 58 is `closes N tabs`; `closes 1 tab` is 57,
+/// and so is the whole sentence when no branch fact has arrived, which is the coincidence that
+/// let a 57 sit beside a threshold only 58 produces.
 ///
 /// Only a line of one span is broken. A line of several is a keys row, built from short pieces
 /// to fit, and breaking it would have to carry each piece's style across the break for no gain.
@@ -533,13 +534,74 @@ mod tests {
         );
     }
 
-    /// A branch name as long as the ones this program really produces.
+    /// The widths `wrapped`'s doc comment states, measured from `deletion_copy` and from the
+    /// box rather than counted by hand.
     ///
-    /// 63 columns, which puts the delete sentence at 120 against a budget of 112, so it is
-    /// eight columns past the edge and has to break. The branch that prompted the measurement,
-    /// `claude/PROJ-1482-rework-the-workspace-branch-provider`, is 53 and the box clipped
-    /// above 55, so the shortened copy left two columns of headroom against what the author
-    /// already types. A synthetic name would prove less than this one.
+    /// Every wrong number in this task was a derived one: the measurements survived review and
+    /// the arithmetic written beside them did not. So the numbers that a reader would other-
+    /// wise have to trust are asserted here, and any number in a comment that this test does
+    /// not hold has been deleted rather than restated.
+    ///
+    /// The fixed part is 58 for `closes N tabs` and 57 for `closes 1 tab`, and 57 is also the
+    /// width of the whole "its local branch" sentence drawn when no fact has arrived. That
+    /// coincidence is how a 57 came to sit beside a threshold that only follows from 58.
+    #[test]
+    fn the_delete_sentence_is_fifty_eight_columns_plus_its_branch() {
+        let root = std::path::Path::new("/Users/pranav/projects/audrey-app");
+        let path =
+            std::path::Path::new("/Users/pranav/projects/audrey-app/.domux/worktrees/workspace-1");
+        let sentence = |branch: Option<&str>, tabs: usize| {
+            display_width(
+                &crate::api::workspace::deletion_copy("workspace-1", root, path, branch, tabs)
+                    .removes_without_the_path,
+            )
+        };
+        assert_eq!(sentence(Some("aa"), 0) - 2, 58, "the fixed part, plural");
+        assert_eq!(
+            sentence(Some("aa"), 1) - 2,
+            57,
+            "one tab is a column shorter"
+        );
+        assert_eq!(sentence(None, 0), 57, "and so is the sentence with no fact");
+
+        // The ceiling, read off the box rather than off the budget: 54 keeps the sentence on
+        // one row and 55 takes a second. Six content rows is identity, blank, sentence, keeps,
+        // blank, keys.
+        let rows = |branch_columns: usize| {
+            let (model, id) = model_with_a_slot();
+            let mut facts = FactRegistry::new();
+            facts.set(
+                domux_core::facts::FactKey::workspace(&id, domux_core::facts::FACT_BRANCH),
+                Some(branch_fact(&"b".repeat(branch_columns))),
+            );
+            drawn_at(&model, &facts, &ConfirmKind::DeleteWorkspace(id), 120)
+                .lines()
+                .filter(|l| l.contains('\u{2502}'))
+                .count()
+        };
+        assert_eq!(rows(54), 6, "54 is the last branch that fits one row");
+        assert_eq!(rows(55), 7, "and 55 is the first that needs two");
+        assert_eq!(
+            rows(53),
+            6,
+            "the longest branch this program has really produced is 53, one column inside it"
+        );
+        assert_eq!(
+            display_width("claude/PROJ-1482-rework-the-workspace-branch-provider"),
+            53,
+            "which is the branch that prompted the measurement"
+        );
+        assert_eq!(display_width(A_LONG_BRANCH), 63, "and the one tested with");
+    }
+
+    /// A branch name as long as the ones this program really produces, and long enough that
+    /// the sentence has to break.
+    ///
+    /// 63 columns, against a box that fits 54 and breaks at 55. The branch that prompted the
+    /// measurement, `claude/PROJ-1482-rework-the-workspace-branch-provider`, is 53, which is
+    /// one column inside that ceiling: that is why a synthetic name would prove less than this
+    /// one. `the_delete_sentence_is_fifty_eight_columns_plus_its_branch` holds every number in
+    /// this paragraph.
     const A_LONG_BRANCH: &str = "claude/PROJ-1482-rework-the-workspace-branch-provider-and-cache";
 
     /// Neither box loses a word at the width the harness calls a terminal, with a branch name
