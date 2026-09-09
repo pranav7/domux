@@ -533,6 +533,15 @@ mod tests {
         assert_eq!(file.agents.len(), 1);
         let json = to_json(&file);
         assert!(json.contains("\"agents\""));
+        // `mark_agents_exited_on_restore` clears `reason` unconditionally on every live
+        // agent it exits, including this one, so the full-struct compare below expects
+        // `None` for it either way and cannot tell a `reason` that serialized correctly
+        // and was then cleared from one that never reached the JSON at all. This checks
+        // the pre-restore bytes directly, independent of that clearing.
+        assert!(
+            json.contains("permission needed"),
+            "reason reaches the JSON before restore clears it on exit"
+        );
         assert!(
             !json.contains("\"pid\""),
             "pid is a fact and is not persisted"
