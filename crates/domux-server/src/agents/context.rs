@@ -51,21 +51,64 @@ pub fn session_start_context(model: &Model, agent: &Agent) -> String {
 /// `project › workspace › tab`, the domain model's place. The tab is dropped when the record
 /// names no pane the model still holds.
 pub fn place_of(model: &Model, agent: &Agent) -> String {
+    place(model, agent, true)
+}
+
+/// The same place with the tab left off: the sidebar's agent row has no room for it
+/// (interface spec 6.3). One function answers both, so the two lines cannot drift apart and
+/// nothing has to take the place back apart to shorten it.
+pub fn place_without_tab(model: &Model, agent: &Agent) -> String {
+    place(model, agent, false)
+}
+
+fn place(model: &Model, agent: &Agent, with_tab: bool) -> String {
     let workspace = model.workspace(&agent.workspace);
     let project = workspace
         .and_then(|w| model.project_of_workspace(&w.id))
         .map(|p| p.name.clone())
         .unwrap_or_default();
     let ws_name = workspace.map(|w| w.display_name()).unwrap_or_default();
-    let tab = agent
-        .pane
-        .as_ref()
-        .or(agent.last_pane.as_ref())
+    let tab = with_tab
+        .then(|| agent.pane.as_ref().or(agent.last_pane.as_ref()))
+        .flatten()
         .and_then(|p| model.pane_location(p))
         .and_then(|l| model.tab(&l.tab))
         .map(|t| t.name.clone().unwrap_or_else(|| t.id.to_string()));
     match tab {
         Some(t) => format!("{project} › {ws_name} › {t}"),
         None => format!("{project} › {ws_name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domux_core::ids::AgentId;
+    use domux_core::model::agent::{AgentKind, AgentSource};
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_place_names_the_tab_and_the_short_form_stops_at_the_workspace() {
+        let mut model = Model::new(7);
+        let (_project, ws, _) = model
+            .add_git_project(PathBuf::from("/repo/audrey-app"), "main".into())
+            .unwrap();
+        let (tab, pane, _) = model
+            .create_tab(&ws, PathBuf::from("/repo/audrey-app"))
+            .unwrap();
+        let agent = Agent::new(
+            AgentId("a_5e21".into()),
+            AgentKind::Claude,
+            ws,
+            pane,
+            PathBuf::from("/repo/audrey-app"),
+            AgentSource::Hook,
+            "2026-09-04T14:32:00+00:00",
+        );
+        assert_eq!(
+            place_of(&model, &agent),
+            format!("audrey-app › main › {tab}")
+        );
+        assert_eq!(place_without_tab(&model, &agent), "audrey-app › main");
     }
 }

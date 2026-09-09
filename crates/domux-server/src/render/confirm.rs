@@ -385,10 +385,12 @@ mod tests {
         let keymap = Keymap::defaults();
         let mut v = view(Overlay::Confirm(kind.clone()));
         v.size = Size { cols, rows: 24 };
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model,
             facts,
             panes: &panes,
+            agents: &agents,
             view: &v,
             keymap: &keymap,
             now: chrono::Local::now(),

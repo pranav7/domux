@@ -2353,6 +2353,47 @@ impl Core {
         }
     }
 
+    /// One `AgentsView` per frame: the records in sort order, their places, and this frame's
+    /// glyph and working words. Building it here is what keeps `render` free of the Model's
+    /// lookups, and what makes the sidebar and the agents overlay draw one agent one way.
+    fn agents_view(&mut self) -> crate::render::agents_box::AgentsView {
+        use crate::render::agents_box::{AgentEntry, AgentsView};
+        use domux_core::model::agent::AgentState;
+        let glyph = crate::agents::labels::frame_at(self.agents.glyph_tick);
+        let now = self.deps.clock.now();
+        let red_dots = self.model.red_dot_count();
+        // `self.model` is read while `self.agents` is written: two fields, borrowed apart.
+        let sorted = self.model.sorted_agents();
+        let mut entries = Vec::with_capacity(sorted.len());
+        for a in sorted {
+            // A working word for a working agent and for no other, so a row that must not
+            // carry one cannot (principle 4).
+            let word = if a.state == AgentState::Working {
+                self.agents.words.word_for(&a.id)
+            } else {
+                ""
+            };
+            entries.push(AgentEntry {
+                id: a.id.clone(),
+                kind: a.kind,
+                name: a.name.clone(),
+                state: a.state,
+                unseen: a.unseen,
+                recap: a.recap.clone(),
+                place_with_tab: crate::agents::context::place_of(&self.model, a),
+                place_without_tab: crate::agents::context::place_without_tab(&self.model, a),
+                last_activity_at: a.last_activity_at.clone(),
+                word,
+            });
+        }
+        AgentsView {
+            agents: entries,
+            glyph,
+            now,
+            red_dots,
+        }
+    }
+
     fn render(&mut self) {
         let any_dirty = self.panes.values().any(|p| p.dirty);
         if !self.view_dirty && !any_dirty {
@@ -2363,6 +2404,9 @@ impl Core {
                 p.snapshot();
             }
         }
+        // One view for every client on this server: the agent list is the same list
+        // wherever it is drawn, and the glyph is the core's frame, not each client's.
+        let agents = self.agents_view();
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
@@ -2371,6 +2415,7 @@ impl Core {
                 model: &self.model,
                 facts: &self.facts,
                 panes: &self.panes,
+                agents: &agents,
                 view: &view,
                 keymap: &self.config.keymap,
                 now: self.deps.clock.now(),

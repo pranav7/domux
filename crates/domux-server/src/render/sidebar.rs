@@ -274,9 +274,11 @@ mod tests {
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
         let facts = crate::facts::FactRegistry::new();
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model: &model,
             panes: &panes,
+            agents: &agents,
             view: &v,
             keymap: &keymap,
             facts: &facts,
@@ -295,9 +297,11 @@ mod tests {
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
         let facts = crate::facts::FactRegistry::new();
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model: &model,
             panes: &panes,
+            agents: &agents,
             view: &v,
             keymap: &keymap,
             facts: &facts,
@@ -328,10 +332,12 @@ mod tests {
         let facts = crate::facts::FactRegistry::new();
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model: &model,
             facts: &facts,
             panes: &panes,
+            agents: &agents,
             view,
             keymap: &keymap,
             now: chrono::Local::now(),

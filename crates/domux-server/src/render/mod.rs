@@ -1,6 +1,7 @@
 //! Composes one client's frame: the top bar over the tab's pane boxes, or, when the sidebar
 //! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
+pub mod agents_box;
 pub mod boxed;
 pub mod confirm;
 pub mod list_box;
@@ -47,6 +48,10 @@ pub struct RenderInput<'a> {
     /// (principle 4).
     pub facts: &'a crate::facts::FactRegistry,
     pub panes: &'a HashMap<PaneId, PaneRuntime>,
+    /// Every agent this frame draws, in sort order, with its place, its recap and this
+    /// frame's glyph and word already resolved. The Agents box reads nothing else, so the
+    /// sidebar and the agents overlay cannot disagree about what an agent is doing.
+    pub agents: &'a agents_box::AgentsView,
     pub view: &'a ClientView,
     pub keymap: &'a Keymap,
     pub now: DateTime<Local>,

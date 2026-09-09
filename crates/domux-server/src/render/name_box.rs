@@ -194,10 +194,12 @@ mod tests {
         let panes = HashMap::new();
         let facts = FactRegistry::new();
         let keymap = Keymap::defaults();
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model,
             facts: &facts,
             panes: &panes,
+            agents: &agents,
             view,
             keymap: &keymap,
             now: chrono::Local::now(),

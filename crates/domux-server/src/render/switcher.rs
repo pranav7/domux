@@ -161,10 +161,12 @@ mod tests {
     ) -> Buffer {
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model,
             facts,
             panes: &panes,
+            agents: &agents,
             view,
             keymap: &keymap,
             now: chrono::Local::now(),
@@ -334,10 +336,12 @@ mod tests {
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
         let view = view(filter);
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model: &model,
             facts: &facts,
             panes: &panes,
+            agents: &agents,
             view: &view,
             keymap: &keymap,
             now: chrono::Local::now(),

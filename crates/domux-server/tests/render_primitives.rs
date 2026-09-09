@@ -340,10 +340,12 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
     };
     assert_eq!(view.tab, tab);
     let panes = HashMap::new();
+    let agents = domux_server::render::agents_box::AgentsView::empty(chrono::Local::now());
     let (buffer, _) = compose(&RenderInput {
         model: &model,
         facts: &domux_server::facts::FactRegistry::new(),
         panes: &panes,
+        agents: &agents,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
         now: chrono::Local::now(),
@@ -380,10 +382,12 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
         .unwrap()
         .clone();
     let panes = HashMap::new();
+    let agents = domux_server::render::agents_box::AgentsView::empty(chrono::Local::now());
     let (buffer, _) = compose(&RenderInput {
         model: &model,
         facts: &domux_server::facts::FactRegistry::new(),
         panes: &panes,
+        agents: &agents,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
         now: chrono::Local::now(),
@@ -454,9 +458,11 @@ fn a_wide_grapheme_in_a_tab_name_leaves_no_hole_in_the_top_bar() {
             .clone()
     };
     let panes = HashMap::new();
+    let agents = domux_server::render::agents_box::AgentsView::empty(chrono::Local::now());
     let (buffer, _) = compose(&RenderInput {
         model: &model,
         panes: &panes,
+        agents: &agents,
         view: &view,
         keymap: &domux_core::keymap::Keymap::defaults(),
         facts: &domux_server::facts::FactRegistry::new(),
