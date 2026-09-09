@@ -826,3 +826,113 @@ async fn the_keys_overlay_lists_the_leader_table_first_from_a_pane() {
         "which the overlay says rather than presenting a partial list as the whole of it:\n{f}"
     );
 }
+
+/// `?` from the sidebar's Projects box comes back to the box, the same way `?` over the
+/// switcher comes back to the switcher (interface spec 12.7 applied to the other surface).
+///
+/// The focus is asserted and then used: `j` moves the cursor, which is what proves the box
+/// has the keys rather than only being labelled as though it does. Esc is not the check here,
+/// because Esc in the box is `focus.pane` and that method's whole job is to leave.
+#[tokio::test]
+async fn question_mark_from_the_sidebars_box_comes_back_to_the_box() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.git_project_with_two_slots().await;
+    h.api("sidebar.show", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Projects"),
+        Duration::from_secs(3),
+    )
+    .await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        Focus::Region(RegionKind::SidebarProjects),
+        "the keys start in the box"
+    );
+    let before = h.model().client(&h.client).unwrap().projects_cursor.clone();
+
+    h.key(h.client.clone(), "?").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Keys"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "Esc").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains("┌ Keys"),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        Focus::Region(RegionKind::SidebarProjects),
+        "and come back to it rather than to a pane behind the sidebar"
+    );
+    // `k` and not `j`: entering the box puts the cursor on the workspace this client is in,
+    // which is the harness's own `proj` main, and `proj` sorts after `audrey-app` so that is
+    // the last row the cursor can rest on. `j` clamps there and moves nothing, and would have
+    // passed against a pane that had swallowed the key.
+    h.key(h.client.clone(), "k").await;
+    h.frame(h.client.clone()).await;
+    assert_ne!(
+        h.model().client(&h.client).unwrap().projects_cursor,
+        before,
+        "which `k` proves: the box has the keys, not just the label"
+    );
+}
+
+/// A box that is gone by the time the help closes hands the keys to the pane instead.
+///
+/// The client is narrowed below `SIDEBAR_MIN_COLS` while the help is open, which is the one
+/// way to reach it: `sidebar.show` at 120 columns leaves `sidebar_forced` false, so the resize
+/// really does take the sidebar off the screen. Without the `sidebar_visible` half of the
+/// rule the keys land in a region nothing on the screen marks (principle 2).
+#[tokio::test]
+async fn a_help_opened_in_the_sidebars_box_gives_the_keys_to_the_pane_when_the_box_is_gone() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("sidebar.show", json!({"client": h.client.as_str()}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Projects"),
+        Duration::from_secs(3),
+    )
+    .await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.key(h.client.clone(), "?").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Keys"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    h.resize(h.client.clone(), 80, 24).await;
+    h.frame(h.client.clone()).await;
+    assert!(
+        !h.model().client(&h.client).unwrap().sidebar_visible(),
+        "the sidebar is off the screen, which is what makes this the discriminating state"
+    );
+    h.key(h.client.clone(), "Esc").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().focus,
+        Focus::Pane(pane),
+        "with no box left to come back to the keys go to the pane:\n{f}"
+    );
+}

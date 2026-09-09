@@ -315,22 +315,61 @@ impl ClientView {
         self.overlay.clone()
     }
 
-    /// Where the keys go once `pop_overlay` has run: the overlay it uncovered, or `pane` when
-    /// it uncovered nothing. Never a frame with the keys in a region nothing on the screen
-    /// marks (principle 2).
+    /// Where the keys go once `pop_overlay` has run: the overlay it uncovered, or `fallback`
+    /// when it uncovered nothing. Never a frame with the keys in a region nothing on the
+    /// screen marks (principle 2).
     ///
     /// The switcher is named rather than lumped in with `Overlay`, because the region is what
     /// says which key table the reader is holding and the switcher's box has one of its own.
     /// Answered here rather than at each of the three callers - `api::focus::pane`,
     /// `api::switcher::close` and `input::close_overlay` - which wrote the same match out
-    /// three times and would have grown this arm three times.
-    pub fn focus_after_pop(&self, pane: Option<PaneId>) -> Focus {
-        match (&self.overlay, pane) {
-            (Some(Overlay::Switcher), _) => Focus::Region(RegionKind::Switcher),
-            (Some(_), _) => Focus::Region(RegionKind::Overlay),
-            (None, Some(p)) => Focus::Pane(p),
-            (None, None) => self.focus.clone(),
+    /// three times.
+    ///
+    /// The fallback is the caller's because the three ask two different questions, and only
+    /// where nothing is left underneath. Closing an overlay gives the keys back to whatever
+    /// had them, so `?` in a box comes back to the box: `focus_returning_from_overlay`.
+    /// `focus.pane` is a request to leave, and Esc in the sidebar's box returns to the pane
+    /// you left (interface spec 5.4), so it passes `focus_on_pane`. The difference is one
+    /// case, and it is spelled at the call rather than guessed here.
+    pub fn focus_after_pop(&self, fallback: Focus) -> Focus {
+        match &self.overlay {
+            Some(Overlay::Switcher) => Focus::Region(RegionKind::Switcher),
+            Some(_) => Focus::Region(RegionKind::Overlay),
+            None => fallback,
         }
+    }
+
+    /// The pane, or the focus this view already has when it has no pane to go to.
+    pub fn focus_on_pane(&self, pane: Option<PaneId>) -> Focus {
+        match pane {
+            Some(p) => Focus::Pane(p),
+            None => self.focus.clone(),
+        }
+    }
+
+    /// Where the keys go when an overlay closes over no other: back to the box that had them
+    /// while it was open, and to the pane when there is no such box.
+    ///
+    /// `api::client::help` keeps a box's region while the help is over it, so this is what
+    /// makes `?` in the sidebar's Projects box come back to the box, the same way `?` over the
+    /// switcher comes back to the switcher. Half of that rule would be worse than either
+    /// whole: a reader who learns one surface would be surprised by the other.
+    ///
+    /// `sidebar_visible` earns its place. A client narrowed below `SIDEBAR_MIN_COLS` while the
+    /// help was open has no box left to come back to, and the keys would land in a region
+    /// nothing on the screen marks (principle 2).
+    ///
+    /// Only `SidebarProjects`: the switcher's box is an overlay and `focus_after_pop` answers
+    /// for it above, and M3's Agents boxes join this when they exist. They are left out rather
+    /// than written ahead, because nothing in M2 can put the keys there, so the arm could not
+    /// be tested and its mutant could never die.
+    pub fn focus_returning_from_overlay(&self, pane: Option<PaneId>) -> Focus {
+        if matches!(self.focus, Focus::Region(RegionKind::SidebarProjects))
+            && self.sidebar_visible()
+        {
+            return self.focus.clone();
+        }
+        self.focus_on_pane(pane)
     }
 }
 
@@ -2573,7 +2612,7 @@ mod tests {
         view.push_overlay(Overlay::Help);
         view.pop_overlay();
         assert_eq!(
-            view.focus_after_pop(Some(pane.clone())),
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
             Focus::Region(RegionKind::Switcher),
             "a switcher that comes back is a box, not any old modal"
         );
@@ -2582,7 +2621,7 @@ mod tests {
         view.push_overlay(Overlay::Help);
         view.pop_overlay();
         assert_eq!(
-            view.focus_after_pop(Some(pane.clone())),
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
             Focus::Region(RegionKind::Overlay),
             "a name box has no key table of its own"
         );
@@ -2591,13 +2630,13 @@ mod tests {
         view.pop_overlay();
         assert_eq!(view.overlay, None);
         assert_eq!(
-            view.focus_after_pop(Some(pane.clone())),
+            view.focus_after_pop(view.focus_on_pane(Some(pane.clone()))),
             Focus::Pane(pane.clone()),
             "with nothing left the keys go back to the pane"
         );
         let before = view.focus.clone();
         assert_eq!(
-            view.focus_after_pop(None),
+            view.focus_after_pop(view.focus_on_pane(None)),
             before,
             "and a client with no pane keeps the focus it had rather than losing it"
         );

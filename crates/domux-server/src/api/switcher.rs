@@ -52,7 +52,8 @@ pub fn close(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
         return ok(Ack { ok: true });
     }
     view.pop_overlay();
-    view.focus = view.focus_after_pop(focused);
+    let pane_focus = view.focus_on_pane(focused);
+    view.focus = view.focus_after_pop(pane_focus);
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

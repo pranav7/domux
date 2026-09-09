@@ -187,7 +187,9 @@ pub fn pane(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     // `overlay_under` where nothing draws it and nothing closes it.
     view.pop_overlay();
     view.chord = None;
-    view.focus = view.focus_after_pop(focused);
+    // The pane, not the box: this method is the request to leave (interface spec 5.4).
+    let pane_focus = view.focus_on_pane(focused);
+    view.focus = view.focus_after_pop(pane_focus);
     ctx.view_dirty = true;
     result(ctx)
 }

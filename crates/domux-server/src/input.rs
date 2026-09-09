@@ -324,6 +324,8 @@ fn close_overlay(core: &mut Core, client: &ClientId) {
     let focused = core.focused_pane(client);
     if let Some(view) = core.model.client_mut(client) {
         view.pop_overlay();
-        view.focus = view.focus_after_pop(focused);
+        // The box that had the keys keeps them when nothing else is left underneath.
+        let back = view.focus_returning_from_overlay(focused);
+        view.focus = view.focus_after_pop(back);
     }
 }
