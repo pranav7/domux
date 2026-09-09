@@ -5,11 +5,13 @@
 //! "Server started" and "Config reloaded." print on stderr, and a subcommand that only
 //! changed something says nothing at all.
 
+pub mod agent;
 pub mod api;
 pub mod attach;
 pub mod config;
 pub mod events;
 pub mod import;
+pub mod install;
 pub mod open;
 pub mod pane;
 pub mod project;
