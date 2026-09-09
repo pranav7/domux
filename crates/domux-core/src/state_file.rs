@@ -51,7 +51,7 @@ pub fn v1_to_v2(value: &mut Value) -> Result<(), String> {
 }
 
 /// 2 to 3: the `agents` list appears, empty.
-fn v2_to_v3(v: &mut Value) -> Result<(), String> {
+pub fn v2_to_v3(v: &mut Value) -> Result<(), String> {
     let obj = v
         .as_object_mut()
         .ok_or_else(|| "state.json is not an object".to_string())?;
@@ -347,6 +347,26 @@ mod tests {
         assert_eq!(value["sidebar_open"], Value::from(false));
     }
 
+    /// `StateFile::agents` carries `#[serde(default)]`, whose fallback is also an empty
+    /// `Vec`. That makes a migrated file with no `agents` key indistinguishable, from the
+    /// outside, from a migration that quietly does nothing at all: both leave the key
+    /// absent and both restore to no agents. This test pins `v2_to_v3` directly, so a
+    /// no-op migration function - one that returns `Ok(())` without touching the value -
+    /// fails here even though every test that goes through `parse` and `restore` would
+    /// still pass.
+    #[test]
+    fn v2_to_v3_actually_writes_an_empty_agents_array_when_absent() {
+        let mut value = json!({
+            "schema_version": 2,
+            "saved_at": "x",
+            "projects": [],
+            "last_workspace": null,
+            "sidebar_open": false
+        });
+        v2_to_v3(&mut value).unwrap();
+        assert_eq!(value["agents"], Value::Array(Vec::new()));
+    }
+
     #[test]
     fn a_schema_version_1_file_migrates_and_starts_with_the_sidebar_hidden() {
         let text = std::fs::read_to_string(concat!(
@@ -493,6 +513,9 @@ mod tests {
             )
             .unwrap()
             .agent;
+        // Every field, not a chosen few: the point of a round trip is to catch a field
+        // that silently fails to serialize, which two or three assertions cannot do.
+        let mut expected = m.agent(&id).unwrap().clone();
         let file = snapshot(&m, "2026-09-05T10:00:00Z");
         assert_eq!(file.schema_version, SCHEMA_VERSION);
         assert_eq!(file.agents.len(), 1);
@@ -503,10 +526,16 @@ mod tests {
             "pid is a fact and is not persisted"
         );
         let back = restore(parse(&json).unwrap()).unwrap();
-        assert_eq!(back.agent(&id).unwrap().session_id.as_deref(), Some("s"));
+        // The only fields a restart actually changes (architecture spec section 5): the
+        // record comes back exited, off its pane, and marked as a restore rather than
+        // whatever created it.
+        expected.state = crate::model::AgentState::Exited;
+        expected.pane = None;
+        expected.source = crate::model::AgentSource::Restore;
         assert_eq!(
-            back.agent(&id).unwrap().state,
-            crate::model::AgentState::Exited
+            back.agent(&id).unwrap(),
+            &expected,
+            "every field but state, pane and source round-trips unchanged"
         );
     }
 
