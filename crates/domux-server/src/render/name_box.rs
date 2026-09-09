@@ -290,6 +290,49 @@ mod tests {
         );
     }
 
+    /// On a screen too narrow for the hint line, the last hint is cut with an ellipsis rather
+    /// than clipped at the border with nothing to say it was cut.
+    ///
+    /// Both halves need the narrow case, and only the narrow case: at 80 columns the line is
+    /// 47 cells inside a 54 cell budget, so it never reaches either rule. The budget is the
+    /// inside less its two pads, and a budget measured on the whole inside puts the ellipsis
+    /// one cell past the border, where `put_within` drops it and the row ends mid-word.
+    #[test]
+    fn a_narrow_box_cuts_the_last_hint_with_an_ellipsis() {
+        let model = model_with(None);
+        let buf = draw_over(&model, &view(TextInput::new("")), 46, 24, " ");
+        let hints = line(&buf, 13);
+        assert!(hints.contains("⏎ save    esc cancel"), "{hints}");
+        assert!(!hints.contains("an empty name clears it"), "{hints}");
+        assert!(hints.contains('…'), "the cut says it was cut: {hints}");
+    }
+
+    /// A box clamped shorter than its own rows draws only what fits inside its border.
+    ///
+    /// `overlay::centred_area` clamps to the workpanel, so a short screen gives a box with one
+    /// inner row or none at all. Nothing composed by `render::compose` reaches it - a screen
+    /// under `MIN_ROWS` draws the size message and no overlay - but a caller passing a small
+    /// rectangle does, and without the two guards the hints land on the bottom border or off
+    /// the buffer entirely.
+    #[test]
+    fn a_box_shorter_than_its_rows_draws_only_what_fits() {
+        let model = model_with(None);
+        // Six rows: one inner row, so the field fits and the hints do not.
+        let buf = draw_over(&model, &view(TextInput::new("auth")), 60, 6, "@");
+        assert!(line(&buf, 3).contains("auth"), "{}", line(&buf, 3));
+        assert_eq!(
+            line(&buf, 5),
+            "@".repeat(60),
+            "the hints stay inside the border"
+        );
+
+        // Three rows: two border rows and no inside at all.
+        let buf = draw_over(&model, &view(TextInput::new("auth")), 60, 3, "@");
+        for y in 0..3u16 {
+            assert!(!line(&buf, y).contains("auth"), "{}", line(&buf, y));
+        }
+    }
+
     /// A refused name leaves the box open, so its message takes the hint row rather than the
     /// row of keys the reader already knows (interface spec 12.12).
     #[test]

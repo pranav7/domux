@@ -221,6 +221,42 @@ async fn n_in_the_sidebar_box_names_the_cursor_row_and_takes_the_keys_off_the_si
     );
 }
 
+/// The caret moves, so a name is edited rather than only appended to. Every one of the four
+/// keys changes the answer: drop any of them and the final name is a different string.
+#[tokio::test]
+async fn the_arrow_home_and_end_keys_move_the_caret_in_the_field() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let client = h.client.clone();
+    h.api(
+        "workspace.focus",
+        json!({"workspace": w1.as_str(), "client": client.as_str()}),
+    )
+    .await
+    .unwrap();
+    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "N").await;
+    h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
+        .await;
+
+    h.type_text(client.clone(), "auth").await;
+    h.key(client.clone(), "Left").await;
+    h.type_text(client.clone(), "X").await;
+    h.key(client.clone(), "Home").await;
+    h.key(client.clone(), "Right").await;
+    h.type_text(client.clone(), "1").await;
+    h.key(client.clone(), "End").await;
+    h.type_text(client.clone(), "9").await;
+    h.key(client.clone(), "Enter").await;
+
+    h.wait_for(client.clone(), |f| !f.contains("Name workspace-1"), WAIT)
+        .await;
+    assert_eq!(
+        h.model().workspace(&w1).unwrap().name.as_deref(),
+        Some("a1utXh9")
+    );
+}
+
 /// `leader n` clears the name with no question and no box: the row redrawing with its handle
 /// is the whole answer (interface spec 12.9).
 #[tokio::test]
