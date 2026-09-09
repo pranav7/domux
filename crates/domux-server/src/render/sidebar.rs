@@ -91,29 +91,36 @@ pub fn projects_area(size: Size) -> Rect {
 /// screen and `sidebar_area` starts at the screen's own origin, so the two are already
 /// measured against the same top edge.
 ///
-/// **The comparison is against territory, not against the two boxes as they are drawn, and
-/// changing that breaks `C-h` on an unsplit tab.** Do not "simplify" the rebinding below away.
-/// The reason is one row: the tab row takes screen row 0, so the workpanel starts at row 1 and
-/// a pane filling it misses the Projects box's first row while covering every row of the
-/// Agents box. Measured against the drawn boxes it therefore leans to Agents by exactly that
-/// row, and `C-h` on the commonest layout of all - one pane, no split - lands in the lower box.
-/// Interface spec 12.29 is titled "`C-h` into the sidebar from a pane beside the Agents box"
-/// and its own frame 8.2 shows that press entering Projects, so the overlap rule is the
-/// tie-break for a pane sitting beside the lower box and not a redefinition of where `C-h`
-/// goes by default. Counting the row between the boxes as Projects makes an unsplit tab an
-/// exact tie at an even screen height, which is the case plan assumption 25's "ties go to
-/// Projects" was written for and the only way that rule can ever fire.
+/// **What this answers for a pane filling the workpanel** - the one pane of an unsplit tab,
+/// which is the commonest layout there is - is Projects, at every screen height from 12 up. It
+/// gets there by two different routes, and "a tie" is the right word for only one of them:
 ///
-/// The gap row is only half of it. At an odd height the two territories cannot be equal, so
-/// `split_column` rounds the split up in Projects' favour and the upper box is strictly the
-/// larger of the two. Both halves are needed: with the gap row alone the answer flips with the
-/// parity of the screen, and with the rounding alone an even height leans to Agents.
+/// - At an **even** height the two territories are exactly equal, and plan assumption 25 sends
+///   the tie to Projects. This is the only case that rule can ever reach.
+/// - At an **odd** height they cannot be equal. `split_column` rounds the split up in Projects'
+///   favour, so Projects is strictly the larger territory and wins on the rule's own terms with
+///   no tie involved.
+/// - At **10 and 11 rows** the column is too short for both minimums, `MIN_AGENTS` wins, the
+///   Agents box really is the larger of the two, and the answer is Agents. That is the "subject
+///   to the minimum rows" edge, and it is the one case where a pane filling the workpanel does
+///   not enter Projects.
 ///
-/// The two heights this still does not hold at are 10 and 11, where the column is too short
-/// for both minimums and `MIN_AGENTS` wins, so the Agents box really is the larger one and the
-/// rule's own answer is Agents. That is the "subject to the minimum rows" edge, and
-/// `a_pane_filling_the_workpanel_enters_projects_at_every_height` pins it rather than skipping
-/// it.
+/// `a_pane_filling_the_workpanel_enters_projects_at_every_height` walks the whole range,
+/// including those last two.
+///
+/// **Two things make that true and removing either one breaks `C-h` on an unsplit tab.** The
+/// first is here: the comparison is against territory, the row between the boxes counted with
+/// Projects, and not against the two boxes as they are drawn. Do not "simplify" the rebinding
+/// below away. The reason is one row - the tab row takes screen row 0, so the workpanel starts
+/// at row 1 and a pane filling it misses the Projects box's first row while covering every row
+/// of the Agents box, which measured against the drawn boxes leans to Agents by exactly that
+/// row. The second is the round-up in `split_column`; with the gap row alone the answer flips
+/// with the parity of the screen, and with the round-up alone an even height leans to Agents.
+///
+/// Why Projects is the right default at all: interface spec 12.29 is titled "`C-h` into the
+/// sidebar from a pane beside the Agents box" and its own frame 8.2 shows that press entering
+/// Projects, so the overlap rule is the tie-break for a pane sitting beside the lower box and
+/// not a redefinition of where `C-h` goes by default.
 pub fn region_for_rows(pane: Rect, projects: Rect, agents: Rect) -> RegionKind {
     // Projects owns everything above the Agents box, the row between them included.
     let projects = Rect::new(

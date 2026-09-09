@@ -62,6 +62,23 @@ impl Piece {
 /// to read as a message, and the mark that says the rest was cut.
 const RIGHT_FLOOR: usize = 8;
 
+/// `● 3`: the agent list folded to one cell (interface spec 6.8), on a `surface0` fill with
+/// the dot in red. Only while the sidebar is not drawn - `sidebar_visible`, not the
+/// remembered `sidebar_open` intent, because a client auto-hidden on a narrow screen still
+/// draws this bar and has nothing else to show the count in - and only while there is
+/// something to count. Never on a tab: this is the agent list folded, not a tab notification.
+pub fn count_piece(input: &RenderInput) -> Option<Vec<Piece>> {
+    if input.view.sidebar_visible() || input.agents.red_dots == 0 {
+        return None;
+    }
+    let fill = Style::default().bg(theme::SURFACE0);
+    Some(vec![
+        Piece::new(" ", fill),
+        Piece::new("●", fill.fg(theme::RED)),
+        Piece::new(format!(" {} ", input.agents.red_dots), fill.fg(theme::TEXT)),
+    ])
+}
+
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // The buffer is the authority on how wide the bar may be, not the client's reported
     // size: the fill below indexes cells directly, so a width taken from anywhere else
@@ -86,9 +103,15 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .map(|p| p.name.as_str())
         .unwrap_or("");
     let location = format!(" {project} › {} ", ws.display_name());
+    let mut x = area.x;
+    if let Some(pieces) = count_piece(input) {
+        for p in pieces {
+            x = put(buf, x, y, &p.text, p.style);
+        }
+    }
     let x = put(
         buf,
-        area.x,
+        x,
         y,
         &location,
         Style::default()
