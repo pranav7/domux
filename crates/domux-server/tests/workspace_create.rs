@@ -104,12 +104,16 @@ async fn create_makes_the_worktree_on_a_fresh_branch_at_the_lowest_free_number()
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("◌ workspace-2"),
+            // Both glyphs, not one and then an assertion about the other. The `◌` needs that
+            // slot's branch fact, and the two slots are fetched independently, so waiting for
+            // one says nothing about the other having arrived. That raced: the macOS runner
+            // drew `workspace-2` with its glyph and `workspace-1` without.
+            |f| f.contains("◌ workspace-1") && f.contains("◌ workspace-2"),
             Duration::from_secs(10),
         )
         .await;
     assert!(
-        f.contains("◌ workspace-1"),
+        f.contains("◌ workspace-1") && f.contains("◌ workspace-2"),
         "both slots draw as untouched (interface spec 12.23):\n{f}"
     );
 }

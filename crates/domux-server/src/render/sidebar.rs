@@ -127,18 +127,6 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         );
         return;
     }
-    // What the start-up prune took away, over the keys and under the pill, the same order the
-    // switcher's footer draws these three in (`overlay::footer`).
-    if let Some(note) = crate::render::note_line(input.notes) {
-        put(
-            buf,
-            area.x + 1,
-            area.y,
-            &truncate_with_ellipsis(&note, area.width.saturating_sub(2) as usize),
-            Style::default().fg(theme::TEXT),
-        );
-        return;
-    }
     // The keys as configured, never the default spelling (principle 3). A key the reader has
     // rebound to nothing drops out of the row rather than naming a key that does nothing.
     let focused = matches!(input.view.focus, Focus::Region(RegionKind::SidebarProjects));
@@ -146,6 +134,12 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
     // because a mode with no marker on the screen is a mode the reader cannot see they are in
     // (principle 2). Spelled out rather than looked up for the reason `overlay::footer` gives:
     // no action clears the filter, so there is no binding to read.
+    //
+    // Over the note and under the pill, which is `overlay::footer`'s order (Task 20). Both
+    // are surfaces of one question and answering it twice is how they drift: an open text
+    // field with no marker is a principle 2 failure, where a note kept waiting behind one is
+    // only late. Reachable, though only over the API: `list.filter` opens the field without a
+    // key, and it is a key in a box that clears a note.
     //
     // Two surfaces write these words. They are one sentence of text rather than a rule, and
     // the two rows have nothing else in common - this one is 38 cells wide with the sidebar's
@@ -173,6 +167,18 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
             Style::default().add_modifier(Modifier::REVERSED),
         );
         put_within(buf, cx, area.y, last_x, "  esc clear", word);
+        return;
+    }
+    // What the start-up prune took away, over the keys and under both the pill and the
+    // filter, the same order the switcher's footer draws these four in (`overlay::footer`).
+    if let Some(note) = crate::render::note_line(input.notes) {
+        put(
+            buf,
+            area.x + 1,
+            area.y,
+            &truncate_with_ellipsis(&note, area.width.saturating_sub(2) as usize),
+            Style::default().fg(theme::TEXT),
+        );
         return;
     }
     let pairs: Vec<(String, &str)> = if focused {

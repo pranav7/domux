@@ -12,7 +12,7 @@ use crate::core::Core;
 use domux_core::api::Method;
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::keymap::Action;
-use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind, RegionKind};
+use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind};
 use domux_core::proto::ServerMsg;
 use domux_term::{Emulator, Key, KeyAction, KeyEvent, Mods};
 
@@ -220,7 +220,8 @@ fn filter_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
 
 /// Keys inside an overlay. The prompt edits its input; Enter saves, Esc cancels. The help
 /// overlay closes on Esc, `q` or `?`. A confirmation acts on `y` and cancels on anything
-/// else. Closing returns focus to the pane.
+/// else. Closing returns the keys to the overlay underneath, or to the pane when there is
+/// none: see `close_overlay`.
 fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
     let Some(overlay) = core
         .model
@@ -276,16 +277,16 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         // The same rule as the tab above, and the keys the box itself offers:
         // `y remove project    esc keep project` (interface spec 7.3).
         //
-        // `pop_confirmation` rather than `close_overlay`, and the same for the two workspace
-        // kinds below: all three are opened with `push_overlay`, and what `push_overlay`
-        // covers, `pop_overlay` uncovers. `close_overlay` clears the top overlay and leaves
-        // `overlay_under` where it is, so it does not merely fail to restore what was
-        // underneath, it strands it. That is invisible for `project.remove`, whose only way
-        // here is a key bound to it and a key reaches `run_action` only when no overlay is
-        // open, so this is behaviour that has never differed; it is written the one way
-        // because the two halves belong together, not because a test can tell them apart.
+        // All three confirmations are opened with `push_overlay`, so all three are closed with
+        // `close_overlay`, which pops one overlay: what `push_overlay` covers, `pop_overlay`
+        // uncovers. Before Task 20 that call cleared the top overlay and left `overlay_under`
+        // where it stood, which did not merely fail to restore what was underneath, it
+        // stranded it. That was invisible for `project.remove`, whose only way here is a key,
+        // and a key reaches `run_action` only when no overlay is open. Task 18's `X` inside
+        // the Projects box is the first caller to open a confirmation over the switcher, and
+        // Task 20 made the close correct for it.
         Overlay::Confirm(ConfirmKind::RemoveProject(project)) => {
-            pop_confirmation(core, client);
+            close_overlay(core, client);
             if confirmed(&key) {
                 let method = Method::ProjectRemove(domux_core::api::ProjectRemoveParams {
                     project: project.to_string(),
@@ -304,7 +305,7 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         // commits that were never pushed, and the job's refusal names the state and what to
         // do about it.
         Overlay::Confirm(ConfirmKind::DeleteWorkspace(workspace)) => {
-            pop_confirmation(core, client);
+            close_overlay(core, client);
             if confirmed(&key) {
                 let method = Method::WorkspaceDelete(domux_core::api::WorkspaceDeleteParams {
                     workspace: workspace.to_string(),
@@ -315,7 +316,7 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             }
         }
         Overlay::Confirm(ConfirmKind::ClearWorkspace(workspace)) => {
-            pop_confirmation(core, client);
+            close_overlay(core, client);
             if confirmed(&key) {
                 let method = Method::WorkspaceClear(domux_core::api::WorkspaceClearParams {
                     workspace: Some(workspace.to_string()),
@@ -345,34 +346,21 @@ fn confirmed(key: &KeyEvent) -> bool {
     matches!(key.key, Key::Char('y') | Key::Char('Y'))
 }
 
-/// Closes a confirmation and gives the keys back to whatever was underneath: the overlay it
-/// was opened over (interface spec 12.7), or the pane.
+/// Closes the overlay that has the keys and gives them back to what was under it: the
+/// overlay it was opened over (interface spec 12.7), or the pane.
 ///
-/// The other half of `api::workspace::ask` and `api::project::remove`, which open with
-/// `push_overlay`. `close_overlay` below is for the overlays that are opened by assignment:
-/// the help overlay, the tab prompt, and the close-tab question `Core::confirmation_for`
-/// sets. Those cover nothing, so they have nothing to uncover.
+/// One overlay, not the whole stack. `?` over the switcher has to come back to the switcher,
+/// and `view.overlay = None` would not merely fail to restore it, it would strand it in
+/// `overlay_under` where nothing draws it and nothing closes it.
 ///
-/// The focus line is `api::switcher::close`'s, for the same reason: never a frame with the
-/// keys in a region nothing on the screen marks (principle 2).
-fn pop_confirmation(core: &mut Core, client: &ClientId) {
-    let focused = core.focused_pane(client);
-    if let Some(view) = core.model.client_mut(client) {
-        view.pop_overlay();
-        view.focus = match (&view.overlay, focused) {
-            (Some(_), _) => Focus::Region(RegionKind::Overlay),
-            (None, Some(pane)) => Focus::Pane(pane),
-            (None, None) => view.focus.clone(),
-        };
-    }
-}
-
+/// Where the keys land is `ClientView::focus_after_pop`, which `api::focus::pane` and
+/// `api::switcher::close` also call. The three had written the same match out three times.
 fn close_overlay(core: &mut Core, client: &ClientId) {
     let focused = core.focused_pane(client);
     if let Some(view) = core.model.client_mut(client) {
-        view.overlay = None;
-        if let Some(p) = focused {
-            view.focus = Focus::Pane(p);
-        }
+        view.pop_overlay();
+        // The box that had the keys keeps them when nothing else is left underneath.
+        let back = view.focus_returning_from_overlay(focused);
+        view.focus = view.focus_after_pop(back);
     }
 }

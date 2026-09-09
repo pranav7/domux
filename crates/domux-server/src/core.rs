@@ -3649,9 +3649,13 @@ mod tests {
                 "{key} puts the reader back where the question was asked"
             );
             assert_eq!(view.overlay_under, None, "{key} left nothing stranded");
+            // `Switcher`, not the generic `Overlay`. This asserted `Overlay` when it was
+            // written, which is what `close_overlay` produced before Task 20 gave
+            // `ClientView::focus_after_pop` the job of naming the switcher as the box it is.
+            // The weaker value was what the code did; this one is what the test is called.
             assert_eq!(
                 view.focus,
-                Focus::Region(RegionKind::Overlay),
+                Focus::Region(RegionKind::Switcher),
                 "{key} left the keys in the box that is still open"
             );
         }

@@ -27,6 +27,19 @@ pub enum RegionKind {
     Overlay,
 }
 
+impl RegionKind {
+    /// Whether this region is a box, which is a region with its own `[keys.list]` table, as
+    /// against `Overlay`, which is every modal that has no table of its own.
+    ///
+    /// The line is the one this enum's own comment draws, named so that a reader can ask the
+    /// question rather than restate the list. `render::overlay::draw_help` asks it to decide
+    /// which key table the reader is holding, and gets the same answer for the switcher's box
+    /// and the sidebar's box because it is one question.
+    pub fn is_box(self) -> bool {
+        !matches!(self, RegionKind::Overlay)
+    }
+}
+
 /// A one-line text input with a caret, for prompts. Pure, so every edit has a unit test.
 ///
 /// `Default` is the empty input, which is what `TextInput::new("")` builds. `ClientView`

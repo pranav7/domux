@@ -52,12 +52,8 @@ pub fn close(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
         return ok(Ack { ok: true });
     }
     view.pop_overlay();
-    // Never a frame with the keys in a region nothing on the screen marks (principle 2).
-    view.focus = match (&view.overlay, focused) {
-        (Some(_), _) => Focus::Region(RegionKind::Overlay),
-        (None, Some(pane)) => Focus::Pane(pane),
-        (None, None) => view.focus.clone(),
-    };
+    let pane_focus = view.focus_on_pane(focused);
+    view.focus = view.focus_after_pop(pane_focus);
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }
