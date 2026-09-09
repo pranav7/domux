@@ -26,7 +26,8 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 
 - Work on `v2`, or on a milestone branch (`m1`, `m2`, `m3`) that merges into `v2` by pull request. Never commit to `main`, `master`, or `workspace-*`.
 - Nothing here writes under `~/.local/share/domux`, `~/.config/domux`, `~/.claude`, or `~/.codex`. V2 uses `~/.local/share/domux2`, `~/.config/domux2/domux.toml` and `domux2.sock` until the M3 cut-over; every such name comes from `domux_core::names` and `domux_core::paths`.
-- No tmux. No mouse. No Windows.
+- No tmux. No Windows. The mouse is read: the wheel, a drag that selects, and clicks on the
+  chrome. Read `docs/decisions/0014-the-mouse.md` before changing what any of them do.
 - One implementation per operation: a key, a CLI subcommand and an API call reach the same handler in `domux_server::api`.
 - One core task owns all mutable state. Atomic writes: `path.tmp`, then rename.
 - Test names are `behavior_condition` in snake_case.

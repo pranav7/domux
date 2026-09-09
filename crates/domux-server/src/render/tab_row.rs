@@ -8,7 +8,7 @@
 
 use crate::render::boxed::put_within;
 use crate::render::{theme, RenderInput};
-use domux_core::model::{Focus, Overlay, PromptKind, Tab, TextInput};
+use domux_core::model::{PromptKind, Tab, TextInput};
 use domux_core::text::{display_width, sanitize_for_display};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
@@ -42,6 +42,34 @@ impl TabCell {
     fn slot(&self) -> usize {
         self.width + 1
     }
+}
+
+/// What a cell of the drawn row acts on when it is clicked (decision 0014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabTarget {
+    /// The tab at this index among the workspace's tabs.
+    Tab(usize),
+    /// The `+`.
+    Plus,
+}
+
+/// One run of cells of the row as it is drawn: what it draws and what a click on it acts on.
+///
+/// The row is laid out once, into these, and then both drawn and hit-tested from them. A second
+/// walk that placed the cells its own way would put a tab under the pointer that the reader sees
+/// somewhere else, and the two walks would drift apart at exactly the widths where the row elides
+/// and nobody looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Piece {
+    Separator,
+    Elision,
+    Plus,
+    Tab(usize),
+    /// The anchor's cell, cut to `width` cells because not even it fits whole.
+    Cut {
+        tab: usize,
+        width: usize,
+    },
 }
 
 /// The tab row of one workspace, ready to measure and then draw.
@@ -97,37 +125,14 @@ impl TabRow {
         self.natural().min(anchor)
     }
 
-    /// Draws the row from `x` on row `y` into `budget` cells over a background of `bg`, and
-    /// returns the x after the last cell it drew.
-    ///
-    /// `bg` is the row's own background, not the cells': the full-width top bar sits on
-    /// mantle and the row on the panes sits on nothing (`Color::Reset`). It is applied here
-    /// rather than baked into the cells so that a cell with a background of its own - the
-    /// accent fill on the tab that owns the keys - keeps it either way.
-    pub fn draw(&self, x: u16, y: u16, budget: usize, bg: Color, buf: &mut Buffer) -> u16 {
-        // Explicit rather than left to `put_within`, which patches: a wide grapheme blanks
-        // the cell under its second half, and a style with no background would leave that
-        // cell showing through the bar.
-        let on_row = |style: Style| match style.bg {
-            Some(_) => style,
-            None => style.bg(bg),
-        };
-        let sep = on_row(Style::default().fg(theme::SURFACE0));
-        let plus_style = on_row(Style::default().fg(theme::SURFACE2));
+    /// The row laid out for `budget` cells: every piece it draws, in order.
+    fn pieces(&self, budget: usize) -> Vec<Piece> {
         if budget == 0 {
-            return x;
+            return Vec::new();
         }
-        // Inclusive, and clamped into `u16` before the cast: a budget is derived from a
-        // client's reported screen, which nothing clamps, and a wrapped edge would let the row
-        // write over its neighbour instead of stopping at it.
-        let last_x = x
-            .saturating_add(budget.min(u16::MAX as usize) as u16)
-            .saturating_sub(1);
         let n = self.cells.len();
         if n == 0 {
-            let cx = put_within(buf, x, y, last_x, "│", sep);
-            let cx = put_within(buf, cx, y, last_x, " + ", plus_style);
-            return put_within(buf, cx, y, last_x, "│", sep);
+            return vec![Piece::Separator, Piece::Plus, Piece::Separator];
         }
         let current = self.current.min(n - 1);
         let anchor = self.anchor.min(n - 1);
@@ -173,32 +178,119 @@ impl TabRow {
             // Not even the anchor's own cell fits. It is drawn cut at one cell short of the
             // budget and that cell is the `…`, so a cut cell says it was cut (principle 6)
             // instead of ending wherever the clip fell.
-            let mut cx = x;
-            for (text, style) in &self.cells[anchor].runs {
-                cx = put_within(buf, cx, y, last_x.saturating_sub(1), text, on_row(*style));
-            }
-            return put_within(buf, cx, y, last_x, "…", sep);
+            return vec![
+                Piece::Cut {
+                    tab: anchor,
+                    width: budget - 1,
+                },
+                Piece::Elision,
+            ];
         }
-        let mut cx = x;
+        let mut out = Vec::new();
         if lo > 0 {
-            cx = put_within(buf, cx, y, last_x, "…", sep);
-            cx = put_within(buf, cx, y, last_x, "│", sep);
+            out.push(Piece::Elision);
+            out.push(Piece::Separator);
         }
-        for cell in &self.cells[lo..hi] {
-            for (text, style) in &cell.runs {
-                cx = put_within(buf, cx, y, last_x, text, on_row(*style));
-            }
-            cx = put_within(buf, cx, y, last_x, "│", sep);
+        for i in lo..hi {
+            out.push(Piece::Tab(i));
+            out.push(Piece::Separator);
         }
         if hi < n {
-            cx = put_within(buf, cx, y, last_x, "…", sep);
-            cx = put_within(buf, cx, y, last_x, "│", sep);
+            out.push(Piece::Elision);
+            out.push(Piece::Separator);
         }
         if plus {
-            cx = put_within(buf, cx, y, last_x, " + ", plus_style);
-            cx = put_within(buf, cx, y, last_x, "│", sep);
+            out.push(Piece::Plus);
+            out.push(Piece::Separator);
+        }
+        out
+    }
+
+    /// The cells one piece takes, which is what both the drawing and the hit test measure by.
+    fn width_of(&self, piece: &Piece) -> usize {
+        match piece {
+            Piece::Separator | Piece::Elision => 1,
+            Piece::Plus => PLUS - 1,
+            Piece::Tab(i) => self.cells[*i].width,
+            Piece::Cut { width, .. } => *width,
+        }
+    }
+
+    /// Draws the row from `x` on row `y` into `budget` cells over a background of `bg`, and
+    /// returns the x after the last cell it drew.
+    ///
+    /// `bg` is the row's own background, not the cells': the full-width top bar sits on
+    /// mantle and the row on the panes sits on nothing (`Color::Reset`). It is applied here
+    /// rather than baked into the cells so that a cell with a background of its own - the
+    /// accent fill on the tab that owns the keys - keeps it either way.
+    pub fn draw(&self, x: u16, y: u16, budget: usize, bg: Color, buf: &mut Buffer) -> u16 {
+        // Explicit rather than left to `put_within`, which patches: a wide grapheme blanks
+        // the cell under its second half, and a style with no background would leave that
+        // cell showing through the bar.
+        let on_row = |style: Style| match style.bg {
+            Some(_) => style,
+            None => style.bg(bg),
+        };
+        let sep = on_row(Style::default().fg(theme::SURFACE0));
+        let plus_style = on_row(Style::default().fg(theme::SURFACE2));
+        if budget == 0 {
+            return x;
+        }
+        // Inclusive, and clamped into `u16` before the cast: a budget is derived from a
+        // client's reported screen, which nothing clamps, and a wrapped edge would let the row
+        // write over its neighbour instead of stopping at it.
+        let last_x = x
+            .saturating_add(budget.min(u16::MAX as usize) as u16)
+            .saturating_sub(1);
+        let mut cx = x;
+        for piece in self.pieces(budget) {
+            cx = match piece {
+                Piece::Separator => put_within(buf, cx, y, last_x, "│", sep),
+                Piece::Elision => put_within(buf, cx, y, last_x, "…", sep),
+                Piece::Plus => put_within(buf, cx, y, last_x, " + ", plus_style),
+                Piece::Tab(i) => self.draw_cell(i, cx, y, last_x, &on_row, buf),
+                // One cell short of the budget: the cell after it is the `…` piece behind this
+                // one, and `put_within` would otherwise let a wide label take it.
+                Piece::Cut { tab, .. } => {
+                    self.draw_cell(tab, cx, y, last_x.saturating_sub(1), &on_row, buf)
+                }
+            };
         }
         cx
+    }
+
+    fn draw_cell(
+        &self,
+        i: usize,
+        x: u16,
+        y: u16,
+        last_x: u16,
+        on_row: &impl Fn(Style) -> Style,
+        buf: &mut Buffer,
+    ) -> u16 {
+        let mut cx = x;
+        for (text, style) in &self.cells[i].runs {
+            cx = put_within(buf, cx, y, last_x, text, on_row(*style));
+        }
+        cx
+    }
+
+    /// What a click at `at_x` acts on, for a row drawn from `x` into `budget` cells. A click on a
+    /// separator, on an elision mark or past the end of the row acts on nothing.
+    pub fn target_at(&self, x: u16, budget: usize, at_x: u16) -> Option<TabTarget> {
+        let mut cx = x;
+        for piece in self.pieces(budget) {
+            let width = self.width_of(&piece).min(u16::MAX as usize) as u16;
+            if at_x >= cx && at_x < cx.saturating_add(width) {
+                return match piece {
+                    Piece::Tab(i) | Piece::Cut { tab: i, .. } => Some(TabTarget::Tab(i)),
+                    Piece::Plus => Some(TabTarget::Plus),
+                    Piece::Separator | Piece::Elision => None,
+                };
+            }
+            cx = cx.saturating_add(width);
+        }
+        None
     }
 }
 
@@ -285,24 +377,9 @@ fn prompt_cell(number: usize, input: &TextInput) -> TabCell {
 /// full-width bar uses, so the clock gives way to the tabs in one place, not two.
 pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
     let area = crate::render::workpanel_area(input.view);
-    let Some(ws) = input.model.workspace(&input.view.workspace) else {
+    let Some(row) = crate::render::top_bar::tab_row_of(input) else {
         return;
     };
-    let current = ws
-        .tabs
-        .iter()
-        .position(|t| t.id == input.view.tab)
-        .unwrap_or(0);
-    let prompt = match &input.view.overlay {
-        Some(Overlay::Prompt(p)) => Some(p),
-        _ => None,
-    };
-    let row = TabRow::new(
-        &ws.tabs,
-        current,
-        prompt,
-        matches!(input.view.focus, Focus::Pane(_)),
-    );
     crate::render::top_bar::draw_tabs_and_right(
         input,
         &row,

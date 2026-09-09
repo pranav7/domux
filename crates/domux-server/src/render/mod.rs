@@ -154,6 +154,94 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
     (buf, cursor)
 }
 
+/// What one screen cell belongs to (decision 0014). `compose` draws these; the pointer routes
+/// to them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hit {
+    /// A cell inside a pane's box, with the cell of that pane's own grid under it. A cell on the
+    /// box's rule clamps to the nearest cell inside it, so the border belongs to the pane it
+    /// draws rather than to nothing.
+    Pane { pane: PaneId, row: u16, col: u16 },
+    /// A tab's cell in the tab row.
+    Tab(domux_core::ids::TabId),
+    /// The `+` at the end of the tab row.
+    NewTab,
+    /// A workspace's row in the sidebar's Projects box.
+    Workspace(domux_core::ids::WorkspaceId),
+}
+
+/// What the cell at `column`, `row` of this client's screen belongs to, or `None` for a cell
+/// that acts on nothing: the chrome's own rules and marks, unused space, the size notice, or
+/// anything under an open overlay.
+///
+/// The arms are `compose`'s arms in `compose`'s order, and each one asks the module that draws
+/// that region. Nothing here measures anything itself: a second measurement is how the cell a
+/// reader clicks stops being the cell they see.
+pub fn hit_at(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
+    let size = input.view.size;
+    if size.cols < MIN_COLS || size.rows < MIN_ROWS {
+        // The size notice covers the screen, and it names a size to reach rather than offering
+        // anything to act on.
+        return None;
+    }
+    // An open overlay owns the screen: what is under it is not what the reader is pointing at
+    // (principle 2). The switcher's own rows answer a click when the overlay does.
+    if input.view.overlay.is_some() {
+        return None;
+    }
+    if input.view.sidebar_visible() {
+        let sidebar = sidebar::sidebar_area(size);
+        if column < sidebar.right() {
+            return sidebar::workspace_at(input, row).map(Hit::Workspace);
+        }
+        if row == 0 {
+            let area = workpanel_area(input.view);
+            let tabs = top_bar::tab_row_of(input)?;
+            return tab_hit(
+                input,
+                top_bar::tab_target_at(input, &tabs, area.x, area.x + area.width, column),
+            );
+        }
+    } else if row == 0 {
+        return tab_hit(input, top_bar::bar_tab_hit(input, column));
+    }
+    pane_hit(input, column, row)
+}
+
+/// A tab target as the tab it names. The row carries indices, because that is what it draws
+/// from; every handler takes an id.
+fn tab_hit(input: &RenderInput, target: Option<tab_row::TabTarget>) -> Option<Hit> {
+    match target? {
+        tab_row::TabTarget::Plus => Some(Hit::NewTab),
+        tab_row::TabTarget::Tab(i) => {
+            let ws = input.model.workspace(&input.view.workspace)?;
+            ws.tabs.get(i).map(|t| Hit::Tab(t.id.clone()))
+        }
+    }
+}
+
+/// The pane whose box holds the cell, and the cell of its own grid under it.
+fn pane_hit(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
+    let tab = input.model.tab(&input.view.tab)?;
+    // The rectangle `draw_panes` lays the boxes out on, and the inner area it draws each grid
+    // in.
+    let area = smallest_workpanel(input.model, &tab.id, input.view);
+    let (pane, rect) = solve(&tab.layout, area, tab.zoomed.as_ref())
+        .into_iter()
+        .find(|(_, rect)| {
+            column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
+        })?;
+    let inner = boxed::Boxed::inner_of(to_rect(rect));
+    if inner.width == 0 || inner.height == 0 {
+        return None;
+    }
+    Some(Hit::Pane {
+        pane,
+        row: row.clamp(inner.y, inner.bottom() - 1) - inner.y,
+        col: column.clamp(inner.x, inner.right() - 1) - inner.x,
+    })
+}
+
 /// Whether this client draws pane boxes at all. A screen under the minimum shows only the
 /// size notice, so it has no claim on a pane box or its PTY.
 fn draws_panes(view: &ClientView) -> bool {

@@ -8,6 +8,7 @@ pub mod facts;
 pub mod git;
 pub mod input;
 pub mod log;
+pub mod mouse;
 pub mod pane;
 pub mod persist;
 pub mod process;

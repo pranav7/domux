@@ -174,6 +174,28 @@ impl ListBox<'_> {
     }
 }
 
+/// The index of the row drawn at screen row `y`, or `None` when no row is drawn there.
+///
+/// The same walk `render` makes, in the same order, over the same rows and scroll: a row is as
+/// many lines tall as it has, and the lines outside the scrolled window are not drawn. A click
+/// then lands on the row the reader sees, whatever the rows above it are.
+pub fn row_at(rows: &[ListRow], scroll: u16, inner: Rect, y: u16) -> Option<usize> {
+    if inner.height == 0 || y < inner.y || y >= inner.bottom() {
+        return None;
+    }
+    let wanted = (y - inner.y).checked_add(scroll)?;
+    let mut next = 0u16;
+    for (i, row) in rows.iter().enumerate() {
+        for _ in 0..row.height() {
+            if next == wanted {
+                return Some(i);
+            }
+            next = next.saturating_add(1);
+        }
+    }
+    None
+}
+
 /// Draws one line's spans, cut to `width` by grapheme with a trailing ellipsis. The filled
 /// line takes the fill as its background and brightens: bold text stays bold, and dim text
 /// loses its dimming (interface spec 5.3).

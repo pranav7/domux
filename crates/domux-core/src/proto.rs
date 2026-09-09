@@ -1,7 +1,7 @@
 //! The attach protocol. Task 9 fills this file; the Model needs `Capabilities` first.
 
 use crate::ids::ClientId;
-use domux_term::{CursorShape, KeyEvent, Rgb};
+use domux_term::{CursorShape, KeyEvent, MouseEvent, Rgb};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,8 @@ pub struct Capabilities {
 }
 
 /// Bumped when a message shape changes. The server refuses a client with another value.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3 added `ClientMsg::Mouse` (decision 0014).
+pub const PROTOCOL_VERSION: u32 = 3;
 /// A frame larger than this is a bug or an attack, never a screen. The value is also what
 /// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.
 pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
@@ -55,6 +56,19 @@ pub enum ClientMsg {
         column: u16,
         row: u16,
         lines: i16,
+    },
+    /// A mouse button pressed, dragged or released at an outer-terminal cell. The event's own
+    /// `row` and `col` are that cell: the server rebases them onto whatever they hit.
+    Mouse {
+        event: MouseEvent,
+        /// Which press of a repeated click this is: 1, 2 for a double, 3 for a triple, and 1
+        /// again after that. A drag and a release carry the count of the press they belong to.
+        ///
+        /// The client counts, for the reason it turns one wheel notch into a fixed number of
+        /// lines: the timing is the outer terminal's, not the server's. It also keeps what the
+        /// server does a function of the messages it was sent, so a double click is a test
+        /// rather than two presses and a sleep.
+        count: u8,
     },
     Paste(String),
     Resize {
@@ -317,10 +331,10 @@ mod tests {
     /// green through a change to the byte order or to whether the length counts itself.
     #[test]
     fn a_frame_is_a_big_endian_length_then_the_bincode_body() {
-        // `Detach` is variant 6, which bincode writes as a 4-byte body.
+        // `Detach` is variant 7, which bincode writes as a 4-byte body.
         assert_eq!(
             encode(&ClientMsg::Detach).unwrap(),
-            vec![0, 0, 0, 4, 6, 0, 0, 0]
+            vec![0, 0, 0, 4, 7, 0, 0, 0]
         );
     }
 
