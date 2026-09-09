@@ -254,8 +254,7 @@ async fn a_kind_that_cannot_resume_says_so_even_when_it_also_has_no_session_id()
         .await
         .unwrap_err();
     assert_eq!(
-        err.message,
-        "codex does not resume in domux 2.0; only claude does. Start it yourself in its pane",
+        err.message, "codex does not resume yet; only claude does. Start it yourself in its pane",
         "the kind is asked about before the session id"
     );
 }
@@ -334,7 +333,7 @@ async fn codex_and_opencode_do_not_resume_in_v2_0_and_the_message_says_so() {
     assert_eq!(err.code, ErrorCode::Unavailable);
     assert_eq!(
         err.message,
-        "codex does not resume in domux 2.0; only claude does. Start it yourself in its pane"
+        "codex does not resume yet; only claude does. Start it yourself in its pane"
     );
     // The kind leads its own message, so an OpenCode row names OpenCode. One assertion on one
     // kind would pass with the kind hard coded.
@@ -353,7 +352,7 @@ async fn codex_and_opencode_do_not_resume_in_v2_0_and_the_message_says_so() {
         .unwrap_err();
     assert_eq!(
         err.message,
-        "opencode does not resume in domux 2.0; only claude does. Start it yourself in its pane"
+        "opencode does not resume yet; only claude does. Start it yourself in its pane"
     );
 }
 

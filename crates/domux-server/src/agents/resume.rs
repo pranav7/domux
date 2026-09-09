@@ -17,8 +17,16 @@ use std::path::Path;
 /// ...". Codex and OpenCode carry no template in V2.0, so an exited row of either says which
 /// kind cannot resume and what to do instead, rather than failing in words about a manifest
 /// (principle 9).
+///
+/// It names no version, for two reasons. The release this ships in is 1.0.0 whatever the
+/// internal names say, so a message naming 2.0 would be wrong in front of a reader. And the
+/// product name is one word of the binary name: `names::BIN_NAME` loses its `2` at the
+/// cut-over, and a message that spelled the product would then fail
+/// `names::tests::nothing_outside_this_file_spells_the_binary_name` - from a resume message,
+/// which is nowhere anyone renaming the binary would think to look. "yet" carries what the
+/// version was there to carry, which is that the other kinds are coming.
 pub const RESUME_UNAVAILABLE: &str =
-    "does not resume in domux 2.0; only claude does. Start it yourself in its pane";
+    "does not resume yet; only claude does. Start it yourself in its pane";
 
 /// The line, or `None` when this kind has no resume command.
 ///

@@ -563,12 +563,21 @@ impl Core {
     /// resuming on attach would type a second `claude --resume` into a pane where the first one
     /// is already running.
     ///
-    /// Every record the model holds, with no filter of its own. `state_file::restore` exits
-    /// every live record it reads - the server stopped, so whatever those sessions were doing
-    /// they are not doing now - so at this point there is nothing but exited records to offer,
-    /// and a filter here would be a second answer to "can this be resumed" that no input could
-    /// ever disagree with. `agent::plan_resume` is that one answer, and it refuses a live record
-    /// the same way it refuses a kind that does not resume.
+    /// Every record the model holds, with no filter of its own, and the reason is that it does
+    /// not need one rather than that a live record cannot turn up here.
+    ///
+    /// `agent::plan_resume` is the one judge of what can be resumed. It refuses a live record and
+    /// types nothing, and this loop reaches it through `dispatch` for every record, so the worst a
+    /// live record could do here is produce a logged refusal. A filter would be a second judge of
+    /// the same question, and the two could disagree; there is nothing it could prevent.
+    ///
+    /// What no input can currently produce is a live record at this point at all, which is why no
+    /// test covers that path. `state_file::restore` ends by exiting every live record it reads -
+    /// the server stopped, so whatever those sessions were doing they are not doing now - and the
+    /// only two things that make a record, the observer's tick and an `agent.report` over the
+    /// socket, both run after `Core::new` has returned. **That is `restore`'s behaviour today and
+    /// not a promise to this function**, which is exactly why the safety above is written not to
+    /// rest on it.
     ///
     /// This runs after the pane loop above because the line goes into a shell, and until each
     /// pane has been spawned there is no shell to type into.
