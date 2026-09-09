@@ -516,11 +516,7 @@ impl Core {
         // client at `attach`, which leaves it running and unusable with no way back but
         // deleting the state file.
         if core.model.projects.is_empty() {
-            // A model with no projects holds at most `RETIRED_CAPACITY` ids of a possible
-            // 65536, so this cannot exhaust the id space.
-            core.model
-                .add_folder_project(project_root)
-                .expect("a model with no projects cannot exhaust the id space");
+            core.seed_project(&project_root);
         }
         // Last of the three, so it judges the model the server is actually starting with:
         // anything the cache knew about a record the prune took away, and nothing about the
@@ -538,6 +534,49 @@ impl Core {
             socket: core.socket_path.clone(),
         });
         Ok(core)
+    }
+
+    /// Registers the directory the server was started in, when the model holds nothing else.
+    ///
+    /// It asks the same question `project.add` asks - is this a repository, what does
+    /// `origin/HEAD` point at, which `workspace-N` directories are already beside it - so a
+    /// server started in a repository gets a git project with its branch on the sidebar and
+    /// the worktrees V1 left behind adopted as slots. `read_project` forks git three times;
+    /// this is start-up, before the core task's loop and before any client can attach, so
+    /// there is nothing for those forks to hold up.
+    ///
+    /// A path git will not answer for still becomes a folder project. The seed exists so
+    /// that a server always has somewhere to be: refusing it would leave the server running
+    /// and unattachable, which is a worse answer than a project with no branch.
+    fn seed_project(&mut self, root: &Path) {
+        let (root, default_branch, slots) = match read_project(&root.to_string_lossy()) {
+            JobOutcome::ProjectRead {
+                root,
+                default_branch,
+                slots,
+            } => (root, default_branch, slots),
+            // `read_project` answers `ProjectRead` or `Failed` and nothing else, so the
+            // arm is written for the one other shape rather than left to a catch-all that
+            // would silently take a third if one ever arrived.
+            JobOutcome::Failed { message, .. } => {
+                tracing::warn!(
+                    "could not read {} as a project ({message}); registering it as a folder",
+                    root.display()
+                );
+                (root.to_path_buf(), None, Vec::new())
+            }
+            _ => {
+                tracing::warn!(
+                    "reading {} as a project answered something else; registering it as a folder",
+                    root.display()
+                );
+                (root.to_path_buf(), None, Vec::new())
+            }
+        };
+        // A model with no projects holds at most `RETIRED_CAPACITY` ids of a possible
+        // 65536, so this cannot exhaust the id space.
+        self.register_project(&root, default_branch, slots)
+            .expect("a model with no projects cannot exhaust the id space");
     }
 
     /// Records whose path is gone are removed at start, before any pane is spawned, and the
@@ -864,11 +903,11 @@ impl Core {
             .clone()
             .filter(|w| self.model.workspace(w).is_some())
             .or_else(|| self.model.first_workspace())
-            .ok_or("the server has no workspace")?;
+            .ok_or_else(nothing_to_attach_to)?;
         let ws = self
             .model
             .workspace(&workspace)
-            .ok_or("the server has no workspace")?;
+            .ok_or_else(nothing_to_attach_to)?;
         let tab = ws
             .last_tab
             .clone()
@@ -1565,28 +1604,27 @@ impl Core {
         cleared
     }
 
-    /// `project.add`'s model change: register the path and adopt the worktrees the job
-    /// found beside it.
-    fn project_read(
+    /// Registers a path that the model does not hold yet and adopts the worktrees beside
+    /// it, reporting the events it made and the handles it adopted.
+    ///
+    /// The model change on its own, with none of the side effects a live call needs, so
+    /// `project.add` and the seed `Core::new` plants can register a path the same way.
+    /// Before this, the seed called `add_folder_project` and asked git nothing, so a server
+    /// started in a repository registered it as a plain folder: no branch on its sidebar
+    /// row, because `facts::targets` skips a folder, and none of the `workspace-N`
+    /// worktrees already on disk beside it.
+    fn register_project(
         &mut self,
-        root: PathBuf,
+        root: &Path,
         default_branch: Option<String>,
         slots: Vec<(u32, PathBuf)>,
-    ) -> Result<serde_json::Value, ApiError> {
-        // Idempotence is decided here rather than in the handler, because the canonical
-        // path is only known once the job has resolved it. A path that is already a project
-        // is answered for as it stands, and nothing new is adopted: `project.add` is how a
-        // path is registered, and `workspace.create` is how a slot is made.
-        if let Some(existing) = self.model.project_at(&root) {
-            return api::project::added(existing, Vec::new());
-        }
+    ) -> Result<(ProjectId, Vec<String>), ApiError> {
         let added = match &default_branch {
-            Some(branch) => self.model.add_git_project(root.clone(), branch.clone()),
-            None => self.model.add_folder_project(root.clone()),
+            Some(branch) => self
+                .model
+                .add_git_project(root.to_path_buf(), branch.clone()),
+            None => self.model.add_folder_project(root.to_path_buf()),
         };
-        // `Core::handle` returns nothing, so a failure here is answered rather than
-        // propagated with `?` to a caller that is not there: the one who is waiting is on
-        // the other end of `reply`.
         let (project, _main, mut events) = added?;
         // `add_folder_project` is M1's and reports no events, because `project.added` is an
         // M2 event. `add_git_project` is M2's and reports it itself, so only the folder
@@ -1600,7 +1638,7 @@ impl Core {
             events.push(Event::ProjectAdded {
                 project: project.clone(),
                 name,
-                root: root.clone(),
+                root: root.to_path_buf(),
             });
         }
         let mut adopted = Vec::new();
@@ -1620,6 +1658,28 @@ impl Core {
             }
         }
         self.pending_events.extend(events);
+        Ok((project, adopted))
+    }
+
+    /// `project.add`'s model change: register the path and adopt the worktrees the job
+    /// found beside it.
+    fn project_read(
+        &mut self,
+        root: PathBuf,
+        default_branch: Option<String>,
+        slots: Vec<(u32, PathBuf)>,
+    ) -> Result<serde_json::Value, ApiError> {
+        // Idempotence is decided here rather than in the handler, because the canonical
+        // path is only known once the job has resolved it. A path that is already a project
+        // is answered for as it stands, and nothing new is adopted: `project.add` is how a
+        // path is registered, and `workspace.create` is how a slot is made.
+        if let Some(existing) = self.model.project_at(&root) {
+            return api::project::added(existing, Vec::new());
+        }
+        // `Core::handle` returns nothing, so a failure here is answered rather than
+        // propagated with `?` to a caller that is not there: the one who is waiting is on
+        // the other end of `reply`.
+        let (project, adopted) = self.register_project(&root, default_branch, slots)?;
         // Every new workspace gets its tab and its shell, the same invariant
         // `apply_side_effects` keeps for every other path that makes one.
         self.apply_side_effects(Vec::new(), Vec::new(), Vec::new());
@@ -2555,6 +2615,19 @@ fn slot_directory(root: &Path, slot: u32) -> PathBuf {
         .join(crate::git::slot_branch(slot))
 }
 
+/// What a client is told when the model holds no workspace to seat it on.
+///
+/// Reachable since `project.remove --all`, which is the way back to an empty domux, so it
+/// names the way forward rather than stating the state and stopping (principle 9). Before
+/// that the only route here was a state file whose every project had been deleted from
+/// underneath the server.
+fn nothing_to_attach_to() -> String {
+    format!(
+        "the server holds no project; run {} open <path> to add one",
+        domux_core::names::BIN_NAME
+    )
+}
+
 /// The `client` parameter of a view method, when the request carried one.
 fn param_client(method: &Method) -> Option<ClientId> {
     use Method::*;
@@ -2566,7 +2639,9 @@ fn param_client(method: &Method) -> Option<ClientId> {
         TabRename(p) => p.client.clone(),
         TabClearName(p) | TabClose(p) | PaneList(p) => p.client.clone(),
         TabSelect(p) => p.client.clone(),
-        PaneClose(p) | PaneFocus(p) | PaneZoom(p) | PaneCopyMode(p) => p.client.clone(),
+        PaneClose(p) | PaneFocus(p) | PaneZoom(p) | PaneCopyMode(p) | PaneClear(p) => {
+            p.client.clone()
+        }
         PaneSplit(p) => p.client.clone(),
         PaneResize(p) => p.client.clone(),
         PaneSendText(p) => p.client.clone(),

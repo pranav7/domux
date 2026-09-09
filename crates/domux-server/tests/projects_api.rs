@@ -1000,3 +1000,112 @@ async fn the_confirmation_names_the_project_s_root_so_two_of_one_name_are_told_a
         "and not the other one:\n{f}"
     );
 }
+
+/// `--all` is the way back to an empty domux, for an author who wants to register everything
+/// again from scratch rather than remove one project at a time.
+#[tokio::test]
+async fn removing_every_project_leaves_the_model_empty_and_the_folders_alone() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let other = tempfile::tempdir().unwrap();
+    h.api(
+        "project.add",
+        json!({"path": other.path().to_str().unwrap()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.model().projects.len(), 2);
+
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .unwrap();
+    assert!(
+        h.model().projects.is_empty(),
+        "every project's records are gone"
+    );
+    assert!(
+        other.path().is_dir(),
+        "the folders it registered are still on disk"
+    );
+    h.stop().await;
+}
+
+/// The same consent every other destructive call asks for, and the same shape: the question,
+/// what goes, what stays.
+#[tokio::test]
+async fn removing_every_project_asks_first_and_changes_nothing_when_it_does() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let refused = h
+        .api("project.remove", json!({"all": true}))
+        .await
+        .expect_err("it asks first");
+    assert_eq!(refused.code, ErrorCode::Refused);
+    assert!(
+        refused
+            .message
+            .starts_with("Remove every project? There is 1 project: proj."),
+        "{}",
+        refused.message
+    );
+    assert!(
+        refused
+            .message
+            .contains("The folder and its worktrees stay on disk."),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        h.model().projects.len(),
+        1,
+        "a refusal leaves the model as it found it"
+    );
+    h.stop().await;
+}
+
+/// Removing everything twice is not an error the second time. The caller asked for no
+/// projects and there are none, which is the state they asked for.
+#[tokio::test]
+async fn removing_every_project_when_there_are_none_is_quiet() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .unwrap();
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .expect("nothing to remove is not a failure");
+    h.stop().await;
+}
+
+/// A removal that names nothing and asks for nothing is a mistake, not "remove everything".
+#[tokio::test]
+async fn a_removal_with_no_target_and_no_all_names_both_ways_to_ask() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let refused = h
+        .api("project.remove", json!({}))
+        .await
+        .expect_err("it names no project");
+    assert_eq!(refused.code, ErrorCode::InvalidParams);
+    assert!(
+        refused.message.contains("--all"),
+        "it names the other way to ask: {}",
+        refused.message
+    );
+    assert_eq!(h.model().projects.len(), 1);
+    h.stop().await;
+}
+
+/// A client whose workspace has just gone has nowhere to be moved to, and a later attach has
+/// nothing to seat a client on. The refusal names the way out rather than stating the state
+/// and stopping.
+#[tokio::test]
+async fn attaching_to_a_server_with_no_project_says_how_to_add_one() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .unwrap();
+    let refused = h.attach_refusal(80, 24).await;
+    assert_eq!(
+        refused,
+        "the server holds no project; run domux2 open <path> to add one"
+    );
+    h.stop().await;
+}

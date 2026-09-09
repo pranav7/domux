@@ -1,9 +1,13 @@
 //! The bare command and `attach`: start the server when needed, then attach.
 
-use super::socket;
+use super::{call, call_as, socket};
 use domux_client::{attach, control, AttachOutcome};
+use domux_core::api::{ProjectAdded, ProjectInfo, WorkspaceInfo};
 use domux_core::names::BIN_NAME;
+use serde_json::json;
 use std::ffi::OsString;
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 /// The bare command, which is how the attach is normally typed. Inside a pane it refuses: a
 /// second whole screen drawn inside one pane of the screen it is drawing takes the keys from
@@ -30,12 +34,108 @@ pub async fn run() -> anyhow::Result<()> {
     if !control::is_live(&socket).await {
         // The attach that follows is the answer, so the start says nothing: telling the
         // reader to attach would name an action already underway.
+        //
+        // The server this starts seeds the directory it was started in, so the offer below
+        // has nothing to offer: the question is only ever asked of a server that was already
+        // running somewhere else.
         super::server::start(super::server::Announce::No).await?;
     }
+    offer_to_register_here().await?;
     // `attach` returns with the terminal already restored, so the line below lands on a
     // terminal the reader can type into again (principle 11).
     eprintln!("{}", ending(attach(&socket).await?)?);
     Ok(())
+}
+
+/// Asks, once, whether the directory this was typed in should become a project, and registers
+/// it when the answer is yes.
+///
+/// Decision record 0006 settled that attach reconnects to what is registered rather than
+/// following the shell, and that still holds: this does not move the client to the directory
+/// on its own. What it adds is the offer, because the old behaviour had no way to say yes.
+/// Typing the bare command somewhere new landed you in another project's tabs with nothing
+/// on the screen about the directory you were standing in, and the only way out was to know
+/// that `open` existed.
+///
+/// It asks rather than registering, so a bare command typed in a scratch directory, a
+/// downloads folder or somebody else's checkout does not quietly leave a project behind.
+///
+/// Everything here is best effort. A directory that cannot be read, a server that will not
+/// answer `project.list`, a reader who is not on a terminal: each one skips the offer and
+/// attaches, because the attach is what was asked for and the offer is an extra.
+async fn offer_to_register_here() -> anyhow::Result<()> {
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(());
+    };
+    // Not a terminal means nothing to ask and nobody to answer. A script that pipes into
+    // the client must not stop on a question it cannot see.
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(());
+    }
+    let projects: Vec<ProjectInfo> = call_as("project.list", json!({})).await?;
+    let workspaces: Vec<WorkspaceInfo> = call_as("workspace.list", json!({})).await?;
+    let known: Vec<PathBuf> = projects
+        .iter()
+        .map(|p| p.root.clone())
+        .chain(workspaces.iter().map(|w| w.path.clone()))
+        .collect();
+    if is_inside_any(&cwd, &known) {
+        return Ok(());
+    }
+    if !answered_yes(&question(&cwd))? {
+        eprintln!("Left unregistered. Run {BIN_NAME} open . to register it later.");
+        return Ok(());
+    }
+    // The same two calls `open` makes, in the same order and for the same reason: the
+    // registration is true whether or not the switch works, so it is said first.
+    let added: ProjectAdded = call_as("project.add", json!({ "path": cwd })).await?;
+    if !added.adopted.is_empty() {
+        eprintln!("Adopted {}.", added.adopted.join(", "));
+    }
+    call("workspace.focus", json!({ "workspace": added.workspace })).await?;
+    Ok(())
+}
+
+/// The question, as the state, the object and the next action (principle 9).
+fn question(cwd: &Path) -> String {
+    format!(
+        "{} is not a project yet. Register it? [y/N] ",
+        cwd.display()
+    )
+}
+
+/// Whether `dir` is one of `known` or lives under one of them.
+///
+/// Both sides are resolved, because the server answers with the path it canonicalized and
+/// this reads the path the shell is standing in: on a Mac `/tmp/x` here is `/private/tmp/x`
+/// there, and comparing them as written would offer to register a directory that is already
+/// a project. A path that will not resolve is compared as it stands.
+fn is_inside_any(dir: &Path, known: &[PathBuf]) -> bool {
+    let dir = resolved(dir);
+    known.iter().any(|k| dir.starts_with(resolved(k)))
+}
+
+fn resolved(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Reads one line and answers whether it said yes. Anything else, end of input included, is
+/// no: the default in the prompt is the answer that changes nothing (principle 10).
+fn answered_yes(question: &str) -> anyhow::Result<bool> {
+    let mut err = std::io::stderr();
+    write!(err, "{question}")?;
+    err.flush()?;
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line)? == 0 {
+        eprintln!();
+        return Ok(false);
+    }
+    Ok(says_yes(&line))
+}
+
+/// Whether one typed line said yes.
+fn says_yes(line: &str) -> bool {
+    matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
 /// What the reader is told when the attach ends. The two outcomes that are not a failure
@@ -106,6 +206,52 @@ mod tests {
         assert_eq!(
             refused,
             "the server is domux 2.0.0 and this client is 1.9.0"
+        );
+    }
+
+    #[test]
+    fn only_yes_registers_and_everything_else_leaves_the_directory_alone() {
+        assert!(says_yes("y"));
+        assert!(says_yes("Y\n"));
+        assert!(says_yes("  yes  "));
+        assert!(!says_yes(""));
+        assert!(!says_yes("n"));
+        assert!(!says_yes("yeah"));
+        assert!(!says_yes("yes please"));
+    }
+
+    #[test]
+    fn a_directory_under_a_registered_path_is_already_at_home() {
+        let known = vec![PathBuf::from("/repo/audrey-app"), PathBuf::from("/notes")];
+        assert!(is_inside_any(Path::new("/repo/audrey-app"), &known));
+        assert!(is_inside_any(
+            Path::new("/repo/audrey-app/crates/api"),
+            &known
+        ));
+        assert!(is_inside_any(Path::new("/notes"), &known));
+    }
+
+    /// Component by component, not character by character: `/repo/audrey-app-2` is a
+    /// different directory from `/repo/audrey-app` and must still be offered.
+    #[test]
+    fn a_directory_whose_name_merely_starts_the_same_is_not_at_home() {
+        let known = vec![PathBuf::from("/repo/audrey-app")];
+        assert!(!is_inside_any(Path::new("/repo/audrey-app-2"), &known));
+        assert!(!is_inside_any(Path::new("/repo"), &known));
+        assert!(!is_inside_any(Path::new("/elsewhere"), &known));
+    }
+
+    #[test]
+    fn nothing_registered_means_every_directory_is_offered() {
+        assert!(!is_inside_any(Path::new("/repo/audrey-app"), &[]));
+    }
+
+    #[test]
+    fn the_question_names_the_directory_and_defaults_to_leaving_it_alone() {
+        let said = question(Path::new("/repo/audrey-app"));
+        assert_eq!(
+            said,
+            "/repo/audrey-app is not a project yet. Register it? [y/N] "
         );
     }
 

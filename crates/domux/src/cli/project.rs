@@ -20,11 +20,14 @@ pub enum ProjectAction {
     },
     /// Let a project go. The folder and its worktrees stay on disk
     Remove {
-        /// A project id or name
-        project: String,
+        /// A project id or name. Leave it out with --all
+        project: Option<String>,
         /// Remove it without asking
         #[arg(long)]
         yes: bool,
+        /// Let every project go, for starting over
+        #[arg(long, conflicts_with = "project")]
+        all: bool,
     },
     /// List the projects as JSON
     List,
@@ -40,8 +43,12 @@ pub async fn run(cmd: ProjectCmd) -> anyhow::Result<()> {
         }
         // It asks first, and the answer to a removal that went through is the project no
         // longer being in `project list`.
-        ProjectAction::Remove { project, yes } => {
-            call_that_asks("project.remove", json!({ "project": project, "yes": yes })).await?;
+        ProjectAction::Remove { project, yes, all } => {
+            call_that_asks(
+                "project.remove",
+                json!({ "project": project, "yes": yes, "all": all }),
+            )
+            .await?;
         }
         ProjectAction::List => {
             let projects = call("project.list", json!({})).await?;

@@ -203,6 +203,7 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         PaneSendText(p) => pane::send_text(ctx, p),
         PaneSendKey(p) => pane::send_key(ctx, p),
         PaneRead(p) => pane::read(ctx, p),
+        PaneClear(p) => pane::clear(ctx, p),
         FocusLeft(p) => focus::step(ctx, p, Direction::Left),
         FocusRight(p) => focus::step(ctx, p, Direction::Right),
         FocusUp(p) => focus::step(ctx, p, Direction::Up),

@@ -289,8 +289,9 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             close_overlay(core, client);
             if confirmed(&key) {
                 let method = Method::ProjectRemove(domux_core::api::ProjectRemoveParams {
-                    project: project.to_string(),
+                    project: Some(project.to_string()),
                     yes: true,
+                    all: false,
                 });
                 let _ = core.dispatch_from_key(method, Some(client.clone()));
             }

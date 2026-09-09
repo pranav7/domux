@@ -232,9 +232,9 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
     cfg.keys.bindings.insert("|".into(), "".into());
     // Tall enough that the full list fits with no truncation: M2 added four leader
     // bindings (switcher.open, sidebar.toggle, workspace.rename, workspace.clear_name),
-    // so this grew from the 80x30 M1 needed. The 80x24 case is the next test, which is
-    // where truncation is the behaviour under test.
-    let mut h = Harness::start(cfg, 80, 34).await;
+    // so this grew from the 80x30 M1 needed, and pane.clear added one more. The 80x24 case
+    // is the next test, which is where truncation is the behaviour under test.
+    let mut h = Harness::start(cfg, 80, 35).await;
     h.key(h.client.clone(), "C-b").await;
     h.key(h.client.clone(), "?").await;
     let f = h
