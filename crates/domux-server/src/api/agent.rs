@@ -33,12 +33,32 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     };
     let now = ctx.deps.clock.now().to_rfc3339();
     let AgentReportOutcome {
-        agent, to, events, ..
+        agent,
+        from,
+        to,
+        events,
+        ..
     } = ctx.model.report_agent(&pane, p.kind, parsed, &now)?;
+    // `Model::report_agent` leaves a record whose session is over alone for every hook but
+    // `SessionStart`, down to its last activity time (M3 plan assumption 7), and says so by
+    // answering `exited` to `exited`. So nothing below may touch that record either: a hook
+    // that arrives after the session ended must not rewrite its recap or its session name,
+    // which outlive the session and are what the exited row shows.
+    let applied = from != AgentState::Exited || to != AgentState::Exited;
+    // Any events it did produce belong to another record it exited on the way, so they
+    // travel and the screen changed even when this record did not.
+    let changed = applied || !events.is_empty();
     ctx.events.extend(events);
-    // The Agents box, the agents overlay and the top bar's count all read the record, so a
-    // report that changed one is a report that changed the screen.
-    ctx.view_dirty = true;
+    // The Agents box, the agents overlay and the top bar's count all read the records, and
+    // nothing turns an event into a redraw, so a report that changed one says so here.
+    ctx.view_dirty |= changed;
+    if !applied {
+        return ok(AgentReportResult {
+            agent: Some(agent),
+            state: Some(to),
+            context: None,
+        });
+    }
 
     // The word is per working agent and is freed the moment the agent stops working.
     if to != AgentState::Working {
@@ -64,9 +84,19 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
                 .and_then(|a| a.transcript_path.clone())
             {
                 let t = ctx.agents.recaps.read(&path);
+                // The recap summarises the last turn, so re-deriving it every time is the
+                // point: an absent one means the last turn produced none.
                 let recap_events = ctx.model.set_agent_recap(&agent, t.recap);
                 ctx.events.extend(recap_events);
-                ctx.model.set_agent_name(&agent, t.name);
+                // The session name is not like that. The agent set it once and it stands
+                // until the agent sets another, so an absent one is not evidence that it
+                // was cleared: the reader answers `None` for a transcript it could not
+                // read, and reads a transcript over `recap::FULL_SCAN_BYTES` as a head and
+                // a tail, which can leave an early `/rename` outside the window. Never
+                // fabricate cuts both ways, so a name is written only when one was found.
+                if t.name.is_some() {
+                    ctx.model.set_agent_name(&agent, t.name);
+                }
             }
         }
     }
