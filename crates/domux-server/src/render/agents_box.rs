@@ -27,6 +27,13 @@ pub const RECAP_LINES: usize = 2;
 const GAP: &str = "  ";
 /// Between `exited 12 min ago` and the resume key (interface spec 6.2).
 const RESUME_GAP: &str = "   ";
+/// The list action an exited row's resume label names. `Enter` on an agent row switches to
+/// the agent, and resumes it when the row has exited (interface spec 6.8), so it is that one
+/// binding the label reads. Named here once, so the row and the sidebar's hint row cannot
+/// name different keys for one action (principle 3).
+pub const RESUME_ACTION: &str = "list.activate";
+/// The word after the key on an exited row.
+const RESUME_WORD: &str = "resume";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
@@ -65,17 +72,22 @@ pub struct AgentsView {
     pub now: DateTime<Local>,
     /// Agents that need you, across every project: the top bar's count (interface spec 6.8).
     pub red_dots: usize,
+    /// The configured key for `RESUME_ACTION`, as hint text, or `None` when the reader has
+    /// bound the action to nothing. The core looks it up once a frame so that this row and
+    /// the sidebar's hint row name one key (principle 3).
+    pub resume_key: Option<String>,
 }
 
 impl AgentsView {
     /// No agents. What a surface that draws none passes, and what a frame with an empty list
-    /// holds.
+    /// holds. No row, so no key to name.
     pub fn empty(now: DateTime<Local>) -> AgentsView {
         AgentsView {
             agents: Vec::new(),
             glyph: crate::agents::labels::frame_at(0),
             now,
             red_dots: 0,
+            resume_key: None,
         }
     }
 }
@@ -85,12 +97,21 @@ pub fn row_key(id: &AgentId) -> String {
     id.to_string()
 }
 
-/// Every agent as one `ListRow`. `ListBox` puts the blank row between rows and scrolls them.
+/// Every agent as one `ListRow`, with one blank row between them (interface spec 6.2).
+///
+/// The blanks are pushed here, the way `projects_box::rows` pushes its own. `ListBox` draws
+/// each row's lines one after another and inserts nothing, and `filter_rows` drops these
+/// blanks and rebuilds the same ones between the rows it keeps, so `/` changes what the list
+/// holds and never its shape. `ListBox` owns the scrolling.
 pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
-    view.agents
-        .iter()
-        .map(|a| row(a, view, form, width))
-        .collect()
+    let mut out = Vec::with_capacity(view.agents.len().saturating_mul(2));
+    for a in &view.agents {
+        if !out.is_empty() {
+            out.push(ListRow::blank());
+        }
+        out.push(row(a, view, form, width));
+    }
+    out
 }
 
 fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
@@ -180,11 +201,16 @@ fn activity(a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'stati
                 format!("exited {ago}")
             };
             let mut spans = vec![Span::styled(since, Style::default().fg(theme::OVERLAY1))];
-            if form == RowForm::Overlay {
-                // The sidebar has no room for the key; its hint row carries it while the
-                // cursor is on the row (interface spec 12.6).
+            // The sidebar has no room for the key; its hint row carries it while the cursor
+            // is on the row (interface spec 12.6). A key the reader has bound to nothing
+            // drops the label rather than naming a key that does nothing, which is what
+            // `overlay::footer` does with the same question (principle 3).
+            if let (RowForm::Overlay, Some(key)) = (form, &view.resume_key) {
                 spans.push(Span::raw(RESUME_GAP));
-                spans.push(Span::styled("⏎ resume", Style::default().fg(theme::BLUE)));
+                spans.push(Span::styled(
+                    format!("{key} {RESUME_WORD}"),
+                    Style::default().fg(theme::BLUE),
+                ));
             }
             spans
         }
@@ -342,7 +368,9 @@ pub fn relative_time(then: &str, now: DateTime<Local>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::list_box::filter_rows;
     use domux_core::ids::AgentId;
+    use domux_core::keymap::Keymap;
     use domux_core::model::agent::{AgentKind, AgentState};
     use ratatui::style::Modifier;
 
@@ -378,6 +406,7 @@ mod tests {
             glyph: "✶",
             now: now(),
             red_dots: 0,
+            resume_key: Keymap::defaults().list_key_for(RESUME_ACTION),
         }
     }
 
@@ -639,6 +668,11 @@ mod tests {
         assert_eq!(relative_time("not a timestamp", n), "");
         // A hook stamped by a clock that runs ahead reads as `just now`, not a negative age.
         assert_eq!(relative_time("2026-09-04T14:40:00+00:00", n), "just now");
+        // Both sides of the hour and of the day, so an off-by-one at either edge fails.
+        assert_eq!(relative_time("2026-09-04T13:32:01+00:00", n), "59 min ago");
+        assert_eq!(relative_time("2026-09-04T13:32:00+00:00", n), "1 h ago");
+        assert_eq!(relative_time("2026-09-03T14:32:01+00:00", n), "23 h ago");
+        assert_eq!(relative_time("2026-09-03T14:32:00+00:00", n), "1 d ago");
     }
 
     #[test]
@@ -666,5 +700,66 @@ mod tests {
             rows[0].filter_text
         );
         assert_eq!(rows[0].lines[0].spans[0].content, DOT);
+    }
+
+    #[test]
+    fn two_agents_are_a_row_each_in_order_with_one_blank_between_them() {
+        let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
+        let mut second = entry(AgentState::Idle, Some("billing-export"), AgentKind::Codex);
+        second.id = AgentId("a_9c04".into());
+        second.place_with_tab = "audrey-app › billing export › pr2".into();
+        let rows = rows(&view(vec![first, second]), RowForm::Overlay, 72);
+        assert_eq!(rows.len(), 3, "two agents and the blank between them");
+        assert_eq!(rows[0].key.as_deref(), Some("a_5e21"));
+        assert_eq!(text(&rows[0])[0], "● auth-cleanup");
+        assert!(rows[1].is_blank(), "{:?}", text(&rows[1]));
+        assert_eq!(rows[2].key.as_deref(), Some("a_9c04"));
+        assert_eq!(text(&rows[2])[0], "● billing-export");
+        // `/` changes what the list holds and never its shape: the filter drops these blanks
+        // and rebuilds the same ones between the rows it keeps.
+        let both = filter_rows(&rows, "audrey-app");
+        assert_eq!(both.len(), 3, "both agents still read the same way");
+        assert!(both[1].is_blank());
+        assert_eq!(both[0].key.as_deref(), Some("a_5e21"));
+        assert_eq!(both[2].key.as_deref(), Some("a_9c04"));
+        let one = filter_rows(&rows, "billing");
+        assert_eq!(one.len(), 1, "one match stands alone with no separator");
+        assert_eq!(one[0].key.as_deref(), Some("a_9c04"));
+    }
+
+    #[test]
+    fn the_resume_hint_names_the_configured_key_and_goes_when_it_is_unbound() {
+        let e = entry(AgentState::Exited, Some("auth-cleanup"), AgentKind::Claude);
+        let mut rebound = view(vec![e.clone()]);
+        rebound.resume_key = Some("o".into());
+        assert_eq!(
+            text(&rows(&rebound, RowForm::Overlay, 72)[0])[0],
+            "● auth-cleanup  exited 12 min ago   o resume",
+            "the label names the binding, not the default"
+        );
+        let mut unbound = view(vec![e]);
+        unbound.resume_key = None;
+        assert_eq!(
+            text(&rows(&unbound, RowForm::Overlay, 72)[0])[0],
+            "● auth-cleanup  exited 12 min ago",
+            "an action bound to nothing names no key"
+        );
+    }
+
+    #[test]
+    fn a_recap_that_ends_on_the_second_line_carries_no_ellipsis() {
+        let mut e = entry(AgentState::Idle, Some("auth-cleanup"), AgentKind::Claude);
+        e.recap = Some(
+            "Replaced three session checks with one guard in auth middleware and then \
+             rewrote the token refresh"
+                .into(),
+        );
+        let lines = text(&rows(&view(vec![e]), RowForm::Overlay, 60)[0]);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(
+            lines[2],
+            "※ Replaced three session checks with one guard in auth"
+        );
+        assert_eq!(lines[3], "  middleware and then rewrote the token refresh");
     }
 }

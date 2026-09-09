@@ -2391,6 +2391,12 @@ impl Core {
             glyph,
             now,
             red_dots,
+            // One lookup a frame, so an exited row and the sidebar's hint row name the same
+            // key for one action (principle 3).
+            resume_key: self
+                .config
+                .keymap
+                .list_key_for(crate::render::agents_box::RESUME_ACTION),
         }
     }
 
