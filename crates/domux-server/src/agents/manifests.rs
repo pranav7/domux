@@ -84,41 +84,49 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// The three built-in manifests, added through `register()` so a broken `register()`
+    /// would break the built-ins too: this is the same entry point an extension has, not a
+    /// privilege only this module gets (architecture spec section 8, "Built-ins use the same
+    /// registries").
     pub fn builtin() -> Registry {
-        Registry {
-            manifests: vec![
-                AgentManifest {
-                    kind: AgentKind::Claude,
-                    process_names: vec!["claude".into()],
-                    color_hex: "#DE7356".into(),
-                    // V1's `resumeAgentLaunchLine`, claude arm.
-                    resume_command: Some("claude --resume {session_id}".into()),
-                    hooks: HookTarget::ClaudeSettings,
-                    recap: RecapSource::ClaudeTranscript,
-                    session: SessionSource::HookPayload,
-                },
-                AgentManifest {
-                    kind: AgentKind::Codex,
-                    process_names: vec!["codex".into()],
-                    color_hex: "#89b4fa".into(),
-                    // V2.x: "codex resume {session_id}" (V1's codex arm).
-                    resume_command: None,
-                    hooks: HookTarget::CodexHooks,
-                    recap: RecapSource::None,
-                    session: SessionSource::CodexRollout,
-                },
-                AgentManifest {
-                    kind: AgentKind::Opencode,
-                    process_names: vec!["opencode".into()],
-                    color_hex: "#C678B8".into(),
-                    // V2.x: "opencode --session {session_id}" (V1's opencode arm).
-                    resume_command: None,
-                    hooks: HookTarget::OpencodePlugin,
-                    recap: RecapSource::None,
-                    session: SessionSource::OpencodeCli,
-                },
-            ],
+        let mut registry = Registry {
+            manifests: Vec::new(),
+        };
+        for manifest in [
+            AgentManifest {
+                kind: AgentKind::Claude,
+                process_names: vec!["claude".into()],
+                color_hex: "#DE7356".into(),
+                // V1's `resumeAgentLaunchLine`, claude arm.
+                resume_command: Some("claude --resume {session_id}".into()),
+                hooks: HookTarget::ClaudeSettings,
+                recap: RecapSource::ClaudeTranscript,
+                session: SessionSource::HookPayload,
+            },
+            AgentManifest {
+                kind: AgentKind::Codex,
+                process_names: vec!["codex".into()],
+                color_hex: "#89b4fa".into(),
+                // V2.x: "codex resume {session_id}" (V1's codex arm).
+                resume_command: None,
+                hooks: HookTarget::CodexHooks,
+                recap: RecapSource::None,
+                session: SessionSource::CodexRollout,
+            },
+            AgentManifest {
+                kind: AgentKind::Opencode,
+                process_names: vec!["opencode".into()],
+                color_hex: "#C678B8".into(),
+                // V2.x: "opencode --session {session_id}" (V1's opencode arm).
+                resume_command: None,
+                hooks: HookTarget::OpencodePlugin,
+                recap: RecapSource::None,
+                session: SessionSource::OpencodeCli,
+            },
+        ] {
+            registry.register(manifest);
         }
+        registry
     }
 
     pub fn register(&mut self, manifest: AgentManifest) {
