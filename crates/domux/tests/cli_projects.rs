@@ -10,7 +10,7 @@
 
 use domux_core::config::Config;
 use domux_core::ids::WorkspaceId;
-use domux_core::model::{Model, WorkspaceHandle};
+use domux_core::model::Model;
 use domux_server::testing::{repo_with_origin, Harness};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -689,17 +689,29 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
 
 // ---------------------------------------------------------------- help
 
-/// Every M2 subcommand's help says what it does, in the words of this repository.
+/// Every M2 subcommand and every flag it takes says what it does.
+///
+/// The first line of a clap help is the command's own description, so a command with none
+/// starts straight at `Usage:`. A flag with none draws as its name and nothing else, which
+/// is how `--yes` first shipped here: it read as a placeholder to anyone who had not already
+/// read the code. Both are checked by shape rather than by matching the words, because a
+/// check that matched the words would have to be rewritten every time the words improve.
 ///
 /// `import` is not here: Task 23 created it and `cli_import` checks its own.
 #[tokio::test]
-async fn every_m2_subcommand_has_help_that_names_what_it_does() {
+async fn every_m2_subcommand_and_flag_has_help_that_says_what_it_does() {
     for args in [
         vec!["project", "--help"],
+        vec!["project", "add", "--help"],
         vec!["project", "remove", "--help"],
+        vec!["project", "list", "--help"],
         vec!["workspace", "--help"],
-        vec!["workspace", "delete", "--help"],
+        vec!["workspace", "create", "--help"],
+        vec!["workspace", "name", "--help"],
+        vec!["workspace", "clear-name", "--help"],
         vec!["workspace", "clear", "--help"],
+        vec!["workspace", "delete", "--help"],
+        vec!["workspace", "list", "--help"],
         vec!["open", "--help"],
     ] {
         let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
@@ -707,9 +719,24 @@ async fn every_m2_subcommand_has_help_that_names_what_it_does() {
         let helped = run(c.args(&args)).await;
         assert_eq!(helped.code, Some(0), "{args:?}: {}", helped.err);
         let text = helped.out;
+        let first = text.lines().next().unwrap_or_default();
         assert!(
-            text.to_lowercase().contains(args[0]),
-            "{args:?} does not name the command: {text}"
+            !first.is_empty() && !first.starts_with("Usage:"),
+            "{args:?} has no description of its own: {text}"
+        );
+        let bare: Vec<&str> = text
+            .lines()
+            .filter(|line| {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                // A flag's own line starts with its short or long form. A description line
+                // that happens to end in `--force` starts with a word, so it is left alone.
+                words.first().is_some_and(|w| w.starts_with('-'))
+                    && words.last().is_some_and(|w| w.starts_with("--"))
+            })
+            .collect();
+        assert!(
+            bare.is_empty(),
+            "{args:?} names a flag and says nothing about it: {bare:?}"
         );
         assert!(
             !text.contains('\u{2014}'),
@@ -720,12 +747,4 @@ async fn every_m2_subcommand_has_help_that_names_what_it_does() {
             "{args:?} help still has a placeholder: {text}"
         );
     }
-}
-
-/// The handle grammar this file names in its assertions is the model's, not a string these
-/// tests invented: `workspace-1` is a slot and `main` is the project's own checkout.
-#[test]
-fn the_handles_these_tests_name_are_the_model_s() {
-    assert_eq!(WorkspaceHandle::Main.to_string(), "main");
-    assert_eq!(WorkspaceHandle::Slot(1).to_string(), "workspace-1");
 }
