@@ -178,6 +178,13 @@ impl Ctx<'_> {
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
     // `method.name()` before the match, since the match below moves `method`.
+    //
+    // The stub block at the end of the match is its only reader, so this binding dies with
+    // the last stub arm: whoever empties that block deletes this line too, or clippy fails
+    // the build on an unused binding. Said here rather than left to be discovered, because
+    // the two are removed by different tasks - Task 18 took `workspace.*` out of the block
+    // and Task 14 takes `list.*` - so neither branch sees the block empty on its own and the
+    // merge that joins them is where it bites.
     let unbuilt = method.name();
     match method {
         ServerInfo(_) => server::info(ctx),
