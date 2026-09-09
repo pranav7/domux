@@ -10,13 +10,16 @@ pub mod attach;
 pub mod config;
 pub mod events;
 pub mod import;
+pub mod open;
 pub mod pane;
+pub mod project;
 pub mod server;
 pub mod tab;
+pub mod workspace;
 
 use anyhow::Context;
 use domux_client::control;
-use domux_core::api::ApiError;
+use domux_core::api::{ApiError, ErrorCode};
 use domux_core::names::BIN_NAME;
 use serde_json::Value;
 use std::io::Write;
@@ -34,6 +37,14 @@ pub fn not_running() -> anyhow::Error {
 
 /// Calls a method and turns transport and API errors into one message for stderr.
 pub async fn call(method: &str, params: Value) -> anyhow::Result<Value> {
+    answer(method, params).await?.map_err(api_error)
+}
+
+/// The server's own answer to one call: the result, or the error as the server wrote it.
+///
+/// `call` turns that error into a line for stderr, and loses `data` doing it. A caller that
+/// needs the structured refusal reads it here instead.
+async fn answer(method: &str, params: Value) -> anyhow::Result<Result<Value, ApiError>> {
     let socket = socket();
     if !control::is_live(&socket).await {
         return Err(not_running());
@@ -49,10 +60,65 @@ pub async fn call(method: &str, params: Value) -> anyhow::Result<Value> {
                 socket.display()
             )
         })?;
-    match answer {
+    Ok(answer)
+}
+
+/// Calls a method that asks before it acts, and lays its question out for a reader who has
+/// no screen to draw it on (principle 10).
+///
+/// A destructive call with no consent is refused with the whole consequence: the question in
+/// `message`, and the same content in `data` as a list of what goes and a list of what stays.
+/// A shell reader gets the lists, one item to a line under its label, which is the shape the
+/// confirmation overlay draws, so a reader who has seen one and then the other is not told
+/// two different things.
+///
+/// Only a subcommand that has a `--yes` flag may use this, because the last line names that
+/// flag. Every other refusal still prints as one line.
+pub async fn call_that_asks(method: &str, params: Value) -> anyhow::Result<Value> {
+    match answer(method, params).await? {
         Ok(v) => Ok(v),
-        Err(e) => Err(api_error(e)),
+        Err(e) => Err(match question(&e) {
+            Some(text) => anyhow::anyhow!(text),
+            None => api_error(e),
+        }),
     }
+}
+
+/// The question a refusal is asking, laid out, or `None` when the refusal is not a question.
+///
+/// Written from `data` rather than from `message`, because `message` ends in the server's own
+/// "Answer with --yes", which names a parameter rather than the flag a shell reader has. The
+/// question itself is `confirmation`, the same sentence without that tail.
+fn question(err: &ApiError) -> Option<String> {
+    if err.code != ErrorCode::Refused {
+        return None;
+    }
+    // `ApiError::ambiguous` puts a bare array in `data`, so this asks whatever the refusal
+    // carried rather than assuming it carried an object.
+    let data = err.data.as_ref()?;
+    let mut text = data.get("confirmation")?.as_str()?.to_string();
+    for (label, key) in [("Removes:", "removes"), ("Keeps:", "keeps")] {
+        let items: Vec<&str> = data
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        // A label with nothing under it would read as "this removes nothing", which is a
+        // fact the server did not report (principle 4).
+        if items.is_empty() {
+            continue;
+        }
+        text.push('\n');
+        text.push_str(label);
+        for item in items {
+            text.push_str("\n  ");
+            text.push_str(item);
+        }
+    }
+    // On the same stream as the question, because a reader who redirects one and not the
+    // other must not lose the half that says how to answer it.
+    text.push_str("\nRun it again with --yes.");
+    Some(text)
 }
 
 /// Calls a method and reads its answer as the result type this build declares. A server
