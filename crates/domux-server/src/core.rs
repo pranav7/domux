@@ -568,19 +568,16 @@ impl Core {
     /// workspace is gone rather than restoring it dangling.
     ///
     /// **`workspace.resume` and not one `agent.resume` per record**, because resuming a set of
-    /// records is not the same operation as resuming one and the difference is a rule that has to
-    /// live in one place: a pane takes one relaunch line, so a set has to keep the first record
-    /// for each pane and skip the rest. That rule needs to know what the loop has already typed,
-    /// which `agent.resume` cannot know and `plan_resume` must not, so it belongs to the loop -
-    /// and there is one loop rather than two. A per-record loop here would have needed its own
-    /// copy, and its copy could not have been right: it would have had to guess which pane a
-    /// record resolves to before asking whether that record can resume at all, which is how a
-    /// Codex record that refuses ends up taking a pane from the Claude record behind it.
+    /// records is not the same operation as resuming one, and the difference is a rule that has to
+    /// live in one place: a pane takes one relaunch line, so a set has to keep the first record for
+    /// each pane and skip the rest. That rule needs to know what the loop has already typed, which
+    /// `agent.resume` cannot know and `plan_resume` must not, so it belongs to a loop - and one
+    /// loop is better than two copies of it.
     ///
-    /// It carries no filter of its own for the same reason. `agent::plan_resume` is the one judge
-    /// of what can be resumed, `workspace.resume` collects its refusals, and a live record here
-    /// would produce a skipped line rather than a write. That does not lean on
-    /// `state_file::restore` exiting every live record it reads, which is that function's
+    /// It carries no filter of what may be resumed either, and for the same reason: one rule, one
+    /// home. `agent::plan_resume` is the one judge, `workspace.resume` collects its refusals, and a
+    /// live record reaching this would produce a skipped line rather than a write. That does not
+    /// lean on `state_file::restore` exiting every live record it reads, which is that function's
     /// behaviour today rather than a promise to this one.
     ///
     /// This runs after the pane loop above because the line goes into a shell, and until each
