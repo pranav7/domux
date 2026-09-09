@@ -3,7 +3,7 @@
 //! width; nothing else differs, so the two surfaces cannot drift apart.
 
 use crate::facts::FactRegistry;
-use crate::render::list_box::{filter_rows, needs_gap_after, ListRow};
+use crate::render::list_box::{filter_rows, needs_gap_between, ListRow};
 use crate::render::theme;
 use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
 use domux_core::model::{Model, Project, Workspace, WorkspaceHandle};
@@ -69,9 +69,9 @@ pub struct Rows {
 /// otherwise (5.3).
 ///
 /// The blank rows say what belongs to what. One goes before each header, and under it only
-/// after a workspace that said more than its name, so a project's slots read as one block
-/// while a row with a branch and a pull request under it still ends somewhere the eye can
-/// see. The indent on the workspace rows says the same thing a second way, for a project
+/// where `needs_gap_between` asks for one, so a project's one-line slots read as one block
+/// while a workspace with a branch or a pull request is parted from its neighbours on both
+/// sides. The indent on the workspace rows says the same thing a second way, for a project
 /// whose rows run past the top of the box.
 ///
 /// `filter` is matched without case against the project name, the handle, the name, the
@@ -95,14 +95,18 @@ pub fn rows(
         }
         out.push(header(&project.name, extras.width));
         // No blank after the header, and none between two workspaces that each say one line.
-        // `needs_gap_after` is the whole rule, and `filter_rows` rebuilds to the same one.
-        let mut gap = false;
+        // `needs_gap_between` is the whole rule, and `filter_rows` rebuilds to the same one.
+        let mut first = true;
         for w in project.workspaces.iter() {
             let row = workspace_row(project, w, facts, filled, extras);
-            if gap {
+            if !first
+                && out
+                    .last()
+                    .is_some_and(|above| needs_gap_between(above, &row))
+            {
                 out.push(ListRow::blank());
             }
-            gap = needs_gap_after(&row);
+            first = false;
             out.push(row);
         }
     }

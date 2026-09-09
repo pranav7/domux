@@ -5,7 +5,7 @@
 **Decision:** A box pads its rows one cell in from each border. Under a project header every
 workspace row is indented two cells, and an untouched slot's hollow glyph hangs in that indent
 rather than standing in front of the handle. A blank row goes before each project header, and
-inside a project only after a workspace that drew more than one line.
+inside a project between two workspaces when either of them drew more than one line.
 
 ## Context
 
@@ -26,9 +26,12 @@ follows a workspace that had a branch, a pull request or an agent line under it,
 consecutive one-line slots are drawn tight.
 
 That last rule is the one worth naming, because "no blank between workspaces" alone reads
-badly in the switcher, where a row is up to three lines and two of them would run together
-with nothing between. Spacing by what a row said gives the gap to exactly the joins that need
-it.
+badly wherever a row has a second line. It has to look at both sides. A first pass gave the
+blank only to the row that was tall, and the author read the result as one workspace: `main`
+on its own line, then a named workspace and its branch under it, with nothing between the
+three. A one-line row directly above a two-line one is read as that row's first line, and the
+workspace it really names disappears from the reader's count. So either side being more than
+one line earns the gap, and a run of one-line slots still draws tight.
 
 ## Consequences
 
@@ -39,8 +42,11 @@ it.
   beside it, so a filled row still reads as one band to both borders.
 - A row's text loses four cells to the pads and two more to the indent. In the sidebar that
   leaves 34 of 38, and in the switcher's 60-cell box, 54.
-- `list_box::needs_gap_after` is the whole spacing rule. `projects_box::rows` writes the list
-  to it and `filter_rows` rebuilds to it, so `/` changes what the list holds and never its
-  shape.
+- `list_box::needs_gap_between` is the whole spacing rule. `projects_box::rows` writes the
+  list to it and `filter_rows` rebuilds to it, so `/` changes what the list holds and never
+  its shape.
+- A row is its name and then its branch, and never the handle the name stands in for. That
+  was already true, and it now has a test of its own, because the run-together above is what
+  made it look untrue.
 - Interface spec 5.2's two sentences no longer describe the build. This record is what
   replaces them.

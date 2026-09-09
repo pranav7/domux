@@ -291,21 +291,22 @@ mod tests {
             " ◌ workspace-1",
             "a slot on its own branch is untouched, and its glyph hangs in the indent"
         );
-        assert_eq!(inner_line(&buf, 7), "   workspace-2");
         assert_eq!(
-            inner_line(&buf, 8),
+            inner_line(&buf, 7),
+            "",
+            "the two-line row below parts itself from the one-line row above it"
+        );
+        assert_eq!(inner_line(&buf, 8), "   workspace-2");
+        assert_eq!(
+            inner_line(&buf, 9),
             "   feat/auth",
             "and a branch of its own gets line 2, which is a second line the row did not have"
         );
+        assert_eq!(inner_line(&buf, 10), "", "and from the row below it");
         assert_eq!(
-            inner_line(&buf, 9),
-            "",
-            "a row of more than one line is followed by a blank"
-        );
-        assert_eq!(
-            inner_line(&buf, 10),
+            inner_line(&buf, 11),
             "   workspace-3",
-            "so everything under it moved down two rows"
+            "so everything under it moved down three rows"
         );
     }
 

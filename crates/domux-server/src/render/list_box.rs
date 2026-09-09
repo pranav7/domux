@@ -83,14 +83,17 @@ pub fn content_width(width: u16) -> u16 {
     width.saturating_sub(2 + 2 * PAD)
 }
 
-/// Whether a blank row goes between `above` and the row that follows it inside one group.
+/// Whether a blank row goes between two rows of one group.
 ///
-/// A row that said more than its name gets one, so its extra lines cannot be read as the
-/// next row's; rows of a single line stay tight and the group reads as one block. The row
-/// builder writes the list to this rule and `filter_rows` rebuilds it to the same one, so
-/// `/` changes what the list holds and never its shape.
-pub fn needs_gap_after(above: &ListRow) -> bool {
-    above.height() > 1
+/// Either side saying more than its name is enough. A run of one-line rows stays tight and
+/// reads as one block, and the moment a row has a second line the join on both sides of it is
+/// marked: without the blank above, a one-line row sitting on top of a two-line one reads as
+/// that row's first line, which is a workspace the reader can lose entirely.
+///
+/// The row builder writes the list to this rule and `filter_rows` rebuilds it to the same
+/// one, so `/` changes what the list holds and never its shape.
+pub fn needs_gap_between(above: &ListRow, below: &ListRow) -> bool {
+    above.height() > 1 || below.height() > 1
 }
 
 pub struct ListBox<'a> {
@@ -214,7 +217,7 @@ fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: 
 /// The blanks are rebuilt rather than kept, because the blank above a match is usually the
 /// separator that led the group the filter just emptied. They are rebuilt to the grammar the
 /// row builder uses, which the filter does not change: one blank before a header, and under
-/// it whatever `needs_gap_after` asks for. Keeping a blank the builder would not have
+/// it whatever `needs_gap_between` asks for. Keeping a blank the builder would not have
 /// written would let `/` change the shape of the list and not only its contents.
 pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
     let filter = filter.trim().to_lowercase();
@@ -240,7 +243,10 @@ pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
                 out.push(ListRow::blank());
             }
             out.push(h);
-        } else if out.last().is_some_and(needs_gap_after) {
+        } else if out
+            .last()
+            .is_some_and(|above| needs_gap_between(above, row))
+        {
             out.push(ListRow::blank());
         }
         out.push(row.clone());
