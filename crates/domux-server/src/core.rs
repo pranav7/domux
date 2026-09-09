@@ -64,6 +64,10 @@ pub enum CoreMsg {
     },
     /// Once a second: the process inspector, the clock, exited-pane cleanup.
     Tick,
+    /// One frame of the working glyph, every `agents::labels::GLYPH_INTERVAL`. The ticker
+    /// owns nothing and never stops; the core counts, and ignores the message while nothing
+    /// is working (M3 plan assumption 35).
+    AnimationTick,
     /// A job that shelled out has finished. The model changes here, on the core task, and
     /// the caller waiting on `reply` is answered (decision record 0006).
     JobFinished {
@@ -840,6 +844,7 @@ impl Core {
             }
             CoreMsg::Subscribe { filter, tx } => self.subscribers.push((filter, tx)),
             CoreMsg::Tick => self.tick(),
+            CoreMsg::AnimationTick => self.animation_tick(),
             CoreMsg::JobFinished {
                 outcome,
                 reply,
@@ -1939,6 +1944,23 @@ impl Core {
             title: pane.emulator.title(),
         };
         (facts, fg)
+    }
+
+    /// One frame on, and a redraw, but only while there is something for the glyph to report
+    /// on (principle 7). The counter is the core's, so every client on this server draws the
+    /// same frame of the same animation.
+    ///
+    /// The ticker that sends this runs from the first message to the last and is never
+    /// started or stopped (M3 plan assumption 35). A timer that starts and stops is state,
+    /// and state can be wrong: a start that is missed leaves a working agent with a glyph
+    /// that never turns, and a stop that is missed is the redraw this guard is here to
+    /// prevent, left running for the life of the server. The guard is one boolean walk over
+    /// the records, twelve and a half times a second, and it cannot fail.
+    fn animation_tick(&mut self) {
+        if crate::agents::observer::any_working(&self.model) {
+            self.agents.glyph_tick = self.agents.glyph_tick.wrapping_add(1);
+            self.view_dirty = true;
+        }
     }
 
     fn tick(&mut self) {
@@ -4935,6 +4957,309 @@ mod tests {
             fact_events(&core),
             Vec::new(),
             "and nothing announces a fact that was never recorded"
+        );
+    }
+
+    // The working glyph and the pool of working words.
+    //
+    // Both live here rather than in `tests/agents_animation.rs`, because neither is visible
+    // from a frame. A server with nothing working draws no glyph on any row, so its screen
+    // stands still whether the core counted the tick or threw it away, and an identical
+    // frame sends no diff: the whole cost of a missing guard is work nobody sees. The pool
+    // is a count inside the core that no row shows either. `WorkingWords::in_use` is what
+    // makes both observable, and this module is the only place that can read it.
+
+    /// One hook payload from `pane`, through the handler the report subcommand reaches.
+    fn hook(core: &mut Core, pane: &PaneId, event: &str) {
+        hook_with(core, pane, event, None);
+    }
+
+    /// The same, carrying a transcript, which is what puts an entry in the recap cache: the
+    /// handler reads the recap on `SessionStart`, `UserPromptSubmit` and `Stop`.
+    fn hook_with(core: &mut Core, pane: &PaneId, event: &str, transcript: Option<&Path>) {
+        let mut payload = serde_json::json!({"hook_event_name": event, "session_id": "c1"});
+        if let Some(path) = transcript {
+            payload["transcript_path"] = serde_json::json!(path);
+        }
+        let method = Method::from_request(
+            "agent.report",
+            serde_json::json!({"pane": pane, "kind": "claude", "payload": payload}),
+        )
+        .expect("agent.report takes these params");
+        core.dispatch(method, None).expect("agent.report");
+    }
+
+    /// A transcript on disk for the recap reader to cache.
+    fn a_transcript(dir: &Path) -> PathBuf {
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, "{}\n").expect("write the transcript");
+        path
+    }
+
+    /// The view every frame builds, which is where a working agent takes its word. `render`
+    /// builds one per frame and needs a client and a composed buffer; this is the half of it
+    /// the pool turns on, and it is the same function.
+    fn drawn(core: &mut Core) -> crate::render::agents_box::AgentsView {
+        let now = core.deps.clock.now();
+        agents_view(&core.model, &mut core.agents, &core.config.keymap, now)
+    }
+
+    /// A core and the pane its implicit workspace starts with, for a hook to report from.
+    fn core_with_a_pane(dir: &Path) -> (Core, PaneId) {
+        let core = core(dir);
+        let pane = core
+            .model
+            .all_pane_ids()
+            .first()
+            .cloned()
+            .expect("the implicit workspace starts with one pane");
+        (core, pane)
+    }
+
+    /// A frame of animation turns the glyph and asks for the frame that draws it. The
+    /// assertion is on the glyph the view carries rather than on the counter, so a count
+    /// that no view reads would fail here.
+    #[test]
+    fn an_animation_tick_turns_the_glyph_while_an_agent_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        let before = drawn(&mut core).glyph;
+        core.view_dirty = false;
+
+        core.handle(CoreMsg::AnimationTick);
+
+        assert!(
+            core.view_dirty,
+            "the frame the new glyph is drawn in is asked for"
+        );
+        assert_ne!(drawn(&mut core).glyph, before, "and the glyph moved on");
+    }
+
+    /// And it costs a server with nothing working nothing at all. The ticker never starts and
+    /// never stops (M3 plan assumption 35), so this guard is the only thing between an idle
+    /// server and twelve and a half redraws a second for the rest of its life.
+    ///
+    /// The last three lines are what stop this passing on a server that never animates: the
+    /// same core and the same record, working.
+    #[test]
+    fn an_animation_tick_leaves_a_server_with_nothing_working_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "SessionStart");
+        assert_eq!(core.model.agents.len(), 1, "there is a record to pass over");
+        core.view_dirty = false;
+
+        for _ in 0..crate::agents::labels::GLYPH_FRAMES.len() {
+            core.handle(CoreMsg::AnimationTick);
+        }
+
+        assert_eq!(core.agents.glyph_tick, 0, "an idle record turns nothing");
+        assert!(!core.view_dirty, "and asks for no frame");
+
+        hook(&mut core, &pane, "UserPromptSubmit");
+        core.view_dirty = false;
+        core.handle(CoreMsg::AnimationTick);
+        assert_eq!(
+            core.agents.glyph_tick, 1,
+            "the same core turns once it works"
+        );
+        assert!(core.view_dirty);
+    }
+
+    /// A compacting agent animates too: the glyph says something is happening, and compacting
+    /// is something happening. It carries no working word, which is the other half of the same
+    /// rule (a word is shown for `working` and for nothing else), and the two are asserted
+    /// together so neither is mistaken for the other.
+    #[test]
+    fn a_compacting_agent_turns_the_glyph_and_carries_no_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        assert!(!drawn(&mut core).agents[0].word.is_empty(), "working first");
+
+        hook(&mut core, &pane, "PreCompact");
+        core.view_dirty = false;
+        core.handle(CoreMsg::AnimationTick);
+
+        assert_eq!(
+            core.agents.glyph_tick, 1,
+            "compacting keeps the glyph turning"
+        );
+        assert!(core.view_dirty);
+        assert_eq!(
+            drawn(&mut core).agents[0].word,
+            "",
+            "and shows no working word"
+        );
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "which it gave back on the way"
+        );
+    }
+
+    /// The gate in `agents_view`. `word_for` mutates, so a row that must not show a word must
+    /// not ask for one either: without the gate every record would take a slot from a pool of
+    /// 186 merely by being listed, and the animation lists them all twelve and a half times a
+    /// second for as long as anything works.
+    #[test]
+    fn a_record_that_is_not_working_takes_no_word_from_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "SessionStart");
+
+        // Twenty frames, which is under two seconds of the animation.
+        for _ in 0..20 {
+            let view = drawn(&mut core);
+            assert_eq!(view.agents.len(), 1, "the idle record is listed");
+            assert_eq!(view.agents[0].word, "", "and draws no word");
+        }
+        assert_eq!(core.agents.words.in_use(), 0, "so it took no slot");
+
+        // The positive half, on the same record: a pool nothing ever reaches would pass the
+        // lines above on its own.
+        hook(&mut core, &pane, "UserPromptSubmit");
+        assert!(!drawn(&mut core).agents[0].word.is_empty());
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "a working record does take one"
+        );
+    }
+
+    /// The hook path's release. A word is per working agent, and an agent a hook says has
+    /// stopped is not one.
+    #[test]
+    fn a_stop_hook_gives_the_working_word_back_to_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+
+        hook(&mut core, &pane, "Stop");
+
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "and gave it back on the stop"
+        );
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "the next frame does not take it again"
+        );
+    }
+
+    /// The observer path's release, which is the other way out of `working`. Every record the
+    /// observer exits is released in `Core::agents_changed`, whether the once-a-second pass
+    /// found the process gone or the pane's child did, so this holds one site for both.
+    #[test]
+    fn a_pane_that_exits_gives_back_the_working_words_of_its_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+
+        core.handle(CoreMsg::PaneExited {
+            pane: pane.clone(),
+            status: Some(0),
+        });
+
+        assert_eq!(
+            core.model.agents[0].state,
+            AgentState::Exited,
+            "the record went with the pane"
+        );
+        assert_eq!(core.agents.words.in_use(), 0, "and its word went with it");
+    }
+
+    /// A delete takes every record of the workspace, working ones included, so the words they
+    /// hold have to go back by hand: `Model::remove_workspace` drops the records, and after
+    /// that nothing can name the slots they held.
+    #[test]
+    fn deleting_a_workspace_gives_back_the_working_words_of_its_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let workspace = a_slot(&mut core, dir.path());
+        // A slot is registered without a tab. The invariant every dispatch runs on its way
+        // out is what gives it one, and the pane comes with the tab.
+        core.ensure_every_workspace_has_a_tab();
+        let pane = core
+            .model
+            .workspace(&workspace)
+            .and_then(|w| w.tabs.first())
+            .and_then(|t| t.layout.pane_ids().first().cloned())
+            .expect("the slot's tab starts with one pane");
+        let transcript = a_transcript(dir.path());
+        hook_with(&mut core, &pane, "UserPromptSubmit", Some(&transcript));
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            1,
+            "and its transcript is cached"
+        );
+
+        core.workspace_deleted(
+            None,
+            workspace,
+            "workspace-1".into(),
+            "workspace-1".to_string(),
+        )
+        .expect("the workspace is deleted");
+
+        assert!(
+            core.model.agents.is_empty(),
+            "the records went with the slot"
+        );
+        assert_eq!(core.agents.words.in_use(), 0, "and so did their words");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            0,
+            "and their cached transcripts"
+        );
+    }
+
+    /// `api::agent::dismiss` gives back the word of the record it removes.
+    ///
+    /// The word is put in the pool here rather than by a hook, because no sequence of hooks
+    /// can leave one for a dismiss to find: a record has to be exited before `dismiss_agent`
+    /// will take it, and both ways out of `working` free the word on the way (the two tests
+    /// above hold them). The line is still worth pinning. The pool is finite, an agent id is
+    /// never reissued, and a slot leaked in it is leaked for the life of the server, so the
+    /// state it guards is set directly rather than left with no test at all.
+    #[test]
+    fn dismissing_a_record_gives_its_working_word_back_to_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        let transcript = a_transcript(dir.path());
+        hook_with(&mut core, &pane, "SessionStart", Some(&transcript));
+        hook(&mut core, &pane, "SessionEnd");
+        let id = core.model.agents[0].id.clone();
+        assert_eq!(core.model.agents[0].state, AgentState::Exited);
+        assert_eq!(core.agents.recaps.cached(), 1, "the transcript is cached");
+        core.agents.words.word_for(&id);
+        assert_eq!(core.agents.words.in_use(), 1);
+
+        let method =
+            Method::from_request("agent.dismiss", serde_json::json!({ "agent": id.as_str() }))
+                .expect("agent.dismiss takes these params");
+        core.dispatch(method, None).expect("agent.dismiss");
+
+        assert!(core.model.agents.is_empty(), "the record is gone");
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "and its word is back in the pool"
+        );
+        assert_eq!(
+            core.agents.recaps.cached(),
+            0,
+            "and its transcript is forgotten"
         );
     }
 }
