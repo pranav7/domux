@@ -50,9 +50,43 @@ impl Run {
         assert_eq!(self.code, Some(0), "{}", self.err);
         self
     }
+
+    /// It worked and it said nothing, which is the house rule for a subcommand that only
+    /// changed something.
+    ///
+    /// `ok` alone reads the exit code, and every claim of the form "this one is quiet" that
+    /// rested on `ok` was resting on nothing: a subcommand that printed its ack on stdout
+    /// would still exit 0. Every row of the report's table that says "nothing" is asserted
+    /// through here.
+    fn quiet(self) -> Run {
+        assert_eq!(self.code, Some(0), "{}", self.err);
+        assert_eq!(self.out, "", "it changed something and says nothing");
+        assert_eq!(self.err, "", "and it has no message either");
+        self
+    }
+
     fn json(&self) -> Value {
         serde_json::from_str(&self.out).unwrap_or_else(|e| panic!("{e}: {:?}", self.out))
     }
+
+    /// The field names of the JSON object it printed, sorted.
+    ///
+    /// The shape of an answer is what a shell reader can act on, so it is asserted rather
+    /// than described: a field the CLI stops printing is a field a script stops finding.
+    fn keys(&self) -> Vec<String> {
+        keys_of(&self.json())
+    }
+}
+
+fn keys_of(v: &Value) -> Vec<String> {
+    let mut names: Vec<String> = v
+        .as_object()
+        .unwrap_or_else(|| panic!("an object, not {v}"))
+        .keys()
+        .cloned()
+        .collect();
+    names.sort();
+    names
 }
 
 /// An anti-hang bound, not a patience bound.
@@ -121,14 +155,9 @@ async fn open_registers_a_path_and_switches_to_it_and_project_list_prints_json()
         .unwrap()
         .to_string();
 
-    let opened = run(domux2(&h).args(["open", dir.path().to_str().unwrap()]))
+    run(domux2(&h).args(["open", dir.path().to_str().unwrap()]))
         .await
-        .ok();
-    assert_eq!(opened.out, "", "open changed something and says nothing");
-    assert_eq!(
-        opened.err, "",
-        "and it adopted nothing, so it names nothing"
-    );
+        .quiet();
 
     let client = h.client.clone();
     let m = model_when(&h, "the client moves to the project it opened", |m| {
@@ -141,6 +170,11 @@ async fn open_registers_a_path_and_switches_to_it_and_project_list_prints_json()
     );
 
     let listed = run(domux2(&h).args(["project", "list"])).await.ok();
+    assert_eq!(
+        keys_of(&listed.json().as_array().unwrap()[0]),
+        ["default_branch", "id", "kind", "name", "root", "workspaces"],
+        "the fields a shell reader can act on"
+    );
     assert_eq!(
         listed.err, "",
         "data goes to stdout, messages to stderr (principle 12)"
@@ -201,11 +235,9 @@ async fn open_switches_to_main_and_names_the_slots_it_adopted() {
     // with no slots gives: nothing in it tells a registration from a path that was already
     // there. That is why `open` never says "Added audrey-app" - it would be a claim this
     // command cannot check.
-    let again = run(domux2(&h).args(["open", root.to_str().unwrap()]))
+    run(domux2(&h).args(["open", root.to_str().unwrap()]))
         .await
-        .ok();
-    assert_eq!(again.err, "");
-    assert_eq!(again.out, "");
+        .quiet();
 }
 
 /// `project add` registers a path and prints the record it made on stdout. It is not `open`:
@@ -228,6 +260,13 @@ async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_wa
         .await
         .ok();
     assert_eq!(added.err, "", "data goes to stdout (principle 12)");
+    // `workspace` is the project's own main, and it is the field `open` switches to. A
+    // reader who does not know it is there cannot do from a script what `open` does.
+    assert_eq!(
+        added.keys(),
+        ["adopted", "kind", "name", "project", "root", "workspace"],
+        "the fields a shell reader can act on"
+    );
     let record = added.json();
     assert_eq!(record["name"], name.as_str(), "{:?}", added.out);
     assert_eq!(
@@ -335,15 +374,11 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
     let elsewhere = h.model().client(&client).unwrap().workspace.clone();
     assert_ne!(elsewhere, w1, "the fixture puts the client somewhere else");
 
-    let named = run(domux2(&h).env("DOMUX_WORKSPACE", w1.as_str()).args([
-        "workspace",
-        "name",
-        "auth cleanup",
-    ]))
+    run(domux2(&h)
+        .env("DOMUX_WORKSPACE", w1.as_str())
+        .args(["workspace", "name", "auth cleanup"]))
     .await
-    .ok();
-    assert_eq!(named.out, "", "quiet on success");
-    assert_eq!(named.err, "");
+    .quiet();
     assert_eq!(name_of(&h, &w1).await.as_deref(), Some("auth cleanup"));
     assert_eq!(name_of(&h, &elsewhere).await, None, "and only that one");
 
@@ -351,7 +386,7 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", ""]))
     .await
-    .ok();
+    .quiet();
     assert_eq!(name_of(&h, &w1).await, None, "an empty name clears it");
 
     // `clear-name` is checked here, where the client is somewhere else, rather than in the
@@ -361,13 +396,13 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", "auth cleanup"]))
     .await
-    .ok();
+    .quiet();
     assert_eq!(name_of(&h, &w1).await.as_deref(), Some("auth cleanup"));
     run(domux2(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "clear-name"]))
     .await
-    .ok();
+    .quiet();
     assert_eq!(name_of(&h, &w1).await, None);
     assert_eq!(
         name_of(&h, &elsewhere).await,
@@ -414,7 +449,7 @@ async fn the_clear_name_key_and_the_clear_name_subcommand_both_clear_the_name() 
                 .env("DOMUX_WORKSPACE", w1.as_str())
                 .args(["workspace", "clear-name"]))
             .await
-            .ok();
+            .quiet();
         }
 
         let m = model_when(&h, &format!("the {clear_it} clears the name"), |m| {
@@ -460,10 +495,11 @@ async fn delete_without_yes_prints_the_confirmation_on_stderr_and_exits_one() {
     assert_eq!(
         lines.first().copied(),
         Some(
-            "Delete workspace-1? Removes the worktree at .domux/worktrees/workspace-1 and its \
-             local branch and closes 1 tab. The remote branch and any pull request stay."
+            "refused: Delete workspace-1? Removes the worktree at .domux/worktrees/workspace-1 \
+             and its local branch and closes 1 tab. The remote branch and any pull request \
+             stay."
         ),
-        "{}",
+        "under the same code word every other failure carries: {}",
         asked.err
     );
     assert!(
@@ -497,7 +533,7 @@ async fn delete_without_yes_prints_the_confirmation_on_stderr_and_exits_one() {
 
     run(domux2(&h).args(["workspace", "delete", "workspace-1", "--yes"]))
         .await
-        .ok();
+        .quiet();
     model_when(&h, "the record goes", |m| m.workspace(&w1).is_none()).await;
     assert!(!slot_of(&root, 1).exists(), "and the worktree with it");
 }
@@ -525,7 +561,7 @@ async fn a_workspace_holding_work_needs_force_and_keeps_its_work_until_it_gets_o
 
     run(domux2(&h).args(["workspace", "delete", "workspace-2", "--yes", "--force"]))
         .await
-        .ok();
+        .quiet();
     model_when(&h, "the record goes", |m| m.workspace(&w2).is_none()).await;
     assert!(!slot_of(&root, 2).exists());
 }
@@ -541,7 +577,7 @@ async fn a_workspace_holding_work_needs_force_and_keeps_its_work_until_it_gets_o
 #[tokio::test]
 async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
-    let (root, w1, _w2) = h.git_project_with_two_slots().await;
+    let (root, w1, w2) = h.git_project_with_two_slots().await;
     let scratch = slot_of(&root, 1).join("scratch.txt");
     std::fs::write(&scratch, "work").unwrap();
 
@@ -580,9 +616,28 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
         from_the_variable.err
     );
 
+    // A named target beats the variable. Both are set here and they name different slots, so
+    // the two sources are told apart: with only one of them set, "the target wins" and "the
+    // variable wins" reach the same workspace and nothing could see the difference. It is
+    // asserted on `clear` because `clear` is where getting it backwards throws away work.
+    let named_beats_the_variable = run(domux2(&h).env("DOMUX_WORKSPACE", w2.as_str()).args([
+        "workspace",
+        "clear",
+        "workspace-1",
+    ]))
+    .await;
+    assert_eq!(named_beats_the_variable.code, Some(1));
+    assert!(
+        named_beats_the_variable
+            .err
+            .contains("workspace-1 has uncommitted or unpushed changes"),
+        "the target named on the command line is the one it acted on: {}",
+        named_beats_the_variable.err
+    );
+
     run(domux2(&h).args(["workspace", "clear", "workspace-1", "--yes"]))
         .await
-        .ok();
+        .quiet();
     assert!(
         !scratch.exists(),
         "--yes reaches the job, which cleans the tree"
@@ -604,8 +659,11 @@ async fn project_remove_without_yes_prints_the_confirmation_and_keeps_the_projec
     let lines: Vec<&str> = asked.err.lines().collect();
     assert_eq!(
         lines.first().copied(),
-        Some("Remove audrey-app? It has 3 workspaces. The folder and its worktrees stay on disk."),
-        "{}",
+        Some(
+            "refused: Remove audrey-app? It has 3 workspaces. The folder and its worktrees \
+             stay on disk."
+        ),
+        "under the same code word every other failure carries: {}",
         asked.err
     );
     assert!(
@@ -627,6 +685,35 @@ async fn project_remove_without_yes_prints_the_confirmation_and_keeps_the_projec
     );
 }
 
+/// `--yes` answers the question, and a project that has gone leaves `project list`.
+///
+/// Its own test rather than a second half of the one above, because "it asks" and "`--yes`
+/// answers it" are two claims and the first was carrying both. This path also matters more
+/// than its size: it is the way back from an `open` that registered a project and then could
+/// not switch to it, which is the one half-success this CLI can produce.
+#[tokio::test]
+async fn project_remove_with_yes_removes_the_record_and_leaves_the_folder() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+
+    run(domux2(&h).args(["project", "remove", "audrey-app", "--yes"]))
+        .await
+        .quiet();
+
+    let listed = run(domux2(&h).args(["project", "list"])).await.ok();
+    let rows = listed.json();
+    let names: Vec<&str> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"audrey-app"), "the record goes: {names:?}");
+    // Interface spec 12.8: nothing on disk is touched.
+    assert!(root.join("README.md").is_file(), "and the folder stays");
+    assert!(slot_of(&root, 1).is_dir(), "with its worktrees");
+}
+
 // ---------------------------------------------------------------- create and list
 
 /// `workspace create` and `workspace list` print their answers as JSON on stdout, and
@@ -643,6 +730,11 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
     let made = run(domux2(&h).args(["workspace", "create", "--project", "audrey-app"]))
         .await
         .ok();
+    assert_eq!(
+        made.keys(),
+        ["base", "branch", "handle", "id", "path", "project", "setup", "tabs"],
+        "the fields a shell reader can act on"
+    );
     let made = made.json();
     assert_eq!(made["handle"], "workspace-3");
     assert_eq!(
@@ -673,6 +765,11 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
         .ok();
     assert_eq!(scoped.err, "", "data goes to stdout (principle 12)");
     let rows = scoped.json();
+    assert_eq!(
+        keys_of(&rows.as_array().unwrap()[0]),
+        ["branch", "handle", "id", "name", "path", "pr", "pr_state", "project", "tabs"],
+        "the fields a shell reader can act on"
+    );
     let handles: Vec<&str> = rows
         .as_array()
         .unwrap()

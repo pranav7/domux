@@ -78,7 +78,12 @@ pub async fn call_that_asks(method: &str, params: Value) -> anyhow::Result<Value
     match answer(method, params).await? {
         Ok(v) => Ok(v),
         Err(e) => Err(match question(&e) {
-            Some(text) => anyhow::anyhow!(text),
+            // Under the same code word every other failure carries. A question laid out over
+            // several lines is still a refusal, and a caller that tells refusals apart by the
+            // code must not lose it on the one subcommand that lays its refusal out: without
+            // this, `workspace clear`'s refusal reads `refused: ...` and `workspace delete`'s
+            // does not.
+            Some(text) => anyhow::anyhow!("{}: {text}", code_word(e.code)),
             None => api_error(e),
         }),
     }
@@ -136,13 +141,18 @@ pub async fn call_as<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// An API error as one line: the stable code, then the server's own sentence.
-fn api_error(e: ApiError) -> anyhow::Error {
-    let code = serde_json::to_value(e.code)
+/// The stable code as the word the wire spells it with. Every failure the CLI prints starts
+/// with it, so a script can tell a refusal from a not found without reading the sentence.
+fn code_word(code: ErrorCode) -> String {
+    serde_json::to_value(code)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| "error".to_string());
-    anyhow::anyhow!("{code}: {}", e.message)
+        .unwrap_or_else(|| "error".to_string())
+}
+
+/// An API error as one line: the stable code, then the server's own sentence.
+fn api_error(e: ApiError) -> anyhow::Error {
+    anyhow::anyhow!("{}: {}", code_word(e.code), e.message)
 }
 
 /// Whether the reader is still there. A reader that stopped reading is the normal end of

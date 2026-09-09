@@ -30,7 +30,7 @@ pub enum WorkspaceAction {
     Clear {
         /// A workspace id, handle, name or branch; the default is this workspace
         workspace: Option<String>,
-        /// Clear it without asking, throwing away anything uncommitted or unpushed
+        /// Clear it even when it holds uncommitted or unpushed work
         #[arg(long)]
         yes: bool,
     },
