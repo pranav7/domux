@@ -115,6 +115,15 @@ pub enum CoreJob {
         name: String,
         root: PathBuf,
         path: PathBuf,
+        /// The branch the confirmation named, when it named one. The job reads the branch
+        /// itself and refuses if the two disagree: the reader consented to losing a named
+        /// branch, and losing a different one because the slot moved in between is the
+        /// surprise the question exists to prevent (principle 10).
+        ///
+        /// `None` when no branch fact had arrived, which is when the question said "its local
+        /// branch" and promised nothing specific. There is then nothing to reconcile and the
+        /// fresh read stands.
+        expected_branch: Option<String>,
         base: Option<String>,
         /// False means "refuse a dirty slot". `git worktree remove` has a force of its own
         /// for modified and untracked files, but it does not see commits that were never
@@ -1944,9 +1953,10 @@ fn run_job(job: CoreJob) -> JobOutcome {
             name,
             root,
             path,
+            expected_branch,
             base,
             force,
-        } => delete_workspace(workspace, name, &root, &path, base, force),
+        } => delete_workspace(workspace, name, &root, &path, expected_branch, base, force),
     }
 }
 
@@ -1966,19 +1976,26 @@ fn unavailable(e: crate::git::GitError) -> JobOutcome {
 /// The dirty gate is here rather than in the handler because only `git::is_dirty` can answer
 /// it and it shells out. Every step that can refuse runs before anything is thrown away.
 ///
-/// **The branch is read here, not taken from the branch fact**, and both jobs do it. Two
-/// reasons, and the second decides it. A slot's handle is `workspace-1` and the branch it was
-/// made on has the same name, but nothing stops the author checking out `feat/auth-cleanup`
-/// in it, so the handle cannot be used: acting on it would reset or delete a branch the
-/// worktree is not on and report that it had done the right thing (principle 4). And a fact
-/// is an observation with a time to live - up to 30 seconds for the branch - while this is
-/// the observation that is true at the moment of the reset or the delete. `git::is_dirty`
-/// measures `base..branch`, so a stale name would have the guard weigh one branch while the
-/// action destroyed another; they read one answer because they read it from here.
+/// **The branch is read here, not taken from the branch fact**, and both jobs do it.
 ///
-/// The confirmation still names the fact, because it is composed on the core task where no
-/// git command may run. The two can only disagree if the author changes branch between being
-/// asked and answering, and the job then acts on where the worktree really is.
+/// A slot's handle is `workspace-1` and the branch it was made on has the same name, but
+/// nothing stops the author checking out `feat/auth-cleanup` in it, so the handle cannot be
+/// used at all: acting on it would reset or delete a branch the worktree is not on and report
+/// that it had done the right thing (principle 4).
+///
+/// The fact cannot be used either, and the reason is not that it would make the guard and the
+/// action disagree with each other. It would not: one name would go to both `git::is_dirty`
+/// and the command that destroys, so they would agree, and be wrong together. The reason is
+/// that the fact can name a branch the worktree has since left. It carries a 30 second time to
+/// live, so it is already up to half a minute old when the question is composed, and from a
+/// shell the reader then types `--yes` whenever they get to it. **Neither window needs the
+/// author to do anything while the question is up.** A clear is the sharper case:
+/// `git::reset_to_base` runs `git checkout -q <branch>` in the worktree, so a stale name would
+/// move the slot onto another branch and hard-reset that one, quietly.
+///
+/// The confirmation still names the fact, because it is composed on the core task where no git
+/// command may run. `CoreJob::DeleteWorkspace::expected_branch` is what keeps the two honest:
+/// the question's answer travels with the job and the job refuses if the worktree has moved.
 fn clear_workspace(
     workspace: WorkspaceId,
     name: String,
@@ -2035,6 +2052,7 @@ fn delete_workspace(
     name: String,
     root: &Path,
     path: &Path,
+    expected_branch: Option<String>,
     base: Option<String>,
     force: bool,
 ) -> JobOutcome {
@@ -2044,6 +2062,20 @@ fn delete_workspace(
         Ok(branch) => branch,
         Err(e) => return unavailable(e),
     };
+    // The question named a branch and the worktree is on another one, so the consent that was
+    // given is not consent to this. Refusing names both and leaves everything where it is; the
+    // reader asks again and answers the truth. `conflict` is the code for exactly this: the
+    // state changed underneath the caller.
+    if let Some(expected) = expected_branch {
+        if expected != branch {
+            return JobOutcome::Failed {
+                message: format!(
+                    "{name} is on {branch} now, not {expected}, so nothing was removed; ask again"
+                ),
+                code: ErrorCode::Conflict,
+            };
+        }
+    }
     if !force {
         let base = crate::git::base_ref(root, base.as_deref());
         match crate::git::is_dirty(path, &branch, &base) {
@@ -3065,6 +3097,55 @@ mod tests {
         );
     }
 
+    /// The job refuses when the worktree has left the branch the question named, and goes
+    /// ahead when it has not.
+    ///
+    /// Called directly rather than through the API, because the disagreement cannot be staged
+    /// end to end: the harness clock is fixed, so a branch fact that has arrived once is never
+    /// due again and cannot be made to go stale, and racing a checkout against the provider's
+    /// first tick is a test that inverts its own verdict when it flakes. The state the race
+    /// would produce is set here instead and the question asked exactly. The cost is that the
+    /// scenario is asserted rather than exercised.
+    ///
+    /// Both directions, because a job that refused every time and a job that refused the right
+    /// time answer the same on the first case alone. And the refusal asserts the worktree is
+    /// still on disk: an error code does not tell a delete that refused from one that removed
+    /// and then complained.
+    #[test]
+    fn a_delete_refuses_when_the_worktree_has_left_the_branch_the_question_named() {
+        let (_tmp, repo) = crate::testing::repo_with_origin("main");
+        let path = crate::git::slot_path(&repo, 1);
+        crate::git::worktree_add(&repo, &path, "workspace-1", "origin/main").unwrap();
+        let ws = WorkspaceId("w_1".into());
+        let delete = |expected: &str| {
+            delete_workspace(
+                ws.clone(),
+                "workspace-1".to_string(),
+                &repo,
+                &path,
+                Some(expected.to_string()),
+                None,
+                false,
+            )
+        };
+
+        match delete("feat/auth-cleanup") {
+            JobOutcome::Failed { message, code } => {
+                assert_eq!(code, ErrorCode::Conflict, "{message}");
+                assert!(message.contains("is on workspace-1 now"), "{message}");
+                assert!(message.contains("not feat/auth-cleanup"), "{message}");
+            }
+            _ => panic!("a delete of a branch nobody consented to must not go ahead"),
+        }
+        assert!(path.is_dir(), "and it refused before it removed anything");
+
+        assert!(
+            matches!(delete("workspace-1"), JobOutcome::Deleted { .. }),
+            "and the branch the question named is the one it removes"
+        );
+        assert!(!path.exists());
+    }
+
     /// `esc` on the delete question starts no job, and `y` starts one.
     ///
     /// The observable is the job, not the disk. A delete from a key queues work on a blocking
@@ -3123,6 +3204,44 @@ mod tests {
             .await
             .unwrap_or(false);
             assert_eq!(started, expected, "{key} started a job: {started}");
+        }
+    }
+
+    /// A key carrying a client the model does not hold opens no question, anywhere.
+    ///
+    /// The branch is reachable: `Core::run_action` never checks that the id it is handed is
+    /// attached, so `from_key` does not close the path. That makes it a refusal to test rather
+    /// than an argument to write down, which is Task 19's ruling on the same shape - a branch
+    /// no run can reach is a mutant that can never die, and a survivor that can never die
+    /// teaches the next reader that survivors are normal.
+    ///
+    /// The attached client is what makes the second assertion able to fail: with nobody else
+    /// attached, "no client was given the question" and "there was no client" are the same
+    /// sentence, and `Ctx::view` falls back to the most recent client, which is exactly the
+    /// wrong answer this guards against.
+    #[test]
+    fn a_key_from_a_client_that_is_not_attached_opens_no_question_anywhere() {
+        for method in ["workspace.delete", "workspace.clear"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut core = core(dir.path());
+            let watching = attached(&mut core);
+            let _ws = a_slot(&mut core, dir.path());
+            let gone = ClientId("c_gone".into());
+
+            let err = core
+                .dispatch_from_key(
+                    Method::from_request(method, serde_json::json!({"workspace": "workspace-1"}))
+                        .expect("params"),
+                    Some(gone.clone()),
+                )
+                .expect_err("there is no screen to put the question on");
+
+            assert_eq!(err.code, ErrorCode::NotFound, "{method}: {err}");
+            assert!(err.message.contains(gone.as_str()), "{method}: {err}");
+            assert!(
+                core.model.client(&watching).unwrap().overlay.is_none(),
+                "{method}: the question must not land on somebody else's screen"
+            );
         }
     }
 

@@ -518,11 +518,16 @@ pub fn clear(ctx: &mut Ctx, p: WorkspaceClearParams) -> Result<Value, ApiError> 
 /// and told to add `--yes`. Both refusals leave the model and the disk exactly as they found
 /// them.
 ///
-/// **The branch that goes is the one the branch provider observed**, not the one the handle
-/// is named after. Nothing stops the author checking out `feat/auth-cleanup` in a slot, and
-/// deleting `workspace-1` there would delete the wrong branch and report that it had deleted
-/// the right one. When no fact has arrived the job reads the branch with `git::branch_of`,
-/// on the blocking task where that call belongs.
+/// **The question names the branch fact; the job reads the branch itself.** Nothing stops the
+/// author checking out `feat/auth-cleanup` in a slot, so the handle cannot be used: deleting
+/// `workspace-1` there would delete a branch nobody asked about and report that it had done
+/// the right thing. The fact answers the question because a handler runs on the core task and
+/// may not call git; the job answers the act, on the blocking task, from the worktree as it is
+/// at that moment.
+///
+/// The two are reconciled rather than left to differ: `expected_branch` carries what the
+/// question named into the job, and the job refuses when the worktree has moved since. So a
+/// reader who consented to losing `feat/auth-cleanup` never loses something else instead.
 pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError> {
     let (target, doomed) = target_of(ctx, Some(&p.workspace), MAIN_CANNOT_BE_DELETED)?;
     if !p.yes {
@@ -549,6 +554,11 @@ pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError
         name: doomed.name,
         root: doomed.root,
         path: doomed.path,
+        // What the question named, so the job can refuse if the worktree has moved since.
+        // Read here rather than in the job because a job may not touch the fact registry, and
+        // read now rather than when the box was drawn because this call is the consent: the
+        // `--yes` retry and the overlay's `y` both come back through here.
+        expected_branch: doomed.branch,
         base: doomed.base,
         force: p.force,
     });
@@ -564,8 +574,10 @@ pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError
 /// (interface spec 12.7). `input::pop_confirmation` is the other half.
 fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
     let client = ctx.view()?;
-    // Before the overlay, not after it: a call naming a client that is not attached must
-    // change nothing rather than half of it.
+    // Reachable, and tested: `Core::run_action` never checks that the client id it is handed
+    // is attached, so a key press can arrive carrying one the model has dropped. Refusing here
+    // is what stops `Ctx::view`'s fallback to the most recent client from putting a delete
+    // question about somebody else's workspace on the screen of whoever happens to be last.
     let Some(view) = ctx.model.client_mut(&client) else {
         return Err(ApiError::not_found(format!(
             "client {client} is not attached"
@@ -573,6 +585,11 @@ fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
     };
     view.push_overlay(Overlay::Confirm(kind));
     view.focus = Focus::Region(RegionKind::Overlay);
+    // Equivalent, and left in on purpose. `Core::key` marks the view after every `route_key`
+    // and `ask` is reachable only behind `from_key`, so no frame depends on this line and no
+    // test can tell it from its absence. It stays because `api::project::remove` writes the
+    // same line on the same path, and one of the two opening a question without saying the
+    // screen changed would be the odd one out the day either becomes reachable another way.
     ctx.view_dirty = true;
     ok(Ack { ok: true })
 }

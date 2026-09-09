@@ -14,7 +14,7 @@
 mod support;
 
 use domux_core::api::{ApiError, ErrorCode};
-use domux_core::config::Config;
+use domux_core::config::{Config, WorktreesConfig};
 use domux_core::model::{Focus, Model, RegionKind, WorkspaceHandle};
 use domux_server::testing::Harness;
 use serde_json::{json, Value};
@@ -541,6 +541,91 @@ async fn a_clear_and_a_delete_each_say_what_they_did_in_the_hint_row() {
         f.contains("bold fg=#1e1e2e bg=#a6e3a1"),
         "and so is this:\n{f}"
     );
+}
+
+// ------------------------------------------------- the configured base
+
+/// A project whose `[worktrees] base` is `origin/release`, holding one slot built from it.
+///
+/// `release` carries a commit `main` does not, which is what makes every assertion below able
+/// to fail: a job that discarded the configured base would resolve `origin/HEAD`, land on
+/// `origin/main`, and the file would not be there.
+async fn with_a_configured_base() -> (Harness, std::path::PathBuf, std::path::PathBuf) {
+    let (tmp, repo) = support::repo_with_origin("main");
+    support::git(&repo, &["checkout", "-q", "-b", "release"]);
+    support::commit(&repo, "release-only.md", "released\n");
+    support::git(&repo, &["push", "-q", "origin", "release"]);
+    support::git(&repo, &["checkout", "-q", "main"]);
+    let config = Config {
+        worktrees: WorktreesConfig {
+            base: Some("origin/release".into()),
+        },
+        ..Config::default()
+    };
+    let mut h = Harness::start(config, 120, 24).await;
+    h.api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    let made = api(&h, "workspace.create", json!({"project": "audrey-app"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        made["base"], "origin/release",
+        "the slot came from the base"
+    );
+    let slot = std::path::PathBuf::from(made["path"].as_str().expect("a create answers a path"));
+    // The harness keeps the repository alive for the length of the test; this one was built
+    // here rather than by `git_project`, so its temp directory is handed back with it.
+    std::mem::forget(tmp);
+    (h, repo, slot)
+}
+
+/// A clear puts the slot back at the **configured** base, not at `origin/HEAD`.
+///
+/// This is the destructive half of decision record 0007, which named this task. `clear` is the
+/// one path here that asks nobody when the slot is clean, so a wrong base is not a refusal the
+/// author can read: it is a hard reset onto a branch they never named, with no question asked.
+#[tokio::test]
+async fn clear_resets_to_the_configured_base_and_not_to_the_default_branch() {
+    let (h, _repo, slot) = with_a_configured_base().await;
+    support::commit(&slot, "spike.md", "spike\n");
+    api(
+        &h,
+        "workspace.clear",
+        json!({"workspace": "workspace-1", "yes": true}),
+    )
+    .await
+    .unwrap();
+    assert!(!slot.join("spike.md").exists(), "the spike went");
+    assert!(
+        slot.join("release-only.md").is_file(),
+        "and what came back is release, which is what the author configured"
+    );
+}
+
+/// A fresh slot on a base that is not the default branch reads clean, so a delete needs no
+/// `--force`.
+///
+/// `git::is_dirty` measures `base..branch`. With the base discarded it would measure
+/// `origin/main..workspace-1`, which holds release's own commit, so **every** workspace in such
+/// a project would be born dirty and this delete would be refused. Decision 0007 measured that
+/// exact failure and left the gate to this task.
+#[tokio::test]
+async fn a_slot_from_a_configured_base_is_not_born_dirty() {
+    let (h, _repo, slot) = with_a_configured_base().await;
+    assert_eq!(
+        support::git(&slot, &["status", "--porcelain"]),
+        "",
+        "nothing uncommitted, so only the range comparison can call this dirty"
+    );
+    api(
+        &h,
+        "workspace.delete",
+        json!({"workspace": "workspace-1", "yes": true}),
+    )
+    .await
+    .expect("a slot holding no work of its own deletes without --force");
+    assert!(!slot.exists());
 }
 
 // ---------------------------------------------------------------- events

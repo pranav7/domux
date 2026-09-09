@@ -132,9 +132,13 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
                 .project_of_workspace(id)
                 .map(|p| p.root.clone())?;
             // What was observed, never the handle. A slot checked out on `feat/auth-cleanup`
-            // is asked about by that branch, because that is the branch the delete removes;
-            // a slot whose branch fact has not arrived is asked about without one
-            // (principle 4). `api::workspace::delete` reads the same fact for the same reason.
+            // is asked about by that branch; a slot whose branch fact has not arrived is asked
+            // about without one (principle 4).
+            //
+            // The fact, not a fresh read, because a frame is composed on the core task and no
+            // git command may run there. It is what the question promises rather than what the
+            // delete will do: the job reads the worktree itself and refuses if the two have
+            // come apart, so the promise is kept without this line having to be current.
             let branch = input
                 .facts
                 .get(&FactKey::workspace(id, FACT_BRANCH))
