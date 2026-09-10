@@ -2334,7 +2334,9 @@ async fn stay_awake_status_with_no_server_says_so_rather_than_starting_one() {
 }
 
 /// The install writes two files that need a password, so without `--apply` it prints them and
-/// writes nothing, the way the agent hook installers do.
+/// writes nothing, the way the agent hook installers do. Full mode's files are macOS only
+/// (decision 0029), so this runs only there.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn stay_awake_install_previews_both_files_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -2355,6 +2357,28 @@ async fn stay_awake_install_previews_both_files_and_writes_nothing() {
     assert!(said.contains("/etc/sudoers.d/"), "{said}");
     assert!(said.contains("Nothing has been written."), "{said}");
     assert!(!Path::new(&domux_server::stay_awake::plist_path()).exists());
+}
+
+/// Elsewhere, full mode is one more flag on the same child (decision 0029): there are no files
+/// to preview, so `install --full` says why on stderr rather than writing anything.
+#[cfg(not(target_os = "macos"))]
+#[tokio::test]
+async fn stay_awake_install_full_needs_no_files_off_macos() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", dir.path().join("nothing.sock"))
+        .env_remove("TMUX")
+        .args(["stay-awake", "install", "--full"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Full mode needs no files on this system"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// `install` with no mode named does nothing rather than guessing which one was meant.
