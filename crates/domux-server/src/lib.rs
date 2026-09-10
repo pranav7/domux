@@ -1,5 +1,6 @@
 //! The domux server: one core task owns the model, the panes and the clients.
 
+pub mod agents;
 pub mod api;
 pub mod client;
 pub mod copy_mode;
@@ -177,6 +178,7 @@ pub struct ServerHandle {
     persist: tokio::task::JoinHandle<()>,
     listener: tokio::task::JoinHandle<()>,
     tick: tokio::task::JoinHandle<()>,
+    animation: tokio::task::JoinHandle<()>,
 }
 
 impl ServerHandle {
@@ -187,6 +189,7 @@ impl ServerHandle {
         let _ = self.persist.await;
         self.listener.abort();
         self.tick.abort();
+        self.animation.abort();
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
@@ -225,6 +228,22 @@ impl Server {
                 }
             }
         });
+        // The working glyph, one frame every 80 ms. It runs from here to shutdown whether or
+        // not anything is working: the core is what decides that, so there is no timer to
+        // start and stop and no state about it to get wrong (M3 plan assumption 35). A tick
+        // the core was too busy to take is skipped rather than queued, so a server that falls
+        // behind resumes the animation instead of replaying the frames it missed.
+        let animation_tx = core_tx.clone();
+        let animation = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(crate::agents::labels::GLYPH_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                if animation_tx.send(CoreMsg::AnimationTick).await.is_err() {
+                    break;
+                }
+            }
+        });
         let core = tokio::spawn(core.run(core_rx));
         Ok(ServerHandle {
             core_tx,
@@ -236,6 +255,7 @@ impl Server {
             persist,
             listener,
             tick,
+            animation,
         })
     }
 }

@@ -2,13 +2,12 @@
 //! Writing the file is the server's job (`persist.rs`); this module only shapes the bytes.
 
 use crate::ids::WorkspaceId;
-use crate::model::{Model, Project};
+use crate::model::{Agent, Model, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 1 at the end of M1, 2 at M2 (roadmap decision 5). M3 makes it 3, M4 4, each with a
-/// migration and a fixture.
-pub const SCHEMA_VERSION: u32 = 2;
+/// 1 at the end of M1, 2 at M2, 3 at M3 (agent records), 4 at M4.
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
@@ -21,6 +20,9 @@ pub struct StateFile {
     /// version 2.
     #[serde(default)]
     pub sidebar_open: bool,
+    /// M3. Live records are restored as exited (architecture spec section 5).
+    #[serde(default)]
+    pub agents: Vec<Agent>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,8 +50,19 @@ pub fn v1_to_v2(value: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar.
-pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2)];
+/// 2 to 3: the `agents` list appears, empty.
+pub fn v2_to_v3(v: &mut Value) -> Result<(), String> {
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| "state.json is not an object".to_string())?;
+    obj.entry("agents")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    Ok(())
+}
+
+/// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar; M3 adds
+/// agents.
+pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2), (2, v2_to_v3)];
 
 pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
     StateFile {
@@ -58,6 +71,7 @@ pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
         projects: model.projects.clone(),
         last_workspace: model.last_workspace.clone(),
         sidebar_open: model.sidebar_open,
+        agents: model.agents.clone(),
     }
 }
 
@@ -80,6 +94,15 @@ pub fn restore(file: StateFile) -> Result<Model, StateError> {
             }
         }
     }
+    // A record whose workspace no longer exists (the workspace was cleared or deleted)
+    // is dropped rather than restored dangling. Core has no logging, so this is silent;
+    // the pruned-workspace footer note belongs to the server, as M2 left it.
+    model.agents = file
+        .agents
+        .into_iter()
+        .filter(|a| model.workspace(&a.workspace).is_some())
+        .collect();
+    model.mark_agents_exited_on_restore();
     Ok(model)
 }
 
@@ -324,6 +347,26 @@ mod tests {
         assert_eq!(value["sidebar_open"], Value::from(false));
     }
 
+    /// `StateFile::agents` carries `#[serde(default)]`, whose fallback is also an empty
+    /// `Vec`. That makes a migrated file with no `agents` key indistinguishable, from the
+    /// outside, from a migration that quietly does nothing at all: both leave the key
+    /// absent and both restore to no agents. This test pins `v2_to_v3` directly, so a
+    /// no-op migration function - one that returns `Ok(())` without touching the value -
+    /// fails here even though every test that goes through `parse` and `restore` would
+    /// still pass.
+    #[test]
+    fn v2_to_v3_actually_writes_an_empty_agents_array_when_absent() {
+        let mut value = json!({
+            "schema_version": 2,
+            "saved_at": "x",
+            "projects": [],
+            "last_workspace": null,
+            "sidebar_open": false
+        });
+        v2_to_v3(&mut value).unwrap();
+        assert_eq!(value["agents"], Value::Array(Vec::new()));
+    }
+
     #[test]
     fn a_schema_version_1_file_migrates_and_starts_with_the_sidebar_hidden() {
         let text = std::fs::read_to_string(concat!(
@@ -385,10 +428,154 @@ mod tests {
                 err,
                 StateError::Newer {
                     found: 9,
-                    supported: 2
+                    supported: SCHEMA_VERSION
                 }
             ),
             "{err}"
         );
+    }
+
+    fn fixture_v3() -> String {
+        std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v3.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn v3_fixture_restores_agents_with_live_ones_exited_and_places_kept() {
+        let file = parse(&fixture_v3()).unwrap();
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert_eq!(file.agents.len(), 2);
+        let model = restore(file).unwrap();
+        let a = model.agent(&crate::ids::AgentId("a_5e21".into())).unwrap();
+        assert_eq!(
+            a.state,
+            crate::model::AgentState::Exited,
+            "it was working when the server stopped"
+        );
+        assert_eq!(a.pane, None);
+        assert_eq!(a.last_pane, Some(crate::ids::PaneId("p_8f2a".into())));
+        assert_eq!(a.name.as_deref(), Some("auth-cleanup"));
+        assert_eq!(
+            a.recap.as_deref(),
+            Some("Replaced three session checks with one guard in auth/middleware.go")
+        );
+        assert!(!a.unseen, "restore does not paint rows red");
+        assert_eq!(a.source, crate::model::AgentSource::Restore);
+        let b = model.agent(&crate::ids::AgentId("a_0b77".into())).unwrap();
+        assert!(
+            b.unseen,
+            "an exit the agent made before the stop stays unseen"
+        );
+        assert_eq!(b.source, crate::model::AgentSource::Hook);
+    }
+
+    #[test]
+    fn v2_and_v1_fixtures_migrate_to_v3_with_no_agents() {
+        let v2 = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v2.json"
+        ))
+        .unwrap();
+        let file = parse(&v2).unwrap();
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert!(file.agents.is_empty());
+        let v1 = fixture();
+        let file = parse(&v1).unwrap();
+        assert_eq!(
+            file.schema_version, SCHEMA_VERSION,
+            "the ladder runs 1 to 2 to 3"
+        );
+        assert!(file.agents.is_empty());
+        restore(file).unwrap();
+    }
+
+    #[test]
+    fn snapshot_carries_agents_and_restore_gives_them_back() {
+        let mut m = Model::new(3);
+        let (_, ws, _) = m.add_folder_project(PathBuf::from("/x")).unwrap();
+        let (_, p, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        let report = crate::model::AgentReport {
+            event: Some(crate::model::AgentEvent::SessionStart),
+            session_id: Some("s".into()),
+            transcript_path: None,
+            cwd: None,
+            reason: None,
+        };
+        let id = m
+            .report_agent(
+                &p,
+                crate::model::AgentKind::Claude,
+                report,
+                "2026-09-05T10:00:00Z",
+            )
+            .unwrap()
+            .agent;
+        // Every optional field gets a distinct, non-default value. A field that
+        // round-trips to a matching `None` would pass a full-struct compare exactly as
+        // easily as a field that was silently dropped from serialization; only a real
+        // value tells the two apart.
+        {
+            let a = m.agent_mut(&id).unwrap();
+            a.name = Some("auth-cleanup".into());
+            a.reason = Some("permission needed".into());
+            a.recap = Some("Replaced three session checks with one guard".into());
+            a.last_message = Some("go ahead".into());
+            a.transcript_path = Some(PathBuf::from("/tmp/t.jsonl"));
+        }
+        // Every field, not a chosen few: the point of a round trip is to catch a field
+        // that silently fails to serialize, which two or three assertions cannot do.
+        let mut expected = m.agent(&id).unwrap().clone();
+        let file = snapshot(&m, "2026-09-05T10:00:00Z");
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert_eq!(file.agents.len(), 1);
+        let json = to_json(&file);
+        assert!(json.contains("\"agents\""));
+        // `mark_agents_exited_on_restore` clears `reason` unconditionally on every live
+        // agent it exits, including this one, so the full-struct compare below expects
+        // `None` for it either way and cannot tell a `reason` that serialized correctly
+        // and was then cleared from one that never reached the JSON at all. This checks
+        // the pre-restore bytes directly, independent of that clearing.
+        assert!(
+            json.contains("permission needed"),
+            "reason reaches the JSON before restore clears it on exit"
+        );
+        assert!(
+            !json.contains("\"pid\""),
+            "pid is a fact and is not persisted"
+        );
+        let back = restore(parse(&json).unwrap()).unwrap();
+        // The fields a restart actually changes (architecture spec section 5): the
+        // record comes back exited, off its pane, marked as a restore rather than
+        // whatever created it, and with its waiting reason gone (`Model::
+        // mark_agents_exited_on_restore`: a restored `waiting` reason would describe a
+        // permission prompt from before the restart).
+        expected.state = crate::model::AgentState::Exited;
+        expected.pane = None;
+        expected.reason = None;
+        expected.source = crate::model::AgentSource::Restore;
+        assert_eq!(
+            back.agent(&id).unwrap(),
+            &expected,
+            "every field but state, pane, reason and source round-trips unchanged"
+        );
+    }
+
+    #[test]
+    fn a_restored_agent_whose_workspace_is_gone_is_dropped_and_the_rest_kept() {
+        let mut value: Value = serde_json::from_str(&fixture_v3()).unwrap();
+        value["agents"][0]["workspace"] = Value::from("w_dead");
+        let file: StateFile = serde_json::from_value(value).unwrap();
+        assert_eq!(file.agents.len(), 2, "parse itself does not prune");
+        let model = restore(file).unwrap();
+        assert_eq!(
+            model.agents.len(),
+            1,
+            "the record with no workspace is dropped"
+        );
+        assert!(model.agent(&crate::ids::AgentId("a_5e21".into())).is_none());
+        assert!(model.agent(&crate::ids::AgentId("a_0b77".into())).is_some());
     }
 }

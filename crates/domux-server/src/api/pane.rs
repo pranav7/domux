@@ -6,6 +6,7 @@ use domux_core::api::{
     Ack, ApiError, PaneInfo, PaneReadParams, PaneReadResult, PaneResizeParams, PaneSendKeyParams,
     PaneSendTextParams, PaneSplitParams, PaneTargetParams, TabTargetParams, ZoomResult,
 };
+use domux_core::ids::PaneId;
 use domux_core::keymap::KeyName;
 use domux_term::{Emulator, KeyAction, KeyEvent, Mode, ScrollbackPos};
 use serde_json::Value;
@@ -165,11 +166,8 @@ pub fn resize(ctx: &mut Ctx, p: PaneResizeParams) -> Result<Value, ApiError> {
 /// Writes the text as typed. `\n` becomes `\r`, which is what Enter sends.
 pub fn send_text(ctx: &mut Ctx, p: PaneSendTextParams) -> Result<Value, ApiError> {
     let pane = ctx.resolve_pane_param(p.pane.as_deref())?;
-    let rt = ctx
-        .panes
-        .get_mut(&pane)
-        .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
-    rt.write(p.text.replace('\n', "\r").as_bytes());
+    ctx.write_to_pane(&pane, p.text.replace('\n', "\r").as_bytes())?;
+    seen_by_input(ctx, &pane);
     ok(Ack { ok: true })
 }
 
@@ -190,7 +188,21 @@ pub fn send_key(ctx: &mut Ctx, p: PaneSendKeyParams) -> Result<Value, ApiError> 
         &mut out,
     );
     rt.write(&out);
+    seen_by_input(ctx, &pane);
     ok(Ack { ok: true })
+}
+
+/// Input reached `pane`, so the agent there has been seen (interface spec 6.5). The rule
+/// itself is `Model::clear_unseen_for_pane`; this records what it produced, as `Core`'s own
+/// `seen_by_input` does for a key press and a paste.
+///
+/// These two methods are input in the same sense a keystroke is: a caller with a command line
+/// typing into a pane is the only way an agent can be answered from a script, and the dot
+/// means "something changed since you last looked" whichever surface did the looking.
+fn seen_by_input(ctx: &mut Ctx, pane: &PaneId) {
+    let cleared = ctx.model.clear_unseen_for_pane(pane);
+    ctx.view_dirty |= !cleared.is_empty();
+    ctx.events.extend(cleared);
 }
 
 /// The last `lines` lines ending at the cursor's row (default: as many as the screen has

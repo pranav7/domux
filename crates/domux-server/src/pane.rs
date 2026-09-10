@@ -285,6 +285,11 @@ fn pty_size(size: Size) -> PtySize {
 /// Shared, so the spawner can still read a handle it has given away.
 type WriteLog = Arc<Mutex<Vec<(PaneId, Vec<u8>)>>>;
 
+/// The first descriptor number the fake spawner hands out. It is not a real descriptor and
+/// nothing passes it to the kernel: only `FakeInspector` is ever asked about one, and it
+/// exists so a test can tell one fake pane's PTY from another's.
+pub const FAKE_PTY_FD_BASE: RawFd = 100;
+
 /// No process. Records spawn requests and everything written, so tests can assert on them.
 #[derive(Default)]
 pub struct FakeSpawner {
@@ -308,6 +313,15 @@ impl FakeSpawner {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// The descriptor this spawner gave the pane's PTY, which is what `FakeInspector::set_for`
+    /// keys on. The pane's last spawn answers: a pane whose process was replaced is running
+    /// the newer one.
+    pub fn raw_fd(&self, pane: &PaneId) -> Option<RawFd> {
+        let requests = self.requests.lock().unwrap();
+        let index = requests.iter().rposition(|r| &r.pane == pane)?;
+        Some(FAKE_PTY_FD_BASE + index as RawFd)
+    }
+
     pub fn written(&self, pane: &PaneId) -> Vec<u8> {
         self.written
             .lock()
@@ -322,18 +336,24 @@ impl FakeSpawner {
 struct FakePty {
     pane: PaneId,
     written: WriteLog,
+    fd: RawFd,
 }
 
 impl PtySpawner for FakeSpawner {
     fn spawn(&self, req: SpawnRequest, _tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>> {
         let pane = req.pane.clone();
-        self.requests.lock().unwrap().push(req);
+        let index = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(req);
+            requests.len() - 1
+        };
         if self.refusing.load(std::sync::atomic::Ordering::SeqCst) {
             anyhow::bail!("the fake spawner was told to refuse");
         }
         Ok(Box::new(FakePty {
             pane,
             written: self.written.clone(),
+            fd: FAKE_PTY_FD_BASE + index as RawFd,
         }))
     }
 }
@@ -357,8 +377,10 @@ impl PtyHandle for FakePty {
         None
     }
 
+    /// The number the spawner assigned, not a descriptor the kernel knows: it tells this
+    /// pane's PTY from another's so the fake inspector can answer for one pane at a time.
     fn raw_fd(&self) -> Option<RawFd> {
-        None
+        Some(self.fd)
     }
 
     fn exit_status(&mut self) -> Option<i32> {

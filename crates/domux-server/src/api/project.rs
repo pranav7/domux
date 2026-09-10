@@ -5,10 +5,10 @@ use crate::core::CoreJob;
 use domux_core::api::{
     Ack, ApiError, ProjectAddParams, ProjectAdded, ProjectInfo, ProjectRemoveParams,
 };
-use domux_core::ids::ProjectId;
+use domux_core::ids::{AgentId, ProjectId, WorkspaceId};
 use domux_core::model::{ConfirmKind, Focus, Overlay, Project, ProjectKind, RegionKind};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What a project is: a repository, or a folder domux keeps workspaces beside. The word the
 /// API answers with, in one place, so `project.list` and `project.add` cannot disagree.
@@ -171,7 +171,26 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
         .flat_map(|w| w.tabs.iter())
         .flat_map(|t| t.layout.pane_ids())
         .collect();
+    // The caches of every record that is about to go, read before it goes because afterwards
+    // nothing can name them. `remove_project` drops the records without passing through
+    // `dismiss_agent`, so nothing else frees the working words they hold or the transcripts
+    // they cached. This is the harsher of the two removal paths: a clear leaves its records
+    // behind as exited, so a later dismiss reclaims what it missed, but a record removed here
+    // is gone and a word lost with it is lost for the life of the server.
+    let doomed_workspaces: Vec<WorkspaceId> = ctx
+        .model
+        .workspaces_of(&project)
+        .map(|w| w.id.clone())
+        .collect();
+    let doomed_records: Vec<(AgentId, Option<PathBuf>)> = doomed_workspaces
+        .iter()
+        .flat_map(|ws| ctx.model.agents_in_workspace(ws))
+        .map(|a| (a.id.clone(), a.transcript_path.clone()))
+        .collect();
     ctx.events.extend(ctx.model.remove_project(&project)?);
+    for (id, transcript) in &doomed_records {
+        ctx.agents.forget_record(id, transcript.as_deref());
+    }
     ctx.pending_kills.extend(doomed);
     let moved = reseat_stranded_clients(ctx.model);
     ctx.events.extend(moved);

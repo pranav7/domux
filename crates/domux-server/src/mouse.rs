@@ -33,7 +33,7 @@ struct PaneHit {
 }
 
 /// The pane under a screen cell, or `None` when the cell belongs to the chrome or to nothing.
-fn pane_hit(core: &Core, client: &ClientId, column: u16, row: u16) -> Option<PaneHit> {
+fn pane_hit(core: &mut Core, client: &ClientId, column: u16, row: u16) -> Option<PaneHit> {
     match core.hit_at(client, column, row) {
         Some(Hit::Pane { pane, row, col }) => Some(PaneHit { pane, row, col }),
         _ => None,

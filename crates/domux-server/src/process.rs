@@ -1,6 +1,7 @@
 //! Who is in the foreground of a pane, and where. `tcgetpgrp` on the PTY master gives the
 //! foreground process group; its leader's name and working directory come from the OS.
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
@@ -27,6 +28,14 @@ pub trait ProcessInspector: Send + Sync {
     /// number that belongs to something else.
     fn foreground(&self, pty_fd: Option<RawFd>) -> Option<ForegroundProcess>;
     fn cwd_of(&self, pid: u32) -> Option<PathBuf>;
+
+    /// Is this process still there? The default asks the OS for its working directory, which
+    /// fails for a dead process on macOS and on Linux, so one question answers both platforms
+    /// and no signal probe needs a platform arm of its own. The observer uses this to tell
+    /// "the agent is running a tool" from "the agent is gone".
+    fn is_alive(&self, pid: u32) -> bool {
+        self.cwd_of(pid).is_some()
+    }
 }
 
 pub struct RealInspector;
@@ -225,24 +234,67 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
     Some(cwd)
 }
 
-/// The test double: answers whatever the test set, for every pane.
+/// One entry of the fake's process table: who is in the foreground of a pane, and where that
+/// process is.
+type Entry = (Option<ForegroundProcess>, Option<PathBuf>);
+
+/// The test double: a process table. `set` answers for every pane; `set_for` answers for one
+/// pane's PTY file descriptor and wins over `set`, so two panes can hold two agents.
 #[derive(Default)]
 pub struct FakeInspector {
-    state: Mutex<(Option<ForegroundProcess>, Option<PathBuf>)>,
+    all: Mutex<Entry>,
+    per_fd: Mutex<HashMap<RawFd, Entry>>,
+    dead: Mutex<HashSet<u32>>,
 }
 
 impl FakeInspector {
     pub fn set(&self, foreground: Option<ForegroundProcess>, cwd: Option<PathBuf>) {
-        *self.state.lock().unwrap() = (foreground, cwd);
+        *self.all.lock().unwrap() = (foreground, cwd);
+    }
+
+    /// What the pane behind `fd` is running, and where.
+    pub fn set_for(&self, fd: RawFd, foreground: Option<ForegroundProcess>, cwd: Option<PathBuf>) {
+        self.per_fd.lock().unwrap().insert(fd, (foreground, cwd));
+    }
+
+    /// The process is gone; `is_alive` says so from now on, and it has no working directory.
+    pub fn set_dead(&self, pid: u32) {
+        self.dead.lock().unwrap().insert(pid);
     }
 }
 
 impl ProcessInspector for FakeInspector {
-    fn foreground(&self, _pty_fd: Option<RawFd>) -> Option<ForegroundProcess> {
-        self.state.lock().unwrap().0.clone()
+    fn foreground(&self, pty_fd: Option<RawFd>) -> Option<ForegroundProcess> {
+        if let Some(fd) = pty_fd {
+            if let Some((foreground, _)) = self.per_fd.lock().unwrap().get(&fd) {
+                return foreground.clone();
+            }
+        }
+        self.all.lock().unwrap().0.clone()
     }
-    fn cwd_of(&self, _pid: u32) -> Option<PathBuf> {
-        self.state.lock().unwrap().1.clone()
+
+    fn cwd_of(&self, pid: u32) -> Option<PathBuf> {
+        if self.dead.lock().unwrap().contains(&pid) {
+            return None;
+        }
+        // A per-pane entry answers for the process it put in the foreground, and only for
+        // that one: a table keyed by descriptor still has to answer a question about a pid.
+        let per_fd = self.per_fd.lock().unwrap();
+        let named = per_fd
+            .values()
+            .find_map(|(foreground, cwd)| match foreground {
+                Some(f) if f.pid == pid => cwd.clone(),
+                _ => None,
+            });
+        drop(per_fd);
+        named.or_else(|| self.all.lock().unwrap().1.clone())
+    }
+
+    /// The fake keeps its own list rather than taking the default: a test sets a foreground
+    /// process without a working directory, and under the default every such process would
+    /// read as dead.
+    fn is_alive(&self, pid: u32) -> bool {
+        !self.dead.lock().unwrap().contains(&pid)
     }
 }
 
@@ -499,5 +551,82 @@ mod tests {
         );
         assert_eq!(fake.foreground(None).unwrap().name, "nvim");
         assert_eq!(fake.cwd_of(42), Some(PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn fake_inspector_answers_per_descriptor_before_it_answers_for_every_pane() {
+        let fake = FakeInspector::default();
+        fake.set(
+            Some(ForegroundProcess {
+                pid: 1,
+                name: "sh".into(),
+            }),
+            None,
+        );
+        fake.set_for(
+            101,
+            Some(ForegroundProcess {
+                pid: 5000,
+                name: "claude".into(),
+            }),
+            Some(PathBuf::from("/work")),
+        );
+        // The descriptor with an entry gets it; every other pane still gets `set`.
+        assert_eq!(fake.foreground(Some(101)).unwrap().name, "claude");
+        assert_eq!(fake.foreground(Some(102)).unwrap().name, "sh");
+        assert_eq!(fake.foreground(None).unwrap().name, "sh");
+        // The entry's working directory answers for the process it named, and for no other.
+        assert_eq!(fake.cwd_of(5000), Some(PathBuf::from("/work")));
+        assert_eq!(fake.cwd_of(1), None);
+        // A descriptor can also be told nothing is in front of it.
+        fake.set_for(101, None, None);
+        assert_eq!(fake.foreground(Some(101)), None);
+    }
+
+    #[test]
+    fn fake_inspector_calls_a_killed_process_dead_and_leaves_the_rest_alive() {
+        let fake = FakeInspector::default();
+        fake.set_for(
+            101,
+            Some(ForegroundProcess {
+                pid: 5000,
+                name: "claude".into(),
+            }),
+            Some(PathBuf::from("/work")),
+        );
+        assert!(fake.is_alive(5000));
+        fake.set_dead(5000);
+        assert!(!fake.is_alive(5000));
+        assert!(fake.is_alive(5001));
+        // A dead process has no working directory either.
+        assert_eq!(fake.cwd_of(5000), None);
+        // And the foreground table is untouched: what a pane is running is a separate
+        // question from whether one pid is still there.
+        assert_eq!(fake.foreground(Some(101)).unwrap().pid, 5000);
+    }
+
+    /// The trait's default, which the real inspector takes and the fake replaces.
+    #[test]
+    fn is_alive_by_default_is_whether_the_os_reports_a_working_directory() {
+        struct OnlyCwd(Option<PathBuf>);
+        impl ProcessInspector for OnlyCwd {
+            fn foreground(&self, _pty_fd: Option<RawFd>) -> Option<ForegroundProcess> {
+                None
+            }
+            fn cwd_of(&self, _pid: u32) -> Option<PathBuf> {
+                self.0.clone()
+            }
+        }
+        assert!(OnlyCwd(Some(PathBuf::from("/tmp"))).is_alive(7));
+        assert!(!OnlyCwd(None).is_alive(7));
+    }
+
+    #[test]
+    fn real_inspector_calls_this_process_alive_and_a_reaped_child_gone() {
+        assert!(RealInspector.is_alive(std::process::id()));
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!RealInspector.is_alive(pid));
     }
 }

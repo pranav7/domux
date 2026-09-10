@@ -313,6 +313,91 @@ async fn a_note_clears_on_the_first_key_in_a_box() {
     );
 }
 
+/// The same rule in the sidebar's Agents box, which M3 added as a second place a key can land
+/// in a box.
+///
+/// The note going is only half of what the reader sees. The hint row prints the note in place
+/// of the keys, so a note that will not clear leaves the box refusing to say what to press and
+/// refusing to stop hiding it, which is worse than a stale line: the reader is stuck. Both
+/// halves are asserted, because the first on its own passes on a box whose keys never come
+/// back.
+#[tokio::test]
+async fn a_note_clears_on_the_first_key_in_the_sidebar_agents_box() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    h.stop().await;
+    std::fs::remove_dir_all(root.join(".domux/worktrees/workspace-2")).unwrap();
+    h.restart().await;
+
+    h.api("sidebar.show", json!({})).await.unwrap();
+    h.api("focus.region", json!({"region": "sidebar_agents"}))
+        .await
+        .unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Pruned workspace-2"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        !f.contains("more"),
+        "the note has the hint row, so the box is showing no keys:\n{f}"
+    );
+
+    // `j` is `list.down` over an empty box, so it does nothing at all except be a key in a
+    // box. What follows is the whole visible result.
+    h.key(h.client.clone(), "j").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("Pruned workspace-2"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("open") && f.contains("more"),
+        "and the hint row goes back to the keys the box was hiding:\n{f}"
+    );
+}
+
+/// And in the agents overlay, the other place M3 added. Its footer orders the note and the
+/// keys the way the sidebar's hint row does, so it hides them the same way.
+#[tokio::test]
+async fn a_note_clears_on_the_first_key_in_the_agents_overlay() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (root, _w1, _w2) = h.git_project_with_two_slots().await;
+    h.stop().await;
+    std::fs::remove_dir_all(root.join(".domux/worktrees/workspace-2")).unwrap();
+    h.restart().await;
+
+    h.api("agents.open", json!({})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Pruned workspace-2"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("┌ Agents") && !f.contains("filter"),
+        "the note has the footer, so the overlay is showing no keys:\n{f}"
+    );
+
+    h.key(h.client.clone(), "j").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains("Pruned workspace-2"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("open") && f.contains("filter") && f.contains("close"),
+        "and the footer goes back to the keys it was hiding:\n{f}"
+    );
+}
+
 /// A note is the server's, and the box a key was in is one client's. A key another client
 /// sent from a pane does not read a note on behalf of the reader looking at the switcher.
 ///

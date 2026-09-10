@@ -39,6 +39,29 @@ enum Command {
     Workspace(cli::workspace::WorkspaceCmd),
     /// Register a path as a project and switch to it
     Open(cli::open::OpenCmd),
+    /// Agents: list, report, focus, dismiss, resume
+    Agent(cli::agent::AgentCmd),
+    /// Every agent: kind, place, state, recap
+    Peek {
+        /// Print the API result rather than the rows
+        #[arg(long)]
+        json: bool,
+    },
+    /// This pane's agent: project, workspace, tab and pane
+    Whoami,
+    /// Resume the exited agents of a workspace or a project
+    Resume {
+        /// A workspace or a project; the default is this shell's workspace
+        target: Option<String>,
+    },
+    /// Send a message to an agent. Messaging arrives in M4
+    Send(cli::agent::SendCmd),
+    /// Read an agent's last output. Messaging arrives in M4
+    Read(cli::agent::ReadCmd),
+    /// Wait for an agent to finish. Messaging arrives in M4
+    Wait(cli::agent::WaitCmd),
+    /// Install the domux hooks for an agent
+    Install(cli::install::InstallCmd),
 }
 
 /// Errors go to stderr and leave a status of 1, so a script can tell a failure from an
@@ -59,6 +82,15 @@ async fn main() {
         Some(Command::Project(c)) => cli::project::run(c).await,
         Some(Command::Workspace(c)) => cli::workspace::run(c).await,
         Some(Command::Open(c)) => cli::open::run(c).await,
+        Some(Command::Agent(c)) => cli::agent::run(c).await,
+        Some(Command::Peek { json }) => cli::agent::peek(json).await,
+        Some(Command::Whoami) => cli::agent::whoami().await,
+        Some(Command::Resume { target }) => cli::agent::resume_target(target).await,
+        Some(Command::Send(c)) => cli::agent::send(c).await,
+        Some(Command::Read(c)) => cli::agent::read(c).await,
+        Some(Command::Wait(c)) => cli::agent::wait(c).await,
+        // The one subcommand that is not an API call: installing hooks needs no server.
+        Some(Command::Install(c)) => cli::install::run(c),
     };
     if let Err(e) = result {
         // The whole chain, so the context and the reason under it both reach the reader:

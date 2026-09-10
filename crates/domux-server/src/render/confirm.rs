@@ -295,13 +295,11 @@ mod tests {
     use super::*;
     use crate::facts::FactRegistry;
     use domux_core::facts::Fact;
-    use domux_core::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
+    use domux_core::ids::{ProjectId, TabId, WorkspaceId};
     use domux_core::keymap::Keymap;
     use domux_core::model::{
-        ClientView, Focus, Model, Overlay, Project, ProjectKind, TextInput, Workspace,
-        WorkspaceHandle,
+        ClientView, Model, Overlay, Project, ProjectKind, Workspace, WorkspaceHandle,
     };
-    use domux_core::proto::Capabilities;
     use domux_term::Size;
     use ratatui::layout::Rect;
     use std::collections::HashMap;
@@ -345,27 +343,13 @@ mod tests {
 
     fn view(overlay: Overlay) -> ClientView {
         ClientView {
-            id: ClientId("c_0001".into()),
             size: Size {
                 cols: 160,
                 rows: 24,
             },
-            caps: Capabilities::default(),
             workspace: WorkspaceId("w_1".into()),
-            tab: TabId("t_0001".into()),
-            focus: Focus::Pane(PaneId("p_0001".into())),
-            sidebar_open: false,
-            sidebar_forced: false,
             overlay: Some(overlay),
-            chord: None,
-            filter: String::new(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            filtering: false,
-            input: TextInput::new(""),
-            overlay_under: None,
-            pill: None,
+            ..crate::testing::client_view()
         }
     }
 
@@ -384,10 +368,12 @@ mod tests {
         let keymap = Keymap::defaults();
         let mut v = view(Overlay::Confirm(kind.clone()));
         v.size = Size { cols, rows: 24 };
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model,
             facts,
             panes: &panes,
+            agents: &agents,
             view: &v,
             keymap: &keymap,
             now: chrono::Local::now(),

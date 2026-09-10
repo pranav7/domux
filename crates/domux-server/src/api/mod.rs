@@ -1,6 +1,8 @@
 //! One handler per method. A keybinding, a CLI subcommand and an API request all arrive
 //! here as a `Method` and leave as a `Value` or an `ApiError`.
 
+pub mod agent;
+pub mod agents;
 pub mod client;
 pub mod config;
 pub mod focus;
@@ -41,6 +43,9 @@ pub struct Ctx<'a> {
     /// What domux observed. A handler reads a fact; it never fetches one, because a fetch
     /// shells out and a handler runs on the core task.
     pub facts: &'a FactRegistry,
+    /// The caches and declarations the agent records need: working words, the transcript
+    /// reader and the manifest registry. Not persisted.
+    pub agents: &'a mut crate::agents::AgentsState,
     pub core_tx: &'a mpsc::Sender<CoreMsg>,
     pub socket_path: &'a PathBuf,
     pub state_dir: &'a PathBuf,
@@ -128,6 +133,40 @@ impl Ctx<'_> {
         crate::render::tab_workpanel(self.model, tab, UNVIEWED_SIZE)
     }
 
+    /// Types bytes into a pane's shell, as if they had been typed at the keyboard.
+    ///
+    /// In place rather than through a list the core drains afterwards. `pending_spawns` and
+    /// `pending_kills` exist because starting and killing a process needs the core's spawner;
+    /// a write needs nothing a handler does not already hold, and a second mechanism for it
+    /// would be a second place to look for where a pane's input comes from.
+    ///
+    /// One lookup and one message for every handler that types into a pane, so `pane.send_text`
+    /// and `agent.resume` cannot come to disagree about what a pane with no terminal is called.
+    pub fn write_to_pane(&mut self, pane: &PaneId, bytes: &[u8]) -> Result<(), ApiError> {
+        let runtime = self
+            .panes
+            .get_mut(pane)
+            .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
+        runtime.write(bytes);
+        Ok(())
+    }
+
+    /// Puts one line of result in the calling client's hint row or footer (interface spec 7.3
+    /// and 12.12).
+    ///
+    /// The rule itself is `core::set_pill`, which `Core::set_pill` also calls: this is that
+    /// pill from inside a handler, where `Core::set_pill` is the same one for an answer that
+    /// arrives after the handler has returned. A call with no client draws nothing, which is
+    /// the honest outcome - a pill is a place on a screen, and a caller with no screen has
+    /// already been answered by its reply.
+    pub fn set_pill(&mut self, text: String, ok: bool) {
+        let at = self.deps.clock.now().to_rfc3339();
+        let client = self.client.clone();
+        if crate::core::set_pill(self.model, client.as_ref(), text, ok, &at) {
+            self.view_dirty = true;
+        }
+    }
+
     /// A pane as the API reports it. `cols` and `rows` are its emulator's, which is the
     /// screen its program believes it has, so a pane with no runtime reports 0x0 rather
     /// than a size nothing is drawing.
@@ -159,23 +198,26 @@ impl Ctx<'_> {
 /// Every method, one arm each. No catch-all: a method added to the table in
 /// `domux_core::api` fails to compile here until it has a handler.
 ///
-/// Deviation from the M2 task 4 plan (see `fed6573`, which removed the catch-all this
-/// comment used to describe): the M2 stub block below restores that catch-all's exact
-/// wording for the 19 methods Task 4 declares, because the M2 plan assumed the removed
-/// catch-all was still here and predicted these methods would answer `unavailable` at run
-/// time rather than fail to build. Tasks 12 to 19 give each of these a real arm and delete
-/// that method's line from `STILL_UNBUILT` in `crate::core::tests`, which two tests there
-/// enforce from both directions: implementing one without removing it fails
-/// `only_the_expected_m2_methods_still_answer_unavailable`, and a stub added anywhere in
-/// this function - joined into the block below or written as its own arm, here or
-/// elsewhere - without a matching `STILL_UNBUILT` line fails
-/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. When `STILL_UNBUILT` is
-/// empty, this class of M2 gap is closed.
+/// A method declared before its handler answers `unavailable` from a stub arm at the end of
+/// the match, and every such arm is on the register: `STILL_UNBUILT` in
+/// `crate::core::tests`, which two tests there enforce from both directions. Building one
+/// without deleting its line fails `only_the_expected_methods_still_answer_unavailable`, and
+/// a stub added anywhere in this function - joined into an or-pattern or standing alone,
+/// here or elsewhere - without a matching `STILL_UNBUILT` line fails
+/// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt`. Both key off the words
+/// "is not built yet", so a stub's message has to end in them.
 ///
-/// `workspace.resume` was the one method the plan left for M3, and Task 19 gave it a real
-/// arm rather than a stub: `api::workspace::resume` answers `unavailable` in words about
-/// agents instead of the register's "is not built yet", so it is off the register on both
-/// counts. That is the deliberate exception, and it is a handler rather than a line here.
+/// The register is M2's (see `fed6573`, which removed the catch-all that used to answer for
+/// a method with no handler, and `2d4d3a4`, which put those words back as a declared block):
+/// Tasks 12 to 19 emptied it, which was the end state it was built to reach. M3 declares its
+/// thirteen methods in one commit and fills them in over Tasks 10 to 18, so it is carrying
+/// again, and it is what stops one of those methods from reaching the cut-over unbuilt and
+/// unnoticed.
+///
+/// `workspace.resume` was never on the register and never needed to come off it. M2 gave it a
+/// handler that refused in its own words about agents rather than in the register's, and M3
+/// replaced that handler with the real resume; both directions key off the words "is not built
+/// yet", so a method that refuses in words of its own stays off either way.
 pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     use Method::*;
     match method {
@@ -231,6 +273,30 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         ListUp(p) => list::up(ctx, p),
         ListActivate(p) => list::activate(ctx, p),
         ListFilter(p) => list::filter(ctx, p),
+        // M3's verbs are declared before their handlers, so every caller reads one shape of
+        // this API from the first commit of the milestone. Each names what it is waiting for
+        // and ends in the register's words, which is what puts it on `STILL_UNBUILT`: the
+        // task that builds one replaces its arm and deletes its line there, and the register
+        // fails if either half is forgotten.
+        AgentList(p) => agent::list(ctx, p),
+        AgentGet(p) => agent::get(ctx, p),
+        AgentSelf(p) => agent::self_(ctx, p),
+        AgentReport(p) => agent::report(ctx, p),
+        AgentFocus(p) => agent::focus(ctx, p),
+        AgentDismiss(p) => agent::dismiss(ctx, p),
+        AgentResume(p) => agent::resume(ctx, p),
+        AgentSend(_) => Err(ApiError::unavailable(
+            "agent.send arrives with messaging in M4 and is not built yet",
+        )),
+        AgentRead(_) => Err(ApiError::unavailable(
+            "agent.read arrives with messaging in M4 and is not built yet",
+        )),
+        AgentWait(_) => Err(ApiError::unavailable(
+            "agent.wait arrives with messaging in M4 and is not built yet",
+        )),
+        AgentsOpen(p) => agents::open(ctx, p),
+        AgentsClose(p) => agents::close(ctx, p),
+        FocusNextRegion(p) => focus::next_region(ctx, p),
     }
 }
 

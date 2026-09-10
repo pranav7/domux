@@ -1,16 +1,21 @@
 //! The core task: the one owner of the Model, every PaneRuntime and every ClientConn.
 
+use crate::agents::observer::{self, PaneProcess};
 use crate::api::{self, Ctx};
 use crate::client::{ClientConn, Hint, HintKind};
 use crate::facts::FactRegistry;
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
+use crate::process::ForegroundProcess;
 use crate::render::{self, RenderInput};
 use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
+use chrono::{DateTime, Local};
 use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
+use domux_core::config::ResumeMode;
 use domux_core::facts::{Fact, FactKey, FactState};
-use domux_core::ids::{ClientId, PaneId, ProjectId, TabId, WorkspaceId};
+use domux_core::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
+use domux_core::model::agent::AgentState;
 use domux_core::model::{
     ClientView, ConfirmKind, Focus, Model, Overlay, PaneFacts, Pill, ProjectKind, RegionKind,
     WorkspaceHandle, PILL_SECONDS,
@@ -61,6 +66,10 @@ pub enum CoreMsg {
     },
     /// Once a second: the process inspector, the clock, exited-pane cleanup.
     Tick,
+    /// One frame of the working glyph, every `agents::labels::GLYPH_INTERVAL`. The ticker
+    /// owns nothing and never stops; the core counts, and ignores the message while nothing
+    /// is working (M3 plan assumption 35).
+    AnimationTick,
     /// A job that shelled out has finished. The model changes here, on the core task, and
     /// the caller waiting on `reply` is answered (decision record 0006).
     JobFinished {
@@ -373,6 +382,9 @@ pub struct Core {
     /// What domux observed. The core reads it and records answers; the fetching happens on
     /// blocking tasks.
     pub facts: FactRegistry,
+    /// What the agent handlers hold outside the Model: working words, the transcript reader
+    /// and the manifest registry.
+    pub agents: crate::agents::AgentsState,
     /// What the jobs in flight have chosen and not yet written into the model.
     ///
     /// A handler that only reads the model is safe without this, because the core task
@@ -506,6 +518,7 @@ impl Core {
             facts,
             claims: HashSet::new(),
             notes: Vec::new(),
+            agents: crate::agents::AgentsState::default(),
         };
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
@@ -530,11 +543,79 @@ impl Core {
         for pane in core.model.all_pane_ids() {
             core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
         }
+        core.resume_agents_on_start();
         core.pending_events.push(Event::ServerStarted {
             version: domux_core::VERSION.into(),
             socket: core.socket_path.clone(),
         });
         Ok(core)
+    }
+
+    /// `[resume] agents = "auto"`: every record the server starts holding gets its relaunch line
+    /// typed into its pane (architecture spec section 5). `manual` is the default and this does
+    /// nothing.
+    ///
+    /// At start only, and not on every attach (plan assumption 30). A reader who attaches a
+    /// second terminal to a running server has not asked for anything to be relaunched, and
+    /// resuming on attach would type a second `claude --resume` into a pane where the first one
+    /// is already running.
+    ///
+    /// One `workspace.resume` per workspace, which is every record the model holds: a record's
+    /// workspace is one the model has, because `state_file::restore` drops a record whose
+    /// workspace is gone rather than restoring it dangling.
+    ///
+    /// **`workspace.resume` and not one `agent.resume` per record**, because resuming a set of
+    /// records is not the same operation as resuming one, and the difference is a rule that has to
+    /// live in one place: a pane takes one relaunch line, so a set has to keep the first record for
+    /// each pane and skip the rest. That rule needs to know what the loop has already typed, which
+    /// `agent.resume` cannot know and `plan_resume` must not, so it belongs to a loop - and one
+    /// loop is better than two copies of it.
+    ///
+    /// It carries no filter of what may be resumed either, and for the same reason: one rule, one
+    /// home. `agent::plan_resume` is the one judge, `workspace.resume` collects its refusals, and a
+    /// live record reaching this would produce a skipped line rather than a write. That does not
+    /// lean on `state_file::restore` exiting every live record it reads, which is that function's
+    /// behaviour today rather than a promise to this one.
+    ///
+    /// This runs after the pane loop above because the line goes into a shell, and until each
+    /// pane has been spawned there is no shell to type into.
+    ///
+    /// Everything it could not do is logged, because there is nobody to tell: no client has
+    /// attached - `Core::new` returns before `socket::listen` runs - so there is no screen for a
+    /// pill and no caller waiting for a reply.
+    fn resume_agents_on_start(&mut self) {
+        if self.config.config.resume.agents != ResumeMode::Auto {
+            return;
+        }
+        let workspaces: Vec<WorkspaceId> = self
+            .model
+            .projects
+            .iter()
+            .flat_map(|p| p.workspaces.iter())
+            .map(|w| w.id.clone())
+            .collect();
+        for workspace in workspaces {
+            let method = Method::WorkspaceResume(domux_core::api::WorkspaceTargetParams {
+                workspace: Some(workspace.to_string()),
+            });
+            match self.dispatch(method, None) {
+                Ok(value) => {
+                    for line in value
+                        .get("skipped")
+                        .and_then(|s| s.as_array())
+                        .map(|s| s.as_slice())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|line| line.as_str())
+                    {
+                        tracing::info!(workspace = %workspace, "not resumed at start: {line}");
+                    }
+                }
+                Err(e) => {
+                    tracing::info!(workspace = %workspace, "not resumed at start: {}", e.message)
+                }
+            }
+        }
     }
 
     /// Registers the directory the server was started in, when the model holds nothing else.
@@ -766,7 +847,7 @@ impl Core {
                 // Ask the inspector now rather than waiting for the next tick. A pane's box
                 // shows its command, and up to a second of an untitled box is up to a
                 // second of a frame that does not yet say what is running (principle 8).
-                let observed = self.panes.get(pane).map(|rt| self.observe_pane(rt));
+                let observed = self.panes.get(pane).map(|rt| self.observe_pane(rt).0);
                 if let Some(facts) = observed {
                     self.model.set_pane_facts(pane, facts);
                 }
@@ -831,6 +912,10 @@ impl Core {
                         status,
                     });
                     self.view_dirty = true;
+                    // Here rather than on the next tick: the child is gone, so every agent
+                    // that was running in this pane is gone with it, and a row must not read
+                    // `working` for up to a second after the process it names ended.
+                    self.agents_gone_with_pane(&pane);
                 }
             }
             CoreMsg::ClientConnected { hello, tx, reply } => {
@@ -868,6 +953,7 @@ impl Core {
             }
             CoreMsg::Subscribe { filter, tx } => self.subscribers.push((filter, tx)),
             CoreMsg::Tick => self.tick(),
+            CoreMsg::AnimationTick => self.animation_tick(),
             CoreMsg::JobFinished {
                 outcome,
                 reply,
@@ -940,6 +1026,8 @@ impl Core {
             last_active_seq: 0,
             projects_cursor: None,
             projects_scroll: 0,
+            agents_cursor: None,
+            agents_scroll: 0,
             filtering: false,
             input: domux_core::model::TextInput::new(""),
             overlay_under: None,
@@ -1002,6 +1090,7 @@ impl Core {
                         p.emulator.encode_paste(&text, &mut out);
                         p.write(&out);
                     }
+                    self.seen_by_input(&pane);
                 }
             }
             ClientMsg::Resize { cols, rows } => {
@@ -1034,10 +1123,40 @@ impl Core {
 
     /// One key, routed by `input::route_key`. Every key gets a frame: the chord indicator
     /// appearing, an action's result, a hint cleared or replaced (principle 8).
+    ///
+    /// A press the pane took is the reader typing into it, which clears the dot on the agent
+    /// there (interface spec 6.5). Here rather than in `input::forward_to_pane`, because copy
+    /// mode and an exited pane take the key without going through it and a reader in either
+    /// is reading that pane. Presses only: a release arrives after whichever key it belongs
+    /// to and always routes to the pane, so clearing on one would take the dot away for
+    /// `leader a` as well.
+    ///
+    /// The pane is read **before** the routing, because the routing can move the focus off it.
+    /// Enter on a pane whose child exited closes that pane, and `Model::close_pane` hands the
+    /// tab's focus to a neighbour, so reading it afterwards named a pane the key never reached
+    /// and cleared the dot of whatever agent was in it. Nothing on the screen says a dot went,
+    /// and only a state transition sets one (`model::agent::attention`), so the reader cannot
+    /// ask for it back.
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
         self.clear_notes_read_by(client, &key);
-        let _ = crate::input::route_key(self, client, key);
+        let press = key.action != domux_term::KeyAction::Release;
+        let aimed_at = self.focused_pane(client);
+        let route = crate::input::route_key(self, client, key);
+        if press && route == crate::input::Route::Pane {
+            if let Some(pane) = aimed_at {
+                self.seen_by_input(&pane);
+            }
+        }
         self.view_dirty = true;
+    }
+
+    /// Input reached `pane`, so the agent there has been seen (interface spec 6.5). The one
+    /// rule lives in `Model::clear_unseen_for_pane`; this is the core's way of recording what
+    /// it produced, and `api::pane`'s `seen_by_input` is the handler's.
+    fn seen_by_input(&mut self, pane: &PaneId) {
+        let cleared = self.model.clear_unseen_for_pane(pane);
+        self.view_dirty |= !cleared.is_empty();
+        self.pending_events.extend(cleared);
     }
 
     /// Scrolls whatever is under the outer terminal cell: the pane's program when it asked for
@@ -1061,15 +1180,24 @@ impl Core {
     /// The question is `render::hit_at`'s, and it is asked through the same `RenderInput` the
     /// frame is drawn from, so a pointer and a frame cannot disagree about what is where. It
     /// lives here because that input is built from fields the core owns.
-    pub fn hit_at(&self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
+    ///
+    /// `&mut self` for the agent view alone, which `render` also builds by mutation:
+    /// `agents_view` hands a working agent the word it already gave that agent, so asking here
+    /// changes no word the reader is looking at. Building a thinner view instead would put the
+    /// count in the top bar on one measurement and the pointer on another, and the tab row
+    /// starts after that count.
+    pub fn hit_at(&mut self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
+        let now = self.deps.clock.now();
+        let agents = agents_view(&self.model, &mut self.agents, &self.config.keymap, now);
         let view = self.model.client(client)?;
         let input = RenderInput {
             model: &self.model,
             facts: &self.facts,
             panes: &self.panes,
+            agents: &agents,
             view,
             keymap: &self.config.keymap,
-            now: self.deps.clock.now(),
+            now,
             config_error: self.config.error.as_ref(),
             hint: self.clients.get(client).and_then(|c| c.hint.as_ref()),
             notes: &self.notes,
@@ -1092,14 +1220,20 @@ impl Core {
         if self.notes.is_empty() || key.action == domux_term::KeyAction::Release {
             return;
         }
-        // The switcher is the one box a key can reach in M2. `Focus::Region(SidebarProjects)`
-        // is the other and `api::focus::region` refuses it today, so it is written out here
-        // rather than left for Task 14 to remember: the rule is about a box, not about the
-        // switcher.
-        let in_a_box = self.model.client(client).is_some_and(|view| {
-            matches!(view.overlay, Some(Overlay::Switcher))
-                || matches!(view.focus, Focus::Region(RegionKind::SidebarProjects))
-        });
+        // One question, asked of the focus, because the rule is about a box and not about any
+        // particular one. M2 wrote it out as the switcher plus the sidebar's Projects box and
+        // M3 added two more places a key can land in a box, the sidebar's Agents box and the
+        // agents overlay, which a list of names silently fell through. `RegionKind::is_box`
+        // is the same question `render::overlay::draw_help` asks to pick a key table.
+        //
+        // The focus alone is enough. Every box sets its own region when it opens
+        // (`api::switcher::open`, `api::agents::open`, `enter_sidebar_box`), and
+        // `ClientView::focus_after_pop` names the switcher and the agents overlay again when
+        // an overlay over one closes, so a box the reader came back to still reads as a box.
+        let in_a_box = self
+            .model
+            .client(client)
+            .is_some_and(|view| matches!(view.focus, Focus::Region(kind) if kind.is_box()));
         if in_a_box {
             self.notes.clear();
         }
@@ -1282,6 +1416,7 @@ impl Core {
             config: &mut self.config,
             deps: &self.deps,
             facts: &self.facts,
+            agents: &mut self.agents,
             core_tx: &self.core_tx,
             socket_path: &self.socket_path,
             state_dir: &self.state_dir,
@@ -1494,8 +1629,19 @@ impl Core {
         })
     }
 
-    /// `workspace.clear`'s model change, which is none: the slot's record, its number, its
-    /// name and its tabs are what a clear keeps, and the work all happened on disk.
+    /// `workspace.clear`'s model change: the slot's exited agent records, and nothing else. Its
+    /// record, its number, its name and its tabs are what a clear keeps, and the rest of the
+    /// work all happened on disk.
+    ///
+    /// Those records go because a clear puts the slot back at its base, so the work the
+    /// sessions that ended there were about is gone too (M3 plan assumption 32; the
+    /// architecture spec says an exited record stays "until you dismiss it or clear the
+    /// workspace").
+    ///
+    /// **Here rather than in `api::workspace::clear`**, which is where the plan put it. That
+    /// handler only queues the job: it does not know yet whether the slot will be reset, and a
+    /// clear the job refuses - a dirty tree without `--yes` is the common one - would have
+    /// taken the records with it and left the work in place.
     ///
     /// The event still goes out, because a subscriber cannot see the disk: `workspace.cleared`
     /// carries the base the slot was put back at, which is the one thing about the reset that
@@ -1507,10 +1653,86 @@ impl Core {
         name: String,
         base: String,
     ) -> Result<serde_json::Value, ApiError> {
+        let gone = self.dismiss_exited_agents_of(&workspace);
+        self.pending_events.extend(gone);
         self.pending_events
             .push(Event::WorkspaceCleared { workspace, base });
         self.set_pill(client.as_ref(), format!("Cleared {name}"), true);
+        self.view_dirty = true;
         api::ok(domux_core::api::Ack { ok: true })
+    }
+
+    /// Dismisses every record of a workspace whose session is over, as a clear does.
+    ///
+    /// **Exited only.** A clear keeps the workspace and its panes, so an agent running in the
+    /// slot is still running, and taking its record would destroy the session id, the recap
+    /// and the name a resume needs. The observer would then put a bare record in its place:
+    /// a live, resumable session made unresumable because the reader reset a worktree. The
+    /// spec's sentence is about how long an exited record lasts, not a licence over a live
+    /// one. A delete is the other case and takes everything, because the workspace itself is
+    /// gone.
+    ///
+    /// `Model::dismiss_agent` rather than a removal of its own: taking away an exited record
+    /// is one operation, and this is a clear asking for it once per record.
+    ///
+    /// Of the two caches `forget_agent_caches` drops below, only the transcript is ever there
+    /// on this route: the filter takes records whose session is over, and such a record holds
+    /// no working word, for the reason `api::agent::dismiss` sets out. The word half is live
+    /// on the other caller, `forget_agent_caches_of`, which a delete uses and which takes
+    /// working records too.
+    ///
+    /// That choice leaves the filter and the removal as two guards over one rule, and the
+    /// removal's is the stronger: `dismiss_agent` refuses a live record on its own, so
+    /// deleting the filter here would not let one through. The filter is what says which
+    /// records a clear is asking about, and it is what keeps the `Err` arm below unreached -
+    /// without it every live agent in the slot would log a warning on every clear, which is a
+    /// normal outcome reported as a failure.
+    fn dismiss_exited_agents_of(&mut self, workspace: &WorkspaceId) -> Vec<Event> {
+        let doomed: Vec<(AgentId, Option<PathBuf>)> = self
+            .model
+            .agents_in_workspace(workspace)
+            .into_iter()
+            .filter(|a| !a.state.is_live())
+            .map(|a| (a.id.clone(), a.transcript_path.clone()))
+            .collect();
+        let mut events = Vec::new();
+        for (id, transcript) in doomed {
+            // Both of `dismiss_agent`'s refusals are unreachable here: every id came from the
+            // model a line ago, and the filter already excluded a live record. Written as a
+            // match rather than an `expect` so a clear cannot panic the core if that ever
+            // stops being true.
+            match self.model.dismiss_agent(&id) {
+                Ok(dismissed) => events.extend(dismissed),
+                Err(e) => tracing::warn!("clearing {workspace}: {id} was not dismissed: {e}"),
+            }
+            self.forget_agent_caches(&id, transcript.as_deref());
+        }
+        events
+    }
+
+    /// Drops the working word and the cached transcript keyed to a record that has just gone.
+    /// `api::agent::dismiss` does the same for the record it removes and says why: an agent id
+    /// is never reissued, so nothing will ever ask for either again, and the pool of working
+    /// words is finite, so a word never released is a slot lost for the life of the server.
+    fn forget_agent_caches(&mut self, agent: &AgentId, transcript: Option<&Path>) {
+        self.agents.forget_record(agent, transcript);
+    }
+
+    /// The same for every record of a workspace that is about to go with it, which is what a
+    /// delete takes. Called before the removal, so a removal that refuses would release a word
+    /// a record still holds. Nothing observable turns on that: a working word is picked from
+    /// the agent id and comes back the same on the next look (M3 plan assumption 34), and a
+    /// recap is re-read from the transcript.
+    fn forget_agent_caches_of(&mut self, workspace: &WorkspaceId) {
+        let doomed: Vec<(AgentId, Option<PathBuf>)> = self
+            .model
+            .agents_in_workspace(workspace)
+            .into_iter()
+            .map(|a| (a.id.clone(), a.transcript_path.clone()))
+            .collect();
+        for (id, transcript) in doomed {
+            self.forget_agent_caches(&id, transcript.as_deref());
+        }
     }
 
     /// `workspace.delete`'s model change: the panes' processes, then the record.
@@ -1523,7 +1745,9 @@ impl Core {
     /// The panes are collected before the record goes. `remove_workspace` takes the tabs and
     /// the panes with it without passing through `close_pane`, so nothing else would ever kill
     /// these PTYs and the processes would outlive the slot on screen - the same reasoning
-    /// `api::project::remove` gives for a project.
+    /// `api::project::remove` gives for a project. The agent records go the same way, inside
+    /// `remove_workspace`; only their caches are dropped here, because the model cannot reach
+    /// them.
     fn workspace_deleted(
         &mut self,
         client: Option<ClientId>,
@@ -1536,6 +1760,7 @@ impl Core {
             .workspace(&workspace)
             .map(|w| w.tabs.iter().flat_map(|t| t.layout.pane_ids()).collect())
             .unwrap_or_default();
+        self.forget_agent_caches_of(&workspace);
         let (handle, events) = self.model.remove_workspace(&workspace)?;
         self.pending_events.extend(events);
         // A client that was in the slot is now pointing at a workspace the model does not
@@ -1570,19 +1795,18 @@ impl Core {
         api::ok(domux_core::api::Ack { ok: true })
     }
 
-    /// Puts one line of result in a client's hint row or footer, green when it worked and red
-    /// when it did not (interface spec 7.3 and 12.12). Stamped from the core's clock, which
-    /// is the same clock `tick` measures its age against.
+    /// Puts one line of result in a client's hint row or footer (interface spec 7.3 and 12.12),
+    /// stamped from the core's clock, which is the same clock `tick` measures its age against.
     ///
-    /// A call with no client draws nothing, and that is the honest outcome: a pill is a place
-    /// on a screen, and a caller with no screen has already been answered by its reply.
+    /// This is the pill for an answer that arrives back on the core task: a finished job, or a
+    /// key whose result `input` reads. `Ctx::set_pill` is the same pill from inside a handler,
+    /// and both go through `core::set_pill` so the two cannot come to disagree about where a
+    /// pill lands or when the view has changed.
     pub fn set_pill(&mut self, client: Option<&ClientId>, text: String, ok: bool) {
         let at = self.deps.clock.now().to_rfc3339();
-        let Some(view) = client.and_then(|c| self.model.client_mut(c)) else {
-            return;
-        };
-        view.pill = Some(Pill { text, ok, at });
-        self.view_dirty = true;
+        if set_pill(&mut self.model, client, text, ok, &at) {
+            self.view_dirty = true;
+        }
     }
 
     /// Drops every pill that has been showing for longer than `PILL_SECONDS`, so a result
@@ -1835,6 +2059,11 @@ impl Core {
     ) {
         let acted = !spawns.is_empty() || !kills.is_empty() || !detaches.is_empty();
         for pane in kills {
+            // Every close reaches this list: `close_pane`, `pane.close`, `tab.close`, a
+            // deleted workspace and a removed project all put their panes here, and the last
+            // three never pass through `close_pane` at all. So this is where a pane going
+            // away ends the agents that were running in it, rather than in each of those.
+            self.agents_gone_with_pane(&pane);
             if let Some(mut rt) = self.panes.remove(&pane) {
                 rt.pty.kill();
             }
@@ -1917,27 +2146,73 @@ impl Core {
             .unwrap_or(fallback)
     }
 
+    /// Publishes what the observer did and answers whether it did anything. A record that
+    /// stopped working frees its working word, exactly as a hook report does: the word is per
+    /// working agent, and an agent that exited is not one.
+    fn agents_changed(&mut self, events: Vec<Event>) -> bool {
+        if events.is_empty() {
+            return false;
+        }
+        self.agents.release_words_of(&events);
+        self.pending_events.extend(events);
+        true
+    }
+
+    /// Every live record on `pane` exits now: a record must never read `working` on a pane
+    /// that is gone. The records are found by the pane they hold, so this answers whether or
+    /// not the model still has that pane, and each record keeps the workspace it started in.
+    fn agents_gone_with_pane(&mut self, pane: &PaneId) {
+        let now = self.deps.clock.now().to_rfc3339();
+        let events = observer::pane_gone(&mut self.model, pane, &now);
+        if self.agents_changed(events) {
+            self.view_dirty = true;
+        }
+    }
+
     /// What the process inspector and the emulator say about one pane right now. Each field
     /// is `None` when nothing answered, so `set_pane_facts` leaves that fact alone rather
     /// than clearing it.
-    fn observe_pane(&self, pane: &PaneRuntime) -> PaneFacts {
+    ///
+    /// The foreground process comes back beside the facts because the observer asks a second
+    /// question of the same answer: the pane box wants the command's name, and the observer
+    /// wants to know whether that command is a known agent.
+    fn observe_pane(&self, pane: &PaneRuntime) -> (PaneFacts, Option<ForegroundProcess>) {
         let fg = self.deps.inspector.foreground(pane.pty.raw_fd());
         let cwd = pane
             .emulator
             .cwd()
             .or_else(|| fg.as_ref().and_then(|f| self.deps.inspector.cwd_of(f.pid)));
-        PaneFacts {
+        let facts = PaneFacts {
             command: fg.as_ref().map(|f| f.name.clone()),
             pid: fg.as_ref().map(|f| f.pid),
             cwd,
             title: pane.emulator.title(),
+        };
+        (facts, fg)
+    }
+
+    /// One frame on, and a redraw, but only while there is something for the glyph to report
+    /// on (principle 7). The counter is the core's, so every client on this server draws the
+    /// same frame of the same animation.
+    ///
+    /// The ticker that sends this runs from the first message to the last and is never
+    /// started or stopped (M3 plan assumption 35). A timer that starts and stops is state,
+    /// and state can be wrong: a start that is missed leaves a working agent with a glyph
+    /// that never turns, and a stop that is missed is the redraw this guard is here to
+    /// prevent, left running for the life of the server. The guard is one boolean walk over
+    /// the records, twelve and a half times a second, and it cannot fail.
+    fn animation_tick(&mut self) {
+        if crate::agents::observer::any_working(&self.model) {
+            self.agents.glyph_tick = self.agents.glyph_tick.wrapping_add(1);
+            self.view_dirty = true;
         }
     }
 
     fn tick(&mut self) {
         let mut changed = false;
+        let mut seen: Vec<PaneProcess> = Vec::with_capacity(self.panes.len());
         for (id, pane) in &self.panes {
-            let facts = self.observe_pane(pane);
+            let (facts, foreground) = self.observe_pane(pane);
             if let Some(current) = self.model.pane(id) {
                 if (facts.command.is_some() && facts.command != current.command)
                     || (facts.cwd.is_some() && facts.cwd.as_ref() != Some(&current.cwd))
@@ -1946,8 +2221,23 @@ impl Core {
                     changed = true;
                 }
             }
+            seen.push(PaneProcess {
+                pane: id.clone(),
+                foreground,
+            });
             self.model.set_pane_facts(id, facts);
         }
+        // The agent question, off the same walk: the inspector was asked once and both the
+        // pane boxes and the records read that one answer.
+        let now = self.deps.clock.now().to_rfc3339();
+        let events = observer::run(
+            &mut self.model,
+            &seen,
+            &self.agents.manifests,
+            self.deps.inspector.as_ref(),
+            &now,
+        );
+        changed |= self.agents_changed(events);
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
             self.last_minute = Some(minute);
@@ -2342,6 +2632,10 @@ impl Core {
                 p.snapshot();
             }
         }
+        // One view for every client on this server: the agent list is the same list
+        // wherever it is drawn, and the glyph is the core's frame, not each client's.
+        let now = self.deps.clock.now();
+        let agents = agents_view(&self.model, &mut self.agents, &self.config.keymap, now);
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
@@ -2350,6 +2644,7 @@ impl Core {
                 model: &self.model,
                 facts: &self.facts,
                 panes: &self.panes,
+                agents: &agents,
                 view: &view,
                 keymap: &self.config.keymap,
                 now: self.deps.clock.now(),
@@ -2712,6 +3007,89 @@ fn slot_directory(root: &Path, slot: u32) -> PathBuf {
         .join(crate::git::slot_branch(slot))
 }
 
+/// One `AgentsView`: the records in sort order, their places, and this frame's glyph and
+/// working words.
+///
+/// Free rather than a method on `Core`, because two callers need it. `Core::render` builds one
+/// per frame, and `api::list` builds one to walk the cursor over exactly the rows that frame
+/// drew (interface spec 12.2). A second builder would be a second list, and the cursor would
+/// come to rest on rows the box does not have.
+///
+/// Building it here is what keeps `render` free of the Model's lookups, and what makes the
+/// sidebar and the agents overlay draw one agent one way.
+pub(crate) fn agents_view(
+    model: &Model,
+    state: &mut crate::agents::AgentsState,
+    keymap: &domux_core::keymap::Keymap,
+    now: DateTime<Local>,
+) -> crate::render::agents_box::AgentsView {
+    use crate::render::agents_box::{AgentEntry, AgentsView};
+    let glyph = crate::agents::labels::frame_at(state.glyph_tick);
+    let red_dots = model.red_dot_count();
+    let sorted = model.sorted_agents();
+    let mut entries = Vec::with_capacity(sorted.len());
+    for a in sorted {
+        // A working word for a working agent and for no other, so a row that must not carry
+        // one cannot (principle 4).
+        let word = if a.state == AgentState::Working {
+            state.words.word_for(&a.id)
+        } else {
+            ""
+        };
+        entries.push(AgentEntry {
+            id: a.id.clone(),
+            kind: a.kind,
+            name: a.name.clone(),
+            state: a.state,
+            unseen: a.unseen,
+            recap: a.recap.clone(),
+            place_with_tab: crate::agents::context::place_of(model, a),
+            place_without_tab: crate::agents::context::place_without_tab(model, a),
+            last_activity_at: a.last_activity_at.clone(),
+            word,
+        });
+    }
+    AgentsView {
+        agents: entries,
+        glyph,
+        now,
+        red_dots,
+        // One lookup a frame, so an exited row and the sidebar's hint row name the same key
+        // for one action (principle 3).
+        resume_key: keymap.list_key_for(crate::render::agents_box::RESUME_ACTION),
+    }
+}
+
+/// Puts one line of result in a client's hint row or footer, green when it worked and red when
+/// it did not (interface spec 7.3 and 12.12). True when a client took it, which is when the view
+/// changed.
+///
+/// A rule over the model rather than a method, because a pill is set from two sides of the same
+/// message: a handler, which holds the model through its `Ctx` and is gone before the next
+/// message arrives, and the core, which sets one for a finished job or a key's refusal.
+/// `Ctx::set_pill` and `Core::set_pill` are the two wrappers, and each supplies the clock it
+/// has.
+///
+/// A call with no client draws nothing, and that is the honest outcome: a pill is a place on a
+/// screen, and a caller with no screen has already been answered by its reply.
+pub(crate) fn set_pill(
+    model: &mut Model,
+    client: Option<&ClientId>,
+    text: String,
+    ok: bool,
+    at: &str,
+) -> bool {
+    let Some(view) = client.and_then(|c| model.client_mut(c)) else {
+        return false;
+    };
+    view.pill = Some(Pill {
+        text,
+        ok,
+        at: at.to_string(),
+    });
+    true
+}
+
 /// What a client is told when the model holds no workspace to seat it on.
 ///
 /// Reachable since `project.remove --all`, which is the way back to an empty domux, so it
@@ -2749,7 +3127,10 @@ fn param_client(method: &Method) -> Option<ClientId> {
         WorkspaceRename(p) => p.client.clone(),
         WorkspaceFocus(p) => p.client.clone(),
         SwitcherOpen(p) | SwitcherClose(p) | SidebarToggle(p) | SidebarShow(p) | SidebarHide(p)
-        | ListDown(p) | ListUp(p) | ListActivate(p) | ListFilter(p) => p.client.clone(),
+        | ListDown(p) | ListUp(p) | ListActivate(p) | ListFilter(p) | AgentsOpen(p)
+        | AgentsClose(p) | FocusNextRegion(p) => p.client.clone(),
+        AgentGet(p) | AgentFocus(p) | AgentDismiss(p) => p.client.clone(),
+        AgentResume(p) => p.client.clone(),
         ServerInfo(_)
         | ServerStop(_)
         | EventsSubscribe(_)
@@ -2761,7 +3142,13 @@ fn param_client(method: &Method) -> Option<ClientId> {
         | WorkspaceClear(_)
         | WorkspaceDelete(_)
         | WorkspaceClearName(_)
-        | WorkspaceResume(_) => None,
+        | WorkspaceResume(_)
+        | AgentList(_)
+        | AgentSelf(_)
+        | AgentReport(_)
+        | AgentSend(_)
+        | AgentRead(_)
+        | AgentWait(_) => None,
     }
 }
 
@@ -3173,31 +3560,39 @@ mod tests {
         assert_eq!(core.model.last_workspace, last);
     }
 
-    /// The register `only_the_expected_m2_methods_still_answer_unavailable` and
+    /// The register `only_the_expected_methods_still_answer_unavailable` and
     /// `every_unavailable_arm_in_dispatch_is_listed_in_still_unbuilt` both check against:
-    /// every method Task 4 declared but no task has given a handler yet. When this is empty,
-    /// M2 has closed this class of gap.
+    /// every method declared in `domux_core::api` that no task has given a handler yet, with
+    /// the params to call it by.
     ///
-    /// `workspace.resume` was on this list as the one method left for M3. It is off it now,
-    /// and not because it was built: Task 19 gave it a real handler that answers
-    /// `unavailable` with "resume arrives with agents in M3". Both directions of the register
-    /// key off the words "is not built yet", so a method that refuses in its own words has to
-    /// leave: direction A asserts that message on everything listed here, and direction B
-    /// only scans arms in `dispatch` that carry it.
-    /// **It is empty, and that is the end state this register was built to reach.** Task 14
-    /// took the `list.*` lines and Task 18 took `workspace.clear` and `workspace.delete`, on
-    /// separate branches, so neither saw the block empty on its own; the merge that joined
-    /// them removed the last arm from `api::dispatch` and the `unbuilt` binding with it. Both
-    /// directions still hold and cost nothing: A iterates no methods, and B finds no arm in
-    /// `dispatch` carrying "is not built yet". A method stubbed here later is caught the same
-    /// way it always was.
-    const STILL_UNBUILT: &[(&str, &str)] = &[];
+    /// M2 emptied it, which was the end state it was built to reach, and M3 filled it again:
+    /// Task 5 declares thirteen methods in one commit so that every caller reads one shape of
+    /// the API from the start of the milestone, and Tasks 10 to 18 fill them in one at a
+    /// time. **When M3 finishes this holds exactly `agent.send`, `agent.read` and
+    /// `agent.wait`** - the three verbs M4 fills - **and nothing else.** Anything else still
+    /// on it is a method that would reach the cut-over answering "not built" to a reader who
+    /// has no way to know that from the outside, which is the failure this register exists to
+    /// prevent.
+    ///
+    /// `workspace.resume` was never here. M2 gave it a handler that refused in its own words,
+    /// "resume arrives with agents in M3", and M3 replaced that with the real resume. Both
+    /// directions key off the words "is not built yet", so a method that refuses in words of its
+    /// own has to stay off: direction A asserts that message on everything listed here, and
+    /// direction B only scans arms in `dispatch` that carry it.
+    ///
+    /// Task 18 built `agent.resume`, the last of the ten M3 fills, so what is left is exactly
+    /// the three verbs M4 fills.
+    const STILL_UNBUILT: &[(&str, &str)] = &[
+        ("agent.send", r#"{"text": "hello"}"#),
+        ("agent.read", "{}"),
+        ("agent.wait", "{}"),
+    ];
 
     /// Direction A of the register: implementing one of `STILL_UNBUILT` must fail this test
     /// until the implementer removes that method's line here and from the stub block in
     /// `api::dispatch`, so removal is forced rather than remembered.
     #[test]
-    fn only_the_expected_m2_methods_still_answer_unavailable() {
+    fn only_the_expected_methods_still_answer_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         for (name, params) in STILL_UNBUILT {
             assert!(
@@ -3235,7 +3630,7 @@ mod tests {
     ///
     /// Reads both source files as text and cross-checks the identifiers against the wire
     /// names the `methods!` table gives them, rather than dispatching every method in
-    /// `Method::NAMES` to see which answer `unavailable`: most of the other 28 have side
+    /// `Method::NAMES` to see which answer `unavailable`: most of the others have side
     /// effects (`server.stop` stops the server), so calling them just to observe an error
     /// code is not an option. This is the same move as
     /// `names::tests::nothing_outside_this_file_spells_the_binary_name`: pin the source text
@@ -4278,16 +4673,23 @@ mod tests {
     /// and clearing on the release would take the note away one event before `route_key` had
     /// decided what the press meant. The harness sends only presses, so this is the only place
     /// the two can be told apart.
+    ///
+    /// The switcher is opened through its own handler rather than by setting the overlay
+    /// field. `api::switcher::open` sets the overlay and the region together, and a fixture
+    /// that set only one of them would be a state no running server can be in.
     #[test]
     fn a_key_release_in_a_box_leaves_a_note_where_it_is() {
         let dir = tempfile::tempdir().unwrap();
         let mut core = core(dir.path());
         let client = attached(&mut core);
         core.notes = vec!["Pruned workspace-2: its worktree is gone".into()];
-        core.model
-            .client_mut(&client)
-            .expect("the client is attached")
-            .overlay = Some(Overlay::Switcher);
+        core.dispatch(
+            Method::SwitcherOpen(domux_core::api::ClientParams {
+                client: Some(client.clone()),
+            }),
+            Some(client.clone()),
+        )
+        .expect("switcher.open");
         let key = |action| domux_term::KeyEvent {
             key: domux_term::Key::Char('j'),
             mods: domux_term::Mods::empty(),
@@ -4854,6 +5256,496 @@ mod tests {
             fact_events(&core),
             Vec::new(),
             "and nothing announces a fact that was never recorded"
+        );
+    }
+
+    // The working glyph and the pool of working words.
+    //
+    // Both live here rather than in `tests/agents_animation.rs`, because neither is visible
+    // from a frame. A server with nothing working draws no glyph on any row, so its screen
+    // stands still whether the core counted the tick or threw it away, and an identical
+    // frame sends no diff: the whole cost of a missing guard is work nobody sees. The pool
+    // is a count inside the core that no row shows either. `WorkingWords::in_use` is what
+    // makes both observable, and this module is the only place that can read it.
+
+    /// One hook payload from `pane`, through the handler the report subcommand reaches.
+    fn hook(core: &mut Core, pane: &PaneId, event: &str) {
+        hook_with(core, pane, event, None);
+    }
+
+    /// The same, carrying a transcript, which is what puts an entry in the recap cache: the
+    /// handler reads the recap on `SessionStart`, `UserPromptSubmit` and `Stop`.
+    fn hook_with(core: &mut Core, pane: &PaneId, event: &str, transcript: Option<&Path>) {
+        let mut payload = serde_json::json!({"hook_event_name": event, "session_id": "c1"});
+        if let Some(path) = transcript {
+            payload["transcript_path"] = serde_json::json!(path);
+        }
+        let method = Method::from_request(
+            "agent.report",
+            serde_json::json!({"pane": pane, "kind": "claude", "payload": payload}),
+        )
+        .expect("agent.report takes these params");
+        core.dispatch(method, None).expect("agent.report");
+    }
+
+    /// A transcript on disk for the recap reader to cache.
+    fn a_transcript(dir: &Path) -> PathBuf {
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, "{}\n").expect("write the transcript");
+        path
+    }
+
+    /// The view every frame builds, which is where a working agent takes its word. `render`
+    /// builds one per frame and needs a client and a composed buffer; this is the half of it
+    /// the pool turns on, and it is the same function.
+    fn drawn(core: &mut Core) -> crate::render::agents_box::AgentsView {
+        let now = core.deps.clock.now();
+        agents_view(&core.model, &mut core.agents, &core.config.keymap, now)
+    }
+
+    /// A core and the pane its implicit workspace starts with, for a hook to report from.
+    fn core_with_a_pane(dir: &Path) -> (Core, PaneId) {
+        let core = core(dir);
+        let pane = core
+            .model
+            .all_pane_ids()
+            .first()
+            .cloned()
+            .expect("the implicit workspace starts with one pane");
+        (core, pane)
+    }
+
+    /// A frame of animation turns the glyph and asks for the frame that draws it. The
+    /// assertion is on the glyph the view carries rather than on the counter, so a count
+    /// that no view reads would fail here.
+    #[test]
+    fn an_animation_tick_turns_the_glyph_while_an_agent_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        let before = drawn(&mut core).glyph;
+        core.view_dirty = false;
+
+        core.handle(CoreMsg::AnimationTick);
+
+        assert!(
+            core.view_dirty,
+            "the frame the new glyph is drawn in is asked for"
+        );
+        assert_ne!(drawn(&mut core).glyph, before, "and the glyph moved on");
+    }
+
+    /// And it costs a server with nothing working nothing at all. The ticker never starts and
+    /// never stops (M3 plan assumption 35), so this guard is the only thing between an idle
+    /// server and twelve and a half redraws a second for the rest of its life.
+    ///
+    /// The last three lines are what stop this passing on a server that never animates: the
+    /// same core and the same record, working.
+    #[test]
+    fn an_animation_tick_leaves_a_server_with_nothing_working_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "SessionStart");
+        assert_eq!(core.model.agents.len(), 1, "there is a record to pass over");
+        core.view_dirty = false;
+
+        for _ in 0..crate::agents::labels::GLYPH_FRAMES.len() {
+            core.handle(CoreMsg::AnimationTick);
+        }
+
+        assert_eq!(core.agents.glyph_tick, 0, "an idle record turns nothing");
+        assert!(!core.view_dirty, "and asks for no frame");
+
+        hook(&mut core, &pane, "UserPromptSubmit");
+        core.view_dirty = false;
+        core.handle(CoreMsg::AnimationTick);
+        assert_eq!(
+            core.agents.glyph_tick, 1,
+            "the same core turns once it works"
+        );
+        assert!(core.view_dirty);
+    }
+
+    /// A compacting agent animates too: the glyph says something is happening, and compacting
+    /// is something happening. It carries no working word, which is the other half of the same
+    /// rule (a word is shown for `working` and for nothing else), and the two are asserted
+    /// together so neither is mistaken for the other.
+    #[test]
+    fn a_compacting_agent_turns_the_glyph_and_carries_no_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        assert!(!drawn(&mut core).agents[0].word.is_empty(), "working first");
+
+        hook(&mut core, &pane, "PreCompact");
+        core.view_dirty = false;
+        core.handle(CoreMsg::AnimationTick);
+
+        assert_eq!(
+            core.agents.glyph_tick, 1,
+            "compacting keeps the glyph turning"
+        );
+        assert!(core.view_dirty);
+        assert_eq!(
+            drawn(&mut core).agents[0].word,
+            "",
+            "and shows no working word"
+        );
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "which it gave back on the way"
+        );
+    }
+
+    /// The gate in `agents_view`. `word_for` mutates, so a row that must not show a word must
+    /// not ask for one either: without the gate every record would take a slot from a pool of
+    /// 186 merely by being listed, and the animation lists them all twelve and a half times a
+    /// second for as long as anything works.
+    #[test]
+    fn a_record_that_is_not_working_takes_no_word_from_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "SessionStart");
+
+        // Twenty frames, which is under two seconds of the animation.
+        for _ in 0..20 {
+            let view = drawn(&mut core);
+            assert_eq!(view.agents.len(), 1, "the idle record is listed");
+            assert_eq!(view.agents[0].word, "", "and draws no word");
+        }
+        assert_eq!(core.agents.words.in_use(), 0, "so it took no slot");
+
+        // The positive half, on the same record: a pool nothing ever reaches would pass the
+        // lines above on its own.
+        hook(&mut core, &pane, "UserPromptSubmit");
+        assert!(!drawn(&mut core).agents[0].word.is_empty());
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "a working record does take one"
+        );
+    }
+
+    /// The hook path's release. A word is per working agent, and an agent a hook says has
+    /// stopped is not one.
+    #[test]
+    fn a_stop_hook_gives_the_working_word_back_to_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+
+        hook(&mut core, &pane, "Stop");
+
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "and gave it back on the stop"
+        );
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "the next frame does not take it again"
+        );
+    }
+
+    /// One hook payload from `pane` carrying `session`, for the two records that displace
+    /// each other below.
+    fn hook_session(core: &mut Core, pane: &PaneId, event: &str, session: Option<&str>) {
+        let mut payload = serde_json::json!({ "hook_event_name": event });
+        if let Some(id) = session {
+            payload["session_id"] = serde_json::json!(id);
+        }
+        let method = Method::from_request(
+            "agent.report",
+            serde_json::json!({"pane": pane, "kind": "claude", "payload": payload}),
+        )
+        .expect("agent.report takes these params");
+        core.dispatch(method, None).expect("agent.report");
+    }
+
+    /// A new session on a pane exits the record that was there, and that record was working a
+    /// moment ago, so its word goes back.
+    ///
+    /// The handler used to free the word of the record the hook named and no other, which left
+    /// the displaced one exited and still holding a slot. Nothing on the screen shows it: the
+    /// row draws no word for an exited record either way. The pool is 186 words, so a server
+    /// that runs long enough hands out a word another record already has.
+    #[test]
+    fn a_session_that_takes_a_pane_gives_back_the_word_of_the_one_it_displaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook_session(&mut core, &pane, "UserPromptSubmit", Some("c1"));
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "the first session took a word"
+        );
+
+        hook_session(&mut core, &pane, "UserPromptSubmit", Some("c2"));
+        drawn(&mut core);
+
+        let states: Vec<AgentState> = core.model.agents.iter().map(|a| a.state).collect();
+        assert_eq!(
+            states,
+            vec![AgentState::Exited, AgentState::Working],
+            "the pane changed hands, so one record exited and one is working"
+        );
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "one word for the one working record, and the displaced one gave its own back"
+        );
+    }
+
+    /// The same when the pane changes hands between two kinds, which is the shape a reader
+    /// meets: they close claude and start codex in the pane it was working in.
+    ///
+    /// A second test over the branch above rather than a duplicate of it. It arrives by a
+    /// different route (the kinds differ, so the payload cannot be matched to the live record
+    /// by session id) and on a different hook, and it is the sequence Task 17's review wrote
+    /// out when it found the leak, so it is the one a reader will come looking for.
+    #[test]
+    fn a_different_kind_taking_over_a_pane_gives_back_the_working_word() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook_session(&mut core, &pane, "UserPromptSubmit", Some("c1"));
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "claude is working and has a word"
+        );
+
+        let method = Method::from_request(
+            "agent.report",
+            serde_json::json!({
+                "pane": &pane,
+                "kind": "codex",
+                "payload": {"hook_event_name": "SessionStart", "session_id": "x1"},
+            }),
+        )
+        .expect("agent.report takes these params");
+        core.dispatch(method, None).expect("agent.report");
+        drawn(&mut core);
+
+        use domux_core::model::agent::AgentKind;
+        let records: Vec<(AgentKind, AgentState)> = core
+            .model
+            .agents
+            .iter()
+            .map(|a| (a.kind, a.state))
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (AgentKind::Claude, AgentState::Exited),
+                (AgentKind::Codex, AgentState::Idle)
+            ],
+            "codex took the pane and the claude record exited with it"
+        );
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "nothing is working, so no word is held"
+        );
+    }
+
+    /// The same for the record a resume removes rather than exits. A session-less record the
+    /// observer left on a pane is dropped when the session that owns that pane reports from
+    /// it, and a dropped record frees its word like an exited one.
+    #[test]
+    fn a_resume_that_drops_a_placeholder_gives_back_the_word_it_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, first) = core_with_a_pane(dir.path());
+        let client = attached(&mut core);
+        core.dispatch(
+            Method::from_request("pane.split", serde_json::json!({"dir": "right"}))
+                .expect("pane.split takes these params"),
+            Some(client),
+        )
+        .expect("pane.split");
+        let second = core
+            .model
+            .all_pane_ids()
+            .into_iter()
+            .find(|p| p != &first)
+            .expect("the split made a second pane");
+        hook_session(&mut core, &first, "UserPromptSubmit", Some("c1"));
+        // No session id, so this record is the placeholder the resume below drops.
+        hook_session(&mut core, &second, "UserPromptSubmit", None);
+        drawn(&mut core);
+        assert_eq!(
+            core.agents.words.in_use(),
+            2,
+            "two working records, two words"
+        );
+
+        hook_session(&mut core, &second, "UserPromptSubmit", Some("c1"));
+        drawn(&mut core);
+
+        assert_eq!(core.model.agents.len(), 1, "the placeholder was dropped");
+        assert_eq!(
+            core.agents.words.in_use(),
+            1,
+            "and it did not take a slot with it"
+        );
+    }
+
+    /// The observer path's release, which is the other way out of `working`. Every record the
+    /// observer exits is released in `Core::agents_changed`, whether the once-a-second pass
+    /// found the process gone or the pane's child did, so this holds one site for both.
+    #[test]
+    fn a_pane_that_exits_gives_back_the_working_words_of_its_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        hook(&mut core, &pane, "UserPromptSubmit");
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+
+        core.handle(CoreMsg::PaneExited {
+            pane: pane.clone(),
+            status: Some(0),
+        });
+
+        assert_eq!(
+            core.model.agents[0].state,
+            AgentState::Exited,
+            "the record went with the pane"
+        );
+        assert_eq!(core.agents.words.in_use(), 0, "and its word went with it");
+    }
+
+    /// A delete takes every record of the workspace, working ones included, so the words they
+    /// hold have to go back by hand: `Model::remove_workspace` drops the records, and after
+    /// that nothing can name the slots they held.
+    #[test]
+    fn deleting_a_workspace_gives_back_the_working_words_of_its_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut core = core(dir.path());
+        let workspace = a_slot(&mut core, dir.path());
+        // A slot is registered without a tab. The invariant every dispatch runs on its way
+        // out is what gives it one, and the pane comes with the tab.
+        core.ensure_every_workspace_has_a_tab();
+        let pane = core
+            .model
+            .workspace(&workspace)
+            .and_then(|w| w.tabs.first())
+            .and_then(|t| t.layout.pane_ids().first().cloned())
+            .expect("the slot's tab starts with one pane");
+        let transcript = a_transcript(dir.path());
+        hook_with(&mut core, &pane, "UserPromptSubmit", Some(&transcript));
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            1,
+            "and its transcript is cached"
+        );
+
+        core.workspace_deleted(
+            None,
+            workspace,
+            "workspace-1".into(),
+            "workspace-1".to_string(),
+        )
+        .expect("the workspace is deleted");
+
+        assert!(
+            core.model.agents.is_empty(),
+            "the records went with the slot"
+        );
+        assert_eq!(core.agents.words.in_use(), 0, "and so did their words");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            0,
+            "and their cached transcripts"
+        );
+    }
+
+    /// Removing a project takes every record under it, so their caches go with them.
+    ///
+    /// The harsher of the two removal paths and the one worth a test of its own. A clear
+    /// leaves its records behind as exited, so a word it missed is still reclaimable by a
+    /// later dismiss; a project removal takes the record away, and nothing can ever name what
+    /// it held again.
+    #[test]
+    fn removing_a_project_gives_back_the_caches_of_the_records_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        let transcript = a_transcript(dir.path());
+        hook_with(&mut core, &pane, "UserPromptSubmit", Some(&transcript));
+        drawn(&mut core);
+        assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            1,
+            "and its transcript is cached"
+        );
+        let project = core.model.projects[0].id.clone();
+
+        core.dispatch(
+            Method::from_request(
+                "project.remove",
+                serde_json::json!({ "project": project.as_str(), "yes": true }),
+            )
+            .expect("project.remove takes these params"),
+            None,
+        )
+        .expect("project.remove");
+
+        assert!(core.model.agents.is_empty(), "the records went with it");
+        assert_eq!(core.agents.words.in_use(), 0, "and so did their words");
+        assert_eq!(
+            core.agents.recaps.cached(),
+            0,
+            "and their cached transcripts"
+        );
+    }
+
+    /// `api::agent::dismiss` gives back the word of the record it removes.
+    ///
+    /// The word is put in the pool here rather than by a hook, because no sequence of hooks
+    /// can leave one for a dismiss to find: a record has to be exited before `dismiss_agent`
+    /// will take it, and every way out of `working` frees the word on the way. There are three
+    /// of them and the tests above hold all three: a hook that stops the agent, a pane that
+    /// exits under it, and a report that takes its pane for another session. The third leaked
+    /// a word until Task 17, which is why this is set by hand rather than driven by hooks, and
+    /// also why the line is worth pinning: the pool is finite, an agent id is never reissued,
+    /// and a slot leaked in it is leaked for the life of the server, so a later change that
+    /// makes this path reachable must not depend on someone adding the release back.
+    #[test]
+    fn dismissing_a_record_gives_its_working_word_back_to_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        let transcript = a_transcript(dir.path());
+        hook_with(&mut core, &pane, "SessionStart", Some(&transcript));
+        hook(&mut core, &pane, "SessionEnd");
+        let id = core.model.agents[0].id.clone();
+        assert_eq!(core.model.agents[0].state, AgentState::Exited);
+        assert_eq!(core.agents.recaps.cached(), 1, "the transcript is cached");
+        core.agents.words.word_for(&id);
+        assert_eq!(core.agents.words.in_use(), 1);
+
+        let method =
+            Method::from_request("agent.dismiss", serde_json::json!({ "agent": id.as_str() }))
+                .expect("agent.dismiss takes these params");
+        core.dispatch(method, None).expect("agent.dismiss");
+
+        assert!(core.model.agents.is_empty(), "the record is gone");
+        assert_eq!(
+            core.agents.words.in_use(),
+            0,
+            "and its word is back in the pool"
+        );
+        assert_eq!(
+            core.agents.recaps.cached(),
+            0,
+            "and its transcript is forgotten"
         );
     }
 }

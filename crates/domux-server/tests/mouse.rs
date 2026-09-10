@@ -422,3 +422,46 @@ async fn a_click_on_a_sidebar_header_does_nothing() {
         .await;
     assert_eq!(h.model().client(&client).unwrap().workspace, before);
 }
+
+/// The tab row starts after the count, and the pointer measures from the same place.
+///
+/// `top_bar::bar_tab_hit` finds where the row begins by measuring what is drawn before it, and
+/// M3 draws the agent count there. A hit test that measured only the location label would put
+/// every tab's cells one count-width to the left of where the reader sees them, so the `+` at
+/// the end of the row would answer nothing at all.
+#[tokio::test]
+async fn a_click_on_the_plus_lands_on_it_while_the_count_is_drawn() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.report(
+        pane,
+        domux_core::model::agent::AgentKind::Claude,
+        r#"{"hook_event_name":"Notification","session_id":"c1","message":"needs permission"}"#,
+    )
+    .await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("● 1"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        row(&f, 0).starts_with("| ● 1 "),
+        "the count is drawn before the label:\n{f}"
+    );
+    assert!(!f.contains(" 2 "), "one tab to start with:\n{f}");
+    let at = column_of(&f, 0, '+');
+    h.mouse(h.client.clone(), MouseAction::Press, at, 0, 1)
+        .await;
+    h.mouse(h.client.clone(), MouseAction::Release, at, 0, 1)
+        .await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(" 2 "),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(f.contains(" 2 "), "the click made a second tab:\n{f}");
+}

@@ -356,9 +356,12 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
                 _ => edit_name(core, client, &key),
             }
         }
-        Overlay::Agents | Overlay::Usage => {
-            // M3 adds the agents overlay and M4 the usage one. Task 18 took the workspace
-            // confirmations out of here and Task 15 took the name box.
+        // The Agents box has its own `[keys.list]` table, the same one the switcher's box
+        // has, so the two arms are one line each and neither holds a copy of it.
+        Overlay::Agents => list_key(core, client, key),
+        Overlay::Usage => {
+            // M4. Task 18 took the workspace confirmations out of here and Task 15 the name
+            // box.
         }
     }
 }
