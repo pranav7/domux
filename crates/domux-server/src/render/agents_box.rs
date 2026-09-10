@@ -7,6 +7,7 @@
 //! `AgentsView`, so a row cannot show a place or a word the frame did not already resolve.
 
 use crate::render::list_box::ListRow;
+use crate::render::projects_box::{self, INDENT};
 use crate::render::theme;
 use chrono::{DateTime, Local};
 use domux_core::ids::AgentId;
@@ -38,10 +39,27 @@ pub const RESUME_WORD: &str = "resume";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
-    /// Two lines: no tab, no recap.
+    /// Two lines: no tab, no recap, and live records only.
     Sidebar,
-    /// Three lines, recap included.
+    /// Three lines, recap included, exited records among them.
     Overlay,
+}
+
+impl RowForm {
+    /// Whether a record in this state gets a row on this surface.
+    ///
+    /// **The sidebar's box is what is running** (MUX-22). It is on the screen all day beside
+    /// the panes, and every session that ends leaves a row on it, so an afternoon's work
+    /// buried the running agents under an hour of dead ones. The exited records are not lost:
+    /// the agents overlay lists them, and resume and dismiss are both there. Asked here rather
+    /// than at each surface, because `api::list` walks the same rows the sidebar draws and a
+    /// cursor that could rest on a row nobody can see is worse than no cursor at all.
+    fn shows(self, state: AgentState) -> bool {
+        match self {
+            RowForm::Sidebar => state.is_live(),
+            RowForm::Overlay => true,
+        }
+    }
 }
 
 /// One agent, with everything the row needs already looked up, so drawing touches no Model.
@@ -55,8 +73,15 @@ pub struct AgentEntry {
     pub unseen: bool,
     /// Absent when no recap arrived. An absent recap draws no line at all.
     pub recap: Option<String>,
+    /// The project the record's workspace belongs to: the header the agents overlay groups
+    /// under (MUX-21). Empty when the model no longer holds the workspace, and a group with an
+    /// empty name is drawn with no header rather than a blank one.
+    pub project: String,
     pub place_with_tab: String,
     pub place_without_tab: String,
+    /// `workspace › tab`: what line 2 says under a project header, where the header has
+    /// already said the project.
+    pub place_in_project: String,
     pub last_activity_at: String,
     /// The working word this agent holds, or `""` for a state that shows none. Never read
     /// outside `working`, so a stale word cannot reach a row that must not carry one.
@@ -71,8 +96,6 @@ pub struct AgentsView {
     /// This frame's glyph (`labels::frame_at`).
     pub glyph: &'static str,
     pub now: DateTime<Local>,
-    /// Agents that need you, across every project: the top bar's count (interface spec 6.8).
-    pub red_dots: usize,
     /// The configured key for `RESUME_ACTION`, as hint text, or `None` when the reader has
     /// bound the action to nothing. The core looks it up once a frame so that this row and
     /// the sidebar's hint row name one key (principle 3).
@@ -87,7 +110,6 @@ impl AgentsView {
             agents: Vec::new(),
             glyph: crate::agents::labels::frame_at(0),
             now,
-            red_dots: 0,
             resume_key: None,
         }
     }
@@ -99,12 +121,16 @@ impl AgentsView {
 /// something is being told about what they typed, and a reader who has not is being told how
 /// to get a first agent. The sidebar's box and the agents overlay both call it, so an empty
 /// list reads one way on both (plan assumption 22).
-pub fn empty_text(filter: &str) -> String {
+pub fn empty_text(filter: &str, form: RowForm) -> String {
     let filter = filter.trim();
-    if filter.is_empty() {
-        "No agents yet. Start claude or codex in a pane.".to_string()
-    } else {
-        format!("No agent matches {filter:?}. esc clears the filter")
+    if !filter.is_empty() {
+        return format!("No agent matches {filter:?}. esc clears the filter");
+    }
+    match form {
+        // The sidebar drops the exited records, so "no agents yet" would be a lie told to a
+        // reader who has a list of them one key away (principle 4).
+        RowForm::Sidebar => "Nothing running. Start claude or codex in a pane.".to_string(),
+        RowForm::Overlay => "No agents yet. Start claude or codex in a pane.".to_string(),
     }
 }
 
@@ -113,21 +139,88 @@ pub fn row_key(id: &AgentId) -> String {
     id.to_string()
 }
 
-/// Every agent as one `ListRow`, with one blank row between them (interface spec 6.2).
+/// Every agent as one `ListRow`, with one blank row between them (interface spec 6.2), and in
+/// the agents overlay under a header per project (MUX-21).
 ///
 /// The blanks are pushed here, the way `projects_box::rows` pushes its own. `ListBox` draws
 /// each row's lines one after another and inserts nothing, and `filter_rows` drops these
 /// blanks and rebuilds the same ones between the rows it keeps, so `/` changes what the list
 /// holds and never its shape. `ListBox` owns the scrolling.
+///
+/// **Only the overlay groups.** The sidebar is 38 columns and its rows are already two lines
+/// each; a header every few rows would spend the room the agents need, and the project is on
+/// each row's own place line there. So the sidebar draws one flat list and the overlay draws
+/// the same rows indented under headers, with `place_in_project` on line 2 because the header
+/// above has said the project already.
+///
+/// **The projects come in the order their first agent does**, which is `sorted_agents` order,
+/// so the project holding the agent that most wants you is the first group in the box. Sorting
+/// the headers by name instead would put a waiting agent below two idle projects.
 pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
-    let mut out = Vec::with_capacity(view.agents.len().saturating_mul(2));
-    for a in &view.agents {
+    let mut out: Vec<ListRow> = Vec::with_capacity(view.agents.len().saturating_mul(2));
+    let shown = || view.agents.iter().filter(|a| form.shows(a.state));
+    if form == RowForm::Sidebar {
+        for a in shown() {
+            if !out.is_empty() {
+                out.push(ListRow::blank());
+            }
+            out.push(row(a, view, form, width));
+        }
+        return out;
+    }
+    let mut groups: Vec<&str> = Vec::new();
+    for a in shown() {
+        if !groups.contains(&a.project.as_str()) {
+            groups.push(&a.project);
+        }
+    }
+    for project in groups {
+        // The grammar `projects_box::rows` writes and `filter_rows` rebuilds: a blank before
+        // each header but the first, and none under it.
         if !out.is_empty() {
             out.push(ListRow::blank());
         }
-        out.push(row(a, view, form, width));
+        let indent = if project.is_empty() {
+            // A record whose workspace the model no longer holds. There is no project to name,
+            // so it takes no header and no indent rather than a blank one (principle 4).
+            0
+        } else {
+            out.push(projects_box::header(project, width as usize));
+            INDENT
+        };
+        let mut first = true;
+        for a in shown().filter(|a| a.project == project) {
+            if !first {
+                out.push(ListRow::blank());
+            }
+            first = false;
+            let row = row(a, view, form, width.saturating_sub(indent as u16));
+            out.push(match indent {
+                0 => row,
+                _ => indented(row),
+            });
+        }
     }
     out
+}
+
+/// Every line of one row moved in by `INDENT`, the way `projects_box` insets a workspace under
+/// its project. A raw span, so it carries no colour of its own and the fill's background is the
+/// only thing it ever shows.
+fn indented(row: ListRow) -> ListRow {
+    let lines = row
+        .lines
+        .into_iter()
+        .map(|line| {
+            let mut spans = vec![Span::raw(" ".repeat(INDENT))];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect();
+    ListRow {
+        lines,
+        ..ListRow::selectable(row.key.unwrap_or_default(), row.filter_text, Vec::new())
+    }
 }
 
 fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
@@ -252,7 +345,8 @@ fn working(glyph: &'static str, word: &str, color: Color) -> Vec<Span<'static>> 
 fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
     let place = match form {
         RowForm::Sidebar => &a.place_without_tab,
-        RowForm::Overlay => &a.place_with_tab,
+        // The header above the row has already said the project (MUX-21).
+        RowForm::Overlay => &a.place_in_project,
     };
     let place_style = Style::default().fg(match form {
         RowForm::Overlay => theme::OVERLAY1,
@@ -349,12 +443,14 @@ fn wrap(text: &str, room: usize) -> Vec<String> {
     lines
 }
 
-/// The dot's colour is the state, and unseen wins (interface spec 6.4 and 6.5).
+/// The dot's colour is the state, and nothing else (interface spec 6.4).
+///
+/// Red means one thing: the agent asked you something and is stopped until you answer.
+/// `unseen` used to win over the state here, which made the dot red on a record that had
+/// merely finished while you were looking elsewhere, and on every exited record. In a list of
+/// a dozen sessions almost every row was red and the mark said nothing. `unseen` still lifts a
+/// row in the sort order and still brightens its recap; it no longer colours the dot.
 fn dot_color(a: &AgentEntry) -> Color {
-    // Unseen wins over the state, and a waiting row is red whether or not it is unseen.
-    if a.unseen {
-        return theme::RED;
-    }
     match a.state {
         AgentState::Waiting => theme::RED,
         AgentState::Working => theme::agent_color(a.kind),
@@ -409,8 +505,10 @@ mod tests {
             recap: Some(
                 "Replaced three session checks with one guard in auth/middleware.go.".into(),
             ),
+            project: "audrey-app".into(),
             place_with_tab: "audrey-app › auth cleanup › pr1".into(),
             place_without_tab: "audrey-app › auth cleanup".into(),
+            place_in_project: "auth cleanup › pr1".into(),
             last_activity_at: "2026-09-04T14:20:00+00:00".into(),
             word: "Percolating",
         }
@@ -421,9 +519,36 @@ mod tests {
             agents: entries,
             glyph: "✶",
             now: now(),
-            red_dots: 0,
             resume_key: Keymap::defaults().list_key_for(RESUME_ACTION),
         }
+    }
+
+    /// The agents overlay's rows that carry a key, built to `width` cells of text and with the
+    /// group indent taken off.
+    ///
+    /// The grouping is one thing and the row grammar is another, and every test below but the
+    /// two that name grouping is about the grammar. So the header and the indent are added by
+    /// `rows` and taken off here, and a test that asks what a working row says reads the same
+    /// string it read before MUX-21 put a project over it.
+    fn overlay_rows(v: &AgentsView, width: u16) -> Vec<ListRow> {
+        rows(v, RowForm::Overlay, width + INDENT as u16)
+            .into_iter()
+            .filter(|r| r.key.is_some())
+            .map(|r| ListRow {
+                lines: r
+                    .lines
+                    .into_iter()
+                    .map(|line| {
+                        let mut spans = line.spans;
+                        if spans.first().is_some_and(|s| s.content == "  ") {
+                            spans.remove(0);
+                        }
+                        Line::from(spans)
+                    })
+                    .collect(),
+                ..ListRow::selectable(r.key.unwrap_or_default(), r.filter_text, Vec::new())
+            })
+            .collect()
     }
 
     /// The row's lines as plain text, for reading a failure.
@@ -446,13 +571,13 @@ mod tests {
             Some("auth-cleanup"),
             AgentKind::Claude,
         )]);
-        let rows = rows(&v, RowForm::Overlay, 72);
+        let rows = overlay_rows(&v, 72);
         assert_eq!(rows.len(), 1);
         assert_eq!(
             text(&rows[0]),
             vec![
                 "● auth-cleanup  ✶ Percolating…",
-                "claude · audrey-app › auth cleanup › pr1",
+                "claude · auth cleanup › pr1",
                 "※ Replaced three session checks with one guard in auth/middleware.go.",
             ]
         );
@@ -477,9 +602,13 @@ mod tests {
     #[test]
     fn an_unnamed_agent_puts_the_kind_on_line_1_and_the_place_alone_on_line_2() {
         let v = view(vec![entry(AgentState::Working, None, AgentKind::Codex)]);
-        let rows = rows(&v, RowForm::Overlay, 72);
+        let rows = overlay_rows(&v, 72);
         assert_eq!(text(&rows[0])[0], "● codex  ✶ Percolating…");
-        assert_eq!(text(&rows[0])[1], "audrey-app › auth cleanup › pr1");
+        assert_eq!(
+            text(&rows[0])[1],
+            "auth cleanup › pr1",
+            "the project is on the header, not on the row (MUX-21)"
+        );
         let label = &rows[0].lines[0].spans[2];
         assert_eq!(label.content, "codex");
         assert_eq!(label.style.fg, Some(theme::CODEX), "a kind standing in");
@@ -516,7 +645,7 @@ mod tests {
         for state in [AgentState::Waiting, AgentState::Idle] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
             assert_eq!(
-                text(&rows(&v, RowForm::Overlay, 72)[0])[0],
+                text(&overlay_rows(&v, 72)[0])[0],
                 "● auth-cleanup",
                 "{state}"
             );
@@ -530,7 +659,7 @@ mod tests {
             Some("auth-cleanup"),
             AgentKind::Claude,
         )]);
-        let rows = rows(&v, RowForm::Overlay, 72);
+        let rows = overlay_rows(&v, 72);
         assert_eq!(text(&rows[0])[0], "● auth-cleanup  ✶ Compacting…");
         let spans = &rows[0].lines[0].spans;
         assert_eq!(spans[0].style.fg, Some(theme::COMPACTING), "the dot");
@@ -548,7 +677,7 @@ mod tests {
             Some("auth-cleanup"),
             AgentKind::Claude,
         )]);
-        let overlay = rows(&v, RowForm::Overlay, 72);
+        let overlay = overlay_rows(&v, 72);
         assert_eq!(
             text(&overlay[0])[0],
             "● auth-cleanup  exited 12 min ago   ⏎ resume"
@@ -559,11 +688,9 @@ mod tests {
             Some(theme::BLUE),
             "the key is blue"
         );
-        // The sidebar drops the key; the hint row shows it while the cursor is on the row.
-        assert_eq!(
-            text(&rows(&v, RowForm::Sidebar, 36)[0])[0],
-            "● auth-cleanup  exited 12 min ago"
-        );
+        // The sidebar has no row for an exited record at all (MUX-22), so the key it used to
+        // drop has nowhere to be dropped from.
+        assert!(rows(&v, RowForm::Sidebar, 36).is_empty());
     }
 
     #[test]
@@ -571,10 +698,10 @@ mod tests {
         let mut e = entry(AgentState::Unknown, None, AgentKind::Claude);
         e.recap = None;
         let v = view(vec![e]);
-        let rows = rows(&v, RowForm::Overlay, 72);
+        let rows = overlay_rows(&v, 72);
         assert_eq!(
             text(&rows[0]),
-            vec!["● claude  unknown", "audrey-app › auth cleanup › pr1"]
+            vec!["● claude  unknown", "auth cleanup › pr1"]
         );
         assert_eq!(
             rows[0].lines[0].spans[0].style.fg,
@@ -590,23 +717,30 @@ mod tests {
         );
     }
 
+    /// The dot is the state and nothing else, and red is waiting alone.
+    ///
+    /// `unseen` used to win over the state here, so an idle record you had not looked at and
+    /// every exited record carried the same red dot as one holding a permission prompt. Both
+    /// pairs below are in the table for that reason: the same state with `unseen` on and off
+    /// draws the same dot.
     #[test]
-    fn the_dot_colour_is_the_state_and_unseen_wins() {
+    fn the_dot_colour_is_the_state_and_red_is_waiting_alone() {
         let cases = [
             (AgentState::Working, false, theme::CLAUDE),
             (AgentState::Waiting, false, theme::RED),
-            (AgentState::Idle, true, theme::RED),
+            (AgentState::Waiting, true, theme::RED),
+            (AgentState::Idle, true, theme::OVERLAY0),
             (AgentState::Idle, false, theme::OVERLAY0),
             (AgentState::Compacting, false, theme::COMPACTING),
             (AgentState::Exited, false, theme::OVERLAY0),
-            (AgentState::Exited, true, theme::RED),
+            (AgentState::Exited, true, theme::OVERLAY0),
             (AgentState::Unknown, false, theme::OVERLAY0),
         ];
         for (state, unseen, colour) in cases {
             let mut e = entry(state, Some("x"), AgentKind::Claude);
             e.unseen = unseen;
             let v = view(vec![e]);
-            let rows = rows(&v, RowForm::Overlay, 72);
+            let rows = overlay_rows(&v, 72);
             assert_eq!(rows[0].lines[0].spans[0].content, "●");
             assert_eq!(
                 rows[0].lines[0].spans[0].style.fg,
@@ -621,7 +755,7 @@ mod tests {
         let mut e = entry(AgentState::Idle, Some("auth-cleanup"), AgentKind::Claude);
         e.recap = Some("Replaced three session checks with one guard in auth middleware and then rewrote the token refresh path so the retry budget is shared across every caller of the client".into());
         let v = view(vec![e]);
-        let rows = rows(&v, RowForm::Overlay, 60);
+        let rows = overlay_rows(&v, 60);
         let lines = text(&rows[0]);
         assert_eq!(lines.len(), 4, "name, place, recap, wrapped recap");
         assert!(lines[2].starts_with("※ "));
@@ -647,7 +781,7 @@ mod tests {
     fn a_recap_is_brighter_until_it_is_seen() {
         let mut e = entry(AgentState::Waiting, Some("x"), AgentKind::Claude);
         e.unseen = true;
-        let bright = rows(&view(vec![e.clone()]), RowForm::Overlay, 72);
+        let bright = overlay_rows(&view(vec![e.clone()]), 72);
         assert_eq!(bright[0].lines[2].spans[1].style.fg, Some(theme::RECAP));
         assert!(
             bright[0].lines[2].spans[1]
@@ -659,13 +793,13 @@ mod tests {
         let mut seen = e.clone();
         seen.state = AgentState::Idle;
         seen.unseen = false;
-        let dim = rows(&view(vec![seen]), RowForm::Overlay, 72);
+        let dim = overlay_rows(&view(vec![seen]), 72);
         assert_eq!(dim[0].lines[2].spans[1].style.fg, Some(theme::RECAP_SEEN));
         // Unseen carries the brightness on its own, on a state that would not: an idle row
         // you have not looked at yet reads the same as a waiting one.
         let mut idle_unseen = e.clone();
         idle_unseen.state = AgentState::Idle;
-        let bright_idle = rows(&view(vec![idle_unseen]), RowForm::Overlay, 72);
+        let bright_idle = overlay_rows(&view(vec![idle_unseen]), 72);
         assert_eq!(
             bright_idle[0].lines[2].spans[1].style.fg,
             Some(theme::RECAP)
@@ -711,7 +845,7 @@ mod tests {
     #[test]
     fn every_row_starts_with_a_dot_and_carries_the_agents_id_as_its_key() {
         let v = view(vec![entry(AgentState::Idle, None, AgentKind::Opencode)]);
-        let rows = rows(&v, RowForm::Overlay, 72);
+        let rows = overlay_rows(&v, 72);
         assert_eq!(rows[0].key.as_deref(), Some("a_5e21"));
         assert!(
             rows[0].filter_text.contains("opencode"),
@@ -722,28 +856,104 @@ mod tests {
     }
 
     #[test]
-    fn two_agents_are_a_row_each_in_order_with_one_blank_between_them() {
+    fn two_agents_of_one_project_sit_under_one_header_with_a_blank_between_them() {
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
         let mut second = entry(AgentState::Idle, Some("billing-export"), AgentKind::Codex);
         second.id = AgentId("a_9c04".into());
         second.place_with_tab = "audrey-app › billing export › pr2".into();
+        second.place_in_project = "billing export › pr2".into();
         let rows = rows(&view(vec![first, second]), RowForm::Overlay, 72);
-        assert_eq!(rows.len(), 3, "two agents and the blank between them");
-        assert_eq!(rows[0].key.as_deref(), Some("a_5e21"));
-        assert_eq!(text(&rows[0])[0], "● auth-cleanup");
-        assert!(rows[1].is_blank(), "{:?}", text(&rows[1]));
-        assert_eq!(rows[2].key.as_deref(), Some("a_9c04"));
-        assert_eq!(text(&rows[2])[0], "● billing-export");
+        assert_eq!(rows.len(), 4, "a header, two agents and the blank between");
+        assert!(
+            rows[0].key.is_none(),
+            "the header rests no cursor on itself"
+        );
+        assert!(text(&rows[0])[0].starts_with("AUDREY-APP "));
+        assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
+        assert_eq!(text(&rows[1])[0], "  ● auth-cleanup", "indented under it");
+        assert!(rows[2].is_blank(), "{:?}", text(&rows[2]));
+        assert_eq!(rows[3].key.as_deref(), Some("a_9c04"));
+        assert_eq!(text(&rows[3])[0], "  ● billing-export");
         // `/` changes what the list holds and never its shape: the filter drops these blanks
-        // and rebuilds the same ones between the rows it keeps.
+        // and rebuilds the same ones between the rows it keeps, header included.
         let both = filter_rows(&rows, "audrey-app");
-        assert_eq!(both.len(), 3, "both agents still read the same way");
-        assert!(both[1].is_blank());
-        assert_eq!(both[0].key.as_deref(), Some("a_5e21"));
-        assert_eq!(both[2].key.as_deref(), Some("a_9c04"));
+        assert_eq!(both.len(), 4, "both agents still read the same way");
+        assert_eq!(both[1].key.as_deref(), Some("a_5e21"));
+        assert_eq!(both[3].key.as_deref(), Some("a_9c04"));
         let one = filter_rows(&rows, "billing");
-        assert_eq!(one.len(), 1, "one match stands alone with no separator");
-        assert_eq!(one[0].key.as_deref(), Some("a_9c04"));
+        assert_eq!(
+            one.len(),
+            2,
+            "one match keeps the header that names its place"
+        );
+        assert!(one[0].key.is_none());
+        assert_eq!(one[1].key.as_deref(), Some("a_9c04"));
+    }
+
+    /// Two projects are two groups, and the group order is the row order: the project holding
+    /// the agent that most wants you comes first, not the one whose name sorts first.
+    #[test]
+    fn each_project_is_a_group_and_the_groups_follow_the_row_order() {
+        let mut waiting = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
+        waiting.project = "zebra-app".into();
+        waiting.place_in_project = "main › pr1".into();
+        let mut idle = entry(AgentState::Idle, Some("billing-export"), AgentKind::Codex);
+        idle.id = AgentId("a_9c04".into());
+        idle.project = "audrey-app".into();
+        idle.place_in_project = "main › pr2".into();
+        let rows = rows(&view(vec![waiting, idle]), RowForm::Overlay, 72);
+        assert_eq!(rows.len(), 5, "two headers, two agents, one blank between");
+        assert!(text(&rows[0])[0].starts_with("ZEBRA-APP "));
+        assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
+        assert!(rows[2].is_blank());
+        assert!(text(&rows[3])[0].starts_with("AUDREY-APP "));
+        assert_eq!(rows[4].key.as_deref(), Some("a_9c04"));
+    }
+
+    /// The sidebar draws one flat list: 38 columns have no room for a header every few rows,
+    /// and each row's own place line names the project there.
+    #[test]
+    fn the_sidebar_draws_no_headers_and_no_indent() {
+        let mut second = entry(AgentState::Idle, Some("billing-export"), AgentKind::Codex);
+        second.id = AgentId("a_9c04".into());
+        let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
+        let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
+        assert_eq!(rows.len(), 3, "two agents and the blank between them");
+        assert_eq!(text(&rows[0])[0], "● auth-cleanup");
+        assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
+    }
+
+    /// MUX-22: the sidebar's box is what is running, and the agents overlay is where an exited
+    /// record still has a row to resume from.
+    #[test]
+    fn the_sidebar_drops_the_exited_records_and_the_overlay_keeps_them() {
+        let live = entry(AgentState::Working, Some("auth-cleanup"), AgentKind::Claude);
+        let mut gone = entry(
+            AgentState::Exited,
+            Some("billing-export"),
+            AgentKind::Claude,
+        );
+        gone.id = AgentId("a_9c04".into());
+        let v = view(vec![live, gone]);
+        let sidebar = rows(&v, RowForm::Sidebar, 34);
+        assert_eq!(sidebar.len(), 1);
+        assert_eq!(sidebar[0].key.as_deref(), Some("a_5e21"));
+        let keys: Vec<_> = rows(&v, RowForm::Overlay, 72)
+            .iter()
+            .filter_map(|r| r.key.clone())
+            .collect();
+        assert_eq!(keys, vec!["a_5e21", "a_9c04"]);
+    }
+
+    /// A record whose workspace the model no longer holds has no project to head it, so its
+    /// rows take no header and no indent rather than an empty one (principle 4).
+    #[test]
+    fn a_record_with_no_project_takes_no_header() {
+        let mut e = entry(AgentState::Idle, Some("orphan"), AgentKind::Claude);
+        e.project = String::new();
+        let rows = rows(&view(vec![e]), RowForm::Overlay, 72);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(text(&rows[0])[0], "● orphan");
     }
 
     #[test]
@@ -752,14 +962,14 @@ mod tests {
         let mut rebound = view(vec![e.clone()]);
         rebound.resume_key = Some("o".into());
         assert_eq!(
-            text(&rows(&rebound, RowForm::Overlay, 72)[0])[0],
+            text(&overlay_rows(&rebound, 72)[0])[0],
             "● auth-cleanup  exited 12 min ago   o resume",
             "the label names the binding, not the default"
         );
         let mut unbound = view(vec![e]);
         unbound.resume_key = None;
         assert_eq!(
-            text(&rows(&unbound, RowForm::Overlay, 72)[0])[0],
+            text(&overlay_rows(&unbound, 72)[0])[0],
             "● auth-cleanup  exited 12 min ago",
             "an action bound to nothing names no key"
         );
@@ -773,7 +983,7 @@ mod tests {
              rewrote the token refresh"
                 .into(),
         );
-        let lines = text(&rows(&view(vec![e]), RowForm::Overlay, 60)[0]);
+        let lines = text(&overlay_rows(&view(vec![e]), 60)[0]);
         assert_eq!(lines.len(), 4);
         assert_eq!(
             lines[2],

@@ -5,13 +5,12 @@
 //! the agent rows from `render::agents_box`, which the agents overlay draws from, so neither
 //! list can read one way here and another way there.
 
-use crate::render::agents_box::{self, RowForm, RESUME_WORD};
+use crate::render::agents_box::{self, RowForm};
 use crate::render::boxed::{put, put_within};
 use crate::render::list_box::{content_width, filter_rows, text_area, ListBox, SIDEBAR_PAD};
 use crate::render::projects_box::{filled_index, rows, Extras, PROJECTS_TITLE};
 use crate::render::top_bar::Piece;
 use crate::render::{theme, RenderInput};
-use domux_core::model::agent::AgentState;
 use domux_core::model::{ClientView, Focus, RegionKind, SIDEBAR_WIDTH};
 use domux_core::text::truncate_with_ellipsis;
 use domux_term::Size;
@@ -35,22 +34,21 @@ pub fn sidebar_area(size: Size) -> Rect {
     Rect::new(0, 0, SIDEBAR_WIDTH.min(size.cols), size.rows)
 }
 
-/// The sidebar's column, split into the Projects box, the Agents box and the hint row.
+/// The sidebar's column, split into the Projects box, the Agents box and the hint row, with
+/// one row between the two boxes (interface spec 12.18) and the hint row under both.
 ///
-/// Half the column each, so both boxes show something, with one row between them (interface
-/// spec 12.18) and the hint row under both. On a column too short for both minimums the
-/// Agents box keeps its five rows and the Projects box takes what is left: an Agents box
-/// squeezed below its minimum has no room for a row at all, where a short Projects box still
-/// shows a project.
+/// **The Projects box takes the rows its projects need, up to half the column** (MUX-18). It
+/// was half the column always, and a reader with four projects had eight blank rows inside a
+/// box that could not grow while the Agents box below it scrolled. `wanted` is the height its
+/// rows ask for; everything left over is the Agents box's, which is the list that grows during
+/// a day's work. The cap at half is what keeps a long project list from squeezing the Agents
+/// box down to one row: past half, Projects scrolls like any other list.
 ///
-/// **An odd number of rows to divide goes to Projects.** Plan assumption 21 says half each and
-/// does not say who takes the remainder, and this is the half of `C-h`'s rule that lives here:
-/// `region_for_rows` compares the two territories, and with the remainder given to Agents a
-/// pane filling the workpanel entered the lower box on every odd screen height and the upper
-/// box on every even one. Rounding up here makes Projects strictly the larger territory at an
-/// odd height rather than leaning on an exact tie, so the answer is the same at 24 rows and at
-/// 25. See `region_for_rows`.
-pub fn split_column(column: Rect) -> (Rect, Rect, Rect) {
+/// Two floors under that. Projects never goes below `MIN_PROJECTS`, so an empty list still
+/// shows its own empty text. And on a column too short for both minimums the Agents box keeps
+/// its five rows and Projects takes what is left, because an Agents box squeezed below its
+/// minimum has no room for a row at all where a short Projects box still shows a project.
+pub fn split_column(column: Rect, wanted: u16) -> (Rect, Rect, Rect) {
     let hint = Rect::new(
         column.x,
         column.y + column.height.saturating_sub(HINT_ROW_HEIGHT),
@@ -59,8 +57,8 @@ pub fn split_column(column: Rect) -> (Rect, Rect, Rect) {
     );
     // What is left for the two boxes: the hint row, and the one row between them.
     let boxes = column.height.saturating_sub(HINT_ROW_HEIGHT + 1);
-    let projects_height = boxes
-        .div_ceil(2)
+    let projects_height = wanted
+        .min(boxes.div_ceil(2))
         .max(MIN_PROJECTS)
         .min(boxes.saturating_sub(MIN_AGENTS));
     let projects = Rect::new(column.x, column.y, column.width, projects_height);
@@ -76,65 +74,76 @@ pub fn split_column(column: Rect) -> (Rect, Rect, Rect) {
     (projects, agents, hint)
 }
 
-/// The Projects box: the first of `split_column`'s rectangles.
+/// The height the Projects box asks for: the lines its rows come to, plus its pads and its two
+/// borders.
 ///
-/// M2's callers ask for it by name and still do; what changed under them is that the box is
-/// half the column rather than all of it above the hint row.
-pub fn projects_area(size: Size) -> Rect {
-    split_column(sidebar_area(size)).0
+/// The whole list and no filter, so the boundary between the two boxes does not move while the
+/// reader types in either of them. `/` shortens what is in the box, not the box.
+pub fn wanted_projects_height(
+    model: &domux_core::model::Model,
+    facts: &crate::facts::FactRegistry,
+    width: u16,
+) -> u16 {
+    let built = rows(
+        model,
+        facts,
+        "",
+        None,
+        Extras::compact(content_width(width, SIDEBAR_PAD)),
+    );
+    let lines = built
+        .rows
+        .iter()
+        .fold(0u16, |sum, r| sum.saturating_add(r.height()));
+    crate::render::list_box::box_lines(lines, SIDEBAR_PAD).saturating_add(2)
 }
 
-/// Which box a pane occupying `pane`'s rows enters on `C-h`: the one whose rows overlap it
-/// most, ties going to Projects (interface spec 12.29, plan assumption 25).
+/// This client's three rectangles: `split_column` with the height the Projects box asks for
+/// already worked out.
+///
+/// Every caller goes through it - the drawing, the pointer and the two handlers that walk these
+/// rows - so nobody measures the split a second way (principle 14).
+pub fn split_for(
+    model: &domux_core::model::Model,
+    facts: &crate::facts::FactRegistry,
+    size: Size,
+) -> (Rect, Rect, Rect) {
+    let column = sidebar_area(size);
+    split_column(column, wanted_projects_height(model, facts, column.width))
+}
+
+/// The Projects box: the first of `split_for`'s rectangles.
+pub fn projects_area(
+    model: &domux_core::model::Model,
+    facts: &crate::facts::FactRegistry,
+    size: Size,
+) -> Rect {
+    split_for(model, facts, size).0
+}
+
+/// Which box a pane occupying `pane`'s rows enters on `C-h`: the Agents box when the pane
+/// starts beside it, and the Projects box otherwise (interface spec 12.29).
 ///
 /// Every rectangle is in screen rows. `render::workpanel_of` places a pane's rectangle on the
 /// screen and `sidebar_area` starts at the screen's own origin, so the two are already
 /// measured against the same top edge.
 ///
-/// **What this answers for a pane filling the workpanel** - the one pane of an unsplit tab,
-/// which is the commonest layout there is - is Projects, at every screen height from 12 up. It
-/// gets there by two different routes, and "a tie" is the right word for only one of them:
+/// **Projects is the default and the pane's own top row is the only thing that moves it.** A
+/// pane filling the workpanel starts at row 1, beside the Projects box, so it enters Projects
+/// at every screen height: interface spec 12.29's own frame 8.2 shows that press landing there,
+/// and Projects is the surface `C-h` is reached for. Only a pane that begins at or below the
+/// Agents box's first row - the lower pane of a vertical split, which is the case the spec is
+/// titled for - is beside the lower box, and that pane enters it.
 ///
-/// - At an **even** height the two territories are exactly equal, and plan assumption 25 sends
-///   the tie to Projects. This is the only case that rule can ever reach.
-/// - At an **odd** height they cannot be equal. `split_column` rounds the split up in Projects'
-///   favour, so Projects is strictly the larger territory and wins on the rule's own terms with
-///   no tie involved.
-/// - At **10 and 11 rows** the column is too short for both minimums, `MIN_AGENTS` wins, the
-///   Agents box really is the larger of the two, and the answer is Agents. That is the "subject
-///   to the minimum rows" edge, and it is the one case where a pane filling the workpanel does
-///   not enter Projects.
-///
-/// `a_pane_filling_the_workpanel_enters_projects_at_every_height` walks the whole range,
-/// including those last two.
-///
-/// **Two things make that true and removing either one breaks `C-h` on an unsplit tab.** The
-/// first is here: the comparison is against territory, the row between the boxes counted with
-/// Projects, and not against the two boxes as they are drawn. Do not "simplify" the rebinding
-/// below away. The reason is one row - the tab row takes screen row 0, so the workpanel starts
-/// at row 1 and a pane filling it misses the Projects box's first row while covering every row
-/// of the Agents box, which measured against the drawn boxes leans to Agents by exactly that
-/// row. The second is the round-up in `split_column`; with the gap row alone the answer flips
-/// with the parity of the screen, and with the round-up alone an even height leans to Agents.
-///
-/// Why Projects is the right default at all: interface spec 12.29 is titled "`C-h` into the
-/// sidebar from a pane beside the Agents box" and its own frame 8.2 shows that press entering
-/// Projects, so the overlap rule is the tie-break for a pane sitting beside the lower box and
-/// not a redefinition of where `C-h` goes by default.
-pub fn region_for_rows(pane: Rect, projects: Rect, agents: Rect) -> RegionKind {
-    // Projects owns everything above the Agents box, the row between them included.
-    let projects = Rect::new(
-        projects.x,
-        projects.y,
-        projects.width,
-        agents.y.saturating_sub(projects.y),
-    );
-    let overlap = |b: Rect| {
-        (pane.y + pane.height)
-            .min(b.y + b.height)
-            .saturating_sub(pane.y.max(b.y))
-    };
-    if overlap(agents) > overlap(projects) {
+/// **This replaced a comparison of overlapping rows** when MUX-18 let the Projects box shrink
+/// to its content. That rule asked which box a pane overlapped more, and it answered Projects
+/// for a full-height pane only while the two boxes were equal halves and the row between them
+/// was counted with Projects; it leaned on a round-up in `split_column` and on the parity of
+/// the screen, and both arguments died with the equal halves. A pane's top row is a fact about
+/// the pane rather than about how tall the boxes happen to be drawn today, so the answer no
+/// longer moves when a project is added or removed.
+pub fn region_for_rows(pane: Rect, agents: Rect) -> RegionKind {
+    if pane.y >= agents.y {
         RegionKind::SidebarAgents
     } else {
         RegionKind::SidebarProjects
@@ -189,7 +198,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
 /// The workspace whose row is at `row` of the screen, or `None` for a header, a blank, the box's
 /// border, the hint row, or a row past the end of the list.
 pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
-    let area = projects_area(input.view.size);
+    let area = projects_area(input.model, input.facts, input.view.size);
     let (built, _) = built_rows(input, area);
     let inner = text_area(area, SIDEBAR_PAD);
     let scroll = crate::render::list_box::scroll_to_show(
@@ -209,7 +218,7 @@ pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::Wo
 /// The two boxes in the sidebar's column, with the hint row under them.
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let column = sidebar_area(input.view.size);
-    let (projects, agents, hint) = split_column(column);
+    let (projects, agents, hint) = split_for(input.model, input.facts, input.view.size);
     // The column's own rectangle first, the way `overlay::frame` clears before drawing its
     // box. `ListBox` paints its border and the text of each row, and leaves the cells after a
     // row's text as it found them, so the region has to be cleared by whoever owns it. The
@@ -276,7 +285,7 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         false => None,
     };
     let filled = filled_index(&visible, cursor.as_deref());
-    let empty = agents_box::empty_text(filter);
+    let empty = agents_box::empty_text(filter, RowForm::Sidebar);
     ListBox {
         title: agents_box::TITLE,
         rows: &visible,
@@ -299,26 +308,12 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
 /// for the other.
 pub fn hint_for(input: &RenderInput) -> Vec<Piece> {
     match focused_box(input.view) {
-        // `agents_box::RESUME_ACTION` is what Enter runs on an agent row whether the record
-        // is live or has exited, so one key answers for both words. It comes off the view
-        // rather than out of a second lookup: the agents overlay's exited row draws it from
-        // that same field, and two lookups are how one action comes to name two keys
-        // (principle 3). Nothing here names the action at all, which is the point: the frame
-        // resolved it once.
-        Some(RegionKind::SidebarAgents) => {
-            let word = match cursor_has_exited(input) {
-                true => RESUME_WORD,
-                false => "open",
-            };
-            pieces(&[
-                (input.agents.resume_key.clone(), word),
-                (input.keymap.list_key_for("help"), "more"),
-            ])
-        }
-        // The Projects box; `focused_box` names no third. Spelled out rather than reusing
-        // `RESUME_ACTION`, whose value is the same: that constant is documented as the action
-        // an exited agent row's resume label names, and borrowing it here would suggest the
-        // two arms share a concept they do not.
+        // Either box: Enter opens the row under the cursor, and `list.activate` is the action
+        // both name. The Agents box said `resume` on an exited row until MUX-22 took the
+        // exited records off this surface; there is no row here now that Enter resumes, and a
+        // hint row is a description of the box in front of the reader (principle 2). The
+        // agents overlay's own exited row still carries the word, drawn from
+        // `agents_box::RESUME_WORD`.
         Some(_) => pieces(&[
             (input.keymap.list_key_for("list.activate"), "open"),
             (input.keymap.list_key_for("help"), "more"),
@@ -328,21 +323,6 @@ pub fn hint_for(input: &RenderInput) -> Vec<Piece> {
             (input.keymap.hint_for("switcher.open"), "search"),
         ]),
     }
-}
-
-/// Whether the row the cursor is on has exited, which is what turns `open` into `resume`
-/// (interface spec 12.6, plan assumption 23).
-///
-/// A cursor pointing at a record that is gone reads as no row at all rather than as an
-/// exited one: the box is showing no fill either, so the row this would name is not on the
-/// screen (principle 4).
-fn cursor_has_exited(input: &RenderInput) -> bool {
-    input
-        .view
-        .agents_cursor
-        .as_ref()
-        .and_then(|id| input.agents.agents.iter().find(|a| &a.id == id))
-        .is_some_and(|a| a.state == AgentState::Exited)
 }
 
 /// Each `(key, word)` as a key piece and a word piece, joined by ` · `.
@@ -464,6 +444,7 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
 mod tests {
     use super::*;
     use domux_core::keymap::Keymap;
+    use domux_core::model::agent::AgentState;
     use domux_core::model::{Model, Pill};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -556,11 +537,30 @@ mod tests {
     /// The three rectangles the sidebar's column splits into, for a buffer the tests drew a
     /// whole screen into. Derived rather than written out, so a test cannot go on reading the
     /// rows of a box that has moved.
+    /// Read off the buffer and not worked out a second time. The two boxes are no longer equal
+    /// halves of the column (MUX-18), so their heights depend on the model the caller drew
+    /// from, and a helper that recomputed the split from the screen size alone would answer for
+    /// a sidebar nobody drew. Each box's top row is the border its title sits in.
     fn boxes_of(buf: &Buffer) -> (Rect, Rect, Rect) {
-        split_column(sidebar_area(Size {
-            cols: buf.area.width,
-            rows: buf.area.height,
-        }))
+        let width = SIDEBAR_WIDTH.min(buf.area.width);
+        let title_row = |title: &str| {
+            (0..buf.area.height)
+                .find(|y| {
+                    (0..width)
+                        .map(|x| buf[(x, *y)].symbol())
+                        .collect::<String>()
+                        .contains(title)
+                })
+                .unwrap_or_else(|| panic!("no {title} box was drawn"))
+        };
+        let top = title_row(PROJECTS_TITLE);
+        let agents_y = title_row(agents_box::TITLE);
+        let hint_y = buf.area.height - HINT_ROW_HEIGHT;
+        (
+            Rect::new(0, top, width, agents_y - 1 - top),
+            Rect::new(0, agents_y, width, hint_y - agents_y),
+            Rect::new(0, hint_y, width, HINT_ROW_HEIGHT),
+        )
     }
 
     /// The rows inside one box, as text, one string per line.
@@ -649,16 +649,18 @@ mod tests {
     }
 
     /// 38 columns of sidebar the whole height of the screen, split into the two boxes and the
-    /// hint row: half the column each, one row between them, the hint row at the bottom.
+    /// hint row, with one row between them and the hint row at the bottom.
+    ///
+    /// A Projects box that wants more than half the column is capped at half, which is the
+    /// split M2 had at every height and the one the geometry tests below read.
     #[test]
     fn the_sidebar_is_38_columns_split_into_two_boxes_over_the_hint_row() {
-        let size = Size {
+        let bar = sidebar_area(Size {
             cols: 120,
             rows: 24,
-        };
-        let bar = sidebar_area(size);
+        });
         assert_eq!((bar.x, bar.y, bar.width, bar.height), (0, 0, 38, 24));
-        let (projects, agents, hint) = split_column(bar);
+        let (projects, agents, hint) = split_column(bar, 40);
         assert_eq!(
             (projects.x, projects.y, projects.width, projects.height),
             (0, 0, 38, 11)
@@ -669,11 +671,6 @@ mod tests {
             "one row between the boxes (interface spec 12.18)"
         );
         assert_eq!((hint.x, hint.y, hint.width, hint.height), (0, 23, 38, 1));
-        assert_eq!(
-            projects,
-            projects_area(size),
-            "M2's callers ask for the first of the three by name"
-        );
         // Nothing is left over and nothing overlaps: the three rectangles and the one gap row
         // are the whole column.
         assert_eq!(
@@ -682,87 +679,105 @@ mod tests {
         );
     }
 
+    /// MUX-18: a Projects box with a few projects in it takes the rows they need and hands the
+    /// rest to the Agents box, rather than sitting at half the column with blank rows in it.
+    #[test]
+    fn a_short_projects_list_gives_its_spare_rows_to_the_agents_box() {
+        let bar = sidebar_area(Size {
+            cols: 120,
+            rows: 40,
+        });
+        let (projects, agents, _) = split_column(bar, 12);
+        assert_eq!(projects.height, 12, "the rows its projects asked for");
+        assert_eq!(agents.y, 13);
+        assert_eq!(agents.height, 26, "and everything left over");
+
+        // Under `MIN_PROJECTS` the box keeps its floor, so an empty list still has room for
+        // its own empty text.
+        let (projects, agents, _) = split_column(bar, 1);
+        assert_eq!((projects.height, agents.height), (MIN_PROJECTS, 32));
+    }
+
+    /// And a list longer than half the column stops at half. Past that the Projects box
+    /// scrolls, because an Agents box squeezed to one row is worse than a Projects box the
+    /// reader walks.
+    #[test]
+    fn a_long_projects_list_stops_at_half_the_column() {
+        let bar = sidebar_area(Size {
+            cols: 120,
+            rows: 40,
+        });
+        let (projects, agents, _) = split_column(bar, 200);
+        assert_eq!((projects.height, agents.height), (19, 19));
+    }
+
+    /// The height the box asks for is its rows plus its two borders, taken from the whole list
+    /// and never from a filtered one: `/` shortens what is in the box, not the box.
+    #[test]
+    fn the_wanted_height_is_the_rows_and_the_two_borders() {
+        let mut model = Model::new(9);
+        let facts = crate::facts::FactRegistry::new();
+        // An empty model has no rows at all, and `box_lines` floors that at one.
+        assert_eq!(wanted_projects_height(&model, &facts, SIDEBAR_WIDTH), 3);
+        model
+            .add_git_project(PathBuf::from("/repo/audrey-app"), "main".into())
+            .unwrap();
+        // One header and one `main` row.
+        assert_eq!(wanted_projects_height(&model, &facts, SIDEBAR_WIDTH), 4);
+        model
+            .add_git_project(PathBuf::from("/repo/domux"), "main".into())
+            .unwrap();
+        // A blank row before the second header, then its header and its `main`.
+        assert_eq!(wanted_projects_height(&model, &facts, SIDEBAR_WIDTH), 7);
+    }
+
     /// A column too short to give both boxes their minimum keeps the Agents box's five rows
     /// and shortens Projects: an Agents box below five has no room for an agent row at all,
     /// where a short Projects box still shows a project (plan assumption 21).
     #[test]
     fn a_column_too_short_for_both_minimums_keeps_the_agents_boxs_rows() {
-        let (projects, agents, hint) = split_column(Rect::new(0, 0, 38, 10));
+        let (projects, agents, hint) = split_column(Rect::new(0, 0, 38, 10), 40);
         assert_eq!((projects.height, agents.height), (3, 5));
         assert_eq!(agents.y, projects.height + 1);
         assert_eq!(hint.y, 9);
 
         // And a column with room for both takes half each, with `MIN_PROJECTS` binding just
         // above the crossover.
-        let (projects, agents, _) = split_column(Rect::new(0, 0, 38, 13));
+        let (projects, agents, _) = split_column(Rect::new(0, 0, 38, 13), 40);
         assert_eq!((projects.height, agents.height), (6, 5));
-        let (projects, agents, _) = split_column(Rect::new(0, 0, 38, 40));
+        let (projects, agents, _) = split_column(Rect::new(0, 0, 38, 40), 40);
         assert_eq!((projects.height, agents.height), (19, 19));
     }
 
     /// A pane filling the workpanel enters Projects at every screen height the program can be
-    /// on, odd and even, down to the two where the minimum rows make the Agents box genuinely
-    /// the larger one.
+    /// on, whatever the two boxes are sized to.
     ///
-    /// A sweep and not one more even number. The defect this replaces was not a test that
-    /// could not fail; it was a suite whose fixtures never reached the failing case: every
-    /// height in it was even (24, 30, 22, 12), and the gap-row rule produced the ruled answer
-    /// only at even heights. One more example would have been one more even number. This walks
-    /// the whole reachable range instead, and it reports the heights that disagree rather than
-    /// stopping at the first, so a change that breaks a band of them says so in one run.
+    /// A sweep and not one example. The defect this replaces was not a test that could not
+    /// fail; it was a suite whose fixtures never reached the failing case: the overlap rule
+    /// this replaced answered Projects only at even screen heights, and every fixture was even.
+    /// It walks the whole reachable range instead, and reports the pairs that disagree rather
+    /// than stopping at the first. It sweeps the Projects box's own height too, because MUX-18
+    /// made that a second thing the answer could turn on and the rule's whole point is that it
+    /// does not.
     #[test]
     fn a_pane_filling_the_workpanel_enters_projects_at_every_height() {
         // `render::workpanel_of`: the tab row takes screen row 0, so the one pane of an
         // unsplit tab is rows 1..height.
         let pane = |height: u16| Rect::new(39, 1, 81, height - 1);
-        let region = |height: u16| {
-            let (projects, agents, _) = split_column(Rect::new(0, 0, SIDEBAR_WIDTH, height));
-            region_for_rows(pane(height), projects, agents)
+        let region = |height: u16, wanted: u16| {
+            let (_, agents, _) = split_column(Rect::new(0, 0, SIDEBAR_WIDTH, height), wanted);
+            region_for_rows(pane(height), agents)
         };
 
         // 10 is `render::MIN_ROWS`; below it `compose` draws the notice screen instead.
-        let wrong: Vec<u16> = (12..=40)
-            .filter(|h| region(*h) != RegionKind::SidebarProjects)
+        let wrong: Vec<(u16, u16)> = (10..=40)
+            .flat_map(|h| (1..=40).map(move |w| (h, w)))
+            .filter(|(h, w)| region(*h, *w) != RegionKind::SidebarProjects)
             .collect();
         assert!(
             wrong.is_empty(),
-            "these heights send the one pane of an unsplit tab to the Agents box: {wrong:?}"
+            "these (height, wanted) pairs send the one pane of an unsplit tab to the Agents box: {wrong:?}"
         );
-        // Both parities are in that range, but name one of each so a future narrowing of the
-        // range cannot quietly drop the odd half, which is the half that was broken.
-        assert_eq!(region(24), RegionKind::SidebarProjects);
-        assert_eq!(region(25), RegionKind::SidebarProjects);
-
-        // The two heights where the minimums bind: `MIN_AGENTS` wins, the Agents box is
-        // strictly the larger of the two, and the rule's own answer is Agents. Pinned rather
-        // than skipped, so this edge is a decision on the record and not a gap.
-        for height in [10, 11] {
-            let (projects, agents, _) = split_column(Rect::new(0, 0, SIDEBAR_WIDTH, height));
-            assert!(
-                agents.height > projects.height,
-                "at {height} rows the Agents box is the larger one: {projects:?} {agents:?}"
-            );
-            assert_eq!(
-                region(height),
-                RegionKind::SidebarAgents,
-                "so `C-h` answers with it at {height} rows"
-            );
-        }
-    }
-
-    /// The remainder of an odd split goes to Projects, which is the half of `C-h`'s rule that
-    /// lives in `split_column`.
-    #[test]
-    fn an_odd_number_of_rows_to_divide_goes_to_the_projects_box() {
-        let (projects, agents, _) = split_column(Rect::new(0, 0, SIDEBAR_WIDTH, 25));
-        assert_eq!(
-            (projects.height, agents.height),
-            (12, 11),
-            "23 rows to divide, and the odd one is the upper box's"
-        );
-        // An even height still divides evenly, so nothing that fitted before has moved.
-        let (projects, agents, _) = split_column(Rect::new(0, 0, SIDEBAR_WIDTH, 24));
-        assert_eq!((projects.height, agents.height), (11, 11));
     }
 
     /// A column with no rows at all asks for no rectangle outside itself. Nothing in the
@@ -771,65 +786,42 @@ mod tests {
     /// directly.
     #[test]
     fn a_column_with_no_height_splits_into_nothing() {
-        let (projects, agents, hint) = split_column(Rect::new(0, 0, 38, 0));
+        let (projects, agents, hint) = split_column(Rect::new(0, 0, 38, 0), 40);
         assert_eq!((projects.height, agents.height, hint.height), (0, 0, 0));
         assert_eq!(projects.y, 0);
     }
 
-    /// `C-h` picks the box whose rows overlap the pane's most, and a tie goes to Projects
-    /// (interface spec 12.29, plan assumption 25).
+    /// `C-h` enters the Agents box only from a pane that starts beside it (interface spec
+    /// 12.29).
     ///
-    /// All three geometries, because only one of them changed when the comparison moved to
-    /// territory and the other two must not regress with it: a pane high in the screen enters
-    /// Projects, a pane low in it enters Agents (the case the spec names), and a pane filling
-    /// the workpanel is a tie and enters Projects.
+    /// All three geometries: a pane high in the screen enters Projects, a pane low in it enters
+    /// Agents (the case the spec names), and a pane filling the workpanel enters Projects.
     #[test]
-    fn the_box_a_pane_enters_is_the_one_its_rows_overlap_most() {
-        let (projects, agents, _) = split_column(Rect::new(0, 0, 38, 30));
+    fn the_box_a_pane_enters_is_the_one_it_starts_beside() {
+        let (projects, agents, _) = split_column(Rect::new(0, 0, 38, 30), 40);
         assert_eq!((projects.y, projects.height), (0, 14));
         assert_eq!((agents.y, agents.height), (15, 14));
 
         let high = Rect::new(39, 1, 81, 14);
-        assert_eq!(
-            region_for_rows(high, projects, agents),
-            RegionKind::SidebarProjects
-        );
+        assert_eq!(region_for_rows(high, agents), RegionKind::SidebarProjects);
         let low = Rect::new(39, 15, 81, 15);
-        assert_eq!(
-            region_for_rows(low, projects, agents),
-            RegionKind::SidebarAgents
-        );
-        // The one pane of an unsplit tab, which is the case plan assumption 25's tie rule was
-        // written for and the only case that can reach it. The arithmetic is spelled out
-        // rather than trusted, so that a change which quietly stopped this being a tie would
-        // fail here saying so rather than failing somewhere downstream.
+        assert_eq!(region_for_rows(low, agents), RegionKind::SidebarAgents);
         let whole = Rect::new(39, 1, 81, 29);
-        let territory = |b: Rect| {
-            (whole.y + whole.height)
-                .min(b.y + b.height)
-                .saturating_sub(whole.y.max(b.y))
-        };
-        let projects_territory = Rect::new(projects.x, projects.y, projects.width, agents.y);
         assert_eq!(
-            (territory(projects_territory), territory(agents)),
-            (14, 14),
-            "the pane covers 14 rows of each, so this is the tie"
-        );
-        assert_eq!(
-            region_for_rows(whole, projects, agents),
+            region_for_rows(whole, agents),
             RegionKind::SidebarProjects,
-            "and the tie goes to Projects (plan assumption 25)"
+            "the one pane of an unsplit tab, which covers both boxes and starts beside Projects"
         );
+        // A pane that reaches well into the Agents box but starts above it is still beside
+        // Projects where it begins. The overlap rule this replaced answered Agents here.
         assert_eq!(
-            region_for_rows(Rect::new(39, 8, 81, 14), projects, agents),
-            RegionKind::SidebarProjects,
-            "seven rows of each, and that tie goes to Projects too"
-        );
-        // A pane that overlaps neither box is a tie of zero against zero.
-        let above = Rect::new(39, 0, 81, 0);
-        assert_eq!(
-            region_for_rows(above, projects, agents),
+            region_for_rows(Rect::new(39, 14, 81, 16), agents),
             RegionKind::SidebarProjects
+        );
+        // The Agents box's own first row is the Agents box.
+        assert_eq!(
+            region_for_rows(Rect::new(39, 15, 81, 1), agents),
+            RegionKind::SidebarAgents
         );
     }
 
@@ -1123,8 +1115,10 @@ mod tests {
             state,
             unseen: false,
             recap: Some("read the transcript".into()),
+            project: "audrey-app".into(),
             place_with_tab: "audrey-app › main › pr1".into(),
             place_without_tab: "audrey-app › main".into(),
+            place_in_project: "main › pr1".into(),
             last_activity_at: "2026-09-04T14:30:00+01:00".into(),
             word: "",
         });
@@ -1169,48 +1163,23 @@ mod tests {
         line_of(&buf, 0)
     }
 
-    /// A live row offers `open` and an exited row offers `resume`, both under the key bound
-    /// to the row's one action (interface spec 12.6 and 12.11).
+    /// Every row in the sidebar's Agents box offers `open`, because every record in it is
+    /// running (MUX-22). The word was `resume` on an exited row until the exited records left
+    /// this surface, and the agents overlay's own exited row carries it now.
     #[test]
-    fn the_hint_row_names_resume_only_while_the_cursor_is_on_an_exited_row() {
+    fn the_hint_row_names_open_for_every_row_in_the_sidebars_box() {
         assert_eq!(
             agents_hint(AgentState::Working, true),
             " ⏎ open · ? more                      "
         );
         assert_eq!(
             agents_hint(AgentState::Exited, true),
-            " ⏎ resume · ? more                    "
+            " ⏎ open · ? more                      ",
+            "an exited record has no row here for the cursor to be on"
         );
         assert_eq!(
             agents_hint(AgentState::Exited, false),
-            " ⏎ open · ? more                      ",
-            "a cursor on no row is not a cursor on an exited one (principle 4)"
-        );
-    }
-
-    /// The hint row draws the key the frame handed it, not a key it looked up itself
-    /// (controller ruling 2).
-    ///
-    /// `resume_key` is set to a string the keymap cannot produce, so the two candidate
-    /// sources answer differently and the assertion can only pass on one of them. In the
-    /// running program they always agree, because `core::agents_view` fills the field from
-    /// exactly that lookup, so this is the one fixture that separates them: a second lookup
-    /// creeping back into `hint_for` would draw `⏎ resume` here.
-    ///
-    /// The point is not the value. It is that the agents overlay's exited row and this row
-    /// read one field, so they cannot come to name different keys for one action.
-    #[test]
-    fn the_hint_row_draws_the_key_the_frame_resolved_and_does_not_look_it_up_again() {
-        let mut agents = agents_view(AgentState::Exited);
-        agents.resume_key = Some("F13".into());
-        assert_ne!(
-            Keymap::defaults().list_key_for("list.activate").as_deref(),
-            Some("F13"),
-            "the fixture is only meaningful while the keymap cannot produce this key"
-        );
-        assert_eq!(
-            agents_hint_with(agents, true),
-            " F13 resume · ? more                  "
+            " ⏎ open · ? more                      "
         );
     }
 
@@ -1267,11 +1236,7 @@ mod tests {
             buf
         };
 
-        let area = split_column(sidebar_area(Size {
-            cols: 120,
-            rows: 24,
-        }))
-        .1;
+        let area = boxes_of(&draw_into(true, "")).1;
         let filled = |buf: &Buffer| {
             (area.y + 1..area.y + area.height - 1)
                 .any(|y| buf[(2u16, y)].bg != ratatui::style::Color::Reset)

@@ -624,14 +624,16 @@ async fn a_link_the_desktop_will_not_open_says_what_could_not_be_opened_and_why(
     );
 }
 
-/// The tab row starts after the count, and the pointer measures from the same place.
+/// The tab row starts after the location label, and the pointer measures from the same place.
 ///
-/// `top_bar::bar_tab_hit` finds where the row begins by measuring what is drawn before it, and
-/// M3 draws the agent count there. A hit test that measured only the location label would put
-/// every tab's cells one count-width to the left of where the reader sees them, so the `+` at
-/// the end of the row would answer nothing at all.
+/// `top_bar::bar_tab_hit` finds where the row begins by measuring what is drawn before it. A hit
+/// test that measured nothing, or measured a piece the bar no longer draws, would put every
+/// tab's cells away from where the reader sees them and the `+` at the end of the row would
+/// answer nothing at all. The label is the only piece in front of the row now that MUX-23 has
+/// taken the agent count off the bar, and a waiting agent is here to prove it: the bar this
+/// clicks on is one that would have carried a count.
 #[tokio::test]
-async fn a_click_on_the_plus_lands_on_it_while_the_count_is_drawn() {
+async fn a_click_on_the_plus_lands_on_it_after_the_location_label() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     let pane = h.focused_pane(h.client.clone());
     h.report(
@@ -640,16 +642,10 @@ async fn a_click_on_the_plus_lands_on_it_while_the_count_is_drawn() {
         r#"{"hook_event_name":"Notification","session_id":"c1","message":"needs permission"}"#,
     )
     .await;
-    let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("● 1"),
-            Duration::from_secs(2),
-        )
-        .await;
+    let f = h.frame(h.client.clone()).await;
     assert!(
-        row(&f, 0).starts_with("| ● 1 "),
-        "the count is drawn before the label:\n{f}"
+        row(&f, 0).starts_with("| proj › main"),
+        "the label opens the bar, with nothing in front of it:\n{f}"
     );
     assert!(!f.contains(" 2 "), "one tab to start with:\n{f}");
     let at = column_of(&f, 0, '+');

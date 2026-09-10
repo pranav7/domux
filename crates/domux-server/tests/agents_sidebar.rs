@@ -106,11 +106,12 @@ async fn the_sidebar_holds_the_agents_box_under_the_projects_box_with_one_row_be
         "the row between the boxes is empty:\n{f}"
     );
     // The whole geometry, not just the gap: a split that gave one box every row it could and
-    // the other three would pass every assertion above.
+    // the other three would pass every assertion above. One project with `main` under it is
+    // five rows of Projects box (MUX-18), and the Agents box takes the other twenty-three.
     assert_eq!(
         (projects_top, projects_bottom, agents_top),
-        (0, 13, 15),
-        "half the column each on a 30 row screen:\n{f}"
+        (0, 5, 7),
+        "the Projects box takes the rows its projects need on a 30 row screen:\n{f}"
     );
     assert_eq!(
         cols(row(&f, 28), 0, 37),
@@ -184,8 +185,12 @@ async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
         .await;
     let line = row_with(&f, "● claude");
     assert!(
-        row(&f, line + 1).contains("proj › main › pr1"),
-        "the overlay's line two carries the tab:\n{f}"
+        row(&f, line - 1).contains("PROJ "),
+        "the overlay heads the group with the project (MUX-21):\n{f}"
+    );
+    assert!(
+        row(&f, line + 1).contains("main › pr1"),
+        "and the overlay's line two carries the tab:\n{f}"
     );
     assert!(
         row(&f, line + 2).contains("※ Session check cleanup"),
@@ -429,9 +434,11 @@ async fn hiding_the_sidebar_from_either_box_gives_the_keys_back_to_the_pane() {
     }
 }
 
-/// The hint row names the keys of the row the cursor is on (interface spec 12.11), and an
-/// exited row's key is the resume key the row itself has no room for (interface spec 12.6,
-/// plan assumption 23).
+/// The hint row names the keys of the row the cursor is on (interface spec 12.11), and every
+/// row in this box offers `open`, because every record in it is running (MUX-22).
+///
+/// The session ending is what takes the row away, and the row and the hint row go together:
+/// the box says nothing is running and the hint row goes back to the sidebar's own keys.
 #[tokio::test]
 async fn the_hint_row_shows_the_cursor_rows_key_while_focus_is_in_the_agents_box() {
     let mut h = Harness::start(Config::default(), 120, 30).await;
@@ -456,25 +463,32 @@ async fn the_hint_row_shows_the_cursor_rows_key_while_focus_is_in_the_agents_box
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("⏎ resume"),
+            |f| f.contains("Nothing running"),
             Duration::from_secs(2),
         )
         .await;
-    assert_eq!(
-        cols(row(&f, 29), 0, 37),
-        format!(" ⏎ resume · ? more{}", " ".repeat(20)),
-        "an exited row offers resume in the hint row (interface spec 12.6):\n{f}"
+    assert!(
+        !f.contains("● claude"),
+        "the session ended, so the row went with it:\n{f}"
     );
-    // The row itself stops after the age: the key is the hint row's, not the row's
-    // (plan assumption 23). Beside a positive assertion, so a blank frame cannot pass it.
+    // The record is still there, in the surface that keeps it, with the key that resumes it.
+    assert_eq!(h.agents().await.len(), 1);
+    h.api("agents.open", json!({})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("● claude"),
+            Duration::from_secs(2),
+        )
+        .await;
     let line = row_with(&f, "● claude");
     assert!(
         row(&f, line).contains("exited"),
         "the row says it exited:\n{f}"
     );
     assert!(
-        !row(&f, line).contains("resume"),
-        "and does not carry the key too:\n{f}"
+        row(&f, line).contains("resume"),
+        "and the overlay has the room to carry the key (interface spec 12.6):\n{f}"
     );
 }
 
@@ -484,13 +498,17 @@ async fn an_empty_agents_box_still_draws_its_border_and_says_why_it_is_empty() {
     h.api("sidebar.show", json!({})).await.unwrap();
     let f = sidebar_frame(&mut h).await;
     let agents_top = row_with(&f, "┌ Agents");
-    assert_eq!(agents_top, 15, "the border is always there (principle 14)");
+    assert_eq!(agents_top, 7, "the border is always there (principle 14)");
     // Wrapped over two rows and not cut: 34 columns for text inside the border and its pad,
-    // and 47 cells of text, and the action is the second half of the sentence (principle 9,
-    // plan assumption 22). The text starts where a row's text starts, one column in.
+    // and the action is the second half of the sentence (principle 9, plan assumption 22).
+    // The text starts where a row's text starts, one column in.
+    //
+    // "Nothing running" and not "No agents yet": the sidebar's box holds the running sessions
+    // and the agents overlay holds the exited ones too (MUX-22), so this box being empty is
+    // not evidence that there are no records.
     assert_eq!(
         cols(row(&f, agents_top + 1), 1, 36),
-        " No agents yet. Start claude or     ",
+        " Nothing running. Start claude or   ",
         "{f}"
     );
     assert_eq!(
@@ -631,14 +649,14 @@ async fn enter_in_the_sidebars_agents_box_switches_to_the_agents_pane() {
     );
 }
 
-/// And Enter on an **exited** row in the sidebar's box resumes it, the same as in the agents
-/// overlay, with the result in the sidebar's hint row rather than the overlay's footer.
+/// An exited record has no row in the sidebar's box at all (MUX-22): the box on the screen all
+/// day is what is running, and the agents overlay is where a session that ended is resumed from.
 ///
-/// The sidebar is the third surface `list.activate` serves, and the test above it only ever
-/// activates a live row: that one would pass with the exited arm broken. This is the other half,
-/// and it reads the pane to prove the line was typed rather than trusting the row.
+/// Both halves in one fixture, because "the sidebar does not show this" passes on a frame with
+/// no records at all. The record is there, the overlay draws it, and the sidebar says nothing is
+/// running.
 #[tokio::test]
-async fn enter_on_an_exited_row_in_the_sidebars_agents_box_resumes_it() {
+async fn an_exited_record_has_a_row_in_the_overlay_and_none_in_the_sidebar() {
     let mut h = Harness::start(Config::default(), 120, 30).await;
     let first = h.focused_pane(h.client.clone());
     h.api("pane.split", json!({"dir": "right"})).await.unwrap();
@@ -647,56 +665,51 @@ async fn enter_on_an_exited_row_in_the_sidebars_agents_box_resumes_it() {
         .await;
     h.report(second.clone(), AgentKind::Claude, CLAUDE_ENDS)
         .await;
-    h.api("sidebar.show", json!({})).await.unwrap();
-    sidebar_frame(&mut h).await;
     h.api("pane.focus", json!({"pane": first.to_string()}))
         .await
         .unwrap();
-    h.api("focus.region", json!({"region": "sidebar_agents"}))
-        .await
-        .unwrap();
+    h.api("sidebar.show", json!({})).await.unwrap();
+    let f = sidebar_frame(&mut h).await;
+    assert_eq!(h.agents().await.len(), 1, "the record is there:\n{f}");
+    assert!(
+        f.contains("Nothing running. Start claude or"),
+        "and the sidebar's box says nothing is running:\n{f}"
+    );
+    assert!(!f.contains("● claude"), "with no row for it:\n{f}");
 
-    h.key(h.client.clone(), "Enter").await;
-
+    h.api("agents.open", json!({})).await.unwrap();
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Resumed"),
+            |f| f.contains("● claude"),
             Duration::from_secs(2),
         )
         .await;
     assert!(
-        f.contains("Resumed claude in "),
-        "the sidebar's hint row carries the result (principle 8):\n{f}"
+        f.contains("exited"),
+        "the overlay draws the exited row, with the key that resumes it:\n{f}"
     );
-    assert_eq!(
-        focus_of(&h),
-        Focus::Region(RegionKind::SidebarAgents),
-        "and the keys stayed in the box, because resume is not a navigation"
-    );
-    assert!(
-        String::from_utf8(h.pane_input(&second))
-            .unwrap()
-            .contains("claude --resume 'c1'"),
-        "the line was typed into the agent's own pane"
-    );
+    assert!(f.contains("resume"), "{f}");
 }
 
-/// A cursor left on a record that has gone starts again at the first row rather than naming
-/// a row the box is not showing (principle 2).
+/// A cursor left on a row the box is no longer showing starts again at the first row rather
+/// than naming a row that is not on the screen (principle 2).
 ///
 /// Its own test because `entering_the_agents_box_puts_the_cursor_on_the_first_row` only ever
 /// enters a box whose cursor is empty, where keeping whatever was held and replacing it look
 /// identical.
+///
+/// The row goes by its session ending, which is how a row leaves this box now that it holds the
+/// running records alone (MUX-22). The record itself is still in the model, so this is the
+/// harder half of the rule: the cursor names something that exists and is not drawn here.
 #[tokio::test]
-async fn a_cursor_left_on_a_record_that_is_gone_starts_again_at_the_first_row() {
+async fn a_cursor_left_on_a_row_the_box_dropped_starts_again_at_the_first_row() {
     let mut h = Harness::start(Config::default(), 120, 30).await;
     let first_pane = h.focused_pane(h.client.clone());
     h.api("pane.split", json!({"dir": "right"})).await.unwrap();
     let second_pane = h.focused_pane(h.client.clone());
     h.report(first_pane.clone(), AgentKind::Claude, CLAUDE_STARTS)
         .await;
-    h.report(first_pane, AgentKind::Claude, CLAUDE_ENDS).await;
     h.report(
         second_pane,
         AgentKind::Codex,
@@ -706,35 +719,44 @@ async fn a_cursor_left_on_a_record_that_is_gone_starts_again_at_the_first_row() 
     h.api("sidebar.show", json!({})).await.unwrap();
     sidebar_frame(&mut h).await;
 
-    // The exited claude sorts last, so the cursor has to be walked onto it.
-    let exited = h
-        .agents()
-        .await
-        .into_iter()
-        .find(|a| a.kind == AgentKind::Claude)
-        .expect("the claude record")
-        .id;
     h.api("focus.region", json!({"region": "sidebar_agents"}))
         .await
         .unwrap();
     h.key(h.client.clone(), "j").await;
     h.frame(h.client.clone()).await;
-    assert_eq!(
-        h.model().client(&h.client).unwrap().agents_cursor,
-        Some(exited.clone()),
-        "the cursor is on the record this test is about to remove"
-    );
+    let doomed = h
+        .model()
+        .client(&h.client)
+        .unwrap()
+        .agents_cursor
+        .clone()
+        .expect("the cursor is on a row");
+    let kind = h
+        .agents()
+        .await
+        .into_iter()
+        .find(|a| a.id == doomed)
+        .expect("the record the cursor names")
+        .kind;
 
     h.api("focus.pane", json!({})).await.unwrap();
-    h.api("agent.dismiss", json!({"agent": exited.to_string()}))
-        .await
-        .unwrap();
+    let payload = match kind {
+        AgentKind::Claude => CLAUDE_ENDS.to_string(),
+        other => format!(
+            "{{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"x1\",\"kind\":\"{other}\"}}"
+        ),
+    };
+    let pane = match kind {
+        AgentKind::Claude => first_pane,
+        _ => h.focused_pane(h.client.clone()),
+    };
+    h.report(pane, kind, &payload).await;
     h.api("focus.region", json!({"region": "sidebar_agents"}))
         .await
         .unwrap();
     let cursor = h.model().client(&h.client).unwrap().agents_cursor.clone();
     assert!(
-        cursor.is_some() && cursor != Some(exited),
+        cursor.is_some() && cursor != Some(doomed),
         "the cursor moved to the row that is still there: {cursor:?}"
     );
 }

@@ -24,7 +24,7 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 
 ## Agents
 
-M3 added the agent records. `docs/milestones/m3.md` says what shipped and what is still open, and `docs/decisions/0017` to `0020` record the four choices the code does not explain on its own. Read them before changing agent behaviour.
+M3 added the agent records. `docs/milestones/m3.md` says what shipped and what is still open, and `docs/decisions/0017` to `0020` record the four choices the code does not explain on its own. `0026` and `0027` record what MUX-18 to MUX-23 changed about the two boxes and the transcript reader. Read them before changing agent behaviour.
 
 - One record per AI coding session. `domux_core::model::agent` holds the record and `transition`, a pure function of (state, event), table-tested over every pair. Never add a state or an event without extending that table: a state is a row, an event is a column in every row.
 - Two sources write records: hooks, through `agent.report`, and the observer, in `agents::observer`. The observer does three things and only three: it creates an `unknown` record, it binds a process id to a record a hook made, and it exits a record whose own process is gone. It never sets a state, and `transition` says so: `(s, Observed) => s`.
@@ -32,8 +32,10 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 - An agent nobody reports on is `unknown`, never `idle`. A recap that did not arrive is absent. A session name is absent until the agent sets one. A working word is never shown for a state other than `working`.
 - A record exits when its own process id goes away, or when its pane goes away. Never because the foreground changed: an agent running a tool puts that tool in front, and the tool can itself be an agent.
 - A hook on a record whose session is over changes nothing, down to its last activity time. `SessionStart` with a matching session id is the exception, and it is how a resumed session comes back rather than starting a second record.
-- `unseen` turns on when an agent starts waiting, goes from working to idle, or exits, which is what `agent::attention` answers. It clears when the agent's pane is focused or when input reaches that pane, and on nothing else. Reading the records does not clear it.
-- The row grammar lives in one place, `render::agents_box`. The sidebar and the agents overlay both draw it; the sidebar drops the tab and the recap.
+- `unseen` turns on when an agent starts waiting, goes from working to idle, or exits, which is what `agent::attention` answers. It clears when the agent's pane is focused or when input reaches that pane, and on nothing else. Reading the records does not clear it. It lifts a row in the sort order and brightens its recap; it never colours the dot.
+- A dot is red when the agent is waiting, and never otherwise. The top bar draws no agent count.
+- The row grammar lives in one place, `render::agents_box`. The sidebar and the agents overlay both draw it, and they hold different rows: the sidebar lists the running sessions, flat, and drops the tab and the recap; the overlay lists every record, grouped under a header per project. An exited record with no session id is removed.
+- The recap is the agent's summary of its last turn, and a summary written before the last prompt is not one. The session name is the transcript's last `custom-title`.
 - Installers preview by default. `--apply` backs up the file it patches, writes `path.tmp` and renames, and is idempotent. Never run `--apply` against `~/.claude` or `~/.codex` without the author saying so.
 
 ## Rules

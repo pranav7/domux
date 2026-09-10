@@ -135,8 +135,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     if surface == Surface::SidebarAgents {
         // The sidebar's own Agents box: its rectangle, its narrower form. `render::sidebar`
         // splits the column the same way, so the cursor walks the rows on the screen.
-        let (_, area, _) =
-            crate::render::sidebar::split_column(crate::render::sidebar::sidebar_area(view.size));
+        let (_, area, _) = crate::render::sidebar::split_for(ctx.model, ctx.facts, view.size);
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
         let all = agents_box::rows(
@@ -202,7 +201,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let area = crate::render::overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
         (rows, text_area(area, OVERLAY_PAD).height)
     } else {
-        let area = crate::render::sidebar::projects_area(view.size);
+        let area = crate::render::sidebar::projects_area(ctx.model, ctx.facts, view.size);
         let rows = projects_box::rows(
             ctx.model,
             ctx.facts,

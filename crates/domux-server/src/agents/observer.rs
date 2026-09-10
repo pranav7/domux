@@ -107,6 +107,49 @@ pub fn pane_gone(model: &mut Model, pane: &PaneId, now: &str) -> Vec<Event> {
         .collect()
 }
 
+/// Removes every exited record nothing can ever reach again (MUX-22).
+///
+/// One property, and it is permanent: **the record has no session id.** It was made by the
+/// observer and no hook ever reported on it, so there is no session for `agent.resume` to name,
+/// and no hook can find it again either - `Model::report_agent` matches a returning session by
+/// its id, and a record without one is unreachable by every route there is. It can be dismissed
+/// and nothing else, which is a row asking the reader to tidy up after domux.
+///
+/// **Three near misses that are deliberately left alone**, each because the reason is temporary
+/// and the record is worth more than the row it costs:
+///
+/// - **A pane that is gone, or one another agent has taken over.** `agent.resume` refuses both,
+///   and both free up: the pane comes back, or the reader starts the session themselves and its
+///   `SessionStart` brings this record back with its recap and its name.
+/// - **A kind that does not resume.** Codex and OpenCode carry no resume command in V2.0, and
+///   that is a gap in this release rather than a fact about the record. Pruning on it would
+///   delete rows for a reason that is due to stop being true, and the reader would never meet
+///   `resume::RESUME_UNAVAILABLE`, which is how they learn that the other kinds are coming.
+/// - **Age.** An exited record is not less useful for being old; it is the oldest ones a reader
+///   goes looking for. What made the list unreadable was the sidebar carrying every one of them,
+///   and `RowForm::shows` is where that was answered.
+///
+/// It runs on the tick and on a pane going, so a record is taken as it exits rather than on a
+/// schedule of its own.
+///
+/// Nothing calls `AgentsState::forget_record` after it, and nothing needs to: a record with no
+/// session id never carried a transcript path, so none of them put a transcript in the cache.
+/// The working words are freed by `release_words_of`, off the `AgentDismissed` events below.
+pub fn prune_unresumable(model: &mut Model) -> Vec<Event> {
+    let gone: Vec<_> = model
+        .agents
+        .iter()
+        .filter(|a| a.state == AgentState::Exited && a.session_id.is_none())
+        .map(|a| a.id.clone())
+        .collect();
+    gone.iter()
+        // `dismiss_agent` is the one removal, and it refuses a live record. Every id here is
+        // exited, so the refusal cannot fire; a `flat_map` rather than an unwrap says so
+        // without a panic nobody could act on.
+        .flat_map(|id| model.dismiss_agent(id).unwrap_or_default())
+        .collect()
+}
+
 /// True while any record works, which is what the animation ticker needs to know: a glyph
 /// only turns while there is something for it to report on (principle 7).
 pub fn any_working(model: &Model) -> bool {

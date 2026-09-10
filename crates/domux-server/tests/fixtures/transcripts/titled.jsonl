@@ -1,0 +1,7 @@
+{"type":"user","timestamp":"2026-09-04T10:00:00.000Z","message":{"role":"user","content":"read auth/middleware.go and tidy the session checks"}}
+{"type":"ai-title","aiTitle":"Session check cleanup"}
+{"type":"custom-title","customTitle":"auth-cleanup","sessionId":"c1"}
+{"type":"agent-name","agentName":"auth-cleanup","sessionId":"c1"}
+{"type":"assistant","timestamp":"2026-09-04T10:00:04.100Z","message":{"role":"assistant","content":[{"type":"text","text":"Read the file. This assistant turn names agentName and customTitle in its prose on purpose."}]}}
+{"type":"custom-title","customTitle":"token-refresh-fix","sessionId":"c1"}
+{"type":"agent-name","agentName":"token-refresh-fix","sessionId":"c1"}

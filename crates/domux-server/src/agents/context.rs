@@ -67,7 +67,33 @@ pub fn place_without_tab(model: &Model, agent: &Agent) -> String {
     place(model, agent, false)
 }
 
+/// The name of the project the record's workspace belongs to, and an empty string when the
+/// model no longer holds either. It is the header the agents overlay groups under (MUX-21).
+pub fn project_of(model: &Model, agent: &Agent) -> String {
+    parts(model, agent, false).0
+}
+
+/// `workspace › tab`: the place with the project left off, for a row drawn under that
+/// project's header (MUX-21). The tab is dropped on the same terms as in `place_of`.
+pub fn place_in_project(model: &Model, agent: &Agent) -> String {
+    let (_, workspace, tab) = parts(model, agent, true);
+    match tab {
+        Some(t) => format!("{workspace} › {t}"),
+        None => workspace,
+    }
+}
+
 fn place(model: &Model, agent: &Agent, with_tab: bool) -> String {
+    let (project, ws_name, tab) = parts(model, agent, with_tab);
+    match tab {
+        Some(t) => format!("{project} › {ws_name} › {t}"),
+        None => format!("{project} › {ws_name}"),
+    }
+}
+
+/// The three names a place is made of. Every form above is built from these, so a project
+/// named in one form and left out of another is one lookup either way.
+fn parts(model: &Model, agent: &Agent, with_tab: bool) -> (String, String, Option<String>) {
     let workspace = model.workspace(&agent.workspace);
     let project = workspace
         .and_then(|w| model.project_of_workspace(&w.id))
@@ -80,16 +106,13 @@ fn place(model: &Model, agent: &Agent, with_tab: bool) -> String {
         .and_then(|p| model.pane_location(p))
         .and_then(|l| model.tab(&l.tab))
         .map(|t| t.name.clone().unwrap_or_else(|| t.id.to_string()));
-    match tab {
-        Some(t) => format!("{project} › {ws_name} › {t}"),
-        None => format!("{project} › {ws_name}"),
-    }
+    (project, ws_name, tab)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domux_core::ids::AgentId;
+    use domux_core::ids::{AgentId, PaneId};
     use domux_core::model::agent::{AgentKind, AgentSource};
     use std::path::PathBuf;
 
@@ -116,5 +139,25 @@ mod tests {
             format!("audrey-app › main › {tab}")
         );
         assert_eq!(place_without_tab(&model, &agent), "audrey-app › main");
+        assert_eq!(project_of(&model, &agent), "audrey-app");
+        assert_eq!(place_in_project(&model, &agent), format!("main › {tab}"));
+    }
+
+    /// A record whose workspace the model no longer holds has no project to head it and no
+    /// place under one. Both answer with what they have rather than with a guess (principle 4).
+    #[test]
+    fn a_record_with_no_workspace_has_no_project_and_no_place_under_one() {
+        let model = Model::new(8);
+        let agent = Agent::new(
+            AgentId("a_5e21".into()),
+            AgentKind::Claude,
+            domux_core::ids::WorkspaceId("w_gone".into()),
+            PaneId("p_8f2a".into()),
+            PathBuf::from("/repo"),
+            AgentSource::Hook,
+            "2026-09-04T14:32:00+00:00",
+        );
+        assert_eq!(project_of(&model, &agent), "");
+        assert_eq!(place_in_project(&model, &agent), "");
     }
 }
