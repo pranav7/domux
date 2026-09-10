@@ -50,7 +50,7 @@ async fn glyphs_over(h: &mut Harness, samples: usize, gap: Duration) -> HashSet<
     let mut seen = HashSet::new();
     for _ in 0..samples {
         let f = h.frame(h.client.clone()).await;
-        let line = row_of(&f, "● claude").to_string();
+        let line = row_of(&f, "claude ").to_string();
         for g in GLYPH_FRAMES {
             if line.contains(g) {
                 seen.insert(g);
@@ -109,13 +109,13 @@ async fn the_word_stands_still_while_the_glyph_turns() {
     h.report(pane.clone(), AgentKind::Claude, CLAUDE_WORKS)
         .await;
     let f = open_overlay(&mut h).await;
-    let first = word_on(row_of(&f, "● claude")).to_string();
+    let first = word_on(row_of(&f, "claude ")).to_string();
 
     let mut glyphs = HashSet::new();
     for _ in 0..8 {
         tokio::time::sleep(Duration::from_millis(90)).await;
         let f = h.frame(h.client.clone()).await;
-        let line = row_of(&f, "● claude");
+        let line = row_of(&f, "claude ");
         assert_eq!(
             word_on(line),
             first,
@@ -154,11 +154,11 @@ async fn two_working_agents_never_share_a_word() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("● codex") && f.contains("● claude"),
+            |f| f.contains("codex ") && f.contains("claude "),
             Duration::from_secs(2),
         )
         .await;
-    let claude = word_on(row_of(&f, "● claude")).to_string();
-    let codex = word_on(row_of(&f, "● codex")).to_string();
+    let claude = word_on(row_of(&f, "claude ")).to_string();
+    let codex = word_on(row_of(&f, "codex ")).to_string();
     assert_ne!(claude, codex, "never the same word twice on screen:\n{f}");
 }

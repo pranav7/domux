@@ -37,9 +37,19 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
         });
     };
     let now = ctx.deps.clock.now().to_rfc3339();
-    let AgentReportOutcome {
+    // `None` is a hook from a session domux is not tracking: no record on the pane, no record
+    // with that session id, and not a `SessionStart` to make one. Nothing changed, and nothing
+    // failed, so the hook is answered rather than refused (decision record 0028).
+    let Some(AgentReportOutcome {
         agent, to, events, ..
-    } = ctx.model.report_agent(&pane, p.kind, parsed, &now)?;
+    }) = ctx.model.report_agent(&pane, p.kind, parsed, &now)?
+    else {
+        return ok(AgentReportResult {
+            agent: None,
+            state: None,
+            context: None,
+        });
+    };
     // `to` is `None` when the report ended the session, in which case `Model::report_agent`
     // has already removed the record. Nothing below may run: there is no row left to write a
     // recap or a session name onto (decision record 0028).

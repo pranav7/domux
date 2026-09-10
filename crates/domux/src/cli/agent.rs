@@ -267,7 +267,6 @@ mod tests {
             (AgentState::Waiting, "waiting"),
             (AgentState::Compacting, "compacting"),
             (AgentState::Idle, "idle"),
-            (AgentState::Exited, "exited"),
             (AgentState::Unknown, "unknown"),
         ] {
             let mut a = info();

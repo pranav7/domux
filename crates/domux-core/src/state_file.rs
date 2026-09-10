@@ -430,14 +430,6 @@ mod tests {
         );
     }
 
-    fn fixture_v3() -> String {
-        std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/fixtures/state/v3.json"
-        ))
-        .unwrap()
-    }
-
     /// Every rung of the ladder, from the oldest fixture to the current version.
     #[test]
     fn the_old_fixtures_migrate_to_the_current_schema() {

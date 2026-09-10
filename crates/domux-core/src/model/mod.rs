@@ -1557,7 +1557,8 @@ impl Model {
 }
 
 /// What `report_agent` did: the record the payload landed on, the states it moved between,
-/// whether the report made the record, and the events to publish.
+/// whether the report made the record, and the events to publish. `report_agent` answers
+/// `None` when the payload landed on no record at all.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentReportOutcome {
     pub agent: AgentId,
@@ -1601,7 +1602,7 @@ impl Model {
         kind: AgentKind,
         report: AgentReport,
         now: &str,
-    ) -> Result<AgentReportOutcome, ApiError> {
+    ) -> Result<Option<AgentReportOutcome>, ApiError> {
         let loc = self.pane_location(pane).ok_or_else(|| {
             ApiError::not_found(format!(
                 "pane {pane} does not exist; the hook ran outside a domux pane or the pane closed"
@@ -1653,6 +1654,13 @@ impl Model {
                     true,
                 )
             }
+            // Nothing on this pane and nothing with this session id. Only `SessionStart`
+            // makes a record: every other hook is a message from a session domux is not
+            // tracking, and inventing a record for one is how a hook arriving after
+            // `SessionEnd` would leave a row behind that nothing could take away (decision
+            // record 0028). A session domux missed the start of still gets a record, from the
+            // observer, the moment its process is in front of a pane.
+            (None, None) if event != AgentEvent::SessionStart => return Ok(None),
             (None, None) => (
                 self.new_agent(kind, &loc, pane, AgentSource::Hook, now)?,
                 true,
@@ -1676,13 +1684,13 @@ impl Model {
         if to.is_none() {
             let id = a.id.clone();
             events.extend(self.end_record(index));
-            return Ok(AgentReportOutcome {
+            return Ok(Some(AgentReportOutcome {
                 agent: id,
                 from,
                 to: None,
                 created,
                 events,
-            });
+            }));
         }
         let to = to.expect("the ending case returned above");
         if a.pane.as_ref() != Some(pane) {
@@ -1724,13 +1732,13 @@ impl Model {
                 unseen: true,
             });
         }
-        Ok(AgentReportOutcome {
+        Ok(Some(AgentReportOutcome {
             agent: id,
             from,
             to: Some(to),
             created,
             events,
-        })
+        }))
     }
 
     /// Adds an `unknown` record on `pane` and answers with its index. The caller applies the
@@ -3525,6 +3533,7 @@ mod tests {
                 hook(AgentEvent::SessionStart, "sid-1"),
                 T0,
             )
+            .unwrap()
             .unwrap();
         assert!(out.created);
         assert_eq!(
@@ -3582,6 +3591,7 @@ mod tests {
                 hook(AgentEvent::UserPromptSubmit, "sid-2"),
                 T1,
             )
+            .unwrap()
             .unwrap();
         assert_eq!(out.agent, id);
         assert!(!out.created);
@@ -3602,6 +3612,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         m.report_agent(
             &pane,
@@ -3609,11 +3620,13 @@ mod tests {
             hook(AgentEvent::UserPromptSubmit, "s"),
             T0,
         )
+        .unwrap()
         .unwrap();
         let mut waiting = hook(AgentEvent::Notification, "s");
         waiting.reason = Some("Claude needs your permission to use Bash".into());
         let out = m
             .report_agent(&pane, AgentKind::Claude, waiting, T1)
+            .unwrap()
             .unwrap();
         assert!(out.events.contains(&Event::AgentUnseenChanged {
             agent: id.clone(),
@@ -3630,6 +3643,7 @@ mod tests {
                 hook(AgentEvent::PreToolUse, "s"),
                 T1,
             )
+            .unwrap()
             .unwrap();
         assert!(
             !out.events
@@ -3655,6 +3669,7 @@ mod tests {
         );
         let out = m
             .report_agent(&pane, AgentKind::Claude, hook(AgentEvent::Stop, "s"), T1)
+            .unwrap()
             .unwrap();
         assert_eq!(
             (out.from, out.to),
@@ -3669,6 +3684,7 @@ mod tests {
                 hook(AgentEvent::SessionEnd, "s"),
                 T1,
             )
+            .unwrap()
             .unwrap();
         assert_eq!(out.to, None, "the session ended");
         assert!(out.events.contains(&Event::AgentExited {
@@ -3692,6 +3708,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         let out = m
             .report_agent(
@@ -3700,6 +3717,7 @@ mod tests {
                 hook(AgentEvent::SessionStart, "s2"),
                 T1,
             )
+            .unwrap()
             .unwrap();
         assert!(out.created);
         assert_ne!(out.agent, first);
@@ -3755,6 +3773,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         let out = m
             .report_agent(
@@ -3763,6 +3782,7 @@ mod tests {
                 hook(AgentEvent::SessionEnd, "s1"),
                 T0,
             )
+            .unwrap()
             .unwrap();
         assert_eq!(out.to, None);
         assert!(out.events.contains(&Event::AgentExited {
@@ -3778,6 +3798,7 @@ mod tests {
                 hook(AgentEvent::SessionStart, "s2"),
                 T0,
             )
+            .unwrap()
             .unwrap()
             .agent;
         assert_eq!(
@@ -3803,6 +3824,7 @@ mod tests {
         let mk = |m: &mut Model, p: &PaneId, sid: &str, t: &str| {
             m.report_agent(p, AgentKind::Claude, hook(AgentEvent::SessionStart, sid), t)
                 .unwrap()
+                .unwrap()
                 .agent
         };
         let idle_seen = mk(&mut m, &ids[0].1, "idle-seen", "2026-09-04T14:00:00+00:00");
@@ -3818,6 +3840,7 @@ mod tests {
             hook(AgentEvent::UserPromptSubmit, "working-old"),
             "2026-09-04T14:01:00+00:00",
         )
+        .unwrap()
         .unwrap();
         let working_new = mk(
             &mut m,
@@ -3831,6 +3854,7 @@ mod tests {
             hook(AgentEvent::UserPromptSubmit, "working-new"),
             "2026-09-04T14:05:00+00:00",
         )
+        .unwrap()
         .unwrap();
         let waiting = mk(&mut m, &ids[3].1, "waiting", "2026-09-04T14:03:00+00:00");
         m.report_agent(
@@ -3839,6 +3863,7 @@ mod tests {
             hook(AgentEvent::Notification, "waiting"),
             "2026-09-04T14:03:00+00:00",
         )
+        .unwrap()
         .unwrap();
         let idle_unseen = mk(
             &mut m,
@@ -3852,6 +3877,7 @@ mod tests {
             hook(AgentEvent::UserPromptSubmit, "idle-unseen"),
             "2026-09-04T14:04:00+00:00",
         )
+        .unwrap()
         .unwrap();
         m.report_agent(
             &ids[4].1,
@@ -3859,6 +3885,7 @@ mod tests {
             hook(AgentEvent::Stop, "idle-unseen"),
             "2026-09-04T14:04:30+00:00",
         )
+        .unwrap()
         .unwrap();
         // Compacting shares the working rank, so its place is decided by last activity
         // alone: between the two working records rather than beside them.
@@ -3869,6 +3896,7 @@ mod tests {
             hook(AgentEvent::PreCompact, "compacting"),
             "2026-09-04T14:03:30+00:00",
         )
+        .unwrap()
         .unwrap();
         let (unknown, _) = m.observe_agent(
             &ids[5].1,
@@ -3911,6 +3939,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         assert_eq!(m.resolve_agent_target(a.as_str()).unwrap(), a);
         assert_eq!(
@@ -3927,6 +3956,7 @@ mod tests {
                 hook(AgentEvent::SessionStart, "s2"),
                 T0,
             )
+            .unwrap()
             .unwrap()
             .agent;
         let err = m.resolve_agent_target("main").unwrap_err();
@@ -3946,6 +3976,7 @@ mod tests {
             hook(AgentEvent::SessionEnd, "s2"),
             T0,
         )
+        .unwrap()
         .unwrap();
         assert_eq!(
             m.resolve_agent_target("main").unwrap(),
@@ -3967,6 +3998,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         m.set_agent_recap(&claude, Some("Wrote the migration".into()));
         let out = m
@@ -3976,6 +4008,7 @@ mod tests {
                 hook(AgentEvent::SessionStart, "s2"),
                 T1,
             )
+            .unwrap()
             .unwrap();
         assert!(out.created);
         assert_ne!(out.agent, claude);
@@ -4008,6 +4041,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         let (placeholder, _) = m.observe_agent(&second, AgentKind::Codex, Some(7), T1);
         let out = m
@@ -4017,6 +4051,7 @@ mod tests {
                 hook(AgentEvent::UserPromptSubmit, "s1"),
                 T1,
             )
+            .unwrap()
             .unwrap();
         assert_eq!(out.agent, claude, "the session is the same record");
         assert!(
@@ -4045,6 +4080,7 @@ mod tests {
                 T0,
             )
             .unwrap()
+            .unwrap()
             .agent;
         m.report_agent(
             &pane,
@@ -4052,6 +4088,7 @@ mod tests {
             hook(AgentEvent::Notification, "s1"),
             T1,
         )
+        .unwrap()
         .unwrap();
         assert!(m.agent(&id).unwrap().unseen, "waiting turned the dot on");
         m.set_agent_recap(&id, Some("Read the transcript".into()));
@@ -4073,6 +4110,7 @@ mod tests {
                 hook(AgentEvent::SessionStart, "s2"),
                 T1,
             )
+            .unwrap()
             .unwrap()
             .agent;
         assert!(
@@ -4116,6 +4154,7 @@ mod tests {
                     T0,
                 )
                 .unwrap()
+                .unwrap()
                 .agent;
             if clear_the_workspace {
                 m.remove_agents_of_workspace(&ws);
@@ -4126,6 +4165,7 @@ mod tests {
                     hook(AgentEvent::SessionEnd, "s1"),
                     T0,
                 )
+                .unwrap()
                 .unwrap();
             }
             assert!(m.agents.is_empty());
@@ -4154,6 +4194,7 @@ mod tests {
             hook(AgentEvent::SessionStart, "s1"),
             T0,
         )
+        .unwrap()
         .unwrap();
         let (placeholder, _) = m.observe_agent(&second, AgentKind::Codex, Some(7), T1);
         m.report_agent(
@@ -4162,6 +4203,7 @@ mod tests {
             hook(AgentEvent::UserPromptSubmit, "s1"),
             T1,
         )
+        .unwrap()
         .unwrap();
         assert!(m.agent(&placeholder).is_none());
         m.reseed(7);
@@ -4187,6 +4229,7 @@ mod tests {
             hook(AgentEvent::SessionStart, "s1"),
             T0,
         )
+        .unwrap()
         .unwrap();
         m.report_agent(
             &split,
@@ -4194,6 +4237,7 @@ mod tests {
             hook(AgentEvent::SessionStart, "s2"),
             T0,
         )
+        .unwrap()
         .unwrap();
         let err = m.resolve_agent_target("main/pr1").unwrap_err();
         assert_eq!(err.code, crate::api::ErrorCode::Ambiguous);

@@ -8,7 +8,7 @@
 
 use domux_core::config::Config;
 use domux_core::ids::PaneId;
-use domux_core::model::agent::{AgentKind, AgentState};
+use domux_core::model::agent::AgentKind;
 use domux_core::model::{Focus, Overlay, RegionKind};
 use domux_server::testing::{row, Harness};
 use serde_json::json;
@@ -16,7 +16,6 @@ use std::time::Duration;
 
 const CLAUDE_STARTS: &str = r#"{"hook_event_name":"SessionStart","session_id":"c1"}"#;
 const CLAUDE_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"c1"}"#;
-const CLAUDE_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#;
 const CODEX_STARTS: &str = r#"{"hook_event_name":"SessionStart","session_id":"x1"}"#;
 /// Codex's waiting event (`agents::hooks::parse_codex`).
 const CODEX_WAITS: &str = r#"{"hook_event_name":"PermissionRequest","session_id":"x1"}"#;
@@ -42,15 +41,6 @@ async fn two_agents(h: &mut Harness) -> (PaneId, PaneId) {
     h.report(second.clone(), AgentKind::Codex, CODEX_WAITS)
         .await;
     (first, second)
-}
-
-/// One claude that started and ended. The exited row is the only row that names the resume
-/// key, so a fixture without one leaves that half of the row untested.
-async fn one_exited_agent(h: &mut Harness) {
-    let pane = h.focused_pane(h.client.clone());
-    h.report(pane.clone(), AgentKind::Claude, CLAUDE_STARTS)
-        .await;
-    h.report(pane.clone(), AgentKind::Claude, CLAUDE_ENDS).await;
 }
 
 async fn open_overlay(h: &mut Harness) -> String {
@@ -142,8 +132,8 @@ async fn leader_a_opens_one_box_with_a_footer_and_the_cursor_on_the_first_row() 
     );
     // And the frame marks that row: the fill is on the cursor's line and on no other
     // (interface spec 5.3), so a cursor the box never read would fail here too.
-    let codex = row_holding(&f, "● codex");
-    let claude = row_holding(&f, "● claude");
+    let codex = row_holding(&f, "codex ");
+    let claude = row_holding(&f, "claude ");
     assert!(
         style_at(&f, codex, BOX_INNER).contains(FILL),
         "the fill is on the cursor's row:\n{f}"
@@ -159,8 +149,8 @@ async fn the_rows_are_the_three_line_form_with_the_waiting_agent_first() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     two_agents(&mut h).await;
     let f = open_overlay(&mut h).await;
-    let codex_line = row_holding(&f, "● codex");
-    let claude_line = row_holding(&f, "● claude");
+    let codex_line = row_holding(&f, "codex ");
+    let claude_line = row_holding(&f, "claude ");
     assert!(codex_line < claude_line, "waiting sorts first:\n{f}");
     // Line 2 is `workspace › tab`, which is what tells the overlay's row form from the
     // sidebar's: the project is on the header above the group (MUX-21), where the sidebar's
@@ -214,7 +204,7 @@ async fn j_and_k_move_the_cursor_and_enter_opens_the_agents_pane_and_clears_unse
     );
     // The fill went with the cursor, so the reader can see which row `Enter` will act on.
     assert!(
-        style_at(&f, row_holding(&f, "● claude"), BOX_INNER).contains(FILL),
+        style_at(&f, row_holding(&f, "claude "), BOX_INNER).contains(FILL),
         "the fill followed the cursor:\n{f}"
     );
     h.key(h.client.clone(), "k").await;
@@ -309,9 +299,9 @@ async fn slash_filters_the_box_and_esc_restores_the_footer() {
             Duration::from_secs(2),
         )
         .await;
-    assert!(f.contains("● codex"), "{f}");
+    assert!(f.contains("codex "), "{f}");
     assert!(
-        !f.contains("● claude"),
+        !f.contains("claude "),
         "the claude row was filtered out:\n{f}"
     );
     assert!(
@@ -326,7 +316,7 @@ async fn slash_filters_the_box_and_esc_restores_the_footer() {
             Duration::from_secs(2),
         )
         .await;
-    assert!(f.contains("● claude"), "esc cleared the filter:\n{f}");
+    assert!(f.contains("claude "), "esc cleared the filter:\n{f}");
     assert!(
         f.contains("┌ Agents"),
         "the first esc clears the filter and does not close the overlay:\n{f}"
@@ -352,7 +342,7 @@ async fn a_filter_with_no_matches_says_so_and_offers_the_key_that_clears_it() {
         "{f}"
     );
     assert!(
-        !f.contains("● codex"),
+        !f.contains("codex "),
         "and no row is left under the message:\n{f}"
     );
 }
@@ -407,73 +397,6 @@ async fn the_overlay_is_centred_between_60_and_120_columns_and_three_rows_down()
     assert_eq!(left, 40, "and still centred:\n{f}");
 }
 
-/// The exited row is the one row that names the resume key, and it names the configured one
-/// (principle 3). Nothing else in M3 draws `AgentsView::resume_key`, so without this fixture
-/// blanking that field would break no test until Task 18.
-#[tokio::test]
-async fn an_exited_row_names_the_configured_resume_key() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
-    one_exited_agent(&mut h).await;
-    let f = open_overlay(&mut h).await;
-    let line = row(&f, row_holding(&f, "● claude"));
-    assert!(
-        line.contains("exited"),
-        "the activity names the state:\n{f}"
-    );
-    assert!(
-        line.contains("⏎ resume"),
-        "and then the key that resumes it:\n{f}"
-    );
-}
-
-/// Enter on an exited row runs `agent.resume` and keeps the overlay open: resume is not a
-/// navigation, so leaving the list is wrong (assumption 28). Which method the row reached is
-/// pinned by the result, which carries the command `agent.resume` typed; what it must never
-/// reach is `agent.focus`, which refuses an exited record.
-///
-/// This test read the refusal `agent.resume` answered before Task 18 built it, and pinned the
-/// code word to say which method the row had reached. `agent_resume.rs` owns the resuming; what
-/// is still this file's is that the row goes to that method and that the list stays up.
-#[tokio::test]
-async fn enter_on_an_exited_row_reaches_resume_and_leaves_the_overlay_open() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
-    one_exited_agent(&mut h).await;
-    let before = h.focused_pane(h.client.clone());
-    open_overlay(&mut h).await;
-    let exited = h.agents().await[0].id.clone();
-    assert_eq!(h.agents().await[0].state, AgentState::Exited);
-    let out = h.api("list.activate", json!({})).await.unwrap();
-    assert_eq!(
-        out["agent"],
-        exited.to_string(),
-        "the row reached agent.resume, with the record under the cursor: {out}"
-    );
-    assert!(
-        out["command"]
-            .as_str()
-            .expect("the result carries the command")
-            .contains("claude --resume 'c1'"),
-        "and it resumed that record's own session: {out}"
-    );
-    let f = h.frame(h.client.clone()).await;
-    assert!(f.contains("┌ Agents"), "the overlay stayed open:\n{f}");
-    // Over the API, so nothing else composed this frame. A key gets one from `Core::key`
-    // whatever the handler did, and every other test of this footer presses one; here the
-    // result line is only on the screen because setting it marked the view (principle 8).
-    assert!(
-        f.contains("Resumed claude in "),
-        "and the footer carries the result, with no key to have redrawn it:\n{f}"
-    );
-    let view = h.model().client(&h.client).unwrap().clone();
-    assert_eq!(view.overlay, Some(Overlay::Agents));
-    assert_eq!(view.agents_cursor, Some(exited), "the cursor did not move");
-    assert_eq!(
-        h.focused_pane(h.client.clone()),
-        before,
-        "and the keys did not go into a pane"
-    );
-}
-
 /// `list.down` keeps the filled row in view by moving `ClientView.agents_scroll`, the same way
 /// M2's handlers keep `projects_scroll` (interface spec 12.2). A 12 row screen leaves the box
 /// two lines for rows, once its border and its end pads are off (decision record 0023), which
@@ -489,12 +412,12 @@ async fn list_down_scrolls_the_box_to_keep_the_filled_row_in_view() {
         0,
         "the overlay opens at the top:\n{f}"
     );
-    assert!(f.contains("● codex"), "the first row is in view:\n{f}");
+    assert!(f.contains("codex "), "the first row is in view:\n{f}");
     h.key(h.client.clone(), "j").await;
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("● claude"),
+            |f| f.contains("claude "),
             Duration::from_secs(2),
         )
         .await;
@@ -504,7 +427,7 @@ async fn list_down_scrolls_the_box_to_keep_the_filled_row_in_view() {
         "the box scrolled to bring the second row in:\n{f}"
     );
     assert!(
-        !f.contains("● codex"),
+        !f.contains("codex "),
         "and the first row's first line went with it:\n{f}"
     );
 }
@@ -641,7 +564,7 @@ async fn reopening_the_overlay_starts_with_no_filter_and_the_box_at_the_top() {
         view.agents_scroll, 0,
         "and the box is back at the top:\n{f}"
     );
-    assert!(f.contains("● codex"), "so the first row is in view:\n{f}");
+    assert!(f.contains("codex "), "so the first row is in view:\n{f}");
 }
 
 /// An overlay opened over another comes back when this one closes (interface spec 12.7). Only
@@ -679,67 +602,6 @@ async fn the_overlay_opens_over_another_and_gives_it_back_when_it_closes() {
         view.focus,
         Focus::Region(RegionKind::Switcher),
         "and its box has the keys again"
-    );
-}
-
-/// The box draws from the scroll the model remembers, not from the top of the list.
-///
-/// `ListBox::render` corrects that number whenever there is a filled row, so the only state in
-/// which the remembered scroll reaches the screen is one with no fill and a list taller than
-/// the box: the cursor names a record that is no longer in the list. Dismissing the record the
-/// cursor is on is how a reader gets there.
-#[tokio::test]
-async fn the_box_draws_from_the_remembered_scroll_when_the_cursor_names_no_row() {
-    // 13 rows and not 12: the box spends its last row on the footer (MUX-16), so a screen one
-    // row taller is what leaves it the two lines of rows this fixture is counted in.
-    let mut h = Harness::start(Config::default(), 100, 13).await;
-    two_agents(&mut h).await;
-    h.api("pane.split", json!({"dir": "down"})).await.unwrap();
-    let third = h.focused_pane(h.client.clone());
-    h.report(
-        third.clone(),
-        AgentKind::Claude,
-        r#"{"hook_event_name":"SessionStart","session_id":"c2"}"#,
-    )
-    .await;
-    h.report(
-        third.clone(),
-        AgentKind::Claude,
-        r#"{"hook_event_name":"SessionEnd","session_id":"c2"}"#,
-    )
-    .await;
-    // Waiting, then working, then exited (interface spec 6.7): a project header, then three
-    // rows of two lines with a blank between them, in a box two lines high.
-    let listed = h.agents().await;
-    assert_eq!(listed.len(), 3);
-    assert_eq!(listed[2].state, AgentState::Exited);
-    let doomed = listed[2].id.clone();
-    open_overlay(&mut h).await;
-    h.key(h.client.clone(), "j").await;
-    h.frame(h.client.clone()).await;
-    h.key(h.client.clone(), "j").await;
-    h.frame(h.client.clone()).await;
-    let view = h.model().client(&h.client).unwrap().clone();
-    assert_eq!(view.agents_cursor.as_ref(), Some(&doomed));
-    assert_eq!(view.agents_scroll, 7, "the box scrolled to the last row");
-    h.api("agent.dismiss", json!({"agent": doomed.to_string()}))
-        .await
-        .unwrap();
-    let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("● claude"),
-            Duration::from_secs(2),
-        )
-        .await;
-    assert_eq!(
-        h.model().client(&h.client).unwrap().agents_scroll,
-        7,
-        "nothing reset the remembered scroll:\n{f}"
-    );
-    assert!(
-        !f.contains("● codex"),
-        "so the box is still scrolled past the first row's first line:\n{f}"
     );
 }
 

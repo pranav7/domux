@@ -421,7 +421,6 @@ mod tests {
     use super::*;
     use crate::render::list_box::filter_rows;
     use domux_core::ids::AgentId;
-    use domux_core::keymap::Keymap;
     use domux_core::model::agent::{AgentKind, AgentState};
     use ratatui::style::Modifier;
 
@@ -458,7 +457,6 @@ mod tests {
             agents: entries,
             glyph: "✶",
             now: now(),
-            resume_key: Keymap::defaults().list_key_for(RESUME_ACTION),
         }
     }
 
@@ -515,12 +513,12 @@ mod tests {
         assert_eq!(
             text(&rows[0]),
             vec![
-                "● auth-cleanup  ✶ Percolating…",
+                "auth-cleanup  ✶ Percolating…",
                 "claude · auth cleanup › pr1",
                 "※ Replaced three session checks with one guard in auth/middleware.go.",
             ]
         );
-        let name = &rows[0].lines[0].spans[2];
+        let name = &rows[0].lines[0].spans[0];
         assert_eq!(name.content, "auth-cleanup");
         assert_eq!(name.style.fg, Some(theme::TEXT), "a name reads in text");
         assert!(name.style.add_modifier.contains(Modifier::BOLD), "and bold");
@@ -542,13 +540,13 @@ mod tests {
     fn an_unnamed_agent_puts_the_kind_on_line_1_and_the_place_alone_on_line_2() {
         let v = view(vec![entry(AgentState::Working, None, AgentKind::Codex)]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "● codex  ✶ Percolating…");
+        assert_eq!(text(&rows[0])[0], "codex  ✶ Percolating…");
         assert_eq!(
             text(&rows[0])[1],
             "auth cleanup › pr1",
             "the project is on the header, not on the row (MUX-21)"
         );
-        let label = &rows[0].lines[0].spans[2];
+        let label = &rows[0].lines[0].spans[0];
         assert_eq!(label.content, "codex");
         assert_eq!(label.style.fg, Some(theme::CODEX), "a kind standing in");
         assert!(
@@ -568,7 +566,7 @@ mod tests {
         assert_eq!(
             text(&rows[0]),
             vec![
-                "● auth-cleanup  ✶ Percolating…",
+                "auth-cleanup  ✶ Percolating…",
                 "claude · audrey-app › auth cleanup"
             ]
         );
@@ -581,13 +579,12 @@ mod tests {
 
     #[test]
     fn waiting_and_idle_rows_carry_no_state_word() {
-        for state in [AgentState::Waiting, AgentState::Idle] {
+        for (state, line) in [
+            (AgentState::Waiting, "auth-cleanup  ●"),
+            (AgentState::Idle, "auth-cleanup"),
+        ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
-            assert_eq!(
-                text(&overlay_rows(&v, 72)[0])[0],
-                "● auth-cleanup",
-                "{state}"
-            );
+            assert_eq!(text(&overlay_rows(&v, 72)[0])[0], line, "{state}");
         }
     }
 
@@ -599,37 +596,17 @@ mod tests {
             AgentKind::Claude,
         )]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "● auth-cleanup  ✶ Compacting…");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup  ✶ Compacting…");
         let spans = &rows[0].lines[0].spans;
-        assert_eq!(spans[0].style.fg, Some(theme::COMPACTING), "the dot");
+        assert!(
+            spans.iter().all(|s| s.content != DOT),
+            "compacting draws no dot; the glyph and the word say it"
+        );
         assert_eq!(
             spans.last().unwrap().style.fg,
             Some(theme::COMPACTING),
             "the word"
         );
-    }
-
-    #[test]
-    fn an_exited_row_reads_how_long_ago_and_offers_resume() {
-        let v = view(vec![entry(
-            AgentState::Exited,
-            Some("auth-cleanup"),
-            AgentKind::Claude,
-        )]);
-        let overlay = overlay_rows(&v, 72);
-        assert_eq!(
-            text(&overlay[0])[0],
-            "● auth-cleanup  exited 12 min ago   ⏎ resume"
-        );
-        let spans = &overlay[0].lines[0].spans;
-        assert_eq!(
-            spans.last().unwrap().style.fg,
-            Some(theme::BLUE),
-            "the key is blue"
-        );
-        // The sidebar has no row for an exited record at all (MUX-22), so the key it used to
-        // drop has nowhere to be dropped from.
-        assert!(rows(&v, RowForm::Sidebar, 36).is_empty());
     }
 
     #[test]
@@ -640,14 +617,9 @@ mod tests {
         let rows = overlay_rows(&v, 72);
         assert_eq!(
             text(&rows[0]),
-            vec!["● claude  unknown", "auth cleanup › pr1"]
+            vec!["claude  unknown", "auth cleanup › pr1"]
         );
-        assert_eq!(
-            rows[0].lines[0].spans[0].style.fg,
-            Some(theme::OVERLAY0),
-            "a dim dot"
-        );
-        let label = &rows[0].lines[0].spans[2];
+        let label = &rows[0].lines[0].spans[0];
         assert_eq!(label.content, "claude");
         assert_eq!(
             label.style.fg,
@@ -656,36 +628,37 @@ mod tests {
         );
     }
 
-    /// The dot is the state and nothing else, and red is waiting alone.
+    /// A dot is drawn only while an agent is waiting on you, and it is red (decision record
+    /// 0028). Every other state draws none: working and compacting say themselves with the
+    /// glyph and the word, idle has nothing to report, and unknown says so in a word.
     ///
-    /// `unseen` used to win over the state here, so an idle record you had not looked at and
-    /// every exited record carried the same red dot as one holding a permission prompt. Both
-    /// pairs below are in the table for that reason: the same state with `unseen` on and off
-    /// draws the same dot.
+    /// `unseen` is in the table twice because it used to win over the state here, which made
+    /// the dot red on a record that had merely finished while you were looking elsewhere.
     #[test]
-    fn the_dot_colour_is_the_state_and_red_is_waiting_alone() {
+    fn a_dot_is_drawn_for_waiting_and_for_no_other_state() {
         let cases = [
-            (AgentState::Working, false, theme::CLAUDE),
-            (AgentState::Waiting, false, theme::RED),
-            (AgentState::Waiting, true, theme::RED),
-            (AgentState::Idle, true, theme::OVERLAY0),
-            (AgentState::Idle, false, theme::OVERLAY0),
-            (AgentState::Compacting, false, theme::COMPACTING),
-            (AgentState::Exited, false, theme::OVERLAY0),
-            (AgentState::Exited, true, theme::OVERLAY0),
-            (AgentState::Unknown, false, theme::OVERLAY0),
+            (AgentState::Waiting, false, true),
+            (AgentState::Waiting, true, true),
+            (AgentState::Working, false, false),
+            (AgentState::Idle, true, false),
+            (AgentState::Idle, false, false),
+            (AgentState::Compacting, false, false),
+            (AgentState::Unknown, false, false),
         ];
-        for (state, unseen, colour) in cases {
+        for (state, unseen, dotted) in cases {
             let mut e = entry(state, Some("x"), AgentKind::Claude);
             e.unseen = unseen;
-            let v = view(vec![e]);
-            let rows = overlay_rows(&v, 72);
-            assert_eq!(rows[0].lines[0].spans[0].content, "●");
-            assert_eq!(
-                rows[0].lines[0].spans[0].style.fg,
-                Some(colour),
-                "{state} unseen={unseen}"
-            );
+            let rows = overlay_rows(&view(vec![e]), 72);
+            let spans = &rows[0].lines[0].spans;
+            let dot = spans.iter().find(|s| s.content == DOT);
+            assert_eq!(dot.is_some(), dotted, "{state} unseen={unseen}");
+            if let Some(dot) = dot {
+                assert_eq!(dot.style.fg, Some(theme::RED), "{state}");
+                assert_ne!(
+                    spans[0].content, DOT,
+                    "the dot follows the name rather than leading the row"
+                );
+            }
         }
     }
 
@@ -782,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn every_row_starts_with_a_dot_and_carries_the_agents_id_as_its_key() {
+    fn every_row_leads_with_its_name_and_carries_the_agents_id_as_its_key() {
         let v = view(vec![entry(AgentState::Idle, None, AgentKind::Opencode)]);
         let rows = overlay_rows(&v, 72);
         assert_eq!(rows[0].key.as_deref(), Some("a_5e21"));
@@ -791,7 +764,10 @@ mod tests {
             "the kind is what / matches when there is no name: {}",
             rows[0].filter_text
         );
-        assert_eq!(rows[0].lines[0].spans[0].content, DOT);
+        assert_eq!(
+            rows[0].lines[0].spans[0].content, "opencode",
+            "the row leads with the label, and an idle row draws nothing after it"
+        );
     }
 
     #[test]
@@ -809,10 +785,10 @@ mod tests {
         );
         assert!(text(&rows[0])[0].starts_with("AUDREY-APP "));
         assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
-        assert_eq!(text(&rows[1])[0], "  ● auth-cleanup", "indented under it");
+        assert_eq!(text(&rows[1])[0], "  auth-cleanup  ●", "indented under it");
         assert!(rows[2].is_blank(), "{:?}", text(&rows[2]));
         assert_eq!(rows[3].key.as_deref(), Some("a_9c04"));
-        assert_eq!(text(&rows[3])[0], "  ● billing-export");
+        assert_eq!(text(&rows[3])[0], "  billing-export");
         // `/` changes what the list holds and never its shape: the filter drops these blanks
         // and rebuilds the same ones between the rows it keeps, header included.
         let both = filter_rows(&rows, "audrey-app");
@@ -858,30 +834,8 @@ mod tests {
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
         let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
         assert_eq!(rows.len(), 3, "two agents and the blank between them");
-        assert_eq!(text(&rows[0])[0], "● auth-cleanup");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup  ●");
         assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
-    }
-
-    /// MUX-22: the sidebar's box is what is running, and the agents overlay is where an exited
-    /// record still has a row to resume from.
-    #[test]
-    fn the_sidebar_drops_the_exited_records_and_the_overlay_keeps_them() {
-        let live = entry(AgentState::Working, Some("auth-cleanup"), AgentKind::Claude);
-        let mut gone = entry(
-            AgentState::Exited,
-            Some("billing-export"),
-            AgentKind::Claude,
-        );
-        gone.id = AgentId("a_9c04".into());
-        let v = view(vec![live, gone]);
-        let sidebar = rows(&v, RowForm::Sidebar, 34);
-        assert_eq!(sidebar.len(), 1);
-        assert_eq!(sidebar[0].key.as_deref(), Some("a_5e21"));
-        let keys: Vec<_> = rows(&v, RowForm::Overlay, 72)
-            .iter()
-            .filter_map(|r| r.key.clone())
-            .collect();
-        assert_eq!(keys, vec!["a_5e21", "a_9c04"]);
     }
 
     /// A record whose workspace the model no longer holds has no project to head it, so its
@@ -892,26 +846,7 @@ mod tests {
         e.project = String::new();
         let rows = rows(&view(vec![e]), RowForm::Overlay, 72);
         assert_eq!(rows.len(), 1);
-        assert_eq!(text(&rows[0])[0], "● orphan");
-    }
-
-    #[test]
-    fn the_resume_hint_names_the_configured_key_and_goes_when_it_is_unbound() {
-        let e = entry(AgentState::Exited, Some("auth-cleanup"), AgentKind::Claude);
-        let mut rebound = view(vec![e.clone()]);
-        rebound.resume_key = Some("o".into());
-        assert_eq!(
-            text(&overlay_rows(&rebound, 72)[0])[0],
-            "● auth-cleanup  exited 12 min ago   o resume",
-            "the label names the binding, not the default"
-        );
-        let mut unbound = view(vec![e]);
-        unbound.resume_key = None;
-        assert_eq!(
-            text(&overlay_rows(&unbound, 72)[0])[0],
-            "● auth-cleanup  exited 12 min ago",
-            "an action bound to nothing names no key"
-        );
+        assert_eq!(text(&rows[0])[0], "orphan");
     }
 
     #[test]

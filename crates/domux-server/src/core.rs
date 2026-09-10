@@ -5295,8 +5295,25 @@ mod tests {
 
     /// The same, carrying a transcript, which is what puts an entry in the recap cache: the
     /// handler reads the recap on `SessionStart`, `UserPromptSubmit` and `Stop`.
+    ///
+    /// It opens the session first when the pane holds no record, because a hook from a session
+    /// domux never saw the start of makes no record at all (decision record 0028), and every
+    /// test below is about the working word rather than about that rule.
     fn hook_with(core: &mut Core, pane: &PaneId, event: &str, transcript: Option<&Path>) {
-        let mut payload = serde_json::json!({"hook_event_name": event, "session_id": "c1"});
+        if event != "SessionStart" && core.model.agent_on_pane(pane).is_none() {
+            send_hook(core, pane, "SessionStart", None, "c1");
+        }
+        send_hook(core, pane, event, transcript, "c1");
+    }
+
+    fn send_hook(
+        core: &mut Core,
+        pane: &PaneId,
+        event: &str,
+        transcript: Option<&Path>,
+        session: &str,
+    ) {
+        let mut payload = serde_json::json!({"hook_event_name": event, "session_id": session});
         if let Some(path) = transcript {
             payload["transcript_path"] = serde_json::json!(path);
         }
@@ -5475,6 +5492,29 @@ mod tests {
     /// One hook payload from `pane` carrying `session`, for the two records that displace
     /// each other below.
     fn hook_session(core: &mut Core, pane: &PaneId, event: &str, session: Option<&str>) {
+        // Each session opens with its own `SessionStart`, for the reason `hook_with` gives.
+        // Keyed on the session id rather than on the pane, because these tests are about one
+        // session taking a pane from another and both have to start.
+        if event != "SessionStart" {
+            let started = session.is_some_and(|id| {
+                core.model
+                    .agents
+                    .iter()
+                    .any(|a| a.session_id.as_deref() == Some(id))
+            });
+            if !started {
+                let mut open = serde_json::json!({ "hook_event_name": "SessionStart" });
+                if let Some(id) = session {
+                    open["session_id"] = serde_json::json!(id);
+                }
+                let method = Method::from_request(
+                    "agent.report",
+                    serde_json::json!({"pane": pane, "kind": "claude", "payload": open}),
+                )
+                .expect("agent.report takes these params");
+                core.dispatch(method, None).expect("agent.report");
+            }
+        }
         let mut payload = serde_json::json!({ "hook_event_name": event });
         if let Some(id) = session {
             payload["session_id"] = serde_json::json!(id);
@@ -5512,8 +5552,8 @@ mod tests {
         let states: Vec<AgentState> = core.model.agents.iter().map(|a| a.state).collect();
         assert_eq!(
             states,
-            vec![AgentState::Exited, AgentState::Working],
-            "the pane changed hands, so one record exited and one is working"
+            vec![AgentState::Working],
+            "the pane changed hands, so one record ended and one is working"
         );
         assert_eq!(
             core.agents.words.in_use(),
@@ -5562,11 +5602,8 @@ mod tests {
             .collect();
         assert_eq!(
             records,
-            vec![
-                (AgentKind::Claude, AgentState::Exited),
-                (AgentKind::Codex, AgentState::Idle)
-            ],
-            "codex took the pane and the claude record exited with it"
+            vec![(AgentKind::Codex, AgentState::Idle)],
+            "codex took the pane and the claude session went with it"
         );
         assert_eq!(
             core.agents.words.in_use(),
@@ -5575,11 +5612,11 @@ mod tests {
         );
     }
 
-    /// The same for the record a resume removes rather than exits. A session-less record the
+    /// The same for a record that is dropped rather than ended. A session-less record the
     /// observer left on a pane is dropped when the session that owns that pane reports from
-    /// it, and a dropped record frees its word like an exited one.
+    /// it, and a dropped record frees its word like any other.
     #[test]
-    fn a_resume_that_drops_a_placeholder_gives_back_the_word_it_held() {
+    fn an_arriving_session_that_drops_a_placeholder_gives_back_the_word_it_held() {
         let dir = tempfile::tempdir().unwrap();
         let (mut core, first) = core_with_a_pane(dir.path());
         let client = attached(&mut core);
@@ -5632,9 +5669,8 @@ mod tests {
             status: Some(0),
         });
 
-        assert_eq!(
-            core.model.agents[0].state,
-            AgentState::Exited,
+        assert!(
+            core.model.agents.is_empty(),
             "the record went with the pane"
         );
         assert_eq!(core.agents.words.in_use(), 0, "and its word went with it");
@@ -5727,45 +5763,31 @@ mod tests {
         );
     }
 
-    /// `api::agent::dismiss` gives back the word of the record it removes.
+    /// A session ending gives back the word of the record it takes and forgets its transcript.
     ///
-    /// The word is put in the pool here rather than by a hook, because no sequence of hooks
-    /// can leave one for a dismiss to find: a record has to be exited before `dismiss_agent`
-    /// will take it, and every way out of `working` frees the word on the way. There are three
-    /// of them and the tests above hold all three: a hook that stops the agent, a pane that
-    /// exits under it, and a report that takes its pane for another session. The third leaked
-    /// a word until Task 17, which is why this is set by hand rather than driven by hooks, and
-    /// also why the line is worth pinning: the pool is finite, an agent id is never reissued,
-    /// and a slot leaked in it is leaked for the life of the server, so a later change that
-    /// makes this path reachable must not depend on someone adding the release back.
+    /// The word is put in the pool by hand rather than by a hook, because every way out of
+    /// `working` already frees it on the way: a hook that stops the agent, a pane that exits
+    /// under it, and a report that takes its pane for another session. The third leaked a word
+    /// until Task 17, which is why the line is worth pinning: the pool is finite, an agent id
+    /// is never reissued, and a slot leaked in it is leaked for the life of the server.
     #[test]
-    fn dismissing_a_record_gives_its_working_word_back_to_the_pool() {
+    fn a_session_ending_gives_its_working_word_back_to_the_pool() {
         let dir = tempfile::tempdir().unwrap();
         let (mut core, pane) = core_with_a_pane(dir.path());
         let transcript = a_transcript(dir.path());
         hook_with(&mut core, &pane, "SessionStart", Some(&transcript));
-        hook(&mut core, &pane, "SessionEnd");
         let id = core.model.agents[0].id.clone();
-        assert_eq!(core.model.agents[0].state, AgentState::Exited);
         assert_eq!(core.agents.recaps.cached(), 1, "the transcript is cached");
         core.agents.words.word_for(&id);
         assert_eq!(core.agents.words.in_use(), 1);
 
-        let method =
-            Method::from_request("agent.dismiss", serde_json::json!({ "agent": id.as_str() }))
-                .expect("agent.dismiss takes these params");
-        core.dispatch(method, None).expect("agent.dismiss");
+        hook(&mut core, &pane, "SessionEnd");
 
         assert!(core.model.agents.is_empty(), "the record is gone");
         assert_eq!(
             core.agents.words.in_use(),
             0,
             "and its word is back in the pool"
-        );
-        assert_eq!(
-            core.agents.recaps.cached(),
-            0,
-            "and its transcript is forgotten"
         );
     }
 }

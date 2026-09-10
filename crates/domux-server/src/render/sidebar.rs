@@ -1111,7 +1111,7 @@ mod tests {
         );
     }
 
-    /// One agent, in the state the caller asks for, with the resume key the keymap gives.
+    /// One agent, in the state the caller asks for.
     fn agents_view(state: AgentState) -> crate::render::agents_box::AgentsView {
         let mut view = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         view.agents.push(crate::render::agents_box::AgentEntry {
@@ -1128,7 +1128,6 @@ mod tests {
             last_activity_at: "2026-09-04T14:30:00+01:00".into(),
             word: "",
         });
-        view.resume_key = Keymap::defaults().list_key_for("list.activate");
         view
     }
 
@@ -1171,24 +1170,19 @@ mod tests {
         line_of(&buf, 0)
     }
 
-    /// Every row in the sidebar's Agents box offers `open`, because every record in it is
-    /// running (MUX-22). The word was `resume` on an exited row until the exited records left
-    /// this surface, and the agents overlay's own exited row carries it now.
+    /// Every row offers `open`, because every record is a running session. The word was
+    /// `resume` on an exited row until decision record 0028 removed both.
     #[test]
-    fn the_hint_row_names_open_for_every_row_in_the_sidebars_box() {
-        assert_eq!(
-            agents_hint(AgentState::Working, true),
-            " ⏎ open · ? more                      "
-        );
-        assert_eq!(
-            agents_hint(AgentState::Exited, true),
-            " ⏎ open · ? more                      ",
-            "an exited record has no row here for the cursor to be on"
-        );
-        assert_eq!(
-            agents_hint(AgentState::Exited, false),
-            " ⏎ open · ? more                      "
-        );
+    fn the_hint_row_names_open_for_every_row_in_the_agents_box() {
+        for state in [AgentState::Working, AgentState::Waiting, AgentState::Idle] {
+            for on_the_cursor in [true, false] {
+                assert_eq!(
+                    agents_hint(state, on_the_cursor),
+                    " ⏎ open · ? more                      ",
+                    "{state} on_the_cursor={on_the_cursor}"
+                );
+            }
+        }
     }
 
     /// An action the reader has bound to nothing drops out of the row rather than naming a
