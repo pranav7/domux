@@ -503,7 +503,7 @@ impl Model {
             "t" => "no free tab id: every draw hit an id already in use or recently closed, so close a tab",
             "p" => "no free pane id: every draw hit an id already in use or recently closed, so close a pane",
             "c" => "no free client id: every draw hit an id already in use or recently closed, so detach a client",
-            "a" => "no free agent id: every draw hit an id already in use or recently closed, so dismiss an exited agent",
+            "a" => "no free agent id: every draw hit an id already in use or recently closed, so close an agent or two",
             // Nothing in this crate passes another prefix. An unknown one still gets a true
             // message rather than a guessed object name.
             _ => "no free id for that kind of object: every draw hit an id already in use or recently closed, so restart the server to clear the recently closed ids",

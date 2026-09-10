@@ -235,19 +235,20 @@ pub fn self_(ctx: &mut Ctx, p: AgentSelfParams) -> Result<Value, ApiError> {
 /// Nothing here clears the dot. `Model::focus_pane` does, for every route to a pane at once,
 /// and this is one of those routes.
 ///
-/// `Liveness::Live`: an exited record has no pane, so a workspace form that answered one would
-/// resolve to a record this refuses two lines later.
+/// Every record has a pane, because a record ends when its session does (decision record 0028).
+/// The refusal below is the narrow case where the pane went between the frame and the key.
 pub fn focus(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
     let id = resolve(ctx, &p)?;
     let client = ctx.view()?;
     let agent = ctx.model.agent(&id).ok_or_else(|| {
         ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
     })?;
-    // An exited record has no pane to go to. Refused rather than not found, and the message
-    // names what to do instead: the record is there, it just has nowhere to put the keys.
+    // A record with no pane, which is a session that ended between the frame and the key.
+    // Refused rather than not found: the record was there a moment ago and there is nowhere
+    // left to put the keys.
     let pane = agent.pane.clone().ok_or_else(|| {
         ApiError::refused(format!(
-            "agent {id} has exited; resume it with {BIN_NAME} agent resume {id}"
+            "agent {id} is no longer running, so it has no pane"
         ))
     })?;
     let tab = ctx

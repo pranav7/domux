@@ -79,7 +79,8 @@ does. What that deletes:
 - `AgentState::Exited`, and with it `Liveness` and `AgentState::is_live`. Every record is live.
 - `observer::prune_unresumable`, whose whole subject was a record nothing could resume.
 - Agent records in the state file. Every process dies with the server, so every record restored
-  was dead on arrival, and `mark_agents_exited_on_restore` existed only to say so.
+  was dead on arrival, and `mark_agents_exited_on_restore` existed only to say so. State schema
+  5 removes the `agents` key; decision 0029 had taken 4 for the stay awake flag.
 
 `transition` answers `Option<AgentState>` now. `None` is the record ending, which is what
 `SessionEnd` and `ProcessGone` mean from every state. The table keeps its property: a state is
