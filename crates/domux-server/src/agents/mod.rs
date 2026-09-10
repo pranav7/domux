@@ -35,16 +35,6 @@ pub struct AgentsState {
 }
 
 impl AgentsState {
-    /// Frees the working word of every record these events say has stopped working or has
-    /// gone. One rule in one place, because the records a change touches are not only the one
-    /// that was asked about: `Model::report_agent` exits the record it takes a pane from and
-    /// removes a placeholder it resumes over, and both of those held a word if they were
-    /// working. The pool is 186 words and an agent id is never reissued, so a word that is
-    /// not freed is a slot lost for the life of the server.
-    ///
-    /// Driven by the events rather than by the caller's own record, because the events are
-    /// what say which records changed. A caller that released only the record it named is how
-    /// the displaced one was missed.
     /// Drops what one record leaves behind when it goes: its working word and its cached
     /// transcript.
     ///
@@ -59,6 +49,16 @@ impl AgentsState {
         }
     }
 
+    /// Frees the working word of every record these events say has stopped working or has
+    /// gone. One rule in one place, because the records a change touches are not only the one
+    /// that was asked about: `Model::report_agent` exits the record it takes a pane from and
+    /// removes a placeholder it resumes over, and both of those held a word if they were
+    /// working. The pool is 186 words and an agent id is never reissued, so a word that is
+    /// not freed is a slot lost for the life of the server.
+    ///
+    /// Driven by the events rather than by the caller's own record, because the events are
+    /// what say which records changed. A caller that released only the record it named is how
+    /// the displaced one was missed.
     pub fn release_words_of(&mut self, events: &[Event]) {
         for e in events {
             match e {
