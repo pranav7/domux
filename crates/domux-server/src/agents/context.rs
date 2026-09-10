@@ -5,6 +5,12 @@
 //! work in M3; `send`, `wait` and `read` answer with an `unavailable` error naming M4 until
 //! M4 fills them in, so the block says so rather than showing an example that fails (M3 plan
 //! assumption 39).
+//!
+//! The block describes that refusal rather than quoting it. There is no one sentence to
+//! quote: each of the three answers its own, naming its own method, and the CLI prints the
+//! error code in front of it. A quotation here would be a fourth wording that nothing keeps
+//! equal to the three in `api::dispatch`, which is how this paragraph came to claim a sentence
+//! the server has never written.
 
 use domux_core::model::{Agent, Model};
 use domux_core::names::{BIN_NAME, PRODUCT_NAME};
@@ -36,7 +42,7 @@ pub fn session_start_context(model: &Model, agent: &Agent) -> String {
          \x20 {bin} whoami    this agent's project, workspace, tab and pane\n\
          \n\
          Messaging between agents is not built yet: {bin} send, {bin} wait and {bin} read\n\
-         answer \"not built yet; messaging arrives in M4\" until then.\n",
+         fail with an error until messaging arrives in M4.\n",
         product = PRODUCT_NAME,
         id = agent.id,
         kind = agent.kind,

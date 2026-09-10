@@ -22,6 +22,19 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 - `cargo run -p domux -- api schema` prints the control API schema.
 - Run `domux2` only in its own Ghostty tab, never inside tmux. `~/bin/domux` is V1 and is never touched; `~/bin/domux2` points at `target/release/domux2`.
 
+## Agents
+
+M3 added the agent records. `docs/milestones/m3.md` says what shipped and what is still open, and `docs/decisions/0009` to `0012` record the four choices the code does not explain on its own. Read them before changing agent behaviour.
+
+- One record per AI coding session. `domux_core::model::agent` holds the record and `transition`, a pure function of (state, event), table-tested over every pair. Never add a state or an event without adding its row.
+- Two sources write records: hooks, through `agent.report`, and the observer, in `agents::observer`. Either may create a record and either may correct one, so hook order does not matter and a lost hook is recovered on the next tick.
+- An agent nobody reports on is `unknown`, never `idle`. A recap that did not arrive is absent. A session name is absent until the agent sets one. A working word is never shown for a state other than `working`.
+- A record exits when its own process id goes away, or when its pane goes away. Never because the foreground changed: an agent running a tool puts that tool in front, and the tool can itself be an agent.
+- A hook on a record whose session is over changes nothing, down to its last activity time. `SessionStart` with a matching session id is the exception, and it is how a resumed session comes back rather than starting a second record.
+- `unseen` turns on when an agent starts waiting, goes from working to idle, or exits, which is what `agent::attention` answers. It clears when the agent's pane is focused or when input reaches that pane, and on nothing else. Reading the records does not clear it.
+- The row grammar lives in one place, `render::agents_box`. The sidebar and the agents overlay both draw it; the sidebar drops the tab and the recap.
+- Installers preview by default. `--apply` backs up the file it patches, writes `path.tmp` and renames, and is idempotent. Never run `--apply` against `~/.claude` or `~/.codex` without the author saying so.
+
 ## Rules
 
 - Work on `v2`, or on a milestone branch (`m1`, `m2`, `m3`) that merges into `v2` by pull request. Never commit to `main`, `master`, or `workspace-*`.
@@ -30,5 +43,5 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 - One implementation per operation: a key, a CLI subcommand and an API call reach the same handler in `domux_server::api`.
 - One core task owns all mutable state. Atomic writes: `path.tmp`, then rename.
 - Test names are `behavior_condition` in snake_case.
-- Prose, comments, help and errors: no em dashes, sentence case, plain words, active voice, one term per concept. Use the words of `2026-09-05-domux-v2-domain-model.md` (outside this repository): screen, top bar, tab row, tab, pane, workpanel, sidebar, switcher, agents overlay, overlay, box, accent, focused region, cursor, fill, hint row, footer, prompt. Never "window" for the screen or "panel" for the sidebar.
+- Prose, comments, help and errors: no em dashes, sentence case, plain words, active voice, one term per concept. Use the words of `2026-09-05-domux-v2-domain-model.md` (outside this repository): screen, top bar, tab row, tab, pane, workpanel, sidebar, switcher, agents overlay, overlay, box, accent, focused region, cursor, fill, hint row, footer, prompt. For agents: agent, kind, session id, session name, state, working word, glyph, unseen, dot (never any other word for it), recap, reason, hook, observer, manifest, resume, dismiss, Agents box, agent row, count, place. Never "window" for the screen, "panel" for the sidebar, or "modal", "popup" or "dialog" for an overlay.
 - Decisions that the specs left open are recorded under `docs/decisions/`; read them before changing the behaviour they describe. Each milestone's protocol and acceptance criteria are under `docs/milestones/`.

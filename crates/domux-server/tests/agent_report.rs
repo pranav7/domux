@@ -51,6 +51,13 @@ async fn a_session_start_creates_an_idle_record_and_answers_with_the_context_blo
     );
     assert!(block.contains("domux2 peek"), "{block}");
     assert!(block.contains("domux2 whoami"), "{block}");
+    // The three verbs M4 fills in are named, and the paragraph says they fail rather than
+    // quoting a sentence: each one refuses in words of its own, naming its own method, so a
+    // quotation in the block would be a fourth wording nothing keeps equal to the other three.
+    for verb in ["domux2 send", "domux2 wait", "domux2 read"] {
+        assert!(block.contains(verb), "{block}");
+    }
+    assert!(block.contains("fail with an error"), "{block}");
     assert!(block.contains("messaging arrives in M4"), "{block}");
     let a = only_agent(&h);
     assert_eq!(a.state, AgentState::Idle);
