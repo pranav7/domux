@@ -51,9 +51,12 @@ When the scan says nothing is working, `Core::animation_tick` returns without to
   window would leave every `frame()` call reading frames until the test timed out. Lowering
   one means raising the other, and the note sits beside the constant.
 - The three interface tests in `tests/agents_animation.rs` are the first tests in this
-  repository whose pass depends on wall-clock progress. The margins are wide (14 looks 90 ms
-  apart, needing 3 distinct frames of 13), but a heavily loaded runner is a new class of flake
-  and the failure message prints the set of frames it saw.
+  repository whose pass depends on a *rate*. Waiting on wall-clock time is not new -
+  `tests/agent_observer.rs` sleeps `A_TICK`, 1200 ms, to be sure the core's one-second tick has
+  run - but that is one deadline elapsing, where these need frames to keep arriving at an
+  interval. The margins are wide (14 looks 90 ms apart, needing 3 distinct frames of 13), but a
+  heavily loaded runner is a new class of flake and the failure message prints the set of
+  frames it saw.
 - `MissedTickBehavior::Skip` and the abort on stop are both untested, deliberately. Forcing a
   missed tick means a sleep in production code or a race in a test, and the consequence of
   getting it wrong is a burst of frames that self-corrects; the abort only makes an ending that

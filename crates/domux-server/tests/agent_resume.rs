@@ -145,8 +145,17 @@ fn overlay(h: &Harness) -> Option<Overlay> {
         .clone()
 }
 
+/// The name says "for its shell to run" because the shell does run it: the line is written
+/// with the carriage return Enter sends, so there is no confirmation step and no prompt left
+/// sitting there for the reader to press Enter on.
+///
+/// What resume does not do is start the process itself. The agent comes back as a child of the
+/// shell that was already in the pane, not as something the server spawned, which is the
+/// distinction this test's earlier name (`..._and_does_not_run_it`) collapsed. That name was
+/// read as "the line waits for you", and a milestone document said so in prose before anyone
+/// opened the body and found this assertion.
 #[tokio::test]
-async fn resume_types_v1s_line_into_the_agents_own_pane_and_does_not_run_it() {
+async fn resume_types_v1s_whole_line_into_the_agents_own_pane_for_its_shell_to_run() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     let (pane, id) = an_exited_claude(&mut h).await;
     let result = h

@@ -26,7 +26,7 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 
 M3 added the agent records. `docs/milestones/m3.md` says what shipped and what is still open, and `docs/decisions/0009` to `0012` record the four choices the code does not explain on its own. Read them before changing agent behaviour.
 
-- One record per AI coding session. `domux_core::model::agent` holds the record and `transition`, a pure function of (state, event), table-tested over every pair. Never add a state or an event without adding its row.
+- One record per AI coding session. `domux_core::model::agent` holds the record and `transition`, a pure function of (state, event), table-tested over every pair. Never add a state or an event without extending that table: a state is a row, an event is a column in every row.
 - Two sources write records: hooks, through `agent.report`, and the observer, in `agents::observer`. The observer does three things and only three: it creates an `unknown` record, it binds a process id to a record a hook made, and it exits a record whose own process is gone. It never sets a state, and `transition` says so: `(s, Observed) => s`.
 - So a record exists whether or not the hooks are installed, and an exit is seen either way, but **a lost hook is not made good later**. A `Stop` that never arrives leaves the row `working` with a turning glyph until the process dies. A row stuck on `working` is what hook loss looks like; go and look rather than waiting.
 - An agent nobody reports on is `unknown`, never `idle`. A recap that did not arrive is absent. A session name is absent until the agent sets one. A working word is never shown for a state other than `working`.
