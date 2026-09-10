@@ -7,6 +7,7 @@ pub mod core;
 pub mod facts;
 pub mod git;
 pub mod input;
+pub mod link;
 pub mod log;
 pub mod mouse;
 pub mod pane;
@@ -136,12 +137,46 @@ impl Clock for FixedClock {
     }
 }
 
+/// Hands a link to whatever the desktop opens it with, behind a trait so no test opens a
+/// browser. What may be handed over at all is `link`'s to decide, not this one's: an
+/// implementation here does what it is told (decision record 0020).
+pub trait Opener: Send + Sync {
+    /// `Ok` means the opener was started, not that anything was displayed: the program it
+    /// hands to reports to the desktop and not back here.
+    fn open(&self, target: &str) -> Result<(), String>;
+}
+
+/// macOS's `open`, which is what a terminal there hands a link to.
+pub struct SystemOpener;
+impl Opener for SystemOpener {
+    fn open(&self, target: &str) -> Result<(), String> {
+        // `--` so a target that begins with a dash is an argument and never a flag. `link`
+        // has already refused everything but an http or https URL and a path that exists, so
+        // this is the second of the two guards rather than the only one.
+        let out = std::process::Command::new("open")
+            .arg("--")
+            .arg(target)
+            .output()
+            .map_err(|e| format!("could not run open: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let said = String::from_utf8_lossy(&out.stderr);
+        let last = said.lines().rev().find(|l| !l.trim().is_empty());
+        Err(match last {
+            Some(line) => line.trim().to_string(),
+            None => format!("open exited {}", out.status),
+        })
+    }
+}
+
 /// What the core needs from the outside world. Tests pass fakes.
 #[derive(Clone)]
 pub struct CoreDeps {
     pub spawner: Arc<dyn PtySpawner>,
     pub inspector: Arc<dyn ProcessInspector>,
     pub clock: Arc<dyn Clock>,
+    pub opener: Arc<dyn Opener>,
     pub id_seed: u64,
 }
 

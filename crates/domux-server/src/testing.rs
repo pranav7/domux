@@ -107,6 +107,38 @@ struct HeadlessClient {
     bells: usize,
 }
 
+/// An opener that opens nothing and remembers what it was handed (MUX-13), so a test can
+/// assert on the link without a browser arriving on the author's screen.
+#[derive(Default)]
+pub struct RecordingOpener {
+    opened: std::sync::Mutex<Vec<String>>,
+    /// What every call answers from now on. `None` is success.
+    refuses_with: std::sync::Mutex<Option<String>>,
+}
+
+impl RecordingOpener {
+    /// Every target handed over, in order.
+    pub fn opened(&self) -> Vec<String> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    /// Makes every call from here on fail with `reason`, for a test about what the reader is
+    /// told when the desktop will not open something.
+    pub fn refuse_with(&self, reason: &str) {
+        *self.refuses_with.lock().unwrap() = Some(reason.to_string());
+    }
+}
+
+impl crate::Opener for RecordingOpener {
+    fn open(&self, target: &str) -> Result<(), String> {
+        self.opened.lock().unwrap().push(target.to_string());
+        match self.refuses_with.lock().unwrap().clone() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+}
+
 pub struct Harness {
     /// The first attached client.
     pub client: ClientId,
@@ -114,6 +146,8 @@ pub struct Harness {
     clients: HashMap<ClientId, HeadlessClient>,
     pub spawner: Option<Arc<FakeSpawner>>,
     pub inspector: Arc<FakeInspector>,
+    /// What a link was handed to. It opens nothing, so no test puts a browser on the screen.
+    pub opener: Arc<RecordingOpener>,
     _tmp: tempfile::TempDir,
     /// Temp directories the harness made on a caller's behalf, kept alive until it drops:
     /// `git_project` hands back a path inside one, and a caller that had to bind the temp
@@ -168,6 +202,7 @@ impl Harness {
             clients: HashMap::new(),
             spawner,
             inspector,
+            opener: Arc::new(RecordingOpener::default()),
             _tmp: tmp,
             kept: Vec::new(),
             state_dir,
@@ -207,6 +242,7 @@ impl Harness {
                 spawner,
                 inspector,
                 clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+                opener: self.opener.clone(),
                 id_seed: 7,
             },
         };
