@@ -2,10 +2,11 @@
 //! attach protocol and keep a buffer. Frames render in the golden format of
 //! `domux_term::Grid::to_text` so a failing test prints a picture.
 
+use crate::command::FakeRunner;
 use crate::core::CoreMsg;
 use crate::pane::{FakeSpawner, PtySpawner, RealSpawner};
 use crate::process::{FakeInspector, ForegroundProcess, ProcessInspector};
-use crate::{load_config, CoreDeps, FixedClock, LoadedConfig, Server, ServerHandle, ServerOptions};
+use crate::{load_config, CoreDeps, LoadedConfig, Server, ServerHandle, ServerOptions};
 use domux_core::api::{AgentInfo, AgentListResult, AgentReportResult, ApiError, Request, Response};
 use domux_core::config::Config;
 use domux_core::facts::{Fact, FactKey};
@@ -80,6 +81,12 @@ pub struct HarnessOptions {
     /// Who observes the facts. Default empty, matching `ServerOptions.providers`: a test
     /// asks for a provider by name here rather than shelling out to git or `gh` by default.
     pub providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+    /// The operating system the server believes it is on. Default `macos`, so a test that
+    /// says nothing gets the same answers on every machine the suite runs on.
+    pub platform: Option<&'static str>,
+    /// The runner every command goes through. Default: a fresh one. A test that has to set a
+    /// program up before the server starts builds its own and passes it here.
+    pub runner: Option<Arc<FakeRunner>>,
 }
 
 impl HarnessOptions {
@@ -93,7 +100,30 @@ impl HarnessOptions {
             project_root: None,
             foreground: None,
             providers: Vec::new(),
+            platform: None,
+            runner: None,
         }
+    }
+}
+
+/// A clock a test can move. It starts where `FixedClock` does, so every frame that has ever
+/// asserted on `14:32` still reads it, and a test that needs time to pass says so.
+pub struct MovableClock(std::sync::Mutex<chrono::DateTime<chrono::Local>>);
+
+impl MovableClock {
+    pub fn at(s: &str) -> MovableClock {
+        MovableClock(std::sync::Mutex::new(crate::FixedClock::at(s).0))
+    }
+
+    pub fn advance(&self, by: Duration) {
+        let mut now = self.0.lock().unwrap();
+        *now += chrono::Duration::from_std(by).expect("a sane step");
+    }
+}
+
+impl crate::Clock for MovableClock {
+    fn now(&self) -> chrono::DateTime<chrono::Local> {
+        *self.0.lock().unwrap()
     }
 }
 
@@ -148,6 +178,11 @@ pub struct Harness {
     pub inspector: Arc<FakeInspector>,
     /// What a link was handed to. It opens nothing, so no test puts a browser on the screen.
     pub opener: Arc<RecordingOpener>,
+    /// What every command was asked to run. It runs nothing, so no test holds this machine
+    /// awake, kills a process or asks for a password.
+    pub runner: Arc<FakeRunner>,
+    /// The server's clock, which a test moves when it is waiting for time to pass.
+    pub clock: Arc<MovableClock>,
     _tmp: tempfile::TempDir,
     /// Temp directories the harness made on a caller's behalf, kept alive until it drops:
     /// `git_project` hands back a path inside one, and a caller that had to bind the temp
@@ -160,6 +195,7 @@ pub struct Harness {
     cols: u16,
     rows: u16,
     providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+    platform: &'static str,
     /// The next process id `set_foreground_for` hands out. Counts up from `FIRST_FAKE_PID` so
     /// every process a test puts in a foreground has its own, and the numbers a failure
     /// prints are the same every run.
@@ -211,6 +247,8 @@ impl Harness {
             spawner,
             inspector,
             opener: Arc::new(RecordingOpener::default()),
+            runner: opts.runner.clone().unwrap_or_default(),
+            clock: Arc::new(MovableClock::at("2026-09-04T14:32:00")),
             _tmp: tmp,
             kept: Vec::new(),
             state_dir,
@@ -220,6 +258,7 @@ impl Harness {
             cols: opts.cols,
             rows: opts.rows,
             providers: opts.providers,
+            platform: opts.platform.unwrap_or("macos"),
             next_pid: FIRST_FAKE_PID,
         };
         h.start_server().await;
@@ -250,12 +289,30 @@ impl Harness {
             deps: CoreDeps {
                 spawner,
                 inspector,
-                clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+                clock: self.clock.clone(),
                 opener: self.opener.clone(),
+                runner: self.runner.clone(),
                 id_seed: 7,
+                platform: self.platform.into(),
             },
         };
         self.server = Some(Server::start(opts).await.expect("server starts"));
+    }
+
+    /// Moves the server's clock on. What is drawn for a length of time - a toast - goes away
+    /// on the tick after the clock passes it, so a test asks for the frame after this.
+    pub fn advance(&self, by: Duration) {
+        self.clock.advance(by);
+    }
+
+    /// This client's screen with its styles, for a test about a colour. `frame` is the text
+    /// of the same buffer.
+    pub fn buffer(&self, client: &ClientId) -> Buffer {
+        self.clients
+            .get(client)
+            .expect("known client")
+            .buffer
+            .clone()
     }
 
     /// Writes a config file into the harness state dir and reloads. For config tests.

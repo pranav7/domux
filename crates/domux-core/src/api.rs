@@ -205,6 +205,8 @@ pub enum Event {
     },
     #[serde(rename = "agent.dismissed")]
     AgentDismissed { agent: AgentId },
+    #[serde(rename = "stay_awake.changed")]
+    StayAwakeChanged { on: bool },
     #[serde(rename = "agent.unseen_changed")]
     AgentUnseenChanged { agent: AgentId, unseen: bool },
 }
@@ -260,6 +262,7 @@ event_names! {
     Event::AgentExited { .. } => "agent.exited",
     Event::AgentDismissed { .. } => "agent.dismissed",
     Event::AgentUnseenChanged { .. } => "agent.unseen_changed",
+    Event::StayAwakeChanged { .. } => "stay_awake.changed",
 }
 
 impl Event {
@@ -631,6 +634,10 @@ pub struct ServerInfo {
     /// not in force - and when the two disagree this is the one that answers keys.
     pub leader: String,
     pub config_error: Option<String>,
+    /// Whether domux is holding this machine awake. Here rather than behind a method of its
+    /// own: it is one more thing about the running server, and `stay-awake status` reads it
+    /// without a call that changes anything.
+    pub stay_awake: bool,
     pub clients: Vec<ClientInfo>,
 }
 
@@ -811,6 +818,11 @@ methods! {
     AgentsOpen = "agents.open": ClientParams => Ack,
     AgentsClose = "agents.close": ClientParams => Ack,
     FocusNextRegion = "focus.next_region": ClientParams => FocusResult,
+    // Stay awake (decision 0029). No parameters: it is one machine-wide hold, so there is no
+    // target to name and no client to answer for.
+    StayAwakeEnable = "stay_awake.enable": NoParams => StayAwakeResult,
+    StayAwakeDisable = "stay_awake.disable": NoParams => StayAwakeResult,
+    StayAwakeToggle = "stay_awake.toggle": NoParams => StayAwakeResult,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1220,6 +1232,16 @@ pub struct AgentResumeResult {
     pub command: String,
 }
 
+/// What stay awake did: whether the machine is now being held awake, and anything the reader
+/// should know that did not stop it. An unsupported platform answers `on: false` with a note
+/// rather than an error, so a startup script that turns it on runs everywhere.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StayAwakeResult {
+    pub on: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceResumeResult {
     pub resumed: Vec<AgentResumeResult>,
@@ -1295,7 +1317,49 @@ mod tests {
         "agents.open",
         "agents.close",
         "focus.next_region",
+        "stay_awake.enable",
+        "stay_awake.disable",
+        "stay_awake.toggle",
     ];
+
+    #[test]
+    fn stay_awake_is_three_methods_a_key_can_reach_with_no_arguments() {
+        for name in [
+            "stay_awake.enable",
+            "stay_awake.disable",
+            "stay_awake.toggle",
+        ] {
+            let m = Method::from_request(name, Value::Null).unwrap();
+            assert_eq!(m.name(), name);
+            let action = crate::keymap::Action::parse(name).unwrap();
+            assert_eq!(Method::from_action(&action).unwrap().name(), name);
+        }
+    }
+
+    #[test]
+    fn the_stay_awake_event_says_whether_the_machine_is_now_held_awake() {
+        let e = Event::StayAwakeChanged { on: true };
+        assert_eq!(e.name(), "stay_awake.changed");
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["event"], "stay_awake.changed");
+        assert_eq!(json["on"], true);
+    }
+
+    #[test]
+    fn a_stay_awake_result_that_could_not_take_the_hold_carries_the_reason() {
+        let r = StayAwakeResult {
+            on: false,
+            note: Some("stay awake works on macOS and Linux, and this machine runs freebsd".into()),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["on"], false);
+        assert!(json["note"].as_str().unwrap().contains("freebsd"));
+        let held = StayAwakeResult {
+            on: true,
+            note: None,
+        };
+        assert!(serde_json::to_value(&held).unwrap()["note"].is_null());
+    }
 
     #[test]
     fn events_serialize_with_dotted_names() {
@@ -1452,6 +1516,9 @@ mod tests {
             ("agents.open", serde_json::json!({})),
             ("agents.close", serde_json::json!({})),
             ("focus.next_region", serde_json::json!({})),
+            ("stay_awake.enable", serde_json::json!({})),
+            ("stay_awake.disable", serde_json::json!({})),
+            ("stay_awake.toggle", serde_json::json!({})),
         ];
         assert_eq!(cases.len(), EXPECTED_METHOD_NAMES.len());
         for (name, mut params) in cases {
@@ -1808,6 +1875,7 @@ mod tests {
                 agent: AgentId("a_5e21".into()),
                 unseen: true,
             },
+            Event::StayAwakeChanged { on: true },
         ];
         assert_eq!(
             samples.len(),

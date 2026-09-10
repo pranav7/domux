@@ -122,7 +122,7 @@ async fn tab_create_select_rename_and_close_update_the_tab_row() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ 2 │ + │                 14:32   Fri 4 Sep |",
+        "| proj › main  1 │ 2 │ + │               14:32   Fri 4 Sep ● |",
         "{f}"
     );
     assert!(
@@ -139,7 +139,7 @@ async fn tab_create_select_rename_and_close_update_the_tab_row() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ 2 tests │ + │           14:32   Fri 4 Sep |"
+        "| proj › main  1 │ 2 tests │ + │         14:32   Fri 4 Sep ● |"
     );
     h.api("tab.select", json!({"tab": "1"})).await.unwrap();
     let f = h
@@ -170,7 +170,7 @@ async fn tab_create_select_rename_and_close_update_the_tab_row() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │                     14:32   Fri 4 Sep |"
+        "| proj › main  1 │ + │                   14:32   Fri 4 Sep ● |"
     );
     let err = h.api("tab.select", json!({"tab": "5"})).await.unwrap_err();
     assert_eq!(
@@ -205,13 +205,13 @@ async fn closing_the_last_pane_in_a_tab_closes_the_tab_and_the_last_tab_is_repla
         first_tab,
         "the client moved to the surviving tab"
     );
-    assert_eq!(row(&f, 0), "| proj › main  1 │ + │ 14:32   Fri 4 Sep |");
+    assert_eq!(row(&f, 0), "| proj › main  1 │ + │ 14:32   Fri 4 … ● |");
     h.exit_pane(first_pane.clone(), Some(0)).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let f = h.frame(h.client.clone()).await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │ 14:32   Fri 4 Sep |",
+        "| proj › main  1 │ + │ 14:32   Fri 4 … ● |",
         "a fresh tab replaced the last one:\n{f}"
     );
     assert_ne!(h.focused_pane(h.client.clone()), first_pane);

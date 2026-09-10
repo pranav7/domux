@@ -157,6 +157,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         draw(&input, &mut buf);
@@ -343,6 +345,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);

@@ -29,6 +29,8 @@ pub fn info(ctx: &mut Ctx) -> Result<Value, ApiError> {
         // The keymap's, not the file's: what answers keys right now.
         leader: ctx.config.keymap.leader.to_string(),
         config_error: ctx.config.error.as_ref().map(|e| e.to_string()),
+        // The hold there is, not the flag saying there should be one.
+        stay_awake: ctx.stay_awake.on(),
         clients,
     })
 }

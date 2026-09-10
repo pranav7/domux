@@ -303,6 +303,8 @@ async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
             clock: Arc::new(SystemClock),
             id_seed: id_seed()?,
             opener: Arc::new(domux_server::SystemOpener),
+            runner: Arc::new(domux_server::command::RealRunner::default()),
+            platform: std::env::consts::OS.into(),
         },
     };
     let handle = Server::start(opts).await?;

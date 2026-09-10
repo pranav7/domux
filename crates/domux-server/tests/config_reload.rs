@@ -127,6 +127,9 @@ async fn unknown_tables_are_warnings_in_the_reload_result_not_errors() {
 /// are the object (`domux.toml line 4`), the state (the parser's own words, cut to the room
 /// with `…`) and the next action (`domux2 config reload`) - principle 9. The message is what
 /// gives way when the room runs short; the next action never is.
+///
+/// The dot past the action is the stay awake light, which keeps its two cells whatever the
+/// bar has to say (decision 0029). The message gives way to it too.
 #[tokio::test]
 async fn the_notice_names_the_file_the_line_and_the_next_action_in_the_room_it_has() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
@@ -145,7 +148,7 @@ async fn the_notice_names_the_file_the_line_and_the_next_action_in_the_room_it_h
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │ domux.toml line 4: invalid string… · domux2 config reload |"
+        "| proj › main  1 │ + │ domux.toml line 4: invalid stri… · domux2 config reload ● |"
     );
     // The same notice whole when there is room for it: the message is elastic, not truncated
     // at the source.
@@ -159,7 +162,7 @@ async fn the_notice_names_the_file_the_line_and_the_next_action_in_the_room_it_h
         .await;
     assert!(
         row(&f, 0).ends_with(
-            "domux.toml line 4: invalid string; expected `\"`, `\'` · domux2 config reload |"
+            "domux.toml line 4: invalid string; expected `\"`, `\'` · domux2 config reload ● |"
         ),
         "{f}"
     );

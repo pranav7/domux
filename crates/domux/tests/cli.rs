@@ -2247,3 +2247,132 @@ async fn declining_the_offer_leaves_the_directory_alone_and_still_attaches() {
         visible(&output)
     );
 }
+
+/// `stay-awake` end to end: the subcommand a person types reaches the same handler the key
+/// does, and says where it left the machine (MUX-15, decision 0029).
+#[tokio::test]
+async fn stay_awake_on_and_off_say_where_they_left_the_machine() {
+    let h = Harness::start(Config::default(), 80, 24).await;
+    h.runner.on_path("caffeinate");
+    let out = domux2(&h)
+        .args(["stay-awake", "on"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Stay awake is on.\n");
+    assert!(
+        h.runner.ran("caffeinate", &["-dimsu"]),
+        "{:?}",
+        h.runner.calls()
+    );
+
+    let out = domux2(&h)
+        .args(["stay-awake", "status"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Stay awake is on.\n");
+
+    let out = domux2(&h)
+        .args(["stay-awake", "off"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Stay awake is off.\n");
+}
+
+/// A machine domux cannot hold awake is not a failure of the command, but it is a failure of
+/// what was asked for: the state goes to stdout and the reason to stderr (principle 12).
+#[tokio::test]
+async fn stay_awake_on_a_machine_it_cannot_hold_says_why_on_stderr() {
+    let h = Harness::start_with(domux_server::testing::HarnessOptions {
+        platform: Some("freebsd"),
+        ..domux_server::testing::HarnessOptions::new(Config::default(), 80, 24)
+    })
+    .await;
+    let out = domux2(&h)
+        .args(["stay-awake", "on"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Stay awake is off.\n");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("freebsd"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn stay_awake_status_with_no_server_says_so_rather_than_starting_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", dir.path().join("nothing.sock"))
+        .env_remove("TMUX")
+        .args(["stay-awake", "status"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success());
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("unknown"), "{said}");
+    assert!(
+        said.contains("server start"),
+        "it names the way to know: {said}"
+    );
+}
+
+/// The install writes two files that need a password, so without `--apply` it prints them and
+/// writes nothing, the way the agent hook installers do.
+#[tokio::test]
+async fn stay_awake_install_previews_both_files_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", dir.path().join("nothing.sock"))
+        .env_remove("TMUX")
+        .args(["stay-awake", "install", "--full"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("/Library/LaunchDaemons/"), "{said}");
+    assert!(said.contains("/etc/sudoers.d/"), "{said}");
+    assert!(said.contains("Nothing has been written."), "{said}");
+    assert!(!Path::new(&domux_server::stay_awake::plist_path()).exists());
+}
+
+/// `install` with no mode named does nothing rather than guessing which one was meant.
+#[tokio::test]
+async fn stay_awake_install_with_no_mode_names_the_one_that_needs_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", dir.path().join("nothing.sock"))
+        .env_remove("TMUX")
+        .args(["stay-awake", "install"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("install --full"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_empty());
+}

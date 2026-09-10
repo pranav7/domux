@@ -14,6 +14,7 @@ pub mod sidebar;
 pub mod switcher;
 pub mod tab_row;
 pub mod theme;
+pub mod toast;
 pub mod top_bar;
 
 use ratatui::layout::Rect;
@@ -64,6 +65,12 @@ pub struct RenderInput<'a> {
     /// What the start-up prune took away, for the switcher's footer and the sidebar's hint
     /// row. Empty in every frame after the reader's first key in a box. See `note_line`.
     pub notes: &'a [String],
+    /// Whether domux is holding this machine awake, which is what the dot at the right end
+    /// says (decision 0029).
+    pub stay_awake: bool,
+    /// The line in the corner, while one is standing. One for the server, so every attached
+    /// client draws the same one.
+    pub toast: Option<&'a crate::toast::Toast>,
 }
 
 /// The one line a list of notes prints as, or `None` when there is nothing to say.
@@ -149,6 +156,9 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
         top_bar::draw(input, &mut buf);
     }
     let cursor = draw_panes(input, &mut buf);
+    // Over the panes and under the overlays: a toast reports something that happened
+    // elsewhere, so it never covers the box the reader is working in (principle 2).
+    toast::draw(input, &mut buf);
     overlay::draw(input, &mut buf);
     // An overlay other than the prompt covers the pane the cursor is in, so the outer terminal
     // hides the cursor rather than blinking it under the box: the overlay is the one visible

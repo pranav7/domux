@@ -62,6 +62,9 @@ enum Command {
     Wait(cli::agent::WaitCmd),
     /// Install the domux hooks for an agent
     Install(cli::install::InstallCmd),
+    /// Hold this machine awake: on, off, toggle, status, install
+    #[command(name = "stay-awake")]
+    StayAwake(cli::stay_awake::StayAwakeCmd),
 }
 
 /// Errors go to stderr and leave a status of 1, so a script can tell a failure from an
@@ -91,6 +94,7 @@ async fn main() {
         Some(Command::Wait(c)) => cli::agent::wait(c).await,
         // The one subcommand that is not an API call: installing hooks needs no server.
         Some(Command::Install(c)) => cli::install::run(c),
+        Some(Command::StayAwake(c)) => cli::stay_awake::run(c).await,
     };
     if let Err(e) = result {
         // The whole chain, so the context and the reason under it both reach the reader:

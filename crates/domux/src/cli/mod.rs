@@ -16,6 +16,7 @@ pub mod open;
 pub mod pane;
 pub mod project;
 pub mod server;
+pub mod stay_awake;
 pub mod tab;
 pub mod workspace;
 

@@ -373,6 +373,8 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
         config_error: None,
         hint: None,
         notes: &[],
+        stay_awake: false,
+        toast: None,
     });
     assert_eq!(buffer.area, Rect::new(0, 0, 40, 10));
     assert_eq!(
@@ -415,6 +417,8 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
         config_error: None,
         hint: None,
         notes: &[],
+        stay_awake: false,
+        toast: None,
     });
     let top = row(&buffer, 1);
     assert_eq!(top.chars().nth(39), Some('┐'), "{top:?}");
@@ -491,6 +495,8 @@ fn a_wide_grapheme_in_a_tab_name_leaves_no_hole_in_the_top_bar() {
         config_error: None,
         hint: None,
         notes: &[],
+        stay_awake: false,
+        toast: None,
     });
     let mantle = ratatui::style::Color::Rgb(0x18, 0x18, 0x25);
     let wide = (0..120u16)

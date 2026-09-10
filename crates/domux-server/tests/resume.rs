@@ -19,12 +19,12 @@ async fn state_json_is_written_after_structure_changes_with_the_current_schema_a
     let path = h.state_dir().join("state.json");
     let text = std::fs::read_to_string(&path).expect("state.json exists");
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    // Deliberately the literal 3, not `state_file::SCHEMA_VERSION`: this assertion exists to
+    // Deliberately the literal 4, not `state_file::SCHEMA_VERSION`: this assertion exists to
     // pin the format contract, the number that actually reaches the author's disk. Comparing
     // against the constant would make it track a bump instead of catching one; a
     // `SCHEMA_VERSION` change with no new migration rung would go unnoticed here even though
     // domux-core's own tests would fail.
-    assert_eq!(v["schema_version"], 3);
+    assert_eq!(v["schema_version"], 4);
     assert_eq!(
         v["projects"][0]["workspaces"][0]["tabs"]
             .as_array()
@@ -79,7 +79,7 @@ async fn kill_and_restart_brings_back_tabs_panes_names_layout_and_cwds() {
     let f = h.frame(h.client.clone()).await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 code │ 2 │ + │            14:32   Fri 4 Sep |",
+        "| proj › main  1 code │ 2 │ + │          14:32   Fri 4 Sep ● |",
         "{f}"
     );
     assert_eq!(
@@ -155,7 +155,7 @@ async fn a_corrupt_state_file_starts_fresh_and_leaves_the_file_for_inspection() 
     };
     let mut h = Harness::start_with(opts).await;
     let f = h.frame(h.client.clone()).await;
-    assert_eq!(row(&f, 0), "| proj › main  1 │ + │ 14:32   Fri 4 Sep |");
+    assert_eq!(row(&f, 0), "| proj › main  1 │ + │ 14:32   Fri 4 … ● |");
     h.api("tab.create", json!({})).await.unwrap();
     h.api("tab.create", json!({})).await.unwrap();
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -377,6 +377,6 @@ async fn a_last_tab_that_is_gone_seats_the_client_on_a_tab_that_exists() {
     // 40 columns wide: the restored name is what this pins, not the truncation.
     assert_eq!(
         row(&h.frame(h.client.clone()).await, 0),
-        "| proj › main  1 code │ + │ 14:32   Fri… |"
+        "| proj › main  1 code │ + │ 14:32   F… ● |"
     );
 }

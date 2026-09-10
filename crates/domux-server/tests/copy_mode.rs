@@ -40,7 +40,7 @@ async fn leader_bracket_enters_copy_mode_and_marks_the_border() {
         "{f}"
     );
     assert!(
-        row(&f, 0).ends_with("v select · ⏎ copy · esc leave |"),
+        row(&f, 0).ends_with("v select · ⏎ copy · esc leave ● |"),
         "{f}"
     );
     assert!(h.model().pane(&pane).unwrap().copy_mode);
@@ -192,7 +192,7 @@ async fn v_enter_copies_the_selection_to_the_client_and_leaves() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("⏎ copy · esc leave |") && !f.contains("v select"),
+            |f| f.contains("⏎ copy · esc leave ● |") && !f.contains("v select"),
             Duration::from_secs(2),
         )
         .await;
@@ -467,7 +467,7 @@ async fn copy_mode_keeps_the_keys_on_a_pane_whose_child_exited() {
         )
         .await;
     assert!(
-        row(&f, 0).ends_with("v select · ⏎ copy · esc leave |"),
+        row(&f, 0).ends_with("v select · ⏎ copy · esc leave ● |"),
         "the bar still offers the copy mode keys:\n{f}"
     );
     // Esc means what it says: it leaves the mode and the pane is untouched.
@@ -550,7 +550,7 @@ async fn the_leader_inside_copy_mode_shows_the_chord_rather_than_the_copy_keys()
             Duration::from_secs(2),
         )
         .await;
-    assert!(row(&f, 0).ends_with("C-a  ? keys |"), "{f}");
+    assert!(row(&f, 0).ends_with("C-a  ? keys ● |"), "{f}");
     assert!(f.contains(" copy "), "copy mode is still open:\n{f}");
     // An unbound second key ends the chord and changes nothing else.
     h.key(h.client.clone(), "Tab").await;
@@ -562,7 +562,7 @@ async fn the_leader_inside_copy_mode_shows_the_chord_rather_than_the_copy_keys()
         )
         .await;
     assert!(
-        row(&f, 0).ends_with("v select · ⏎ copy · esc leave |"),
+        row(&f, 0).ends_with("v select · ⏎ copy · esc leave ● |"),
         "{f}"
     );
 }

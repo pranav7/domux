@@ -11,6 +11,7 @@ pub mod pane;
 pub mod project;
 pub mod server;
 pub mod sidebar;
+pub mod stay_awake;
 pub mod switcher;
 pub mod tab;
 pub mod workspace;
@@ -46,6 +47,10 @@ pub struct Ctx<'a> {
     /// The caches and declarations the agent records need: working words, the transcript
     /// reader and the manifest registry. Not persisted.
     pub agents: &'a mut crate::agents::AgentsState,
+    /// Whether domux is holding this machine awake, and the holder it started. A handler
+    /// takes and gives back the hold through it; the child process is the server's, as a
+    /// pane's is.
+    pub stay_awake: &'a mut crate::stay_awake::StayAwake,
     pub core_tx: &'a mpsc::Sender<CoreMsg>,
     pub socket_path: &'a PathBuf,
     pub state_dir: &'a PathBuf,
@@ -58,6 +63,9 @@ pub struct Ctx<'a> {
     /// "Answer with --yes" for a caller that has a command line (interface spec 7.3).
     pub from_key: bool,
     pub events: Vec<Event>,
+    /// The lines a handler wants said in the corner of the screen. The core keeps the newest
+    /// and draws it for its six seconds; see `crate::toast`.
+    pub toasts: Vec<crate::toast::Toast>,
     pub stop_requested: bool,
     /// Set by a handler when it changes something a frame shows. A read-only method leaves
     /// it clear, so answering `server.info` or `pane.list` does not compose a frame for
@@ -304,6 +312,9 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         AgentsOpen(p) => agents::open(ctx, p),
         AgentsClose(p) => agents::close(ctx, p),
         FocusNextRegion(p) => focus::next_region(ctx, p),
+        StayAwakeEnable(_) => stay_awake::enable(ctx),
+        StayAwakeDisable(_) => stay_awake::disable(ctx),
+        StayAwakeToggle(_) => stay_awake::toggle(ctx),
     }
 }
 

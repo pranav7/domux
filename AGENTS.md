@@ -38,6 +38,26 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 - The recap is the agent's summary of its last turn, and a summary written before the last prompt is not one. The session name is the transcript's last `custom-title`.
 - Installers preview by default. `--apply` backs up the file it patches, writes `path.tmp` and renames, and is idempotent. Never run `--apply` against `~/.claude` or `~/.codex` without the author saying so.
 
+## Stay awake
+
+MUX-15 built it as a slice of M4, and `docs/decisions/0029` records the choices the code does
+not explain on its own. Read it before changing any of them.
+
+- The feature is **stay awake**, never "stay alive" and never the name of the program that
+  implements it. `caffeinate` and `systemd-inhibit` appear in code and in one error each, and
+  nowhere a reader meets in normal use.
+- A child process holds the machine awake and dies with the server. `stay-awake.pid` beside
+  the state file is how a server that crashed finds the hold it left; a process id is only
+  adopted when it is both alive and still the program that was started.
+- The dot at the right end of the top bar is the state, green for held and grey for not. It
+  is drawn outside the right end's priority chain, so nothing the bar says takes it away.
+- A toast says what changed. It is the surface M4's Notifier draws into, so it lives in
+  `toast.rs` and `render/toast.rs` rather than in the stay awake code.
+- Full mode is the lid. On Linux it is one more flag on the same child; on macOS it needs the
+  launch daemon and the sudoers line that `stay-awake install --full` writes, and that command
+  is the only thing in domux that ever asks for sudo. Never run it with `--apply` without the
+  author saying so.
+
 ## Rules
 
 - Work on `v2`, or on a milestone branch (`m1`, `m2`, `m3`) that merges into `v2` by pull request. Never commit to `main`, `master`, or `workspace-*`.

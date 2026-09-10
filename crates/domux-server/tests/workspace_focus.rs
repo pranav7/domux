@@ -124,7 +124,7 @@ async fn focusing_a_workspace_from_the_switcher_switches_it_and_closes_the_switc
     //      + "14:32   Fri 4 Sep " (18) + "|" (1)
     assert_eq!(
         row(&f, 0),
-        "| audrey-app › workspace-1  1 │ + │                            14:32   Fri 4 Sep |",
+        "| audrey-app › workspace-1  1 │ + │                          14:32   Fri 4 Sep ● |",
         "{f}"
     );
     assert_eq!(
