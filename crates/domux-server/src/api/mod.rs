@@ -83,15 +83,22 @@ pub struct Ctx<'a> {
 impl Ctx<'_> {
     /// The client a view method acts on, or `not_found` when none is attached.
     pub fn view(&self) -> Result<ClientId, ApiError> {
+        self.view_or_none().ok_or_else(|| {
+            ApiError::not_found(format!(
+                "no client is attached; run {} to attach one",
+                domux_core::names::BIN_NAME
+            ))
+        })
+    }
+
+    /// The same client `view` names, and `None` rather than an error when there is nobody to
+    /// name. Only for a method that has something to do with no client attached: today that
+    /// is `workspace.focus`, which records the workspace for the client that attaches next
+    /// (decision record 0017). Everything else asks `view` and refuses.
+    pub fn view_or_none(&self) -> Option<ClientId> {
         self.client
             .clone()
             .or_else(|| self.model.most_recent_client())
-            .ok_or_else(|| {
-                ApiError::not_found(format!(
-                    "no client is attached; run {} to attach one",
-                    domux_core::names::BIN_NAME
-                ))
-            })
     }
 
     /// The tab a `tab` param names (number, id or name in the view's workspace), or the

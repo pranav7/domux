@@ -1257,6 +1257,62 @@ async fn attach_from_an_unregistered_directory_offers_to_register_it() {
     );
 }
 
+/// MUX-11: the offer works when nothing is attached, which is the state it is most often
+/// typed in.
+///
+/// The offer runs `project.add` and then `workspace.focus`, and the focus is made before this
+/// command has attached anything, so before decision record 0017 it was refused with "no
+/// client is attached" and the `?` on it took the whole attach down. The reader was left with
+/// a registered project, no screen, and a sentence telling them to run the command they had
+/// just run.
+///
+/// The wait is on the top bar naming the new project, so this pins where the client landed
+/// and not merely that it drew something: `dotfiles` is not the harness's own project.
+#[tokio::test]
+async fn attach_with_nothing_attached_registers_the_directory_and_seats_the_client_in_it() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let elsewhere = tempfile::tempdir().unwrap();
+    let root = elsewhere.path().join("dotfiles");
+    std::fs::create_dir(&root).unwrap();
+    let client = h.client.clone();
+    h.detach(client).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !h.model().clients.is_empty() {
+        assert!(Instant::now() < deadline, "a client was still attached");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux2"));
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("TMUX");
+    cmd.cwd(&root);
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        cmd,
+        &[("is not a project yet. Register it? [y/N]", "y\n")],
+        "dotfiles \u{203a} main",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("no client is attached"),
+        "the switch was made for the client this command was about to attach:\n{}",
+        visible(&output)
+    );
+    let registered = h
+        .model()
+        .projects
+        .iter()
+        .any(|p| p.root == root.canonicalize().unwrap());
+    assert!(
+        registered,
+        "the directory became a project:\n{}",
+        visible(&output)
+    );
+}
+
 /// The default is the answer that changes nothing, and saying no still attaches.
 #[tokio::test]
 async fn declining_the_offer_leaves_the_directory_alone_and_still_attaches() {

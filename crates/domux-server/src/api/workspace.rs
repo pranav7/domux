@@ -153,16 +153,28 @@ pub fn list(ctx: &mut Ctx, p: WorkspaceListParams) -> Result<Value, ApiError> {
 /// The switcher closes because switching is what it was open for. The sidebar does not: it
 /// is not an overlay, the fill moves to the row that is now the current one, and the keys go
 /// to the pane (interface spec 12.26).
+///
+/// **With nothing attached it still records the workspace** (decision record 0017). There is
+/// no view to move, so it moves `last_workspace` alone, which is the field `Core::attach`
+/// seats the next client from. Refusing instead is what MUX-11 reported: the attach offer of
+/// decision record 0009 registers a project and then switches to it, and the switch is made
+/// before there is a client to switch, so the refusal took the whole attach with it.
 pub fn focus(ctx: &mut Ctx, p: WorkspaceFocusParams) -> Result<Value, ApiError> {
-    let client = ctx.view()?;
+    let client = ctx.view_or_none();
     // Before anything is read or made. A call naming a client that is not attached must
     // change nothing rather than half of it: without this guard it would still move
     // `last_workspace` and give the target a tab and a shell on behalf of a client that does
     // not exist, and the error code would look the same either way.
-    if ctx.model.client(&client).is_none() {
-        return Err(ApiError::not_found(format!(
-            "client {client} is not attached"
-        )));
+    //
+    // Naming a client that is gone and naming none at all are different requests, and only
+    // the second one is answered without a view: a caller that named `c_9999` asked for that
+    // client's screen and there is no honest way to give it one.
+    if let Some(named) = &client {
+        if ctx.model.client(named).is_none() {
+            return Err(ApiError::not_found(format!(
+                "client {named} is not attached"
+            )));
+        }
     }
     let target = ctx.resolve_workspace_param(Some(&p.workspace))?;
     // Unreachable: `resolve_workspace_param` answers with the id of a workspace the model
@@ -190,6 +202,13 @@ pub fn focus(ctx: &mut Ctx, p: WorkspaceFocusParams) -> Result<Value, ApiError> 
         ))
     })?;
     ctx.model.last_workspace = Some(target.clone());
+    // Everything above this line is the whole operation when nobody is attached: the
+    // workspace is recorded and the client that attaches next seats there. No event, because
+    // `workspace.switched` names the client it switched and there is none, and no dirty view
+    // for the same reason.
+    let Some(client) = client else {
+        return ok(info(ctx, &target)?);
+    };
     // Nothing writes `last_tab` back, for the reason above: `tab` came from it, so the write
     // would be the identity, and an equivalent line that cannot fail is worse than no line.
     let pane = ctx.model.tab(&tab).map(|t| t.focused.clone());

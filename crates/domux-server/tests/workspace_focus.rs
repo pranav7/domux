@@ -499,6 +499,48 @@ async fn focusing_a_workspace_for_a_client_that_is_not_attached_changes_nothing(
     assert_eq!(h.model().workspace(&w1).unwrap().tabs.len(), before_tabs);
 }
 
+/// MUX-11, decision record 0017. With nobody attached there is no view to move, so the call
+/// records the workspace and answers with it, and the client that attaches next seats there.
+///
+/// Both halves are asserted. `last_workspace` alone would pass for a handler that wrote the
+/// field where nothing reads it back, and the seating alone would pass for a client that
+/// landed in `w1` because `w1` was where the last one already was.
+#[tokio::test]
+async fn focusing_a_workspace_with_nothing_attached_seats_the_client_that_attaches_next() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, w1, w2) = h.git_project_with_two_slots().await;
+    // Away from the target first, so the seating below cannot be the state this started in.
+    h.api("workspace.focus", json!({"workspace": w2.as_str()}))
+        .await
+        .expect("switch to the other slot");
+    let client = h.client.clone();
+    h.detach(client).await;
+    nothing_attached(&mut h).await;
+
+    let answered = h
+        .api("workspace.focus", json!({"workspace": w1.as_str()}))
+        .await
+        .expect("focus with nothing attached");
+
+    assert_eq!(answered["id"], w1.as_str(), "{answered}");
+    assert_eq!(h.model().last_workspace, Some(w1.clone()));
+    let next = h.attach(80, 24).await;
+    assert_eq!(h.model().client(&next).unwrap().workspace, w1);
+}
+
+/// Waits until the last client is gone from the model. `detach` sends a message and returns,
+/// so a call made before the core has taken it would still find a client to act for.
+async fn nothing_attached(h: &mut Harness) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !h.model().clients.is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a client was still attached after two seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn workspace_list_carries_the_branch_and_the_pull_request_and_resume_says_it_is_m3_s() {
     let mut h = Harness::start_with(HarnessOptions {
