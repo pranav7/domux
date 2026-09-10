@@ -631,8 +631,10 @@ async fn the_switchers_filter_takes_the_footer_from_a_note_and_gives_it_to_a_pil
             Duration::from_secs(5),
         )
         .await;
+    // Column 13 on an 80 column screen: the box's left border is at 10, and the footer starts
+    // one border cell and two pad cells in from it (MUX-16).
     assert_eq!(
-        style_at(&f, y, 11),
+        style_at(&f, y, 13),
         "bold fg=#1e1e2e bg=#f38ba8",
         "and the field itself gives the row up to a pill, which answers what the reader\n\
          just did:\n{f}"

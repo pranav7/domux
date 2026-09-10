@@ -1,15 +1,15 @@
-//! The switcher: one overlay holding the Projects box and its footer (`leader s`).
+//! The switcher: one overlay holding the Projects box with its footer on the box's last row
+//! (`leader s`).
 //!
 //! The box is the sidebar's box, from the same row builder, so a project cannot read one way
 //! in the sidebar and another here (domain model, section 3.6). What the switcher adds is
 //! the width: `Extras::switcher` asks for the pull request title and the tab list, which the
 //! sidebar's 38 columns have no room for.
 
-use crate::render::list_box::{box_lines, content_width, ListBox, OVERLAY_PAD};
+use crate::render::list_box::{box_lines, content_width, footer_area, ListBox, OVERLAY_PAD};
 use crate::render::projects_box::{rows, Extras, PROJECTS_TITLE};
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 
 /// The footer's keys, in reading order: what Enter does, then the filter, then help, then
 /// the way out. Each is an action, looked up in `[keys.list]` when the row is drawn.
@@ -45,7 +45,6 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .iter()
         .fold(0u16, |sum, r| sum.saturating_add(r.height()));
     let area = overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
-    let footer = Rect::new(area.x, area.y + area.height, area.width, 1);
     let empty = empty_text(input);
     // `clear` and not `frame_at`: a `ListBox` draws its own `Boxed`, so the switcher paints
     // the background and lets the box own the border.
@@ -60,11 +59,15 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         pad: OVERLAY_PAD,
     }
     .render(area, buf);
-    overlay::footer(input, HINTS, footer, buf);
+    // The footer's row is the box's last, inside the border (MUX-16), so the keys read as
+    // part of the box they act on.
+    if let Some(footer) = footer_area(area, OVERLAY_PAD) {
+        overlay::footer(input, HINTS, footer, buf);
+    }
     // Last, so that what is dimmed is what the switcher did not draw. The corrected scroll
     // `render` returns is dropped on purpose: a renderer does not write to the model, and
     // `list.down` and `list.up` own the scroll (Task 14).
-    overlay::dim(buf, &[area, footer]);
+    overlay::dim(buf, &[area]);
 }
 
 /// What the box says when the rows are empty: the state, and the next action (principle 9).
@@ -234,6 +237,11 @@ mod tests {
         assert_eq!(inner_line(&buf, 6), "    workspace-2");
         assert_eq!(
             inner_line(&buf, 8),
+            "  ⏎ open · / filter · ? help · esc close",
+            "the footer is on the box's last row, in by the same pad the rows use"
+        );
+        assert_eq!(
+            inner_line(&buf, 9),
             "─".repeat(58),
             "and the box is two lines tall, so main and the other three slots are gone"
         );
