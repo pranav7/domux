@@ -156,6 +156,20 @@ pub enum CoreJob {
         /// pushed, so `git::is_dirty` in front of it is the only guard against those.
         force: bool,
     },
+    /// Hands one link to the desktop (decision record 0024). Nothing in the model changes,
+    /// and it is a job for the one reason every other one is: it starts a process, and the
+    /// core task starts none.
+    OpenLink {
+        /// What the opener is given, already refused by `link` if it is not an http or https
+        /// URL or a path that exists.
+        target: String,
+        /// What the row says on the way back, which is not always the target: a path says
+        /// its file name.
+        said: String,
+        /// The opener travels with the job, because `run_job` is a free function off the core
+        /// task and the deps are the core's.
+        opener: Arc<dyn crate::Opener>,
+    },
 }
 
 impl CoreJob {
@@ -174,6 +188,9 @@ impl CoreJob {
             // nothing. A claim would make that a `busy` refusal instead; it is not built,
             // because nothing is corrupted by the answer that arrives today.
             CoreJob::ClearWorkspace { .. } | CoreJob::DeleteWorkspace { .. } => None,
+            // Opening the same link twice opens it twice, which is what a reader who clicked
+            // twice asked for.
+            CoreJob::OpenLink { .. } => None,
         }
     }
 }
@@ -229,6 +246,10 @@ pub enum JobOutcome {
         /// caller with a command line (`CoreJob::DeleteWorkspace::expected_branch`), and a
         /// reader who is only ever told the proposal has no way to find that out.
         branch: String,
+    },
+    /// The link `OpenLink` handed over, in the words the row says it in.
+    Opened {
+        said: String,
     },
     Failed {
         message: String,
@@ -1472,6 +1493,13 @@ impl Core {
     /// failed to queue its job would hold that slot number for the life of the server.
     /// Taking it here is still early enough, because this runs inside the message that
     /// dispatched the handler and the next call is a message of its own.
+    /// Queues a job nobody is waiting on an answer to, for a caller that is not a handler.
+    /// A key or a pointer gesture that starts work has no request to defer, so its outcome
+    /// reaches the reader as a pill rather than as a reply.
+    pub fn queue_job(&mut self, job: CoreJob, client: Option<ClientId>) {
+        self.start_job(job, None, client);
+    }
+
     fn start_job(&mut self, job: CoreJob, reply: Option<JobReply>, client: Option<ClientId>) {
         let claim = job.claim();
         if let Some(claim) = &claim {
@@ -1559,6 +1587,13 @@ impl Core {
                 name,
                 branch,
             } => self.workspace_deleted(client.clone(), workspace, name, branch),
+            // Nothing in the model changed, and the reader is told, because the answer is on
+            // another application's window and the terminal has to say the click landed
+            // (principle 8).
+            JobOutcome::Opened { said } => {
+                self.set_pill(client.as_ref(), format!("Opened {said}"), true);
+                api::ok(domux_core::api::Ack { ok: true })
+            }
         };
         self.answer(result, reply, client);
     }
@@ -2139,10 +2174,7 @@ impl Core {
         domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
             .into_iter()
             .find(|(p, _)| p == pane)
-            .map(|(_, r)| Size {
-                cols: r.width.saturating_sub(2).max(1),
-                rows: r.height.saturating_sub(2).max(1),
-            })
+            .map(|(_, r)| render::pane_screen(r, area))
             .unwrap_or(fallback)
     }
 
@@ -2600,10 +2632,10 @@ impl Core {
             for (pane, rect) in
                 domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
             {
-                let inner = Size {
-                    cols: rect.width.saturating_sub(2).max(1),
-                    rows: rect.height.saturating_sub(2).max(1),
-                };
+                // The box's chrome comes off in one place, `render::pane_screen`, which
+                // `provisional_size` uses too: a box standing on the workpanel's last row has
+                // no bottom rule, so its program gets that row (decision record 0022).
+                let inner = render::pane_screen(rect, area);
                 if let Some(rt) = self.panes.get_mut(&pane) {
                     if rt.size() != inner {
                         rt.resize(inner);
@@ -2703,6 +2735,20 @@ fn run_job(job: CoreJob) -> JobOutcome {
             base,
             force,
         } => delete_workspace(workspace, name, &root, &path, expected_branch, base, force),
+        CoreJob::OpenLink {
+            target,
+            said,
+            opener,
+        } => match opener.open(&target) {
+            Ok(()) => JobOutcome::Opened { said },
+            // The reader is told what could not be opened as well as why, because the target
+            // is often not the text they clicked: an OSC 8 link says one thing and points at
+            // another.
+            Err(reason) => JobOutcome::Failed {
+                message: format!("could not open {said}: {reason}"),
+                code: ErrorCode::Internal,
+            },
+        },
     }
 }
 
@@ -3193,6 +3239,7 @@ mod tests {
                 spawner: Arc::new(FakeSpawner::default()),
                 inspector: Arc::new(FakeInspector::default()),
                 clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+                opener: Arc::new(crate::testing::RecordingOpener::default()),
                 id_seed: 7,
             },
         };

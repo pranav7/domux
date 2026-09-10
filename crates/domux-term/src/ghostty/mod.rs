@@ -699,6 +699,56 @@ impl Emulator for GhosttyEmulator {
         (first, end)
     }
 
+    fn hyperlink_at(&self, pos: ScrollbackPos) -> Option<String> {
+        let cols = self.size.cols;
+        if cols == 0 || self.size.rows == 0 {
+            return None;
+        }
+        let last_row = self.scrollback_len() + self.size.rows as usize - 1;
+        let reference = self.grid_ref_at(ScrollbackPos {
+            row: pos.row.min(last_row),
+            col: pos.col.min(cols - 1),
+        })?;
+        // The two-call shape the header documents: a null buffer asks for the size, and a
+        // cell with no hyperlink answers success with a length of zero rather than an error.
+        // The reference is an untracked snapshot and nothing between the calls mutates the
+        // terminal, so it stays valid for both.
+        let mut needed: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_grid_ref_hyperlink_uri(
+                &reference,
+                std::ptr::null_mut(),
+                0,
+                &mut needed as *mut usize,
+            )
+        };
+        if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS && rc != ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE
+        {
+            return None;
+        }
+        if needed == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; needed];
+        let mut written: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_grid_ref_hyperlink_uri(
+                &reference,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut written as *mut usize,
+            )
+        };
+        if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS || written == 0 {
+            return None;
+        }
+        buf.truncate(written.min(buf.len()));
+        // A target that is not UTF-8 is dropped rather than repaired. It came from a program
+        // over a pipe, and a lossy conversion would hand the opener a different address from
+        // the one the program wrote.
+        String::from_utf8(buf).ok().filter(|s| !s.is_empty())
+    }
+
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> Option<String> {
         let rows = self.size.rows as usize;
         let cols = self.size.cols;

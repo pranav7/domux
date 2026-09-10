@@ -108,6 +108,18 @@ pub trait Emulator: Send {
     /// row the pointer was on rather than nothing.
     fn logical_line(&self, row: usize) -> (usize, usize);
 
+    /// The target of the OSC 8 hyperlink on the cell at `pos`, or `None` when that cell
+    /// carries no hyperlink.
+    ///
+    /// Only the emulator can answer it: a hyperlink is a property the program attached to the
+    /// cell, not something its text can be read for. The text under a hyperlink is usually
+    /// not the target at all, which is the point of OSC 8 (decision record 0024).
+    ///
+    /// `pos` counts rows from the top of the scrollback, as every other position here does.
+    /// A position the emulator cannot resolve answers `None`, the same as a cell with no
+    /// hyperlink: a caller that meets either goes on to read the text.
+    fn hyperlink_at(&self, pos: ScrollbackPos) -> Option<String>;
+
     /// The title the program set with OSC 0 or OSC 2, if any.
     fn title(&self) -> Option<String>;
 

@@ -286,14 +286,15 @@ async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_wa
 }
 
 /// The adoption line is said as soon as it is true, which is before the switch: a switch that
-/// cannot happen does not unsay what the add already did.
+/// happens after it does not change what the add already did.
 ///
-/// The client is detached first, so `workspace.focus` has no view to act for and refuses.
-/// That is also what `open` meets when it is typed in a terminal with nothing attached, which
-/// is the case where a reader who was told nothing would never learn that three workspaces
-/// had appeared.
+/// The client is detached first, which is what `open` meets when it is typed in a terminal
+/// with nothing attached. Both halves still work there: the adoption is reported, and the
+/// switch records the workspace for the client that attaches next rather than refusing
+/// (decision record 0021). Before that record this command exited 1 here, and MUX-11 is what
+/// the same refusal did to the attach offer.
 #[tokio::test]
-async fn open_names_what_it_adopted_even_when_there_is_nobody_to_switch() {
+async fn open_names_what_it_adopted_and_still_switches_with_nobody_attached() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (_tmp, root) = repo_with_origin("main");
     for n in [1, 2] {
@@ -304,32 +305,36 @@ async fn open_names_what_it_adopted_even_when_there_is_nobody_to_switch() {
     model_when(&h, "the client goes", |m| m.most_recent_client().is_none()).await;
 
     let opened = run(domux2(&h).args(["open", root.to_str().unwrap()])).await;
-    assert_eq!(opened.code, Some(1), "{}", opened.err);
-    assert!(
-        opened
-            .err
-            .starts_with("Adopted workspace-1, workspace-2.\n"),
-        "the adoption is said first, because it is what already happened: {}",
-        opened.err
-    );
-    assert!(
-        opened.err.contains("no client is attached"),
-        "and then the switch that could not happen: {}",
+    assert_eq!(opened.code, Some(0), "{}", opened.err);
+    assert_eq!(
+        opened.err.trim(),
+        "Adopted workspace-1, workspace-2.",
+        "the adoption is said and nothing else is: {}",
         opened.err
     );
     let m = model_when(&h, "the project is registered", |m| {
         m.projects.iter().any(|p| p.name == "audrey-app")
     })
     .await;
+    let project = m
+        .projects
+        .iter()
+        .find(|p| p.name == "audrey-app")
+        .expect("the project");
     assert_eq!(
-        m.projects
-            .iter()
-            .find(|p| p.name == "audrey-app")
-            .unwrap()
-            .workspaces
-            .len(),
+        project.workspaces.len(),
         3,
         "main and the two slots it adopted"
+    );
+    let main = project
+        .workspaces
+        .iter()
+        .find(|w| w.handle.to_string() == "main")
+        .expect("main");
+    assert_eq!(
+        m.last_workspace.as_ref(),
+        Some(&main.id),
+        "the switch recorded the project's main for the next client"
     );
 }
 

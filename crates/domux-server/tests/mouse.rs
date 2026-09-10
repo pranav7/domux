@@ -31,7 +31,7 @@ async fn pane_with_lines(h: &mut Harness, n: usize) -> domux_core::ids::PaneId {
 async fn a_drag_selects_what_it_covers_and_copies_it_when_the_button_is_let_go() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     let pane = pane_with_lines(&mut h, 20).await;
-    // `line 14` starts at column 1 of row 2; `line 15` ends at column 7 of row 3.
+    // `line 13` starts at column 1 of row 2; `line 14` ends at column 7 of row 3.
     h.mouse(h.client.clone(), MouseAction::Press, 1, 2, 1).await;
     h.mouse(h.client.clone(), MouseAction::Drag, 7, 3, 1).await;
     let f = h
@@ -57,7 +57,7 @@ async fn a_drag_selects_what_it_covers_and_copies_it_when_the_button_is_let_go()
     .await;
     assert_eq!(
         h.clipboard(h.client.clone()).await,
-        vec!["line 14\nline 15".to_string()],
+        vec!["line 13\nline 14".to_string()],
         "the release copied the selection and left copy mode"
     );
     assert!(!h.model().pane(&pane).unwrap().copy_mode);
@@ -99,7 +99,7 @@ async fn a_click_focuses_the_pane_under_it_and_copies_nothing() {
 async fn a_double_click_copies_the_word_under_it() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     pane_with_lines(&mut h, 20).await;
-    // Row 2 reads `line 14`: column 1 is its `l` and column 6 is the `1` of `14`.
+    // Row 2 reads `line 13`: column 1 is its `l` and column 7 is the `3` of `13`.
     h.mouse(h.client.clone(), MouseAction::Press, 2, 2, 1).await;
     h.mouse(h.client.clone(), MouseAction::Press, 2, 2, 2).await;
     h.wait_for(h.client.clone(), |_| true, Duration::from_secs(2))
@@ -121,7 +121,7 @@ async fn a_double_click_copies_the_word_under_it() {
             .await
             .last()
             .map(String::as_str),
-        Some("14"),
+        Some("13"),
         "the word under the second double click, not the first"
     );
 }
@@ -200,7 +200,7 @@ async fn the_wheel_still_opens_copy_mode_over_a_pane_whose_program_wants_no_mous
     h.scroll(h.client.clone(), 5, 5, 3).await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("copy 3/14"),
+        |f| f.contains("copy 3/13"),
         Duration::from_secs(2),
     )
     .await;
@@ -421,6 +421,207 @@ async fn a_click_on_a_sidebar_header_does_nothing() {
     h.wait_for(client.clone(), |_| true, Duration::from_secs(2))
         .await;
     assert_eq!(h.model().client(&client).unwrap().workspace, before);
+}
+
+// ------------------------------------------------------------------ links (MUX-13)
+
+/// Waits for the opener to have been handed something, and answers with everything it has.
+async fn opened(h: &Harness) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let seen = h.opener.opened();
+        if !seen.is_empty() {
+            return seen;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "nothing was opened within two seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// The pill this client is showing, which is where the reader is told what was opened. It is
+/// read from the view rather than from the frame because a pill only draws in the sidebar's
+/// hint row, and these tests run with the sidebar hidden.
+async fn pill(h: &mut Harness) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let said = h
+            .model()
+            .client(&h.client)
+            .and_then(|v| v.pill.clone())
+            .map(|p| p.text);
+        if said.is_some() {
+            return said;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Presses and releases on one cell, which is a click.
+async fn click(h: &mut Harness, column: u16, row: u16) {
+    h.mouse(h.client.clone(), MouseAction::Press, column, row, 1)
+        .await;
+    h.mouse(h.client.clone(), MouseAction::Release, column, row, 1)
+        .await;
+}
+
+/// MUX-13: a click on an OSC 8 hyperlink opens what the program marked, which is not the text
+/// the reader can see. That difference is the whole assertion: a click that opened the word
+/// under it would open `link`, and a click that opened nothing would leave the opener empty.
+#[tokio::test]
+async fn a_click_on_a_hyperlink_opens_the_target_the_program_marked() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(
+        pane,
+        b"see \x1b]8;;https://example.com/artifact\x1b\\link\x1b]8;;\x1b\\ here",
+    )
+    .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("see link here"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // Column 5 of the screen is column 4 of the pane's grid, which is the `l` of `link`.
+    click(&mut h, 5, 2).await;
+
+    assert_eq!(opened(&h).await, vec!["https://example.com/artifact"]);
+    assert_eq!(
+        pill(&mut h).await.as_deref(),
+        Some("Opened https://example.com/artifact"),
+        "the reader is told, because the answer is on another application's window"
+    );
+}
+
+/// A bare URL in the text opens too, which is the other half of the screenshot on MUX-13:
+/// Claude Code prints the address as plain text beside the marked one.
+#[tokio::test]
+async fn a_click_on_a_url_in_plain_text_opens_it() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(pane, b"Published https://claude.ai/code/artifact/8fc.")
+        .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Published https"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    click(&mut h, 20, 2).await;
+
+    assert_eq!(
+        opened(&h).await,
+        vec!["https://claude.ai/code/artifact/8fc"],
+        "and the full stop the sentence ended with is not part of it"
+    );
+}
+
+/// A path that is really on disk opens, and a word that is not a link opens nothing and says
+/// nothing: a click with no link under it is how the reader moves the focus between panes.
+#[tokio::test]
+async fn a_click_opens_a_path_that_exists_and_ignores_a_word_that_is_not_a_link() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.md");
+    std::fs::write(&file, "x").unwrap();
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(pane, format!("wrote {}", file.display()).as_bytes())
+        .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("notes.md"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    // `wrote` is columns 1 to 5 of the screen, and the path starts at column 7.
+    click(&mut h, 2, 2).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        h.opener.opened().is_empty(),
+        "a word is not a link, and nothing was opened"
+    );
+    assert_eq!(
+        h.model().client(&h.client).and_then(|v| v.pill.clone()),
+        None,
+        "and nothing was said about it either"
+    );
+
+    click(&mut h, 8, 2).await;
+    assert_eq!(opened(&h).await, vec![file.display().to_string()]);
+    assert_eq!(
+        pill(&mut h).await.as_deref(),
+        Some("Opened notes.md"),
+        "a path says its file name, because the row is narrow"
+    );
+}
+
+/// A drag over a link selects and copies it, and opens nothing. The two gestures share a
+/// button, so this is the line between them: a press that moved is a selection.
+#[tokio::test]
+async fn a_drag_over_a_link_copies_it_and_opens_nothing() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(pane, b"https://example.com/x").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("https://example.com/x"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    h.mouse(h.client.clone(), MouseAction::Press, 1, 2, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 21, 2, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Release, 21, 2, 1)
+        .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    assert_eq!(
+        h.clipboard(h.client.clone()).await,
+        vec!["https://example.com/x".to_string()]
+    );
+    assert!(
+        h.opener.opened().is_empty(),
+        "the drag selected it rather than opening it"
+    );
+}
+
+/// An opener that will not open says so, in the words of the link rather than of the target:
+/// an OSC 8 link says one thing and points at another, and a reader told only the target
+/// cannot tell which of the things on their screen failed.
+#[tokio::test]
+async fn a_link_the_desktop_will_not_open_says_what_could_not_be_opened_and_why() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    h.opener.refuse_with("no application knows this");
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(pane, b"https://example.com/x").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("https://example.com/x"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    click(&mut h, 2, 2).await;
+
+    assert_eq!(opened(&h).await, vec!["https://example.com/x"]);
+    assert_eq!(
+        pill(&mut h).await.as_deref(),
+        Some("could not open https://example.com/x: no application knows this")
+    );
 }
 
 /// The tab row starts after the count, and the pointer measures from the same place.

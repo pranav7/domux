@@ -185,9 +185,9 @@ async fn a_filter_that_matches_nothing_names_what_was_searched_for_and_the_way_o
         )
         .await;
     assert_eq!(
-        box_row(&f, 4),
-        " No workspace matches \"zzz\". esc clears the filter",
-        "the state and the next action, in the box's first row, one cell in from the border:\n{f}"
+        box_row(&f, 5),
+        "  No workspace matches \"zzz\". esc clears the filter",
+        "the state and the next action, on the box's first row of text, two cells in:\n{f}"
     );
     assert!(
         !box_text(&f).contains("auth cleanup") && !box_text(&f).contains("AUDREY-APP"),
@@ -370,12 +370,14 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
     );
 }
 
-/// The switcher has the width for the tab list and the sidebar does not (interface spec 5.5).
+/// MUX-12: neither surface draws the tab list under a workspace.
 ///
-/// The tab is named, so the line the switcher draws is one no other row of either surface can
-/// produce: a bare tab number would also appear under a workspace with an unnamed tab.
+/// The tab is named, so the line the switcher used to draw is one no other row of either
+/// surface can produce. It is looked for inside the box's own columns, because the tab row at
+/// the top of the screen says `1 pr1` too and a search of the whole frame would find that
+/// instead, which is why the test this replaces passed either way.
 #[tokio::test]
-async fn the_switcher_shows_the_tab_list_and_the_sidebar_does_not() {
+async fn neither_surface_draws_the_tab_list_under_a_workspace() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let (_root, w1, _w2) = h.git_project_with_two_slots().await;
     h.api("workspace.focus", json!({"workspace": w1.as_str()}))
@@ -390,9 +392,14 @@ async fn the_switcher_shows_the_tab_list_and_the_sidebar_does_not() {
             Duration::from_secs(3),
         )
         .await;
+    let box_rows = under_the_top_row(&f);
     assert!(
-        f.contains("1 pr1"),
-        "the switcher has the width for the tab list:\n{f}"
+        box_rows.contains("workspace-1"),
+        "the switcher is drawing the workspace:\n{f}"
+    );
+    assert!(
+        !box_rows.contains("1 pr1"),
+        "and no tab list under it:\n{f}"
     );
 
     h.key(h.client.clone(), "Esc").await;
@@ -416,8 +423,18 @@ async fn the_switcher_shows_the_tab_list_and_the_sidebar_does_not() {
     );
     assert!(
         !sidebar.contains("1 pr1"),
-        "and its compact rows drop the tab list:\n{f}"
+        "and its rows have no tab list either:\n{f}"
     );
+}
+
+/// Every frame row but the first, which is the tab row and carries the tab names.
+fn under_the_top_row(frame: &str) -> String {
+    frame
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A row too wide for the box is cut inside it, wide graphemes included (interface spec 5.6).
@@ -456,9 +473,9 @@ async fn a_name_of_wide_graphemes_is_cut_inside_the_switchers_box() {
         .expect("the name is on the screen");
     assert_eq!(
         row(&f, y),
-        format!("│         │   {}…  │         │", "設定".repeat(13)),
-        "26 wide graphemes and an ellipsis fill 53 of the row's 54 cells, and the 54th is\n\
-         left blank because a 27th cannot be half drawn:\n{f}"
+        format!("│         │    {}設…   │         │", "設定".repeat(12)),
+        "25 wide graphemes and an ellipsis fill 51 of the row's 52 cells, and the 52nd is\n\
+         left blank because a 26th cannot be half drawn:\n{f}"
     );
 }
 
@@ -513,7 +530,7 @@ async fn the_switcher_cuts_the_pull_request_title_to_its_own_width_and_never_the
         .expect("the pull request is on the screen");
     assert_eq!(
         row(&f, y),
-        "│         │   feat/auth-cleanup · PR#212 · Consolidate the auth mid… │         │",
+        "│         │    feat/auth-cleanup · PR#212 · Consolidate the auth m…  │         │",
         "the title takes what the branch and the number leave and loses its tail:\n{f}"
     );
 

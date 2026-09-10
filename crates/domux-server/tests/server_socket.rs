@@ -9,6 +9,7 @@ use domux_core::proto::{
 use domux_server::core::CoreMsg;
 use domux_server::pane::{FakeSpawner, PtyHandle, PtySpawner, SpawnRequest};
 use domux_server::process::FakeInspector;
+use domux_server::testing::RecordingOpener;
 use domux_server::{load_config, CoreDeps, FixedClock, Server, ServerOptions};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -40,6 +41,7 @@ async fn start_with_config(config: &str) -> (domux_server::ServerHandle, tempfil
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };
@@ -322,6 +324,7 @@ async fn a_broken_config_is_reported_and_the_server_still_starts() {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };
@@ -382,6 +385,7 @@ async fn a_shell_that_exits_immediately_has_bounded_respawns_and_keeps_the_serve
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };
@@ -475,6 +479,7 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };
@@ -558,6 +563,7 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };
@@ -649,6 +655,7 @@ async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded()
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };
@@ -800,6 +807,7 @@ async fn a_pane_that_is_not_the_workspaces_last_does_not_spend_the_respawn_allow
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
+            opener: Arc::new(RecordingOpener::default()),
             id_seed: 7,
         },
     };

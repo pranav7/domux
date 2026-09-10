@@ -11,18 +11,27 @@ pub struct Boxed<'a> {
     pub title: &'a str,
     pub flag: Option<&'a str>,
     pub focused: bool,
+    /// Whether the bottom rule is drawn. False leaves the box open at the foot: the side
+    /// rules run to its last row and that row holds content instead of a line. A pane box
+    /// standing on the bottom of the workpanel is the only thing that asks for it (decision
+    /// record 0022); every other box is closed.
+    pub bottom_rule: bool,
 }
 
 impl Boxed<'_> {
     /// The area inside the border, without drawing anything. `render` returns this, and the
     /// pointer hit test asks for it: a cell hits the grid cell the reader sees under it only
     /// while the two agree about where the border is.
-    pub fn inner_of(area: Rect) -> Rect {
+    ///
+    /// `bottom_rule` is the field of the same name. An open box keeps the row the rule would
+    /// have taken, which is the whole point of opening it.
+    pub fn inner_of(area: Rect, bottom_rule: bool) -> Rect {
+        let chrome = if bottom_rule { 2 } else { 1 };
         Rect::new(
             area.x + 1,
             area.y + 1,
             area.width.saturating_sub(2),
-            area.height.saturating_sub(2),
+            area.height.saturating_sub(chrome),
         )
     }
 
@@ -50,9 +59,10 @@ impl Boxed<'_> {
         });
         let right = area.x + area.width - 1;
         let bottom = area.y + area.height - 1;
+        let closed = self.bottom_rule && area.height > 1;
         for x in area.x..=right {
             buf[(x, area.y)].set_symbol("─").set_style(border);
-            if area.height > 1 {
+            if closed {
                 buf[(x, bottom)].set_symbol("─").set_style(border);
             }
         }
@@ -66,7 +76,7 @@ impl Boxed<'_> {
         if area.width > 1 {
             buf[(right, area.y)].set_symbol("┐").set_style(border);
         }
-        if area.height > 1 {
+        if closed {
             buf[(area.x, bottom)].set_symbol("└").set_style(border);
             if area.width > 1 {
                 buf[(right, bottom)].set_symbol("┘").set_style(border);
@@ -104,7 +114,7 @@ impl Boxed<'_> {
                 title_style,
             );
         }
-        Self::inner_of(area)
+        Self::inner_of(area, self.bottom_rule)
     }
 }
 

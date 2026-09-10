@@ -33,8 +33,12 @@ const MIN_TITLE_WIDTH: usize = 8;
 #[derive(Debug, Clone, Copy)]
 pub struct Extras {
     pub width: usize,
-    /// The pull request's title after its number, and the tab list on its own line
-    /// (interface spec 5.5). The sidebar says no; the switcher says yes.
+    /// The pull request's title after its number. The sidebar says no; the switcher says
+    /// yes.
+    ///
+    /// It carried the tab list on its own line too, and does not any more: MUX-12 read that
+    /// line as noise, and it was the reason almost every row in the switcher was two lines
+    /// and so earned a blank row on both sides of it.
     pub wide: bool,
 }
 
@@ -176,11 +180,6 @@ fn workspace_row(
     if let Some(line) = line2(w, branch, pr, inset) {
         lines.push(indented(line));
     }
-    if inset.wide {
-        if let Some(line) = tab_list(w) {
-            lines.push(indented(line));
-        }
-    }
     ListRow::selectable(key, filter_text, lines)
 }
 
@@ -309,34 +308,6 @@ fn line2(
             spans.push(Span::styled(SEP, Style::default().fg(theme::SURFACE1)));
             spans.push(Span::styled(
                 truncate_with_ellipsis(title, room),
-                Style::default().fg(theme::OVERLAY1),
-            ));
-        }
-    }
-    Some(Line::from(spans))
-}
-
-/// `1 pr1     2 tests`: number, space, name, five spaces between tabs (interface spec 5.5).
-/// Nothing here is shortened. Line 2 shortens itself because it has an order of importance
-/// to express, the title before the branch; the tab list has none, so `ListBox` cuts what
-/// does not fit and keeps each tab's own colour while it does.
-fn tab_list(w: &Workspace) -> Option<Line<'static>> {
-    if w.tabs.is_empty() {
-        return None;
-    }
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (i, tab) in w.tabs.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw("     "));
-        }
-        spans.push(Span::styled(
-            format!("{}", i + 1),
-            Style::default().fg(theme::OVERLAY0),
-        ));
-        if let Some(name) = &tab.name {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                name.clone(),
                 Style::default().fg(theme::OVERLAY1),
             ));
         }

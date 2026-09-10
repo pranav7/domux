@@ -7,7 +7,7 @@
 
 use crate::render::agents_box::{self, RowForm, RESUME_WORD};
 use crate::render::boxed::{put, put_within};
-use crate::render::list_box::{content_width, filter_rows, ListBox};
+use crate::render::list_box::{content_width, filter_rows, text_area, ListBox, SIDEBAR_PAD};
 use crate::render::projects_box::{filled_index, rows, Extras, PROJECTS_TITLE};
 use crate::render::top_bar::Piece;
 use crate::render::{theme, RenderInput};
@@ -181,7 +181,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         input.facts,
         filter,
         Some(key),
-        Extras::compact(content_width(area.width)),
+        Extras::compact(content_width(area.width, SIDEBAR_PAD)),
     );
     (built, focused)
 }
@@ -191,7 +191,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
 pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
     let area = projects_area(input.view.size);
     let (built, _) = built_rows(input, area);
-    let inner = crate::render::boxed::Boxed::inner_of(area);
+    let inner = text_area(area, SIDEBAR_PAD);
     let scroll = crate::render::list_box::scroll_to_show(
         &built.rows,
         built.filled,
@@ -245,6 +245,7 @@ fn draw_projects(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         focused,
         scroll: input.view.projects_scroll,
         empty_text: &empty,
+        pad: SIDEBAR_PAD,
     }
     .render(area, buf);
 }
@@ -264,7 +265,11 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         true => input.view.filter.as_str(),
         false => "",
     };
-    let all = agents_box::rows(input.agents, RowForm::Sidebar, content_width(area.width));
+    let all = agents_box::rows(
+        input.agents,
+        RowForm::Sidebar,
+        content_width(area.width, SIDEBAR_PAD),
+    );
     let visible = filter_rows(&all, filter);
     let cursor = match focused {
         true => input.view.agents_cursor.as_ref().map(|id| id.to_string()),
@@ -279,6 +284,10 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         focused,
         scroll: input.view.agents_scroll,
         empty_text: &empty,
+        // The same pad the Projects box above it takes: the two boxes share a column, so a
+        // row of one starting in a different place from a row of the other would read as an
+        // indent nobody meant (decision record 0023).
+        pad: SIDEBAR_PAD,
     }
     .render(area, buf);
 }

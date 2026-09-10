@@ -211,19 +211,59 @@ fn drag(core: &mut Core, client: &ClientId, hit: &PaneHit) {
 }
 
 /// A release copies what the drag selected and leaves copy mode, which is the whole gesture in
-/// one movement (decision 0014). A press that never dragged selected nothing, so it copies
-/// nothing and the pane keeps the focus the press gave it.
+/// one movement (decision 0014). A press that never dragged selected nothing, so it opens the
+/// link under it if there is one (decision record 0024), and otherwise leaves the pane with
+/// the focus the press gave it.
 fn release(core: &mut Core, client: &ClientId, hit: &PaneHit) {
     let Some(rt) = core.panes.get_mut(&hit.pane) else {
         return;
     };
-    rt.pressed_at = None;
+    let pressed = rt.pressed_at.take();
     let dragged = rt.copy.as_ref().is_some_and(|c| c.anchor.is_some());
     if !dragged {
+        // The cell the button went down on, and only when the button came up on it too. A
+        // press that moved without producing a drag report is not a click on anything in
+        // particular, and opening the cell it happened to end on would act on a link the
+        // reader never pressed.
+        if pressed == Some((hit.row, hit.col)) {
+            open_link(core, client, hit);
+        }
         return;
     }
     let outcome = copy_mode::yank(rt);
     crate::input::finish_copy(core, client, &hit.pane, outcome);
+}
+
+/// Opens the link under a click, if the cell has one. Nothing is said when it does not: a
+/// click with no link is how the reader moves the focus, and every click answering with a row
+/// about what is not under it would be noise.
+///
+/// `link::at` decides what may be opened; this only asks. The opener runs as a job, because
+/// it starts a process and the core task starts none (decision record 0006).
+fn open_link(core: &mut Core, client: &ClientId, hit: &PaneHit) {
+    let cwd = core.model.pane(&hit.pane).map(|p| p.cwd.clone());
+    let Some(rt) = core.panes.get_mut(&hit.pane) else {
+        return;
+    };
+    // Copy mode may be holding the viewport above the live screen, so the row the reader
+    // clicked is resolved against the same offset the grid was drawn at.
+    let offset = rt.copy.as_ref().map(|c| c.offset).unwrap_or(0);
+    // The directory the shell reported with OSC 7 is where it really is now; the pane's
+    // recorded cwd is where it started. A relative path is read against the first when there
+    // is one.
+    let here = rt.emulator.cwd().or(cwd);
+    let Some(found) = crate::link::at(&mut rt.emulator, offset, here.as_deref(), hit.row, hit.col)
+    else {
+        return;
+    };
+    core.queue_job(
+        crate::core::CoreJob::OpenLink {
+            target: found.target(),
+            said: found.said(),
+            opener: core.deps.opener.clone(),
+        },
+        Some(client.clone()),
+    );
 }
 
 /// What a repeated press selects.

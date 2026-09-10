@@ -677,3 +677,29 @@ fn logical_line_clamps_a_row_past_the_end() {
     let last = e.scrollback_len() + 2;
     assert_eq!(e.logical_line(9_999), (last, last));
 }
+
+/// OSC 8 marks the cells between the two sequences, and the target it carries is not the text
+/// the reader sees. Reading it back is how a click opens what the program meant (MUX-13).
+///
+/// The columns on either side of the link are asserted too, because a hyperlink that leaked
+/// past its closing sequence would open the wrong thing from a cell that looks unmarked.
+#[test]
+fn hyperlink_at_reads_the_osc_8_target_of_the_cells_between_the_sequences() {
+    let mut e = make(40, 3);
+    e.feed(b"a \x1b]8;;https://example.com/x\x1b\\link\x1b]8;;\x1b\\ b");
+    let link = |col: u16| e.hyperlink_at(ScrollbackPos { row: 0, col });
+    assert_eq!(link(0), None, "the text before the sequence");
+    assert_eq!(link(2), Some("https://example.com/x".to_string()));
+    assert_eq!(link(5), Some("https://example.com/x".to_string()));
+    assert_eq!(link(6), None, "and the text after the closing sequence");
+}
+
+/// A row with no hyperlink on it anywhere answers `None` rather than failing, and so does a
+/// position past the end of the screen, which clamps the way every other position does.
+#[test]
+fn hyperlink_at_is_absent_for_plain_text_and_for_a_position_past_the_screen() {
+    let mut e = make(40, 3);
+    e.feed(b"https://example.com/plain");
+    assert_eq!(e.hyperlink_at(ScrollbackPos { row: 0, col: 0 }), None);
+    assert_eq!(e.hyperlink_at(ScrollbackPos { row: 99, col: 99 }), None);
+}

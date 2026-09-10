@@ -13,7 +13,7 @@
 //! text is `agents_box::empty_text` for the same reason.
 
 use crate::render::agents_box::{self, rows, RowForm, TITLE};
-use crate::render::list_box::{content_width, filter_rows, ListBox};
+use crate::render::list_box::{box_lines, content_width, filter_rows, ListBox, OVERLAY_PAD};
 use crate::render::projects_box::filled_index;
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
@@ -37,13 +37,13 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // Two passes, as the switcher makes them: the rows truncate to the box's inner width and
     // the row count then decides the box's height, so the width answers first because it does
     // not depend on the rows.
-    let inner_width = content_width(overlay::list_overlay_width(screen));
+    let inner_width = content_width(overlay::list_overlay_width(screen), OVERLAY_PAD);
     let all = rows(input.agents, RowForm::Overlay, inner_width);
     let visible = filter_rows(&all, &input.view.filter);
     let lines = visible
         .iter()
         .fold(0u16, |sum, r| sum.saturating_add(r.height()));
-    let area = overlay::list_overlay_area(screen, lines);
+    let area = overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
     let footer = Rect::new(area.x, area.y + area.height, area.width, 1);
     // The cursor is the agent under it, not a row number, so a re-sort between two frames
     // keeps the fill on the agent it was on (principle 2).
@@ -60,6 +60,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         focused: true,
         scroll: input.view.agents_scroll,
         empty_text: &empty,
+        pad: OVERLAY_PAD,
     }
     .render(area, buf);
     overlay::footer(input, &FOOTER, footer, buf);

@@ -49,10 +49,11 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
         cols(row(&f, 1), 38, 119),
         " ┌ sh ───────────────────────────────────────────────────────────────────────────┐"
     );
-    // 82 = " └" (2) + 79 dashes + "┘" (1)
+    // 82 = " │" (2) + 79 spaces + "│" (1). The box stands on the screen's last row, so it
+    // has no bottom rule and that row is the pane's (MUX-14).
     assert_eq!(
         cols(row(&f, 23), 38, 119),
-        " └───────────────────────────────────────────────────────────────────────────────┘"
+        " │                                                                               │"
     );
     // `cols(line, 0, 37)` takes 38 cells, the sidebar's whole width.
     assert_eq!(
@@ -201,8 +202,9 @@ async fn the_pane_is_narrower_by_the_sidebar_and_the_smallest_client_still_sizes
             panes[0]["cols"].as_u64().unwrap(),
             panes[0]["rows"].as_u64().unwrap()
         ),
-        (79, 21),
-        "120 minus 38 for the sidebar, 1 for the gap, 2 for the box border"
+        (79, 22),
+        "120 wide minus 38 for the sidebar, 1 for the gap and 2 for the box's side rules; 24 \
+         high minus the tab row and the box's top rule, with no bottom rule to take off"
     );
 }
 
@@ -250,7 +252,7 @@ async fn the_pane_takes_the_sidebars_columns_back_when_the_sidebar_hides_itself(
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     let pane = h.focused_pane(h.client.clone());
-    assert_eq!((h.pane_size(&pane).cols, h.pane_size(&pane).rows), (79, 21));
+    assert_eq!((h.pane_size(&pane).cols, h.pane_size(&pane).rows), (79, 22));
     h.resize(h.client.clone(), 119, 24).await;
     h.wait_for(
         h.client.clone(),
@@ -260,8 +262,8 @@ async fn the_pane_takes_the_sidebars_columns_back_when_the_sidebar_hides_itself(
     .await;
     assert_eq!(
         (h.pane_size(&pane).cols, h.pane_size(&pane).rows),
-        (117, 21),
-        "119 columns less the box border, with no sidebar to pay for"
+        (117, 22),
+        "119 columns less the box's side rules, with no sidebar to pay for"
     );
 }
 
@@ -364,7 +366,7 @@ async fn hiding_the_sidebar_redraws_a_client_whose_panes_do_not_change_size() {
         .await;
     let pane = h.focused_pane(h.client.clone());
     let before = h.pane_size(&pane);
-    assert_eq!((before.cols, before.rows), (79, 21));
+    assert_eq!((before.cols, before.rows), (79, 22));
     h.api("sidebar.hide", me).await.unwrap();
     let f = h
         .wait_for(

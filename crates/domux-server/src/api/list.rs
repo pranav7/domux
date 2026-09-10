@@ -12,7 +12,10 @@
 use super::{ok, Ctx};
 use crate::agents::context::place_of;
 use crate::render::agents_box::{self, RowForm};
-use crate::render::list_box::{content_width, filter_rows, scroll_to_show, ListRow};
+use crate::render::list_box::{
+    box_lines, content_width, filter_rows, scroll_to_show, text_area, ListRow, OVERLAY_PAD,
+    SIDEBAR_PAD,
+};
 use crate::render::projects_box::{self, Extras};
 use domux_core::api::{
     Ack, AgentResumeParams, AgentTargetParams, ApiError, ClientParams, Method, WorkspaceFocusParams,
@@ -136,14 +139,18 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             crate::render::sidebar::split_column(crate::render::sidebar::sidebar_area(view.size));
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
-        let all = agents_box::rows(&agents, RowForm::Sidebar, content_width(area.width));
+        let all = agents_box::rows(
+            &agents,
+            RowForm::Sidebar,
+            content_width(area.width, SIDEBAR_PAD),
+        );
         let rows = filter_rows(&all, &view.filter);
         let at = projects_box::filled_index(&rows, view.agents_cursor.as_ref().map(|a| a.as_str()));
         return Ok(Visible {
             surface,
             rows,
             at,
-            height: area.height.saturating_sub(2),
+            height: text_area(area, SIDEBAR_PAD).height,
             scroll: view.agents_scroll,
         });
     }
@@ -151,7 +158,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let width = crate::render::overlay::list_overlay_width(screen);
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
-        let all = agents_box::rows(&agents, RowForm::Overlay, content_width(width));
+        let all = agents_box::rows(&agents, RowForm::Overlay, content_width(width, OVERLAY_PAD));
         // The renderer filters the built rows where `projects_box::rows` takes the filter
         // itself, so this arm filters here for the same reason: one list, filtered once, the
         // way the box on the screen was.
@@ -159,13 +166,13 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let lines = rows
             .iter()
             .fold(0u16, |sum, r| sum.saturating_add(r.height()));
-        let area = crate::render::overlay::list_overlay_area(screen, lines);
+        let area = crate::render::overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
         let at = projects_box::filled_index(&rows, view.agents_cursor.as_ref().map(|a| a.as_str()));
         return Ok(Visible {
             surface,
             rows,
             at,
-            height: area.height.saturating_sub(2),
+            height: text_area(area, OVERLAY_PAD).height,
             scroll: view.agents_scroll,
         });
     }
@@ -184,7 +191,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::switcher(content_width(width)),
+            Extras::switcher(content_width(width, OVERLAY_PAD)),
         );
         // The switcher's height follows its rows, the same two passes `switcher::draw` makes:
         // the width does not depend on the rows, and the row count then decides the height.
@@ -192,8 +199,8 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             .rows
             .iter()
             .fold(0u16, |sum, r| sum.saturating_add(r.height()));
-        let area = crate::render::overlay::list_overlay_area(screen, lines);
-        (rows, area.height.saturating_sub(2))
+        let area = crate::render::overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
+        (rows, text_area(area, OVERLAY_PAD).height)
     } else {
         let area = crate::render::sidebar::projects_area(view.size);
         let rows = projects_box::rows(
@@ -201,9 +208,9 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::compact(content_width(area.width)),
+            Extras::compact(content_width(area.width, SIDEBAR_PAD)),
         );
-        (rows, area.height.saturating_sub(2))
+        (rows, text_area(area, SIDEBAR_PAD).height)
     };
     Ok(Visible {
         surface,
