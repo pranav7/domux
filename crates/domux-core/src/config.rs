@@ -135,8 +135,20 @@ impl Default for KeysConfig {
                 ("C-k", "focus.up"),
                 ("C-l", "focus.right"),
                 ("C-\\", "focus.last"),
+                // Resize moves the boundary the arrow points at. Shift moves it two cells,
+                // ctrl with shift moves it eight: a step small enough to settle on the
+                // column you want, and one large enough to cross a pane in a few presses.
+                // Eight rather than ten because ten is most of the height of a short screen,
+                // where one press would land on the three row floor and the coarse key would
+                // read as a maximise.
                 ("S-Left", "pane.resize left 2"),
                 ("S-Right", "pane.resize right 2"),
+                ("S-Up", "pane.resize up 2"),
+                ("S-Down", "pane.resize down 2"),
+                ("C-S-Left", "pane.resize left 8"),
+                ("C-S-Right", "pane.resize right 8"),
+                ("C-S-Up", "pane.resize up 8"),
+                ("C-S-Down", "pane.resize down 8"),
             ]),
             passthrough: PassthroughConfig::default(),
             // Keys inside the Projects and Agents boxes, with no leader (interface spec
@@ -464,10 +476,20 @@ mod tests {
             c.keys.global.get("C-\\").map(String::as_str),
             Some("focus.last")
         );
-        assert_eq!(
-            c.keys.global.get("S-Left").map(String::as_str),
-            Some("pane.resize left 2")
-        );
+        // Resize is bound on both axes and at two step sizes: shift moves the boundary two
+        // cells, ctrl and shift move it eight.
+        for (key, action) in [
+            ("S-Left", "pane.resize left 2"),
+            ("S-Right", "pane.resize right 2"),
+            ("S-Up", "pane.resize up 2"),
+            ("S-Down", "pane.resize down 2"),
+            ("C-S-Left", "pane.resize left 8"),
+            ("C-S-Right", "pane.resize right 8"),
+            ("C-S-Up", "pane.resize up 8"),
+            ("C-S-Down", "pane.resize down 8"),
+        ] {
+            assert_eq!(c.keys.global.get(key).map(String::as_str), Some(action));
+        }
         assert_eq!(c.keys.passthrough.commands, vec!["nvim", "vim", "fzf"]);
         assert_eq!(
             c.keys.passthrough.keys,

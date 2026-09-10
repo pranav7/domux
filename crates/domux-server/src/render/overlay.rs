@@ -3,9 +3,10 @@
 
 use crate::render::boxed::{put_within, Boxed};
 use crate::render::{theme, RenderInput};
+use domux_core::keymap::{Action, Binding, KeyName};
 use domux_core::model::{Focus, Overlay};
 use domux_core::text::{display_width, truncate_with_ellipsis};
-use domux_term::Size;
+use domux_term::{Mods, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -308,6 +309,38 @@ pub fn centred_area(width: u16, height: u16, buf: &Buffer) -> Rect {
 ///
 /// The `[keys.list]` block goes first when the reader's keys are in a box and last when they
 /// are on a pane; see the comment on `in_a_box` below.
+/// The keys of a collapsed row, as one label. Four arrows written out in full run past the
+/// right edge of the box on a 60 column screen, and the first thing the ellipsis takes is the
+/// step size at the end of the row, which is the only thing telling the two resize rows apart.
+/// So a modifier every key in the group shares is written once: `C-S-Up/Down/Left/Right`. A
+/// group whose keys do not share one is written out in full, which is longer but true.
+fn joined_keys(group: &[&Binding]) -> String {
+    let bare = |k: &KeyName| {
+        KeyName {
+            key: k.key,
+            mods: Mods::empty(),
+        }
+        .to_string()
+    };
+    let mods = group[0].key.mods;
+    if group.iter().any(|b| b.key.mods != mods) {
+        let keys: Vec<String> = group.iter().map(|b| b.key.to_string()).collect();
+        return keys.join("/");
+    }
+    let full = group[0].key.to_string();
+    let prefix = full.strip_suffix(&bare(&group[0].key)).unwrap_or("");
+    let keys: Vec<String> = group.iter().map(|b| bare(&b.key)).collect();
+    format!("{prefix}{}", keys.join("/"))
+}
+
+/// The cell count of a `pane.resize <dir> <cells>` action, which is what the help overlay
+/// groups the resize keys by. `None` for every other action, including a resize written with
+/// the wrong number of arguments: that one is already a keymap warning, and the row it draws
+/// should read as what the file says.
+fn resize_step(action: &Action) -> Option<&str> {
+    (action.method == "pane.resize" && action.args.len() == 2).then(|| action.args[1].as_str())
+}
+
 fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     let km = input.keymap;
     // `[keys.list]`, the keys inside a box (interface spec 5.4). Built here and placed below,
@@ -369,11 +402,42 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
         bindings.push((format!("{} {}", km.leader, keys), "tab.select <n>".into()));
     }
     bindings.sort_by(|a, b| a.1.cmp(&b.1));
-    let mut globals: Vec<(String, String)> = km
-        .global
-        .iter()
-        .map(|b| (b.key.to_string(), b.action.to_string()))
-        .collect();
+    // Collapse the resize bindings the same way, and for the same reason: four directions at
+    // each of two step sizes is eight near-identical rows, which is more than a short screen
+    // has to spare. Each step size gets one row naming its own keys. A step bound in a single
+    // direction keeps its own row instead, because `<dir>` would then hide which direction it
+    // is, where `<n>` above hides nothing.
+    let mut globals: Vec<(String, String)> = Vec::new();
+    let mut steps: Vec<&str> = Vec::new();
+    for b in &km.global {
+        match resize_step(&b.action) {
+            Some(cells) => {
+                if !steps.contains(&cells) {
+                    steps.push(cells);
+                }
+            }
+            None => globals.push((b.key.to_string(), b.action.to_string())),
+        }
+    }
+    for cells in steps {
+        let at_step: Vec<&Binding> = km
+            .global
+            .iter()
+            .filter(|b| resize_step(&b.action) == Some(cells))
+            .collect();
+        let mut dirs: Vec<&str> = at_step.iter().map(|b| b.action.args[0].as_str()).collect();
+        dirs.sort_unstable();
+        dirs.dedup();
+        if dirs.len() > 1 {
+            globals.push((joined_keys(&at_step), format!("pane.resize <dir> {cells}")));
+        } else {
+            globals.extend(
+                at_step
+                    .iter()
+                    .map(|b| (b.key.to_string(), b.action.to_string())),
+            );
+        }
+    }
     globals.sort_by(|a, b| a.1.cmp(&b.1));
     for (k, a) in bindings.iter().chain(globals.iter()) {
         lines.push(format!("{k:<10} {a}"));
