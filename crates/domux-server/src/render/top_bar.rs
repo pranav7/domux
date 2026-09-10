@@ -62,6 +62,43 @@ impl Piece {
 /// to read as a message, and the mark that says the rest was cut.
 const RIGHT_FLOOR: usize = 8;
 
+/// The stay awake dot, and the cells it keeps at the far right of the row: itself and the gap
+/// before it.
+///
+/// It is not one of the right end's pieces. That list is a priority chain which shows one
+/// thing at a time, so a dot inside it would be gone whenever the bar had anything to say,
+/// which is a status light that cannot be trusted (decision 0029). It sits outside instead,
+/// past the clock, and every frame draws it.
+const DOT: &str = "●";
+const DOT_CELLS: u16 = 2;
+
+/// Where the row ends for everything but the dot.
+fn before_the_dot(x_max: u16) -> u16 {
+    x_max.saturating_sub(DOT_CELLS)
+}
+
+/// The dot, green while domux is holding this machine awake and grey while it is not.
+///
+/// Grey rather than absent: a light with no resting state teaches the reader nothing when it
+/// is off, and leaves them looking for a mark that was never there.
+fn draw_dot(input: &RenderInput, y: u16, x_max: u16, bg: Color, buf: &mut Buffer) {
+    if x_max < DOT_CELLS {
+        return;
+    }
+    let colour = if input.stay_awake {
+        theme::GREEN
+    } else {
+        theme::SURFACE2
+    };
+    put(
+        buf,
+        x_max - DOT_CELLS,
+        y,
+        DOT,
+        Style::default().fg(colour).bg(bg),
+    );
+}
+
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // The buffer is the authority on how wide the bar may be, not the client's reported
     // size: the fill below indexes cells directly, so a width taken from anywhere else
@@ -170,9 +207,11 @@ pub fn draw_tabs_and_right(
     buf: &mut Buffer,
 ) {
     let end = right_end(input);
-    let (tabs_budget, right_x) = share(&end, tabs, x, x_max);
+    let limit = before_the_dot(x_max);
+    let (tabs_budget, right_x) = share(&end, tabs, x, limit);
     tabs.draw(x, y, tabs_budget, bg, buf);
-    draw_pieces(end, right_x, y, x_max, bg, buf);
+    draw_pieces(end, right_x, y, limit, bg, buf);
+    draw_dot(input, y, x_max, bg, buf);
 }
 
 /// How the run from `x` to `x_max` is shared: the cells the tab row draws in, and the column the
@@ -206,7 +245,7 @@ pub fn tab_target_at(
     x_max: u16,
     at_x: u16,
 ) -> Option<TabTarget> {
-    let (budget, _) = share(&right_end(input), tabs, x, x_max);
+    let (budget, _) = share(&right_end(input), tabs, x, before_the_dot(x_max));
     tabs.target_at(x, budget, at_x)
 }
 

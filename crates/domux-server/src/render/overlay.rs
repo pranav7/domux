@@ -551,6 +551,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         footer(&input, hints, area, buf);
     }

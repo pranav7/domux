@@ -42,7 +42,9 @@ async fn start_with_config(config: &str) -> (domux_server::ServerHandle, tempfil
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     (Server::start(opts).await.unwrap(), dir)
@@ -325,7 +327,9 @@ async fn a_broken_config_is_reported_and_the_server_still_starts() {
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     let server = Server::start(opts).await.unwrap();
@@ -386,7 +390,9 @@ async fn a_shell_that_exits_immediately_has_bounded_respawns_and_keeps_the_serve
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     let server = Server::start(opts).await.unwrap();
@@ -480,7 +486,9 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     let server = Server::start(opts).await.unwrap();
@@ -564,7 +572,9 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     let server = Server::start(opts).await.unwrap();
@@ -656,7 +666,9 @@ async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded()
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     let server = Server::start(opts).await.unwrap();
@@ -808,7 +820,9 @@ async fn a_pane_that_is_not_the_workspaces_last_does_not_spend_the_respawn_allow
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
+            runner: Arc::new(domux_server::command::FakeRunner::default()),
             id_seed: 7,
+            platform: "macos".into(),
         },
     };
     let server = Server::start(opts).await.unwrap();

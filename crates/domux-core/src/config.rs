@@ -12,6 +12,7 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub worktrees: WorktreesConfig,
     pub resume: ResumeConfig,
+    pub stay_awake: StayAwakeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,6 +77,24 @@ pub enum ResumeMode {
     Auto,
 }
 
+/// `[stay_awake]` (architecture spec section 9, renamed by decision 0029).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StayAwakeConfig {
+    pub mode: StayAwakeMode,
+}
+
+/// `partial`: the machine does not fall asleep on its own, and nothing asks for a password.
+/// `full`: closing the lid does not put it to sleep either, which on macOS needs the two
+/// files `stay-awake install --full` writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StayAwakeMode {
+    #[default]
+    Partial,
+    Full,
+}
+
 impl TerminalConfig {
     pub fn shell_or_default(&self) -> String {
         self.shell
@@ -128,6 +147,9 @@ impl Default for KeysConfig {
                 ("N", "workspace.rename"),
                 ("n", "workspace.clear_name"),
                 ("a", "agents.open"),
+                // The shifted letter of `awake`, the word the dot at the right end stands
+                // for (decision 0029).
+                ("A", "stay_awake.toggle"),
             ]),
             global: map(&[
                 ("C-h", "focus.left"),
@@ -233,7 +255,7 @@ pub struct Parsed {
     pub warnings: Vec<ConfigWarning>,
 }
 
-pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees", "resume"];
+pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees", "resume", "stay_awake"];
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "keys",
@@ -243,6 +265,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("terminal", &["shell", "scrollback", "remain_on_exit"]),
     ("worktrees", &["base"]),
     ("resume", &["agents"]),
+    ("stay_awake", &["mode"]),
 ];
 
 impl Config {
@@ -290,6 +313,7 @@ impl Config {
             terminal: user.terminal,
             worktrees: user.worktrees,
             resume: user.resume,
+            stay_awake: user.stay_awake,
         };
         Ok(Parsed { config, warnings })
     }
@@ -759,6 +783,55 @@ mod tests {
             err.message.contains("manual") && err.message.contains("auto"),
             "{}",
             err.message
+        );
+    }
+
+    #[test]
+    fn the_shifted_letter_of_the_word_on_screen_toggles_stay_awake() {
+        let c = Config::default();
+        assert_eq!(
+            c.keys.bindings.get("A").map(String::as_str),
+            Some("stay_awake.toggle")
+        );
+        assert_eq!(
+            c.keys.bindings.get("a").map(String::as_str),
+            Some("agents.open"),
+            "the unshifted letter keeps the meaning it had"
+        );
+    }
+
+    #[test]
+    fn stay_awake_defaults_to_partial_and_parses_full() {
+        let c = Config::default();
+        assert_eq!(
+            c.stay_awake.mode,
+            StayAwakeMode::Partial,
+            "the mode that asks for nothing is the one nobody has to opt out of"
+        );
+        let p = Config::parse("[stay_awake]\nmode = \"full\"\n").unwrap();
+        assert_eq!(p.config.stay_awake.mode, StayAwakeMode::Full);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+    }
+
+    #[test]
+    fn an_unknown_stay_awake_mode_names_the_line_and_the_two_values() {
+        let err = Config::parse("[stay_awake]\nmode = \"always\"\n").unwrap_err();
+        assert_eq!(err.line, Some(2));
+        assert!(
+            err.message.contains("partial") && err.message.contains("full"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_under_stay_awake_warns_with_its_line_and_keeps_the_rest() {
+        let parsed = Config::parse("[stay_awake]\nmode = \"full\"\nlid = true\n").unwrap();
+        assert_eq!(parsed.config.stay_awake.mode, StayAwakeMode::Full);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+        assert_eq!(
+            parsed.warnings[0].0,
+            "unknown key stay_awake.lid (line 3) is ignored"
         );
     }
 

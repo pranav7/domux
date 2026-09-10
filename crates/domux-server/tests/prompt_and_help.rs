@@ -77,7 +77,7 @@ async fn leader_comma_opens_the_prompt_in_the_tab_cell_and_the_clock_gives_way()
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  Name tab 1 ›   │ + │           ⏎ save · esc cancel · empty clears |",
+        "| proj › main  Name tab 1 ›   │ + │         ⏎ save · esc cancel · empty clears ● |",
         "{f}"
     );
     assert!(
@@ -99,7 +99,7 @@ async fn leader_comma_opens_the_prompt_in_the_tab_cell_and_the_clock_gives_way()
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  Name tab 1 › tests  │ + │      ⏎ save · esc cancel · empty clears |",
+        "| proj › main  Name tab 1 › tests  │ + │    ⏎ save · esc cancel · empty clears ● |",
         "{f}"
     );
     let pane = h.focused_pane(h.client.clone());
@@ -114,7 +114,7 @@ async fn leader_comma_opens_the_prompt_in_the_tab_cell_and_the_clock_gives_way()
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 tests │ + │                                   14:32   Fri 4 Sep |",
+        "| proj › main  1 tests │ + │                                 14:32   Fri 4 Sep ● |",
         "{f}"
     );
     assert_eq!(
@@ -211,7 +211,7 @@ async fn the_chord_indicator_shows_the_leader_and_the_help_key_in_the_clocks_pla
             Duration::from_secs(2),
         )
         .await;
-    assert!(row(&f, 0).ends_with("C-a  ? keys |"), "{f}");
+    assert!(row(&f, 0).ends_with("C-a  ? keys ● |"), "{f}");
     assert!(!f.contains("14:32"), "the clock gave way:\n{f}");
     h.key(h.client.clone(), "Esc").await;
     h.wait_for(
@@ -350,7 +350,7 @@ async fn the_prompt_draws_in_the_cell_of_the_tab_it_names_not_the_current_one() 
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  Name tab 1 ›   │ 2 │ + │       ⏎ save · esc cancel · empty clears |",
+        "| proj › main  Name tab 1 ›   │ 2 │ + │     ⏎ save · esc cancel · empty clears ● |",
         "{f}"
     );
     assert!(
@@ -419,7 +419,7 @@ async fn the_prompt_cell_is_never_elided_off_the_row() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  Name tab 1 › auth  │ 2 │ 3 │   ⏎ save · esc cancel · empty clears |",
+        "| proj › main  Name tab 1 › auth  │ 2 │ 3 │ ⏎ save · esc cancel · empty clears ● |",
         "{f}"
     );
     // The prompt's whole cell, c13 to c32, and nothing else.
@@ -513,11 +513,11 @@ async fn the_tab_row_elides_both_ends_around_the_current_tab_when_the_tabs_do_no
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main …│ 3 │ 4 │ 5 │ 6 │ 7 │…│ + │ 14:32   Fri 4 Sep |",
+        "| proj › main …│ 4 │ 5 │ 6 │ 7 │…│ + │   14:32   Fri 4 Sep ● |",
         "{f}"
     );
     assert!(
-        f.contains("r0 c23-25 bold fg=#1e1e2e bg=#cba6f7"),
+        f.contains("r0 c19-21 bold fg=#1e1e2e bg=#cba6f7"),
         "tab 5 is the current cell:\n{f}"
     );
 }
@@ -539,7 +539,7 @@ async fn the_tab_row_drops_the_plus_before_the_current_tab_on_a_narrow_screen() 
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main …│ 8 │   14:32   Fri 4 Sep |",
+        "| proj › main …│ 8 │   14:32   Fri 4 … ● |",
         "{f}"
     );
     assert!(
@@ -566,7 +566,7 @@ async fn a_hint_too_long_for_the_room_beside_the_tabs_elides() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │ tab 9 does not e… |",
+        "| proj › main  1 │ + │ tab 9 does not… ● |",
         "{f}"
     );
 }
@@ -693,7 +693,7 @@ async fn an_actionable_right_end_elides_into_a_floor_of_its_own_rather_than_goin
     // part of the message (ruled 2026-09-07).
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 a-very-long-b… tab 9 d… |",
+        "| proj › main  1 a-very-long… tab 9 d… ● |",
         "{f}"
     );
 }
@@ -720,7 +720,7 @@ async fn the_tab_row_leaves_the_last_column_empty_when_it_wants_the_whole_row() 
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 a-very-long-branch-nam… |",
+        "| proj › main  1 a-very-long-branch-n… ● |",
         "{f}"
     );
 }

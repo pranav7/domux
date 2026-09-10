@@ -406,6 +406,13 @@ pub struct Core {
     /// What the agent handlers hold outside the Model: working words, the transcript reader
     /// and the manifest registry.
     pub agents: crate::agents::AgentsState,
+    /// The hold that keeps this machine awake, and the process id file that outlives it. The
+    /// model says whether there should be one; this is the one there is (decision 0029).
+    pub stay_awake: crate::stay_awake::StayAwake,
+    /// The line in the corner of the screen, until its six seconds are up. One for the
+    /// server: what it reports is the server's state, so every attached client reads it, and
+    /// the newest is the one that is true.
+    toast: Option<crate::toast::Toast>,
     /// What the jobs in flight have chosen and not yet written into the model.
     ///
     /// A handler that only reads the model is safe without this, because the core task
@@ -514,6 +521,7 @@ impl Core {
             &crate::facts::pr_cache_path(&opts.state_dir),
             opts.deps.clock.now(),
         );
+        let state_dir_for_hold = opts.state_dir.clone();
         let mut core = Core {
             model,
             panes: HashMap::new(),
@@ -540,6 +548,8 @@ impl Core {
             claims: HashSet::new(),
             notes: Vec::new(),
             agents: crate::agents::AgentsState::default(),
+            stay_awake: crate::stay_awake::StayAwake::new(&state_dir_for_hold),
+            toast: None,
         };
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
@@ -564,12 +574,47 @@ impl Core {
         for pane in core.model.all_pane_ids() {
             core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
         }
+        core.take_the_hold_the_state_file_remembers();
         core.resume_agents_on_start();
         core.pending_events.push(Event::ServerStarted {
             version: domux_core::VERSION.into(),
             socket: core.socket_path.clone(),
         });
         Ok(core)
+    }
+
+    /// Stay awake across a restart (decision 0029). Two steps, in this order:
+    ///
+    /// `adopt` first, because a server that died without releasing left a holder running and
+    /// a process id file naming it. Taking that one over is what stops a second holder being
+    /// started beside it, and what makes the hold something the next `disable` can end.
+    ///
+    /// Then the flag: a reader who turned stay awake on said something about the next few
+    /// hours, so a clean stop releases the hold and the next start takes a fresh one. A start
+    /// that cannot take it says so in the log and puts the flag down, because a dot that
+    /// showed green for a hold nobody has would be worse than the feature being off.
+    fn take_the_hold_the_state_file_remembers(&mut self) {
+        let platform = self.deps.platform.clone();
+        self.stay_awake.adopt(
+            &platform,
+            self.deps.runner.as_ref(),
+            self.deps.inspector.as_ref(),
+        );
+        if !self.model.stay_awake || self.stay_awake.on() {
+            return;
+        }
+        let mode = self.config.config.stay_awake.mode;
+        match self
+            .stay_awake
+            .enable(mode, &platform, self.deps.runner.as_ref())
+        {
+            Ok(Some(note)) => tracing::warn!("stay awake: {note}"),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!("stay awake was on when this server last stopped, and the hold could not be taken again: {e}");
+                self.model.stay_awake = false;
+            }
+        }
     }
 
     /// `[resume] agents = "auto"`: every record the server starts holding gets its relaunch line
@@ -1222,6 +1267,8 @@ impl Core {
             config_error: self.config.error.as_ref(),
             hint: self.clients.get(client).and_then(|c| c.hint.as_ref()),
             notes: &self.notes,
+            stay_awake: self.stay_awake.on(),
+            toast: self.toast.as_ref(),
         };
         render::hit_at(&input, column, row)
     }
@@ -1438,6 +1485,7 @@ impl Core {
             deps: &self.deps,
             facts: &self.facts,
             agents: &mut self.agents,
+            stay_awake: &mut self.stay_awake,
             core_tx: &self.core_tx,
             socket_path: &self.socket_path,
             state_dir: &self.state_dir,
@@ -1445,6 +1493,7 @@ impl Core {
             client,
             from_key,
             events: Vec::new(),
+            toasts: Vec::new(),
             stop_requested: false,
             view_dirty: false,
             pending_spawns: Vec::new(),
@@ -1457,6 +1506,7 @@ impl Core {
         };
         let result = api::dispatch(method, &mut ctx);
         let events = std::mem::take(&mut ctx.events);
+        let toasts = std::mem::take(&mut ctx.toasts);
         let spawns = std::mem::take(&mut ctx.pending_spawns);
         let kills = std::mem::take(&mut ctx.pending_kills);
         let detaches = std::mem::take(&mut ctx.detach_clients);
@@ -1472,6 +1522,10 @@ impl Core {
         }
         self.view_dirty |= view_dirty;
         self.pending_events.extend(events);
+        // The newest is the one that is true: two changes inside a second leave the second.
+        if let Some(toast) = toasts.into_iter().next_back() {
+            self.toast = Some(toast);
+        }
         // Before the side effects: a workspace whose block has just been lifted takes its
         // replacement pane from the invariant below like any other.
         if release_blocks {
@@ -1861,6 +1915,18 @@ impl Core {
             }
         }
         cleared
+    }
+
+    /// Takes the toast away once its six seconds are up, and answers whether it did.
+    fn expire_toast(&mut self) -> bool {
+        let now = self.deps.clock.now();
+        match &self.toast {
+            Some(toast) if toast.expired(now) => {
+                self.toast = None;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Registers a path that the model does not hold yet and adopts the worktrees beside
@@ -2287,6 +2353,17 @@ impl Core {
         if self.expire_pills() {
             self.view_dirty = true;
         }
+        if self.expire_toast() {
+            self.view_dirty = true;
+        }
+        // A holder killed from outside domux leaves a green dot saying something that is no
+        // longer true. The flag follows the hold, so this is a change worth persisting.
+        if self.stay_awake.recheck(self.deps.inspector.as_ref()) {
+            self.model.stay_awake = false;
+            self.pending_events
+                .push(Event::StayAwakeChanged { on: false });
+            changed = true;
+        }
         if changed {
             self.view_dirty = true;
             self.persist();
@@ -2690,6 +2767,8 @@ impl Core {
                 config_error: self.config.error.as_ref(),
                 hint: conn.hint.as_ref(),
                 notes: &self.notes,
+                stay_awake: self.stay_awake.on(),
+                toast: self.toast.as_ref(),
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -2698,6 +2777,23 @@ impl Core {
     }
 
     fn shutdown(mut self) {
+        // Before the state file is written, so the flag it saves is the one this server ends
+        // with. The hold itself goes with the server (design principle 11); the flag stays,
+        // and the next start takes a fresh hold.
+        //
+        // Only when there is one to give back: a machine domux cannot hold awake has no hold
+        // and no backend, and asking for one here would log a failure about a feature that
+        // was never on.
+        if self.stay_awake.on() {
+            let mode = self.config.config.stay_awake.mode;
+            let platform = self.deps.platform.clone();
+            if let Err(e) = self
+                .stay_awake
+                .disable(mode, &platform, self.deps.runner.as_ref())
+            {
+                tracing::warn!("the stay awake hold could not be given back: {e}");
+            }
+        }
         self.pending_events.push(Event::ServerStopping);
         self.publish_events();
         self.persist();
@@ -3201,7 +3297,10 @@ fn param_client(method: &Method) -> Option<ClientId> {
         | AgentReport(_)
         | AgentSend(_)
         | AgentRead(_)
-        | AgentWait(_) => None,
+        | AgentWait(_)
+        | StayAwakeEnable(_)
+        | StayAwakeDisable(_)
+        | StayAwakeToggle(_) => None,
     }
 }
 
@@ -3247,7 +3346,9 @@ mod tests {
                 inspector: Arc::new(FakeInspector::default()),
                 clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
                 opener: Arc::new(crate::testing::RecordingOpener::default()),
+                runner: Arc::new(crate::command::FakeRunner::default()),
                 id_seed: 7,
+                platform: "macos".into(),
             },
         };
         let core = Core::new(

@@ -6,8 +6,8 @@ use crate::model::{Agent, Model, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 1 at the end of M1, 2 at M2, 3 at M3 (agent records), 4 at M4.
-pub const SCHEMA_VERSION: u32 = 3;
+/// 1 at the end of M1, 2 at M2, 3 at M3 (agent records), 4 with stay awake (decision 0029).
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
@@ -23,6 +23,9 @@ pub struct StateFile {
     /// M3. Live records are restored as exited (architecture spec section 5).
     #[serde(default)]
     pub agents: Vec<Agent>,
+    /// Whether the machine was being held awake. Added in schema version 4.
+    #[serde(default)]
+    pub stay_awake: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,9 +63,19 @@ pub fn v2_to_v3(v: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// 3 to 4: the stay awake flag appears, off. A file written before the feature existed
+/// describes a machine nobody was holding awake.
+pub fn v3_to_v4(v: &mut Value) -> Result<(), String> {
+    let obj = v
+        .as_object_mut()
+        .ok_or_else(|| "state.json is not an object".to_string())?;
+    obj.entry("stay_awake").or_insert(Value::Bool(false));
+    Ok(())
+}
+
 /// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar; M3 adds
-/// agents.
-pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2), (2, v2_to_v3)];
+/// agents; stay awake adds its flag.
+pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2), (2, v2_to_v3), (3, v3_to_v4)];
 
 pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
     StateFile {
@@ -71,6 +84,7 @@ pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
         projects: model.projects.clone(),
         last_workspace: model.last_workspace.clone(),
         sidebar_open: model.sidebar_open,
+        stay_awake: model.stay_awake,
         agents: model.agents.clone(),
     }
 }
@@ -82,6 +96,7 @@ pub fn restore(file: StateFile) -> Result<Model, StateError> {
     model.projects = file.projects;
     model.last_workspace = file.last_workspace;
     model.sidebar_open = file.sidebar_open;
+    model.stay_awake = file.stay_awake;
     for p in &model.projects {
         for w in &p.workspaces {
             for t in &w.tabs {
@@ -472,8 +487,51 @@ mod tests {
         assert_eq!(b.source, crate::model::AgentSource::Hook);
     }
 
+    /// `StateFile::stay_awake` carries `#[serde(default)]`, whose fallback is also `false`,
+    /// so a migrated file with no key is indistinguishable from one the migration wrote. This
+    /// pins `v3_to_v4` itself, the way the two rungs below it are pinned.
     #[test]
-    fn v2_and_v1_fixtures_migrate_to_v3_with_no_agents() {
+    fn v3_to_v4_actually_writes_stay_awake_false_when_absent() {
+        let mut value = json!({
+            "schema_version": 3,
+            "saved_at": "2026-09-10T10:00:00Z",
+            "projects": [],
+            "sidebar_open": false,
+            "agents": []
+        });
+        v3_to_v4(&mut value).unwrap();
+        assert_eq!(value["stay_awake"], Value::from(false));
+    }
+
+    #[test]
+    fn a_v4_fixture_gives_back_the_hold_it_was_saved_with() {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/state/v4.json"
+        ))
+        .unwrap();
+        let file = parse(&text).unwrap();
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert!(file.stay_awake);
+        let model = restore(file).unwrap();
+        assert!(
+            model.stay_awake,
+            "a machine held awake when the server stopped is held awake when it comes back"
+        );
+    }
+
+    #[test]
+    fn snapshot_carries_stay_awake_and_restore_gives_it_back() {
+        let mut m = Model::new(3);
+        m.add_folder_project(PathBuf::from("/x")).unwrap();
+        m.stay_awake = true;
+        let back =
+            restore(parse(&to_json(&snapshot(&m, "2026-09-10T10:00:00Z"))).unwrap()).unwrap();
+        assert!(back.stay_awake);
+    }
+
+    #[test]
+    fn older_fixtures_climb_the_whole_ladder_with_no_agents() {
         let v2 = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/fixtures/state/v2.json"
@@ -486,7 +544,7 @@ mod tests {
         let file = parse(&v1).unwrap();
         assert_eq!(
             file.schema_version, SCHEMA_VERSION,
-            "the ladder runs 1 to 2 to 3"
+            "the ladder runs every rung, 1 to the current version"
         );
         assert!(file.agents.is_empty());
         restore(file).unwrap();

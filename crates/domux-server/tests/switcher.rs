@@ -173,7 +173,7 @@ async fn the_screen_under_the_switcher_dims_and_comes_back_when_it_closes() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │                                         14:32   Fri 4 Sep |",
+        "| proj › main  1 │ + │                                       14:32   Fri 4 Sep ● |",
         "{f}"
     );
     assert!(

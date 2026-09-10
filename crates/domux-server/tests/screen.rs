@@ -12,7 +12,7 @@ async fn top_bar_shows_location_tabs_plus_and_clock() {
     let f = h.frame(h.client.clone()).await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │ 14:32   Fri 4 Sep |",
+        "| proj › main  1 │ + │ 14:32   Fri 4 … ● |",
         "{f}"
     );
     assert!(
@@ -24,8 +24,12 @@ async fn top_bar_shows_location_tabs_plus_and_clock() {
         "location in bold text on mantle:\n{f}"
     );
     assert!(
-        f.contains("r0 c22-38 fg=#a6adc8 bg=#181825"),
+        f.contains("r0 c22-36 fg=#a6adc8 bg=#181825"),
         "clock in subtext0:\n{f}"
+    );
+    assert!(
+        f.contains("r0 c38-38 fg=#585b70 bg=#181825"),
+        "the stay awake dot, grey while nothing is held awake:\n{f}"
     );
 }
 
@@ -142,7 +146,7 @@ async fn a_screen_below_the_minimum_says_what_it_needs() {
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │ 14:32   Fri 4 Sep |",
+        "| proj › main  1 │ + │ 14:32   Fri 4 … ● |",
         "{f}"
     );
 }

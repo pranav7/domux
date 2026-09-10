@@ -39,6 +39,12 @@ pub struct Model {
     /// irritation.
     #[serde(default)]
     pub sidebar_open: bool,
+    /// Whether domux is holding this machine awake. Persisted for the reason the sidebar is:
+    /// a switch the reader flipped is about the next few hours, not about this run of the
+    /// server. The hold itself is a child process the server owns; this says whether there
+    /// should be one, and the server keeps the two in step (decision 0029).
+    #[serde(default)]
+    pub stay_awake: bool,
     #[serde(skip, default = "default_idgen")]
     idgen: IdGen,
     /// Counts client inputs so `most_recent_client` has an order. Not persisted.
@@ -89,6 +95,7 @@ impl PartialEq for Model {
             clients,
             last_workspace,
             sidebar_open,
+            stay_awake,
             idgen: _,
             activity_seq: _,
             retired: _,
@@ -98,6 +105,7 @@ impl PartialEq for Model {
             && *clients == other.clients
             && *last_workspace == other.last_workspace
             && *sidebar_open == other.sidebar_open
+            && *stay_awake == other.stay_awake
     }
 }
 
@@ -444,6 +452,7 @@ impl Model {
             clients: Vec::new(),
             last_workspace: None,
             sidebar_open: false,
+            stay_awake: false,
             idgen: IdGen::from_seed(seed),
             activity_seq: 0,
             retired: VecDeque::new(),

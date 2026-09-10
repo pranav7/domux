@@ -41,7 +41,7 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     // 82 = "  1 │ + │" (9) + 55 spaces + "14:32   Fri 4 Sep " (18)
     assert_eq!(
         cols(row(&f, 0), 38, 119),
-        "  1 │ + │                                                       14:32   Fri 4 Sep ",
+        "  1 │ + │                                                     14:32   Fri 4 Sep ● ",
         "the tab row sits on the panes with the clock at its end:\n{f}"
     );
     // 82 = " ┌ sh " (6) + 75 dashes + "┐" (1)
@@ -286,7 +286,7 @@ async fn the_leader_indicator_reaches_the_end_of_the_tab_row_on_the_panes() {
     // 82 = "  1 │ + │" (9) + 61 spaces + "C-a  ? keys " (12)
     assert_eq!(
         cols(row(&f, 0), 38, 119),
-        "  1 │ + │                                                             C-a  ? keys ",
+        "  1 │ + │                                                           C-a  ? keys ● ",
         "{f}"
     );
     assert!(

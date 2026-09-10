@@ -507,6 +507,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         draw(&input, buf);
     }
@@ -530,6 +532,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         draw(&input, buf);
     }
@@ -599,6 +603,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         hint_row(&input, area, buf);
     }
@@ -1157,6 +1163,8 @@ mod tests {
             config_error: None,
             hint: None,
             notes: &[],
+            stay_awake: false,
+            toast: None,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 38, 1));
         hint_row(&input, Rect::new(0, 0, 38, 1), &mut buf);
@@ -1230,6 +1238,8 @@ mod tests {
                 config_error: None,
                 hint: None,
                 notes: &[],
+                stay_awake: false,
+                toast: None,
             };
             let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
             draw(&input, &mut buf);

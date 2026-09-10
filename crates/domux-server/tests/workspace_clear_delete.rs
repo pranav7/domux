@@ -982,7 +982,9 @@ async fn a_key_that_cannot_delete_says_why_on_the_screen() {
         .keys
         .bindings
         .insert("D".into(), "workspace.delete workspace-1".into());
-    let mut h = Harness::start(config, 120, 24).await;
+    // Wide enough for the whole refusal beside the tab row and the stay awake dot: this test
+    // is about the words, and a screen that cuts the last of them tests the eliding instead.
+    let mut h = Harness::start(config, 124, 24).await;
     let (root, w1, _w2) = h.git_project_with_two_slots().await;
     let slot = slot_of(&root, 1);
     std::fs::write(slot.join("scratch.txt"), "work").unwrap();

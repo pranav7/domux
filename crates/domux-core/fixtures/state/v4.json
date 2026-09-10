@@ -1,0 +1,74 @@
+{
+  "schema_version": 4,
+  "saved_at": "2026-09-05T10:00:00Z",
+  "projects": [
+    {
+      "id": "pr_19f0",
+      "name": "domux",
+      "root": "/Users/pranav/projects/domux",
+      "kind": { "kind": "folder" },
+      "workspaces": [
+        {
+          "id": "w_c3a1",
+          "handle": "main",
+          "name": null,
+          "path": "/Users/pranav/projects/domux",
+          "tabs": [
+            {
+              "id": "t_41b2",
+              "name": "pr1",
+              "layout": { "node": "leaf", "kind": "terminal", "id": "p_8f2a", "cwd": "/Users/pranav/projects/domux" },
+              "focused": "p_8f2a",
+              "zoomed": null,
+              "last_focused": null
+            }
+          ],
+          "last_tab": "t_41b2"
+        }
+      ]
+    }
+  ],
+  "last_workspace": "w_c3a1",
+  "sidebar_open": false,
+  "stay_awake": true,
+  "agents": [
+    {
+      "id": "a_5e21",
+      "kind": "claude",
+      "name": "auth-cleanup",
+      "session_id": "3f1c9a2e-4b7d-4c1e-9f0a-1b2c3d4e5f60",
+      "cwd": "/Users/pranav/projects/domux",
+      "pane": "p_8f2a",
+      "state": "working",
+      "reason": null,
+      "recap": "Replaced three session checks with one guard in auth/middleware.go",
+      "last_message": null,
+      "started_at": "2026-09-05T09:12:00Z",
+      "last_activity_at": "2026-09-05T09:58:00Z",
+      "unseen": false,
+      "workspace": "w_c3a1",
+      "last_pane": "p_8f2a",
+      "transcript_path": "/Users/pranav/.claude/projects/-Users-pranav-projects-domux/3f1c9a2e-4b7d-4c1e-9f0a-1b2c3d4e5f60.jsonl",
+      "source": "hook"
+    },
+    {
+      "id": "a_0b77",
+      "kind": "codex",
+      "name": null,
+      "session_id": "019a7c1e-2f3b-7d4e-8a9b-0c1d2e3f4a5b",
+      "cwd": "/Users/pranav/projects/domux",
+      "pane": null,
+      "state": "exited",
+      "reason": null,
+      "recap": null,
+      "last_message": null,
+      "started_at": "2026-09-05T08:00:00Z",
+      "last_activity_at": "2026-09-05T08:40:00Z",
+      "unseen": true,
+      "workspace": "w_c3a1",
+      "last_pane": "p_8f2a",
+      "transcript_path": null,
+      "source": "hook"
+    }
+  ]
+}

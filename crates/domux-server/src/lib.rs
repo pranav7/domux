@@ -3,6 +3,7 @@
 pub mod agents;
 pub mod api;
 pub mod client;
+pub mod command;
 pub mod copy_mode;
 pub mod core;
 pub mod facts;
@@ -16,8 +17,10 @@ pub mod persist;
 pub mod process;
 pub mod render;
 pub mod socket;
+pub mod stay_awake;
 pub mod subprocess;
 pub mod testing;
+pub mod toast;
 pub mod worktree_conf;
 
 use crate::core::{Core, CoreMsg};
@@ -178,7 +181,13 @@ pub struct CoreDeps {
     pub inspector: Arc<dyn ProcessInspector>,
     pub clock: Arc<dyn Clock>,
     pub opener: Arc<dyn Opener>,
+    /// Runs the programs that are not a pane's own. Stay awake starts and stops its holder
+    /// through this, so a test records those calls rather than making them.
+    pub runner: Arc<dyn crate::command::CommandRunner>,
     pub id_seed: u64,
+    /// The operating system, as `std::env::consts::OS` spells it. Given rather than read, so
+    /// a test can ask what this server does on a machine it is not running on.
+    pub platform: String,
 }
 
 pub struct ServerOptions {
