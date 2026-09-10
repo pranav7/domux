@@ -9,7 +9,9 @@
 //! methods only say which row the keys are on.
 
 use super::{ok, Ctx};
-use crate::render::list_box::{content_width, scroll_to_show, ListRow};
+use crate::render::list_box::{
+    box_lines, content_width, scroll_to_show, text_area, ListRow, OVERLAY_PAD, SIDEBAR_PAD,
+};
 use crate::render::projects_box::{self, Extras};
 use domux_core::api::{Ack, ApiError, ClientParams, WorkspaceFocusParams};
 use domux_core::ids::{ClientId, WorkspaceId};
@@ -98,7 +100,7 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::switcher(content_width(width)),
+            Extras::switcher(content_width(width, OVERLAY_PAD)),
         );
         // The switcher's height follows its rows, the same two passes `switcher::draw` makes:
         // the width does not depend on the rows, and the row count then decides the height.
@@ -106,8 +108,8 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             .rows
             .iter()
             .fold(0u16, |sum, r| sum.saturating_add(r.height()));
-        let area = crate::render::overlay::list_overlay_area(screen, lines);
-        (rows, area.height.saturating_sub(2))
+        let area = crate::render::overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
+        (rows, text_area(area, OVERLAY_PAD).height)
     } else {
         let area = crate::render::sidebar::projects_area(view.size);
         let rows = projects_box::rows(
@@ -115,9 +117,9 @@ fn visible(ctx: &Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::compact(content_width(area.width)),
+            Extras::compact(content_width(area.width, SIDEBAR_PAD)),
         );
-        (rows, area.height.saturating_sub(2))
+        (rows, text_area(area, SIDEBAR_PAD).height)
     };
     Ok(Visible {
         at: rows.filled,

@@ -5,7 +5,7 @@
 //! sidebar and the switcher cannot show one project two ways.
 
 use crate::render::boxed::{put, put_within};
-use crate::render::list_box::{content_width, ListBox};
+use crate::render::list_box::{content_width, text_area, ListBox, SIDEBAR_PAD};
 use crate::render::projects_box::{rows, Extras, PROJECTS_TITLE};
 use crate::render::{theme, RenderInput};
 use domux_core::model::{Focus, RegionKind, SIDEBAR_WIDTH};
@@ -63,7 +63,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         input.facts,
         filter,
         Some(key),
-        Extras::compact(content_width(area.width)),
+        Extras::compact(content_width(area.width, SIDEBAR_PAD)),
     );
     (built, focused)
 }
@@ -73,7 +73,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
 pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
     let area = projects_area(input.view.size);
     let (built, _) = built_rows(input, area);
-    let inner = crate::render::boxed::Boxed::inner_of(area, true);
+    let inner = text_area(area, SIDEBAR_PAD);
     let scroll = crate::render::list_box::scroll_to_show(
         &built.rows,
         built.filled,
@@ -116,6 +116,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         focused,
         scroll: input.view.projects_scroll,
         empty_text: &empty,
+        pad: SIDEBAR_PAD,
     }
     .render(area, buf);
     hint_row(

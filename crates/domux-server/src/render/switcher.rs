@@ -5,7 +5,7 @@
 //! the width: `Extras::switcher` asks for the pull request title and the tab list, which the
 //! sidebar's 38 columns have no room for.
 
-use crate::render::list_box::{content_width, ListBox};
+use crate::render::list_box::{box_lines, content_width, ListBox, OVERLAY_PAD};
 use crate::render::projects_box::{rows, Extras, PROJECTS_TITLE};
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
@@ -24,7 +24,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let screen = buf.area;
     // Two passes. The rows truncate to the box's inner width, and the row count then decides
     // the box's height; the width answers first because it does not depend on the rows.
-    let inner_width = content_width(overlay::list_overlay_width(screen));
+    let inner_width = content_width(overlay::list_overlay_width(screen), OVERLAY_PAD);
     // The cursor carries the fill while focus is in the box; with no cursor it is the
     // workspace this client is in (domain model, section 3.3).
     let filled = input
@@ -44,7 +44,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .rows
         .iter()
         .fold(0u16, |sum, r| sum.saturating_add(r.height()));
-    let area = overlay::list_overlay_area(screen, lines);
+    let area = overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
     let footer = Rect::new(area.x, area.y + area.height, area.width, 1);
     let empty = empty_text(input);
     // `clear` and not `frame_at`: a `ListBox` draws its own `Boxed`, so the switcher paints
@@ -57,6 +57,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         focused: true,
         scroll: input.view.projects_scroll,
         empty_text: &empty,
+        pad: OVERLAY_PAD,
     }
     .render(area, buf);
     overlay::footer(input, HINTS, footer, buf);
@@ -198,11 +199,11 @@ mod tests {
         let buf = draw_into(&model, &v, 80, 24);
         // Rows inside the box: 4 header, 5 main, 6 workspace-1, 7 workspace-2. The pad and
         // the indent are in the text because the assertion is on the drawn line.
-        assert_eq!(inner_line(&buf, 7), "   workspace-2");
-        assert_eq!(buf[(11, 7)].bg, crate::render::theme::SURFACE0);
-        assert_eq!(inner_line(&buf, 5), "   main");
+        assert_eq!(inner_line(&buf, 8), "    workspace-2");
+        assert_eq!(buf[(11, 8)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(inner_line(&buf, 6), "    main");
         assert_ne!(
-            buf[(11, 5)].bg,
+            buf[(11, 6)].bg,
             crate::render::theme::SURFACE0,
             "and the workspace this client is in does not also carry one"
         );
@@ -219,11 +220,11 @@ mod tests {
         v.workspace = WorkspaceId("w_2".into());
         v.projects_cursor = None;
         let buf = draw_into(&model, &v, 80, 24);
-        assert_eq!(inner_line(&buf, 7), "   workspace-2");
-        assert_eq!(buf[(11, 7)].bg, crate::render::theme::SURFACE0);
-        assert_eq!(inner_line(&buf, 5), "   main");
+        assert_eq!(inner_line(&buf, 8), "    workspace-2");
+        assert_eq!(buf[(11, 8)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(inner_line(&buf, 6), "    main");
         assert_ne!(
-            buf[(11, 5)].bg,
+            buf[(11, 6)].bg,
             crate::render::theme::SURFACE0,
             "and no other row carries one"
         );
@@ -243,13 +244,13 @@ mod tests {
         v.workspace = WorkspaceId("w_main".into());
         let buf = draw_into(&model, &v, 80, 24);
         assert!(
-            inner_line(&buf, 4).starts_with(" PROJ "),
+            inner_line(&buf, 5).starts_with("  PROJ "),
             "the header of the project the match is in stays: {:?}",
-            inner_line(&buf, 4)
+            inner_line(&buf, 5)
         );
-        assert_eq!(inner_line(&buf, 5), "   workspace-2");
+        assert_eq!(inner_line(&buf, 6), "    workspace-2");
         assert_eq!(
-            inner_line(&buf, 6),
+            inner_line(&buf, 8),
             "─".repeat(58),
             "and the box is two lines tall, so main and the other three slots are gone"
         );
@@ -287,25 +288,25 @@ mod tests {
         v.projects_cursor = Some(WorkspaceId("w_main".into()));
         let buf = draw_with_facts(&model, &facts, &v, 80, 24);
         assert_eq!(
-            inner_line(&buf, 6),
-            " ◌ workspace-1",
+            inner_line(&buf, 7),
+            "  ◌ workspace-1",
             "a slot on its own branch is untouched, and its glyph hangs in the indent"
         );
         assert_eq!(
-            inner_line(&buf, 7),
+            inner_line(&buf, 8),
             "",
             "the two-line row below parts itself from the one-line row above it"
         );
-        assert_eq!(inner_line(&buf, 8), "   workspace-2");
+        assert_eq!(inner_line(&buf, 9), "    workspace-2");
         assert_eq!(
-            inner_line(&buf, 9),
-            "   feat/auth",
+            inner_line(&buf, 10),
+            "    feat/auth",
             "and a branch of its own gets line 2, which is a second line the row did not have"
         );
-        assert_eq!(inner_line(&buf, 10), "", "and from the row below it");
+        assert_eq!(inner_line(&buf, 11), "", "and from the row below it");
         assert_eq!(
-            inner_line(&buf, 11),
-            "   workspace-3",
+            inner_line(&buf, 12),
+            "    workspace-3",
             "so everything under it moved down three rows"
         );
     }
@@ -317,17 +318,17 @@ mod tests {
     fn the_box_starts_at_the_remembered_scroll_when_the_cursor_is_already_in_view() {
         let model = model_with_slots();
         let mut v = view("");
-        v.size = Size { cols: 80, rows: 11 };
+        v.size = Size { cols: 80, rows: 13 };
         v.workspace = WorkspaceId("w_main".into());
         v.projects_cursor = Some(WorkspaceId("w_3".into()));
         // Six lines of rows into three rows of box. Line 4 is workspace-3, so a view starting
         // at line 3 holds it and is kept; a box that ignored the scroll would correct 0 up
         // to 2, the least it can be with workspace-3 in view.
         v.projects_scroll = 3;
-        let buf = draw_into(&model, &v, 80, 11);
-        assert_eq!(inner_line(&buf, 4), "   workspace-2");
-        assert_eq!(inner_line(&buf, 5), "   workspace-3");
-        assert_eq!(buf[(11, 5)].bg, crate::render::theme::SURFACE0);
+        let buf = draw_into(&model, &v, 80, 13);
+        assert_eq!(inner_line(&buf, 5), "    workspace-2");
+        assert_eq!(inner_line(&buf, 6), "    workspace-3");
+        assert_eq!(buf[(11, 6)].bg, crate::render::theme::SURFACE0);
     }
 
     /// The switcher over a model with no projects at all, which is the only way to reach the
@@ -352,7 +353,9 @@ mod tests {
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);
-        (0..80).map(|x| buf[(x, 4)].symbol()).collect()
+        // Row 3 is the box's top rule and row 4 the blank the overlay pad puts under it,
+        // so the empty text is on row 5.
+        (0..80).map(|x| buf[(x, 5)].symbol()).collect()
     }
 
     /// An empty box names the state and the next action, in the words of the binary the
@@ -361,7 +364,7 @@ mod tests {
     fn an_empty_switcher_says_how_to_add_a_project() {
         assert_eq!(
             empty_model_row("").trim_end(),
-            "          │ No projects yet. Add one with domux2 open <path>         │"
+            "          │  No projects yet. Add one with domux2 open <path>        │"
         );
     }
 
@@ -371,7 +374,7 @@ mod tests {
     fn a_filter_that_matches_nothing_says_what_was_searched_for() {
         assert_eq!(
             empty_model_row("  auth  ").trim_end(),
-            "          │ No workspace matches \"auth\". esc clears the filter       │"
+            "          │  No workspace matches \"auth\". esc clears the filter      │"
         );
     }
 }

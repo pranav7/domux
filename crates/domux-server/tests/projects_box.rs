@@ -2,13 +2,11 @@ use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
 use domux_core::model::Model;
 use domux_core::text::display_width;
 use domux_server::facts::FactRegistry;
-use domux_server::render::list_box::{ListBox, ListRow};
+use domux_server::render::list_box::ListRow;
 use domux_server::render::projects_box::{
     filled_index, key_at, pr_style, rows, Extras, PROJECTS_TITLE,
 };
 use domux_server::render::theme;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -460,7 +458,7 @@ fn a_project_name_too_wide_for_the_box_is_shortened_and_leaves_no_rule() {
 }
 
 #[test]
-fn the_switcher_adds_the_pull_request_title_and_the_tab_list_when_the_width_allows() {
+fn the_switcher_adds_the_pull_request_title_when_the_width_allows() {
     let (mut m, f) = model_and_facts();
     let w1 = m.projects[0].workspaces[1].id.clone();
     let (t1, _, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
@@ -481,17 +479,6 @@ fn the_switcher_adds_the_pull_request_title_and_the_tab_list_when_the_width_allo
         Some(theme::OVERLAY1),
         "the title"
     );
-    assert_eq!(said(&out[3], 2), "1 pr1     2");
-    assert_eq!(
-        out[3].lines[2].spans[1].style.fg,
-        Some(theme::OVERLAY0),
-        "the tab number"
-    );
-    assert_eq!(
-        out[3].lines[2].spans[3].style.fg,
-        Some(theme::OVERLAY1),
-        "the tab name"
-    );
     let narrow = rows(&m, &f, "", None, Extras::switcher(32)).rows;
     assert_eq!(
         said(&narrow[3], 1),
@@ -500,30 +487,28 @@ fn the_switcher_adds_the_pull_request_title_and_the_tab_list_when_the_width_allo
     );
 }
 
+/// MUX-12: a row is its name and its branch on both surfaces, and never the tabs under it.
+///
+/// The two tabs are named and the box is 80 cells wide, so nothing here is short of room:
+/// what the switcher leaves out, it leaves out because the line said nothing worth a row.
 #[test]
-fn the_sidebar_shows_no_title_and_no_tab_list_however_much_there_is_to_show() {
+fn a_workspace_row_is_two_lines_at_most_on_either_surface() {
     let (mut m, f) = model_and_facts();
     let w1 = m.projects[0].workspaces[1].id.clone();
     let (t1, _, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
     m.rename_tab(&t1, Some("pr1".into())).unwrap();
-    let out = rows(&m, &f, "", None, Extras::compact(80)).rows;
+    let (t2, _, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
+    m.rename_tab(&t2, Some("tests".into())).unwrap();
+
+    let sidebar = rows(&m, &f, "", None, Extras::compact(80)).rows;
     assert_eq!(
-        said(&out[3], 1),
+        said(&sidebar[3], 1),
         "feat/auth-cleanup · PR#212",
         "no title in the sidebar, however wide the box happens to be"
     );
-    assert_eq!(out[3].lines.len(), 2, "and no tab list");
-}
-
-#[test]
-fn a_workspace_with_no_tabs_has_no_tab_list_line() {
-    let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "", None, Extras::switcher(58)).rows;
-    assert_eq!(
-        out[3].lines.len(),
-        2,
-        "a workspace nobody has opened a tab in draws no empty tab line"
-    );
+    assert_eq!(sidebar[3].lines.len(), 2, "the name and the branch");
+    let switcher = rows(&m, &f, "", None, Extras::switcher(80)).rows;
+    assert_eq!(switcher[3].lines.len(), 2, "the same two in the switcher");
 }
 
 #[test]
@@ -863,40 +848,4 @@ fn a_model_with_no_projects_has_no_rows() {
     );
     assert!(out.rows.is_empty(), "the box draws its empty text instead");
     assert_eq!(out.filled, None, "and nothing is filled");
-}
-
-#[test]
-fn a_tab_list_wider_than_the_box_is_cut_by_the_box_with_its_colours_intact() {
-    // The tab list is built whole, because it has no order of importance to express: the
-    // box cuts it, span by span, the way it cuts every other line.
-    let (mut m, f) = model_and_facts();
-    let w1 = m.projects[0].workspaces[1].id.clone();
-    for name in ["review", "tests", "notes"] {
-        let (t, _, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
-        m.rename_tab(&t, Some(name.into())).unwrap();
-    }
-    let out = rows(&m, &f, "", None, Extras::switcher(20)).rows;
-    assert_eq!(
-        said(&out[3], 2),
-        "1 review     2 tests     3 notes",
-        "the row keeps every tab"
-    );
-    let mut buf = Buffer::empty(Rect::new(0, 0, 24, 8));
-    ListBox {
-        title: "Projects",
-        rows: &out,
-        filled: None,
-        focused: false,
-        scroll: 0,
-        empty_text: "",
-    }
-    .render(Rect::new(0, 0, 24, 8), &mut buf);
-    let drawn: String = (0..24).map(|x| buf[(x, 6)].symbol().to_string()).collect();
-    assert_eq!(drawn, "│   1 review     2 te… │", "{drawn}");
-    assert_eq!(
-        buf[(4, 6)].fg,
-        theme::OVERLAY0,
-        "the number keeps its colour through the cut"
-    );
-    assert_eq!(buf[(6, 6)].fg, theme::OVERLAY1, "and so does the name");
 }

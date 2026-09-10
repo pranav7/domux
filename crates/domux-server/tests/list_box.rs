@@ -1,4 +1,6 @@
-use domux_server::render::list_box::{filter_rows, scroll_to_show, ListBox, ListRow};
+use domux_server::render::list_box::{
+    filter_rows, scroll_to_show, text_area, ListBox, ListRow, OVERLAY_PAD, SIDEBAR_PAD,
+};
 use domux_server::render::theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -39,6 +41,49 @@ fn rows() -> Vec<ListRow> {
     ]
 }
 
+/// MUX-12: the overlay's padding is two cells in from each border and a blank row at each
+/// end, where the sidebar's is one cell and no blank rows.
+///
+/// The fill band is asserted beside the text, because the pad is inside the band and not
+/// beside it: a filled row still reaches both borders (decision record 0012), and only its
+/// text starts two cells in.
+#[test]
+fn the_overlay_pad_puts_a_blank_row_at_each_end_and_two_cells_at_each_side() {
+    let area = Rect::new(0, 0, 22, 10);
+    let mut buf = Buffer::empty(area);
+    let scroll = ListBox {
+        title: "Projects",
+        rows: &rows(),
+        filled: Some(1),
+        focused: true,
+        scroll: 0,
+        empty_text: "",
+        pad: OVERLAY_PAD,
+    }
+    .render(area, &mut buf);
+    assert_eq!(scroll, 0);
+    assert_eq!(row(&buf, 0), "┌ Projects ──────────┐");
+    assert_eq!(
+        row(&buf, 1),
+        "│                    │",
+        "the blank row under the rule"
+    );
+    assert_eq!(row(&buf, 2), "│  PROJ ─────────    │");
+    assert_eq!(row(&buf, 3), "│  main              │");
+    assert_eq!(row(&buf, 8), "│                    │", "and one above it");
+    assert_eq!(row(&buf, 9), "└────────────────────┘");
+    assert_eq!(
+        text_area(area, OVERLAY_PAD),
+        Rect::new(1, 2, 20, 6),
+        "the rectangle the pointer is measured against is the one that was drawn"
+    );
+    assert_eq!(
+        (buf[(1, 3)].bg, buf[(20, 3)].bg),
+        (theme::SURFACE0, theme::SURFACE0),
+        "the fill still reaches both borders"
+    );
+}
+
 #[test]
 fn the_box_draws_its_title_its_rows_and_one_filled_row() {
     let mut buf = Buffer::empty(Rect::new(0, 0, 22, 9));
@@ -49,6 +94,7 @@ fn the_box_draws_its_title_its_rows_and_one_filled_row() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 22, 9), &mut buf);
     assert_eq!(scroll, 0);
@@ -99,6 +145,7 @@ fn the_box_draws_at_the_area_it_is_given_and_touches_nothing_outside_it() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(3, 2, 20, 9), &mut buf);
     assert_eq!(
@@ -133,6 +180,7 @@ fn a_box_that_is_not_focused_keeps_the_plain_border_and_still_fills_the_current_
         focused: false,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 20, 9), &mut buf);
     assert_eq!(buf[(0, 0)].fg, theme::SURFACE2);
@@ -233,6 +281,7 @@ fn a_row_taller_than_the_box_shows_its_first_line_so_the_fill_stays_visible() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 8, 4), &mut buf);
     assert_eq!(scroll, 1);
@@ -251,6 +300,7 @@ fn a_scrolled_box_starts_at_the_scroll_line_and_never_draws_a_sticky_header() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 22, 5), &mut buf);
     assert_eq!(scroll, 4);
@@ -284,6 +334,7 @@ fn a_row_above_the_scroll_line_is_not_drawn() {
         focused: true,
         scroll: 3,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 20, 4), &mut buf);
     assert_eq!(
@@ -313,6 +364,7 @@ fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
         focused: true,
         scroll: 2,
         empty_text: "No projects yet. domux2 open .",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 34, 5), &mut buf);
     assert_eq!(scroll, 0, "there is nothing to scroll past");
@@ -331,6 +383,7 @@ fn an_empty_text_wider_than_the_box_is_cut_rather_than_written_over_the_border()
         focused: true,
         scroll: 0,
         empty_text: "No projects yet. domux2 open .",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 1), "│ No proj… │");
@@ -351,6 +404,7 @@ fn a_line_wider_than_the_box_is_cut_by_grapheme_with_an_ellipsis() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     // The cell after a wide grapheme is reset to a space, as `render_grid` and `put` leave
@@ -394,6 +448,7 @@ fn nothing_is_drawn_after_the_span_that_was_cut() {
             focused: true,
             scroll: 0,
             empty_text: "",
+            pad: SIDEBAR_PAD,
         }
         .render(Rect::new(0, 0, 10, 3), &mut buf);
         (row(&buf, 1), buf[(7, 1)].symbol().to_string())
@@ -433,6 +488,7 @@ fn spans_that_fit_are_drawn_one_after_another_in_their_own_styles() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 20, 3), &mut buf);
     assert_eq!(row(&buf, 1), "│ auth feat/auth   │");
@@ -463,6 +519,7 @@ fn the_fill_brightens_the_row_and_leaves_the_rows_around_it_alone() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 14, 4), &mut buf);
     assert!(
@@ -504,6 +561,7 @@ fn a_row_cannot_write_over_the_border_with_text_a_terminal_cannot_draw() {
         focused: true,
         scroll: 0,
         empty_text: "",
+        pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(
@@ -533,6 +591,7 @@ fn a_box_with_no_room_inside_draws_nothing_and_keeps_the_scroll_it_was_given() {
             focused: true,
             scroll: 3,
             empty_text: "nothing",
+            pad: SIDEBAR_PAD,
         }
         .render(Rect::new(0, 0, w, h), &mut buf);
         assert_eq!(scroll, 3, "a {w}x{h} box has no view to correct");

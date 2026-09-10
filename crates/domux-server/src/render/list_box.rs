@@ -68,19 +68,59 @@ impl ListRow {
     }
 }
 
-/// A cell of empty space between the border and a row's text, on both sides.
+/// The empty space a box keeps between its border and its rows.
 ///
-/// Interface spec 5.2 says rows are flush with the box's left padding; before this there was
-/// no padding to be flush with and the text touched the border. One cell puts a row's first
-/// character directly under the first character of the box's title, which `Boxed` draws at
-/// `area.x + 2`.
-pub const PAD: u16 = 1;
+/// Interface spec 5.2 says rows are flush with the box's left padding; before decision record
+/// 0012 there was no padding to be flush with and the text touched the border. `side` is that
+/// padding, and `ends` are blank rows under the top rule and above the bottom one.
+///
+/// It is a value rather than a constant because the two surfaces have different room
+/// (decision record 0019). MUX-12 asked for breathing space in the switcher, which is 60
+/// cells wide; the sidebar is 38 and spends every cell it has on branch names, so it stays
+/// where decision record 0012 put it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pad {
+    /// Cells between each border and a row's text.
+    pub side: u16,
+    /// Blank rows under the top rule and above the bottom one.
+    pub ends: u16,
+}
+
+/// One cell in from each border, no blank rows: the sidebar's 38 columns have none to give.
+pub const SIDEBAR_PAD: Pad = Pad { side: 1, ends: 0 };
+
+/// Two cells in from each border and a blank row at each end (MUX-12).
+pub const OVERLAY_PAD: Pad = Pad { side: 2, ends: 1 };
 
 /// The cells a row's text has inside a box `width` cells wide: the two borders and the two
-/// pads taken off. Every surface that builds rows asks this, so the width a row truncates to
-/// and the width it is drawn in are one number.
-pub fn content_width(width: u16) -> u16 {
-    width.saturating_sub(2 + 2 * PAD)
+/// side pads taken off. Every surface that builds rows asks this, so the width a row
+/// truncates to and the width it is drawn in are one number.
+pub fn content_width(width: u16, pad: Pad) -> u16 {
+    width.saturating_sub(2 + 2 * pad.side)
+}
+
+/// The lines a box has to be tall enough for, when its rows come to `lines`: the end pads
+/// added. Both the switcher's drawing and the `list.*` handlers that scroll it ask this, so
+/// the box a reader sees and the height the cursor is walked against are one number.
+pub fn box_lines(lines: u16, pad: Pad) -> u16 {
+    // At least one, because a box with no rows draws its empty text on the first row it has,
+    // and a box sized to nothing would say nothing at all.
+    lines.max(1).saturating_add(2 * pad.ends)
+}
+
+/// The rows' own rectangle inside a box at `area`: the border off, then the end pads.
+///
+/// The drawing walks it and so does `row_at`, so a click lands on the row the reader sees.
+/// The fill band is not measured from here: it spans the whole inner width, so a filled row
+/// still reads as one band reaching both borders (decision record 0012).
+pub fn text_area(area: Rect, pad: Pad) -> Rect {
+    let inner = Boxed::inner_of(area, true);
+    Rect::new(
+        inner.x,
+        inner.y.saturating_add(pad.ends),
+        inner.width,
+        inner.height.saturating_sub(2 * pad.ends),
+    )
 }
 
 /// Whether a blank row goes between two rows of one group.
@@ -109,6 +149,8 @@ pub struct ListBox<'a> {
     /// What to draw when there are no rows: name the state and the next action
     /// (principle 9).
     pub empty_text: &'a str,
+    /// The space between the border and the rows. `SIDEBAR_PAD` or `OVERLAY_PAD`.
+    pub pad: Pad,
 }
 
 impl ListBox<'_> {
@@ -133,23 +175,27 @@ impl ListBox<'_> {
         let right = inner.x + inner.width - 1;
         // Where the text goes and how much of it fits. The fill still spans `inner`, so the
         // pad is inside the band rather than beside it.
-        let text_x = inner.x + PAD;
-        let text_width = inner.width.saturating_sub(2 * PAD);
+        let rows_area = text_area(area, self.pad);
+        if rows_area.height == 0 {
+            return self.scroll;
+        }
+        let text_x = rows_area.x + self.pad.side;
+        let text_width = rows_area.width.saturating_sub(2 * self.pad.side);
         if self.rows.is_empty() {
             let text =
                 truncate_with_ellipsis(&sanitize_for_display(self.empty_text), text_width as usize);
             put_within(
                 buf,
                 text_x,
-                inner.y,
+                rows_area.y,
                 right,
                 &text,
                 Style::default().fg(theme::OVERLAY0),
             );
             return 0;
         }
-        let scroll = scroll_to_show(self.rows, self.filled, inner.height, self.scroll);
-        let bottom = scroll.saturating_add(inner.height);
+        let scroll = scroll_to_show(self.rows, self.filled, rows_area.height, self.scroll);
+        let bottom = scroll.saturating_add(rows_area.height);
         let mut next = 0u16;
         for (i, row) in self.rows.iter().enumerate() {
             for (n, line) in row.lines.iter().enumerate() {
@@ -158,7 +204,7 @@ impl ListBox<'_> {
                 if y < scroll || y >= bottom {
                     continue;
                 }
-                let at = inner.y + (y - scroll);
+                let at = rows_area.y + (y - scroll);
                 // The fill is on line 1 of the row only (interface spec 5.3), and it covers
                 // the whole inner width, not just the text: the row is the focus target, so
                 // it reads as one band.
