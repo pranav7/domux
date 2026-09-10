@@ -430,6 +430,25 @@ mod tests {
             "pane.resize left 2",
             "only listed keys pass through"
         );
+        // Both axes and both step sizes. Shift and ctrl with shift are separate bindings, so
+        // the two steps never collapse into one another.
+        assert_eq!(
+            km.global_for(&press(Key::Up, Mods::SHIFT), None)
+                .unwrap()
+                .to_string(),
+            "pane.resize up 2"
+        );
+        assert_eq!(
+            km.global_for(&press(Key::Down, Mods::CTRL | Mods::SHIFT), None)
+                .unwrap()
+                .to_string(),
+            "pane.resize down 8"
+        );
+        assert_eq!(km.key_for("pane.resize up 2"), Some("S-Up".to_string()));
+        assert_eq!(
+            km.key_for("pane.resize down 8"),
+            Some("C-S-Down".to_string())
+        );
         assert_eq!(km.key_for("tab.rename"), Some("C-a ,".to_string()));
         assert_eq!(km.key_for("focus.left"), Some("C-h".to_string()));
         assert_eq!(km.key_for("pane.split right"), Some("C-a \\".to_string()));

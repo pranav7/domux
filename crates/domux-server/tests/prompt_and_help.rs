@@ -253,6 +253,18 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
     assert!(!f.contains("C-b |"), "the unbound default is gone:\n{f}");
     assert!(f.contains("C-h        focus.left"), "{f}");
     assert!(
+        f.contains("S-Up/S-Down/S-Left/S-Right pane.resize <dir> 2"),
+        "the four directions at one step collapse into one row:\n{f}"
+    );
+    assert!(
+        f.contains("C-S-Up/C-S-Down/C-S-Left/C-S-Right pane.resize <dir> 8"),
+        "and the coarse step gets its own row:\n{f}"
+    );
+    assert!(
+        !f.contains("pane.resize left 2"),
+        "no direction keeps a row of its own:\n{f}"
+    );
+    assert!(
         f.contains("nvim, vim, fzf keep C-h, C-j, C-k, C-l, C-\\"),
         "{f}"
     );

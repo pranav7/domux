@@ -3,6 +3,7 @@
 
 use domux_core::config::Config;
 use domux_server::testing::Harness;
+use serde_json::json;
 use std::time::Duration;
 
 #[tokio::test]
@@ -208,4 +209,50 @@ async fn a_failed_action_names_the_failure_until_the_next_key() {
     let frame = h.frame(h.client.clone()).await;
     assert!(!frame.contains("tab 9 does not exist"), "{frame}");
     assert!(frame.contains("14:32"), "the clock is back:\n{frame}");
+}
+
+/// The resize keys, on the axis and at the step each one names. Shift moves the boundary two
+/// cells and ctrl with shift moves it eight, which is the whole reason there are two chords:
+/// a test that only pressed one of them would pass with both bound to the same number.
+///
+/// `Direction::Up` moves the boundary up, so the pane above it is the one that loses rows.
+/// That is the rule tmux uses too, and it is why the key reads as the arrow rather than as
+/// grow or shrink.
+#[tokio::test]
+async fn shift_and_ctrl_shift_arrows_resize_by_two_cells_and_by_eight() {
+    let mut h = Harness::start(Config::default(), 80, 30).await;
+    let top = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "down"})).await.unwrap();
+    h.frame(h.client.clone()).await;
+    let bottom = h.focused_pane(h.client.clone());
+    assert_ne!(top, bottom, "the split made a second pane");
+    let rows = h.pane_size(&top).rows;
+    h.key(h.client.clone(), "S-Up").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(h.pane_size(&top).rows, rows - 2, "shift moves two rows");
+    h.key(h.client.clone(), "C-S-Up").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.pane_size(&top).rows,
+        rows - 10,
+        "ctrl with shift moves eight more"
+    );
+    h.key(h.client.clone(), "S-Down").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.pane_size(&top).rows,
+        rows - 8,
+        "the down arrow moves the same boundary back"
+    );
+    // The other axis, and the pane the arrow does not point at, so no direction is proved
+    // only by its opposite. A vertical split owns no horizontal boundary, so the width of
+    // both panes is unchanged and the call is still carried out.
+    let cols = h.pane_size(&top).cols;
+    h.key(h.client.clone(), "C-S-Right").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.pane_size(&top).cols,
+        cols,
+        "no split owns the horizontal axis here"
+    );
 }
