@@ -33,7 +33,7 @@ struct PaneHit {
 }
 
 /// The pane under a screen cell, or `None` when the cell belongs to the chrome or to nothing.
-fn pane_hit(core: &Core, client: &ClientId, column: u16, row: u16) -> Option<PaneHit> {
+fn pane_hit(core: &mut Core, client: &ClientId, column: u16, row: u16) -> Option<PaneHit> {
     match core.hit_at(client, column, row) {
         Some(Hit::Pane { pane, row, col }) => Some(PaneHit { pane, row, col }),
         _ => None,
@@ -212,7 +212,7 @@ fn drag(core: &mut Core, client: &ClientId, hit: &PaneHit) {
 
 /// A release copies what the drag selected and leaves copy mode, which is the whole gesture in
 /// one movement (decision 0014). A press that never dragged selected nothing, so it opens the
-/// link under it if there is one (decision record 0020), and otherwise leaves the pane with
+/// link under it if there is one (decision record 0024), and otherwise leaves the pane with
 /// the focus the press gave it.
 fn release(core: &mut Core, client: &ClientId, hit: &PaneHit) {
     let Some(rt) = core.panes.get_mut(&hit.pane) else {

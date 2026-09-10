@@ -1,4 +1,4 @@
-//! What link, if any, is under one cell of a pane (decision record 0020).
+//! What link, if any, is under one cell of a pane (decision record 0024).
 //!
 //! Two readings, in order. A cell the program marked with OSC 8 carries its target, and that
 //! target is the answer whatever the text says. Otherwise the run of text around the cell is

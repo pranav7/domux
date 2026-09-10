@@ -373,6 +373,12 @@ fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
     assert_eq!(buf[(2, 1)].fg, Color::Rgb(0x6c, 0x70, 0x86));
 }
 
+/// An empty text longer than the box is cut to it, with the mark that says it was cut.
+///
+/// M3 made the empty text wrap over the rows a box has, and this box has one row inside its
+/// border, so there is nowhere to wrap to. The last row it can draw is filled from everything
+/// that is left rather than from the next wrapped word, so a box too short to wrap shows
+/// exactly what it showed before M3 rather than one word of it.
 #[test]
 fn an_empty_text_wider_than_the_box_is_cut_rather_than_written_over_the_border() {
     let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
@@ -387,6 +393,28 @@ fn an_empty_text_wider_than_the_box_is_cut_rather_than_written_over_the_border()
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 1), "│ No proj… │");
+}
+
+/// The same text in a box with rows to spare: every word of it, over as many lines as it
+/// takes, with no mark because nothing was cut.
+#[test]
+fn an_empty_text_wider_than_the_box_wraps_onto_the_rows_below_it() {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 14, 5));
+    ListBox {
+        title: "Projects",
+        rows: &[],
+        filled: None,
+        focused: true,
+        scroll: 0,
+        empty_text: "No projects yet. open",
+        pad: SIDEBAR_PAD,
+    }
+    .render(Rect::new(0, 0, 14, 5), &mut buf);
+    // 14 wide and not 12: the pad takes a column off each side, and at 12 the last line has
+    // one cell too few and ends in the mark, which is the other test's case.
+    assert_eq!(row(&buf, 1), "│ No         │");
+    assert_eq!(row(&buf, 2), "│ projects   │");
+    assert_eq!(row(&buf, 3), "│ yet. open  │");
 }
 
 #[test]

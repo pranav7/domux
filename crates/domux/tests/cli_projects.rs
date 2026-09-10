@@ -291,7 +291,7 @@ async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_wa
 /// The client is detached first, which is what `open` meets when it is typed in a terminal
 /// with nothing attached. Both halves still work there: the adoption is reported, and the
 /// switch records the workspace for the client that attaches next rather than refusing
-/// (decision record 0017). Before that record this command exited 1 here, and MUX-11 is what
+/// (decision record 0021). Before that record this command exited 1 here, and MUX-11 is what
 /// the same refusal did to the attach offer.
 #[tokio::test]
 async fn open_names_what_it_adopted_and_still_switches_with_nobody_attached() {

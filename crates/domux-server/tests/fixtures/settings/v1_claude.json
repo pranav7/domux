@@ -1,0 +1,28 @@
+{
+  "theme": "dark",
+  "statusLine": { "type": "command", "command": "domux claude-statusline" },
+  "hooks": {
+    "Notification": [
+      { "hooks": [
+        { "type": "command", "command": "echo WAITING > ~/.tmux-claude-$(tmux display-message -p '#S' 2>/dev/null || echo default)" },
+        { "type": "command", "command": "afplay /System/Library/Sounds/Submarine.aiff" }
+      ] },
+      { "hooks": [ { "type": "command", "command": "domux ai-state WAITING" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "domux ai-state CLAUDING" } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "domux workspace occupied" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "domux workspace free && domux ai-state clear" } ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "afplay /System/Library/Sounds/Glass.aiff" },
+        { "type": "command", "command": "domux ai-state clear" }
+      ] }
+    ]
+  }
+}

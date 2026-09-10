@@ -38,6 +38,22 @@ impl RegionKind {
     pub fn is_box(self) -> bool {
         !matches!(self, RegionKind::Overlay)
     }
+
+    /// Whether this region is one of the boxes in the sidebar's column, as against the boxes
+    /// an overlay carries.
+    ///
+    /// The sibling of `is_box`, and it exists for the same reason: four modules across two
+    /// crates asked this question by listing the two names, and M3 adding the Agents box to
+    /// the column is what showed that a list of names goes stale in places nobody remembers
+    /// to look. `api::sidebar::apply`, `api::focus::step_from_region`,
+    /// `ClientView::focus_returning_from_overlay` and `render::sidebar::focused_box` all ask
+    /// it here, so a third box in the column is added in one place.
+    pub fn is_sidebar(self) -> bool {
+        matches!(
+            self,
+            RegionKind::SidebarProjects | RegionKind::SidebarAgents
+        )
+    }
 }
 
 /// A one-line text input with a caret, for prompts. Pure, so every edit has a unit test.

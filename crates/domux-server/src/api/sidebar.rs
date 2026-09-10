@@ -3,7 +3,7 @@
 use super::{ok, Ctx};
 use domux_core::api::{ApiError, ClientParams, Event, SidebarResult};
 use domux_core::ids::{ClientId, PaneId};
-use domux_core::model::{Focus, RegionKind, SIDEBAR_MIN_COLS};
+use domux_core::model::{Focus, SIDEBAR_MIN_COLS};
 use serde_json::Value;
 
 /// Shows the sidebar when it is hidden and hides it when it is shown.
@@ -79,15 +79,18 @@ fn set(ctx: &mut Ctx, open: bool) -> Result<Value, ApiError> {
         // overwritten before anything can read it. Kept for the invariant, not for a
         // behaviour, and said here so the next reader does not go looking for the test.
         view.sidebar_forced = open && asked && view.size.cols < SIDEBAR_MIN_COLS;
-        if !open && matches!(view.focus, Focus::Region(RegionKind::SidebarProjects)) {
+        if !open && matches!(view.focus, Focus::Region(kind) if kind.is_sidebar()) {
             // Hiding the box the keys were in gives them back to the pane, so no frame is
             // drawn with the keys in a region nothing on the screen marks (principle 2).
             //
-            // Unreachable in M2 and therefore untested: nothing sets
-            // `Focus::Region(RegionKind::SidebarProjects)` until `api::focus::region`
-            // accepts that region, which it refuses today. Written from the rule rather
-            // than from a test, so the task that opens the box to focus does not have to
-            // rediscover it.
+            // Both of the sidebar's boxes, asked through `RegionKind::is_sidebar` rather than
+            // by naming them here, which is what M2 did: it wrote this arm for the Projects
+            // box alone, from the rule and with nothing able to reach it, and when M3 gave
+            // the column a second box the arm went on naming one. That left `leader b` from
+            // the Agents box with the keys in a region the screen no longer draws and every
+            // key after it swallowed by `input::list_key`. The predicate is one place to
+            // change, not a forcing function: a third box in the column is still a change
+            // that has to be made there, and nothing here would fail to compile without it.
             if let Some(pane) = pane {
                 view.focus = Focus::Pane(pane);
             }

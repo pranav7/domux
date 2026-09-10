@@ -499,7 +499,7 @@ async fn focusing_a_workspace_for_a_client_that_is_not_attached_changes_nothing(
     assert_eq!(h.model().workspace(&w1).unwrap().tabs.len(), before_tabs);
 }
 
-/// MUX-11, decision record 0017. With nobody attached there is no view to move, so the call
+/// MUX-11, decision record 0021. With nobody attached there is no view to move, so the call
 /// records the workspace and answers with it, and the client that attaches next seats there.
 ///
 /// Both halves are asserted. `last_workspace` alone would pass for a handler that wrote the
@@ -542,7 +542,7 @@ async fn nothing_attached(h: &mut Harness) {
 }
 
 #[tokio::test]
-async fn workspace_list_carries_the_branch_and_the_pull_request_and_resume_says_it_is_m3_s() {
+async fn workspace_list_carries_the_branch_and_the_pull_request_and_resume_resolves_its_target() {
     let mut h = Harness::start_with(HarnessOptions {
         providers: vec![Arc::new(BranchProvider), Arc::new(OnePrProvider)],
         ..HarnessOptions::new(Config::default(), 120, 24)
@@ -597,21 +597,23 @@ async fn workspace_list_carries_the_branch_and_the_pull_request_and_resume_says_
     );
     assert_eq!(rows[2]["tabs"], 1);
 
-    let err = h
+    // `workspace.resume` was M2's stub, which refused without looking at its target. M3 gave it
+    // a handler, so it resolves the workspace first: a slot with no exited record answers with
+    // two empty lists, which is a resume that had nothing to do rather than one that could not
+    // run. `agent_resume.rs` owns what it does with a record.
+    let out = h
         .api("workspace.resume", json!({"workspace": "workspace-1"}))
         .await
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unavailable);
-    assert_eq!(err.message, "resume arrives with agents in M3");
-    // And for a target that matches nothing, which is the input that separates "refuses
-    // without looking" from "resolves first and then refuses": a resume that resolved would
-    // answer `NotFound` here and the same `Unavailable` above.
+        .unwrap();
+    assert_eq!(out["resumed"].as_array().unwrap().len(), 0, "{out}");
+    assert_eq!(out["skipped"].as_array().unwrap().len(), 0, "{out}");
+    // And a target that matches nothing is now `NotFound`, which is the difference the handler
+    // made: the stub answered the same refusal here as it did above.
     let err = h
         .api("workspace.resume", json!({"workspace": "workspace-9"}))
         .await
         .unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unavailable);
-    assert_eq!(err.message, "resume arrives with agents in M3");
+    assert_eq!(err.code, ErrorCode::NotFound);
 }
 
 /// A project the caller named scopes the list to that project, and naming none lists them

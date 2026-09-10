@@ -1,6 +1,8 @@
 //! Composes one client's frame: the top bar over the tab's pane boxes, or, when the sidebar
 //! is open, the sidebar beside them with the tab row on top of them (interface spec 4.2).
 
+pub mod agents_box;
+pub mod agents_overlay;
 pub mod boxed;
 pub mod confirm;
 pub mod list_box;
@@ -47,6 +49,10 @@ pub struct RenderInput<'a> {
     /// (principle 4).
     pub facts: &'a crate::facts::FactRegistry,
     pub panes: &'a HashMap<PaneId, PaneRuntime>,
+    /// Every agent this frame draws, in sort order, with its place, its recap and this
+    /// frame's glyph and word already resolved. The Agents box reads nothing else, so the
+    /// sidebar and the agents overlay cannot disagree about what an agent is doing.
+    pub agents: &'a agents_box::AgentsView,
     pub view: &'a ClientView,
     pub keymap: &'a Keymap,
     pub now: DateTime<Local>,
@@ -306,7 +312,7 @@ pub fn tab_workpanel(model: &Model, tab: &TabId, fallback: Size) -> domux_core::
 ///
 /// A box standing on the workpanel's last row does not. That row is the screen's last row, so
 /// the rule would be a line along the bottom of the screen with nothing under it, and the row
-/// is worth more as the program's output (MUX-14, decision record 0018). A box with another
+/// is worth more as the program's output (MUX-14, decision record 0022). A box with another
 /// box under it keeps its rule, because that rule is what parts the two.
 ///
 /// Every caller that measures a pane box asks this one function: `draw_panes` draws to it,
@@ -438,30 +444,15 @@ mod tests {
     use super::*;
 
     use domux_core::ids::ClientId;
-    use domux_core::model::TextInput;
-    use domux_core::proto::Capabilities;
 
     /// A client on `tab` with a screen of `cols` x `rows` and its remembered sidebar state.
     fn view(id: &str, tab: &str, cols: u16, rows: u16, sidebar_open: bool) -> ClientView {
         ClientView {
             id: ClientId(id.to_string()),
             size: Size { cols, rows },
-            caps: Capabilities::default(),
-            workspace: domux_core::ids::WorkspaceId("w_0001".into()),
             tab: TabId(tab.to_string()),
-            focus: Focus::Pane(PaneId("p_0001".into())),
             sidebar_open,
-            sidebar_forced: false,
-            overlay: None,
-            chord: None,
-            filter: String::new(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            filtering: false,
-            input: TextInput::new(""),
-            overlay_under: None,
-            pill: None,
+            ..crate::testing::client_view()
         }
     }
 

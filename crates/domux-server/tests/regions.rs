@@ -201,18 +201,27 @@ async fn c_h_leaves_the_keys_on_the_pane_while_no_sidebar_is_drawn() {
     );
 }
 
-/// Tab, `C-j` and `C-k` have nowhere to go until M3 puts the Agents box under Projects. They
-/// must not move the tab's focused pane and must not reach the pane either.
+/// Tab, `C-j` and `C-k` cross between the sidebar's two boxes and touch nothing else: they
+/// must not move the tab's focused pane and must not reach a pane.
 ///
 /// The tab is split downwards first, so the pane the keys would move to exists: with one pane
-/// `C-j` does nothing whatever the region rule is.
+/// `C-j` does nothing whatever the region rule is. Until M3 put the Agents box under Projects
+/// these three had nowhere to go, and this test asserted they changed nothing at all; what it
+/// keeps from that version is the half that did not change, which is that a key inside a box
+/// stays inside the sidebar.
 #[tokio::test]
-async fn tab_and_c_j_and_c_k_do_nothing_in_the_sidebar_until_m3_adds_the_agents_box() {
+async fn tab_and_c_j_and_c_k_cross_the_sidebars_boxes_and_reach_nothing_else() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let top = h.focused_pane(h.client.clone());
     h.api("pane.split", json!({"dir": "down"})).await.unwrap();
     let bottom = h.focused_pane(h.client.clone());
     assert_ne!(bottom, top, "the split made a pane below");
+    // Back to the upper pane before entering: `in_the_box` presses `C-h`, which from the
+    // lower pane lands in the Agents box (interface spec 12.29), and this test starts in the
+    // Projects box.
+    h.api("pane.focus", json!({"pane": top.to_string()}))
+        .await
+        .unwrap();
     in_the_box(&mut h).await;
     let before = h
         .model()
@@ -221,13 +230,18 @@ async fn tab_and_c_j_and_c_k_do_nothing_in_the_sidebar_until_m3_adds_the_agents_
         .focused
         .clone();
 
-    for key in ["Tab", "C-j", "C-k"] {
+    // Tab crosses down, `C-j` has nothing below the lower box, `C-k` crosses back.
+    for (key, region) in [
+        ("Tab", RegionKind::SidebarAgents),
+        ("C-j", RegionKind::SidebarAgents),
+        ("C-k", RegionKind::SidebarProjects),
+    ] {
         h.key(h.client.clone(), key).await;
         h.frame(h.client.clone()).await;
         assert_eq!(
             focus(&h),
-            Focus::Region(RegionKind::SidebarProjects),
-            "{key} has nothing to cross to yet"
+            Focus::Region(region),
+            "{key} lands in {region:?}"
         );
         assert_eq!(
             h.model()
@@ -665,14 +679,14 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
 
 /// The box scrolls to keep the cursor in view.
 ///
-/// The box scrolls to keep the cursor in view.
-///
-/// A third slot and the shortest screen domux draws on, which leaves the box 7 lines to draw
-/// 8 in: on a 24 row screen the whole list fits and a hard-coded scroll of 0 passes. The
-/// field can only be tested under the condition that makes it matter.
+/// A third slot, and 19 rows, which leaves the box seven lines to draw eight in: on a taller
+/// screen the whole list fits and a hard-coded scroll of 0 passes. The field can only be
+/// tested under the condition that makes it matter. It was 10 rows until M3 halved the column
+/// between the two boxes, which left the Projects box two lines and no room for the
+/// arithmetic below.
 #[tokio::test]
 async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_row() {
-    let mut h = Harness::start(Config::default(), 120, 10).await;
+    let mut h = Harness::start(Config::default(), 120, 19).await;
     let (_root, _w1, w2) = h.git_project_with_two_slots().await;
     let project = h
         .model()
@@ -742,10 +756,10 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
     );
 }
 
-/// `focus.region` names a region rather than a direction, and every M2 kind refuses when the
-/// thing it names is not on the screen.
+/// `focus.region` names a region rather than a direction, and every kind refuses when the
+/// thing it names is not on the screen (principle 2).
 #[tokio::test]
-async fn focus_region_takes_the_m2_kinds_and_refuses_the_ones_that_are_not_showing() {
+async fn focus_region_takes_every_kind_and_refuses_the_ones_that_are_not_showing() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let err = h
         .api("focus.region", json!({"region": "sidebar_projects"}))
@@ -764,9 +778,16 @@ async fn focus_region_takes_the_m2_kinds_and_refuses_the_ones_that_are_not_showi
     let err = h
         .api("focus.region", json!({"region": "sidebar_agents"}))
         .await
-        .expect_err("M3 builds the agents box");
-    assert_eq!(err.code, domux_core::api::ErrorCode::Unavailable, "{err}");
-    assert!(err.message.contains("M3"), "{err}");
+        .expect_err("the sidebar is closed");
+    assert_eq!(err.code, domux_core::api::ErrorCode::Refused, "{err}");
+    assert!(err.message.contains("sidebar.show"), "{err}");
+
+    let err = h
+        .api("focus.region", json!({"region": "agents_overlay"}))
+        .await
+        .expect_err("the agents overlay is closed");
+    assert_eq!(err.code, domux_core::api::ErrorCode::Refused, "{err}");
+    assert!(err.message.contains("agents.open"), "{err}");
 
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
@@ -964,7 +985,7 @@ async fn the_filter_row_belongs_to_the_box_and_not_to_the_sidebar() {
 ///
 /// `sidebar.hide` hands the keys back without closing the field - it is the one exit that does
 /// not go through `focus.pane` - so `filtering` is still set when the box is entered again,
-/// and `enter_projects_box` is what has to clear it. Nothing else can: `pop_overlay` clears it
+/// and `enter_sidebar_box` is what has to clear it. Nothing else can: `pop_overlay` clears it
 /// on the other exits, and this path has no overlay to pop.
 #[tokio::test]
 async fn coming_back_into_the_box_never_lands_in_a_filter_field_nobody_opened() {

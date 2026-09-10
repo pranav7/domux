@@ -113,7 +113,7 @@ pub trait Emulator: Send {
     ///
     /// Only the emulator can answer it: a hyperlink is a property the program attached to the
     /// cell, not something its text can be read for. The text under a hyperlink is usually
-    /// not the target at all, which is the point of OSC 8 (decision record 0020).
+    /// not the target at all, which is the point of OSC 8 (decision record 0024).
     ///
     /// `pos` counts rows from the top of the scrollback, as every other position here does.
     /// A position the emulator cannot resolve answers `None`, the same as a cell with no

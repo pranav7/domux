@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "\"$HOME/bin/domux\" ai-state --agent codex CODEXING" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "\"$HOME/bin/domux\" ai-state --agent codex CODEXING" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "\"$HOME/bin/domux\" ai-state --agent codex CODEXING" } ] }
+    ],
+    "PermissionRequest": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "\"$HOME/bin/domux\" ai-state --agent codex WAITING" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "\"$HOME/bin/domux\" ai-state --agent codex --all clear" } ] }
+    ]
+  }
+}

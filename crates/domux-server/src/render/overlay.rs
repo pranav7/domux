@@ -41,8 +41,9 @@ fn draw_one(input: &RenderInput, overlay: &Overlay, buf: &mut Buffer) {
         Overlay::Switcher => crate::render::switcher::draw(input, buf),
         Overlay::NameWorkspace(id) => crate::render::name_box::draw(input, id, buf),
         Overlay::Confirm(kind) => crate::render::confirm::draw(input, kind, buf),
-        // The tab prompt lives in the tab cell; Agents is M3 and Usage is M4.
-        Overlay::Prompt(_) | Overlay::Agents | Overlay::Usage => {}
+        Overlay::Agents => crate::render::agents_overlay::draw(input, buf),
+        // The tab prompt lives in the tab cell; Usage is M4.
+        Overlay::Prompt(_) | Overlay::Usage => {}
     }
 }
 
@@ -449,33 +450,12 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
 mod tests {
     use super::*;
     use crate::facts::FactRegistry;
-    use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
     use domux_core::keymap::Keymap;
-    use domux_core::model::{ClientView, Focus, Model, Pill, TextInput};
-    use domux_core::proto::Capabilities;
+    use domux_core::model::{ClientView, Model, Pill};
     use std::collections::HashMap;
 
     fn view() -> ClientView {
-        ClientView {
-            id: ClientId("c_0001".into()),
-            size: Size { cols: 80, rows: 24 },
-            caps: Capabilities::default(),
-            workspace: WorkspaceId("w_0001".into()),
-            tab: TabId("t_0001".into()),
-            focus: Focus::Pane(PaneId("p_0001".into())),
-            sidebar_open: false,
-            sidebar_forced: false,
-            overlay: None,
-            chord: None,
-            filter: String::new(),
-            last_active_seq: 0,
-            projects_cursor: None,
-            projects_scroll: 0,
-            filtering: false,
-            input: TextInput::new(""),
-            overlay_under: None,
-            pill: None,
-        }
+        crate::testing::client_view()
     }
 
     /// Draws the footer for `view` into `area` of `buf`, leaving whatever else is in `buf`.
@@ -494,10 +474,12 @@ mod tests {
         let facts = FactRegistry::new();
         let panes = HashMap::new();
         let keymap = Keymap::defaults();
+        let agents = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         let input = RenderInput {
             model: &model,
             facts: &facts,
             panes: &panes,
+            agents: &agents,
             view,
             keymap: &keymap,
             now: chrono::Local::now(),

@@ -14,7 +14,7 @@ pub struct Boxed<'a> {
     /// Whether the bottom rule is drawn. False leaves the box open at the foot: the side
     /// rules run to its last row and that row holds content instead of a line. A pane box
     /// standing on the bottom of the workpanel is the only thing that asks for it (decision
-    /// record 0018); every other box is closed.
+    /// record 0022); every other box is closed.
     pub bottom_rule: bool,
 }
 

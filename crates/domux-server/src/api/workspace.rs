@@ -3,17 +3,18 @@
 use super::{ok, Ctx};
 use crate::core::{slot_claim, CoreJob};
 use domux_core::api::{
-    Ack, ApiError, Event, WorkspaceClearParams, WorkspaceCreateParams, WorkspaceDeleteParams,
-    WorkspaceFocusParams, WorkspaceInfo, WorkspaceListParams, WorkspaceRenameParams,
-    WorkspaceTargetParams,
+    Ack, AgentResumeResult, ApiError, Event, WorkspaceClearParams, WorkspaceCreateParams,
+    WorkspaceDeleteParams, WorkspaceFocusParams, WorkspaceInfo, WorkspaceListParams,
+    WorkspaceRenameParams, WorkspaceResumeResult, WorkspaceTargetParams,
 };
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
-use domux_core::ids::{ProjectId, WorkspaceId};
+use domux_core::ids::{PaneId, ProjectId, WorkspaceId};
 use domux_core::model::{
     ConfirmKind, Focus, Overlay, ProjectKind, RegionKind, TextInput, WorkspaceHandle,
     MAIN_CANNOT_BE_DELETED,
 };
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Makes the next slot of a project: a worktree at the lowest free number, on a fresh branch
@@ -154,7 +155,7 @@ pub fn list(ctx: &mut Ctx, p: WorkspaceListParams) -> Result<Value, ApiError> {
 /// is not an overlay, the fill moves to the row that is now the current one, and the keys go
 /// to the pane (interface spec 12.26).
 ///
-/// **With nothing attached it still records the workspace** (decision record 0017). There is
+/// **With nothing attached it still records the workspace** (decision record 0021). There is
 /// no view to move, so it moves `last_workspace` alone, which is the field `Core::attach`
 /// seats the next client from. Refusing instead is what MUX-11 reported: the attach offer of
 /// decision record 0009 registers a project and then switches to it, and the switch is made
@@ -662,14 +663,78 @@ fn ask(ctx: &mut Ctx, kind: ConfirmKind) -> Result<Value, ApiError> {
     ok(Ack { ok: true })
 }
 
-/// The stub the roadmap's 5.7 table names. M3 replaces it with the real resume, which puts
-/// an agent back in the pane it was working in.
+/// Every exited record in the workspace, resumed: its relaunch line typed into the pane it
+/// last ran in, in the order the Agents box lists them (newest first).
 ///
-/// It refuses without looking at its target on purpose: resolving a workspace first would
-/// answer `not_found` for a bad target and `unavailable` for a good one, which reads as a
-/// method that half works. There is nothing here to work.
-pub fn resume(_ctx: &mut Ctx, _p: WorkspaceTargetParams) -> Result<Value, ApiError> {
-    Err(ApiError::unavailable("resume arrives with agents in M3"))
+/// Failures are collected rather than fatal (plan assumption 29). One Codex record in a
+/// workspace must not stop the Claude records beside it from coming back, and the reader has to
+/// be told which ones did not, so both halves of the answer travel: `resumed` is what was typed
+/// and `skipped` is one line per record with the reason (principle 9).
+///
+/// Every refusal is `agent::plan_resume`'s, which is what `agent.resume` refuses with too, so a
+/// record skipped here and the same record named on its own give the same reason in the same
+/// words. Nothing about resuming one agent is repeated here.
+///
+/// **One line per pane.** Two exited records name one pane whenever two sessions ran there in
+/// turn, because a record keeps its `last_pane` when it exits. Typing both lines would put the
+/// second into whatever the first started, and reporting both in `resumed` would claim a line
+/// reached a shell when it reached an agent's prompt (principle 4). So the first record resumed
+/// into a pane takes it and the rest are skipped.
+///
+/// First in the order this loop reads, which is `Model::sorted_agents` - the order the Agents box
+/// shows. Choosing *which* record that is belongs to that function and not to this one: it orders
+/// exited records by last activity descending, so the one that takes the pane is the session you
+/// had last, and V1 chose one session per window for that same reason
+/// (`bestAgentSession`, commit b02a3ae).
+///
+/// A pane is claimed where the line is actually typed and nowhere earlier. A record that cannot
+/// resume must not take a pane from one that can: an exited Codex record in front of an exited
+/// Claude record in the same pane refuses on its kind, and the Claude record behind it still
+/// comes back.
+pub fn resume(ctx: &mut Ctx, p: WorkspaceTargetParams) -> Result<Value, ApiError> {
+    let workspace = ctx.resolve_workspace_param(p.workspace.as_deref())?;
+    // Read out as ids before the loop, because the loop writes to the panes through `ctx` and
+    // cannot hold a borrow of the model across that.
+    let exited: Vec<domux_core::ids::AgentId> = ctx
+        .model
+        .sorted_agents()
+        .into_iter()
+        .filter(|a| a.workspace == workspace && !a.state.is_live())
+        .map(|a| a.id.clone())
+        .collect();
+    let mut resumed = Vec::new();
+    let mut skipped = Vec::new();
+    let mut typed_into: HashSet<PaneId> = HashSet::new();
+    for agent in exited {
+        match super::agent::plan_resume(ctx, &agent) {
+            Ok((command, pane)) => {
+                if typed_into.contains(&pane) {
+                    skipped.push(format!(
+                        "{agent}: pane {pane} already took a relaunch line in this resume; one session comes back per pane, so resume this one yourself once that pane is free"
+                    ));
+                    continue;
+                }
+                match ctx.write_to_pane(&pane, format!("{command}\r").as_bytes()) {
+                    Ok(()) => {
+                        typed_into.insert(pane.clone());
+                        resumed.push(AgentResumeResult {
+                            agent,
+                            pane,
+                            command,
+                        })
+                    }
+                    // A pane with no terminal is a record that cannot be resumed like any other, so
+                    // it joins the skipped list instead of ending the run. `plan_resume` has already
+                    // refused the pane the model does not hold; this is the narrower case of a pane
+                    // the model holds whose process failed to start. It claims no pane: nothing was
+                    // typed, so a later record naming the same pane is free to try.
+                    Err(e) => skipped.push(format!("{agent}: {}", e.message)),
+                }
+            }
+            Err(e) => skipped.push(format!("{agent}: {}", e.message)),
+        }
+    }
+    ok(WorkspaceResumeResult { resumed, skipped })
 }
 
 impl Ctx<'_> {
@@ -702,11 +767,12 @@ impl Ctx<'_> {
     /// is also the key both renderers fill their row from, so the workspace this names is the
     /// one the reader can see the fill on.
     ///
-    /// `list::in_a_box` rather than the focus kind: the keys are in the switcher's box
-    /// whenever the switcher is open, whatever `focus` holds after an overlay over it closed,
-    /// and they are in the sidebar's only while the sidebar is actually showing. Asking the
-    /// question `list.*` asks keeps the box the cursor belongs to and the box the keys are in
-    /// one answer.
+    /// `list::in_a_projects_box` rather than the focus kind: the keys are in the switcher's
+    /// box whenever the switcher is open, whatever `focus` holds after an overlay over it
+    /// closed, and they are in the sidebar's only while the sidebar is actually showing.
+    /// Asking the question `list.*` asks keeps the box the cursor belongs to and the box the
+    /// keys are in one answer. The Agents box holds the same keys and is not one of these:
+    /// `projects_cursor` names no row the reader can see while the agents overlay is open.
     ///
     /// One state has no fill to point at: a filter that dropped the cursor's row. This still
     /// answers with that row, where `list.activate` refuses. Switching would move the reader
@@ -719,7 +785,7 @@ impl Ctx<'_> {
             .client(&client)
             .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
         match &view.projects_cursor {
-            Some(cursor) if super::list::in_a_box(self, &client) => Ok(cursor.clone()),
+            Some(cursor) if super::list::in_a_projects_box(self, &client) => Ok(cursor.clone()),
             _ => Ok(view.workspace.clone()),
         }
     }
@@ -734,7 +800,7 @@ impl Ctx<'_> {
     /// it, and names the two ways to ask in the refusal.
     pub fn project_of_cursor(&self) -> Result<ProjectId, ApiError> {
         let client = self.view()?;
-        if !super::list::in_a_box(self, &client) {
+        if !super::list::in_a_projects_box(self, &client) {
             return Err(ApiError::invalid_params(
                 "name a project to remove, or pass --all to remove every one",
             ));

@@ -4,7 +4,9 @@
 
 use crate::render::boxed::{put_within, Boxed};
 use crate::render::theme;
-use domux_core::text::{display_width, sanitize_for_display, truncate_with_ellipsis};
+use domux_core::text::{
+    display_width, sanitize_for_display, truncate_with_ellipsis, wrap_to_width,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -75,7 +77,7 @@ impl ListRow {
 /// padding, and `ends` are blank rows under the top rule and above the bottom one.
 ///
 /// It is a value rather than a constant because the two surfaces have different room
-/// (decision record 0019). MUX-12 asked for breathing space in the switcher, which is 60
+/// (decision record 0023). MUX-12 asked for breathing space in the switcher, which is 60
 /// cells wide; the sidebar is 38 and spends every cell it has on branch names, so it stays
 /// where decision record 0012 put it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +149,7 @@ pub struct ListBox<'a> {
     /// can. `render` corrects it and returns what it used.
     pub scroll: u16,
     /// What to draw when there are no rows: name the state and the next action
-    /// (principle 9).
+    /// (principle 9). Wrapped to the box's inner width, over as many rows as it has.
     pub empty_text: &'a str,
     /// The space between the border and the rows. `SIDEBAR_PAD` or `OVERLAY_PAD`.
     pub pad: Pad,
@@ -182,16 +184,46 @@ impl ListBox<'_> {
         let text_x = rows_area.x + self.pad.side;
         let text_width = rows_area.width.saturating_sub(2 * self.pad.side);
         if self.rows.is_empty() {
-            let text =
-                truncate_with_ellipsis(&sanitize_for_display(self.empty_text), text_width as usize);
-            put_within(
-                buf,
-                text_x,
-                rows_area.y,
-                right,
-                &text,
-                Style::default().fg(theme::OVERLAY0),
-            );
+            // Wrapped over the box's rows rather than cut at the first. The sentence names
+            // the state and then the next action (principle 9), and the action is its second
+            // half, so a box too narrow for one line would drop exactly the half the reader
+            // is here for: the sidebar's Agents box has 34 columns for text inside its border
+            // and its padding, and its text is 47 cells. Text that fits one line still takes
+            // one, so nothing that fitted before has moved.
+            //
+            // A box with fewer rows than the text needs fills its last row from everything
+            // that is left rather than from the next wrapped line, and ends in the mark that
+            // says it was cut. Wrapping alone would show less than not wrapping at all: in a
+            // box one row tall the first wrapped line is one word, where cutting the sentence
+            // fills the row. So the rule is "wrap while there is room, then show as much as
+            // fits", which is what the reader wants in both cases.
+            //
+            // The pad is the rows' pad: `draw_line` starts every row at `text_x` and stops at
+            // `text_width`, so a box with no rows puts its one sentence where the rows would
+            // have been rather than one column further left.
+            if text_width == 0 {
+                return 0;
+            }
+            let text = sanitize_for_display(self.empty_text);
+            let lines = wrap_to_width(&text, text_width as usize);
+            let room = rows_area.height as usize;
+            for (n, line) in lines.iter().take(room).enumerate() {
+                let cut = n + 1 == room && lines.len() > room;
+                let text = match cut {
+                    // `wrap_to_width` splits on whitespace, so joining the rest with one space
+                    // is the text it was given, less the runs of spaces it already collapsed.
+                    true => truncate_with_ellipsis(&lines[n..].join(" "), text_width as usize),
+                    false => line.clone(),
+                };
+                put_within(
+                    buf,
+                    text_x,
+                    rows_area.y + n as u16,
+                    text_x + text_width - 1,
+                    &text,
+                    Style::default().fg(theme::OVERLAY0),
+                );
+            }
             return 0;
         }
         let scroll = scroll_to_show(self.rows, self.filled, rows_area.height, self.scroll);

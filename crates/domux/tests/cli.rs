@@ -6,11 +6,13 @@
 //! server it is waiting for.
 
 use domux_core::config::Config;
+use domux_core::model::agent::AgentKind;
 use domux_server::testing::Harness;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc::TryRecvError;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -974,6 +976,30 @@ impl Case {
     }
 }
 
+/// One whole `AgentInfo`, for the case that reads a typed result back. Spelled out rather than
+/// built from the model, because what is under test is that this CLI can read the answer the
+/// wire carries.
+fn an_agent() -> serde_json::Value {
+    serde_json::json!({
+        "id": "a_5e21",
+        "kind": "claude",
+        "name": null,
+        "session_id": "s1",
+        "state": "idle",
+        "unseen": false,
+        "recap": null,
+        "reason": null,
+        "cwd": "/tmp",
+        "pane": "p_1",
+        "workspace": "w_1",
+        "project": null,
+        "tab": null,
+        "place": "audrey-app \u{203a} main",
+        "started_at": "2026-09-04T14:32:00+00:00",
+        "last_activity_at": "2026-09-04T14:32:00+00:00",
+    })
+}
+
 /// A shell inside a pane, and one outside every tab.
 const IN_A_TAB: &[(&str, &str)] = &[("DOMUX_TAB", "t_1"), ("DOMUX_WORKSPACE", "w_1")];
 const IN_A_PANE: &[(&str, &str)] = &[("DOMUX_PANE", "p_1")];
@@ -1096,6 +1122,71 @@ async fn every_subcommand_sends_the_method_and_the_params_it_claims() {
             ANYWHERE,
             "server.stop",
             serde_json::json!({}),
+        ),
+        // M3. `peek` and `agent list` are two spellings of one call; the block the context
+        // names is the short one, and the namespaced one keeps the namespace whole.
+        case(&["peek"], ANYWHERE, "agent.list", serde_json::json!({}))
+            .answered(serde_json::json!({ "agents": [], "red_dots": 0 })),
+        case(
+            &["agent", "list", "--json"],
+            ANYWHERE,
+            "agent.list",
+            serde_json::json!({}),
+        )
+        .answered(serde_json::json!({ "agents": [], "red_dots": 0 })),
+        case(
+            &["whoami"],
+            IN_A_PANE,
+            "agent.self",
+            serde_json::json!({ "pane": "p_1" }),
+        )
+        .answered(an_agent()),
+        case(
+            &["agent", "focus", "a_5e21"],
+            ANYWHERE,
+            "agent.focus",
+            serde_json::json!({ "agent": "a_5e21" }),
+        ),
+        case(
+            &["agent", "dismiss", "a_5e21"],
+            ANYWHERE,
+            "agent.dismiss",
+            serde_json::json!({ "agent": "a_5e21" }),
+        ),
+        case(
+            &["agent", "resume", "a_5e21"],
+            ANYWHERE,
+            "agent.resume",
+            serde_json::json!({ "agent": "a_5e21" }),
+        )
+        .answered(serde_json::json!({
+            "agent": "a_5e21", "pane": "p_1", "command": "claude --resume 's1'",
+        })),
+        // No target: this shell's workspace, which is what the server reads a null as.
+        case(
+            &["resume"],
+            IN_A_TAB,
+            "workspace.resume",
+            serde_json::json!({ "workspace": "w_1" }),
+        )
+        .answered(serde_json::json!({ "resumed": [], "skipped": [] })),
+        case(
+            &["send", "a_5e21", "ping"],
+            ANYWHERE,
+            "agent.send",
+            serde_json::json!({ "agent": "a_5e21", "text": "ping" }),
+        ),
+        case(
+            &["read", "a_5e21"],
+            ANYWHERE,
+            "agent.read",
+            serde_json::json!({ "agent": "a_5e21" }),
+        ),
+        case(
+            &["wait", "a_5e21", "--timeout-ms", "500"],
+            ANYWHERE,
+            "agent.wait",
+            serde_json::json!({ "agent": "a_5e21", "timeout_ms": 500 }),
         ),
     ];
 
@@ -1224,6 +1315,819 @@ async fn the_socket_override_alone_is_not_a_pane() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// M3: agent, peek, whoami, resume, install
+// ---------------------------------------------------------------------------
+
+/// The agent report subcommand the way a hook runs it: the payload on standard input.
+///
+/// `output()` gives a child a null standard input, so a report run that way reads an empty
+/// payload and pins nothing. Every report here is spawned with a pipe and the payload written
+/// into it.
+async fn report_through_the_cli(cmd: &mut Command, payload: &str) -> std::process::Output {
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(payload.as_bytes()).await.unwrap();
+    drop(stdin);
+    child.wait_with_output().await.unwrap()
+}
+
+/// The same hook lines run under V1's tmux panes until the cut-over, so a report from a shell
+/// that is not in a domux pane exits 0 and says nothing (M3 plan assumption 17).
+///
+/// The socket here is live and would answer. What is pinned is that nothing was posted to it at
+/// all: a report that sent a null pane would be refused by the server and would look exactly
+/// the same from outside, and silence alone is also what a subcommand that does nothing in
+/// every case would produce.
+#[tokio::test]
+async fn agent_report_outside_a_domux_pane_exits_zero_and_says_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let server = one_call(&socket, serde_json::json!({}));
+    let out = report_through_the_cli(
+        Command::new(env!("CARGO_BIN_EXE_domux2"))
+            .env("DOMUX_SOCKET", &socket)
+            .env_remove("DOMUX_PANE")
+            .env_remove("TMUX")
+            .args(["agent", "report", "--agent", "claude"]),
+        r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+    // The process has already exited, so a call it made would have been answered by now.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), server)
+            .await
+            .is_err(),
+        "a report outside a pane called the server anyway"
+    );
+}
+
+/// A hook that fails is an interruption in the agent's session, so a report to a socket nothing
+/// is listening on exits 0 in silence too (M3 plan assumption 17). Every other subcommand says
+/// "The server is not running"; this one is the exception, and it is the exception on purpose.
+#[tokio::test]
+async fn agent_report_without_a_server_exits_zero_and_says_nothing() {
+    let out = report_through_the_cli(
+        Command::new(env!("CARGO_BIN_EXE_domux2"))
+            .env("DOMUX_SOCKET", "/nonexistent/sock")
+            .env("DOMUX_PANE", "p_0001")
+            .env_remove("TMUX")
+            .args(["agent", "report", "--agent", "claude"]),
+        r#"{"hook_event_name":"Stop","session_id":"s1"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "");
+}
+
+/// The whole hook path end to end: the payload reaches `agent.report`, the record it makes
+/// carries the session the payload named, and the `SessionStart` block comes back on stdout,
+/// which is where Claude Code reads a hook's context from.
+#[tokio::test]
+async fn agent_report_posts_the_payload_and_prints_the_context_block_on_session_start() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let out = report_through_the_cli(
+        domux2(&h)
+            .env("DOMUX_PANE", pane.as_str())
+            .args(["agent", "report", "--agent", "claude"]),
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/tmp"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("[domux] You are agent a_"), "{text}");
+    assert!(text.contains("domux2 peek"), "{text}");
+    assert!(text.contains("domux2 whoami"), "{text}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
+
+    let agents = h.agents().await;
+    assert_eq!(agents.len(), 1, "{agents:?}");
+    assert_eq!(agents[0].kind.as_str(), "claude");
+    assert_eq!(agents[0].session_id.as_deref(), Some("s1"));
+
+    // Only `SessionStart` carries a block, so every other event prints nothing at all: a hook
+    // that echoed something on each event would put that text into the agent's context.
+    let out = report_through_the_cli(
+        domux2(&h)
+            .env("DOMUX_PANE", pane.as_str())
+            .args(["agent", "report", "--agent", "claude"]),
+        r#"{"hook_event_name":"Stop","session_id":"s1"}"#,
+    )
+    .await;
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "",
+        "only SessionStart prints"
+    );
+}
+
+/// The exact wire shape of a report: the pane from the environment, the kind from the flag and
+/// the payload parsed from standard input, so a hook posts the object the agent wrote rather
+/// than a string holding it.
+#[tokio::test]
+async fn agent_report_sends_the_pane_the_kind_and_the_parsed_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let server = one_call(
+        &socket,
+        serde_json::json!({"agent": "a_5e21", "state": "idle", "context": null}),
+    );
+    let out = report_through_the_cli(
+        Command::new(env!("CARGO_BIN_EXE_domux2"))
+            .env("DOMUX_SOCKET", &socket)
+            .env("DOMUX_PANE", "p_1")
+            .env_remove("TMUX")
+            .args(["agent", "report", "--agent", "codex"]),
+        r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    let request = tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .expect("agent report never called the server")
+        .unwrap();
+    assert_eq!(request["method"], "agent.report");
+    assert_eq!(
+        request["params"],
+        serde_json::json!({
+            "pane": "p_1",
+            "kind": "codex",
+            "payload": {"hook_event_name": "SessionStart", "session_id": "s1"},
+        })
+    );
+}
+
+/// The row grammar as text: the dot line, then the place line carrying the id, in the order
+/// the Agents box draws the same records in (M3 plan assumption 38).
+///
+/// Two agents in two states, because "in the box's order" is a claim about more than one row.
+/// The waiting one sorts ahead of the idle one (interface spec 6.7), and the assertion reads
+/// the order off `agent.list` rather than restating it, so this holds whatever the order is.
+#[tokio::test]
+async fn peek_prints_one_agent_per_block_in_the_boxs_order() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    let first = h.focused_pane(h.client.clone());
+    let split = h
+        .api(
+            "pane.split",
+            serde_json::json!({"pane": first.as_str(), "dir": "down"}),
+        )
+        .await
+        .unwrap();
+    let second: domux_core::ids::PaneId =
+        serde_json::from_value(split["id"].clone()).expect("the new pane's id");
+    h.report(
+        first.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#,
+    )
+    .await;
+    h.report(
+        second.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"Notification","session_id":"s2","message":"needs permission"}"#,
+    )
+    .await;
+
+    let out = domux2(&h).arg("peek").output().await.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("● claude  waiting"), "{text}");
+    assert!(lines[1].starts_with("  claude · "), "{text}");
+    assert!(
+        lines[1].contains("(a_"),
+        "the id is on the place line so a caller can target it: {text}"
+    );
+    assert!(lines[2].starts_with("● claude  idle"), "{text}");
+
+    // The same order the box sorts its rows in, read off the list both surfaces share.
+    let order: Vec<String> = h
+        .agents()
+        .await
+        .into_iter()
+        .map(|a| a.id.to_string())
+        .collect();
+    assert_eq!(order.len(), 2, "two records");
+    let printed: Vec<String> = lines
+        .iter()
+        .filter_map(|l| {
+            l.rsplit_once('(')
+                .map(|(_, id)| id.trim_end_matches(')').to_string())
+        })
+        .collect();
+    assert_eq!(printed, order, "{text}");
+}
+
+/// `--json` is the API result, not a rendering of it (M3 plan assumption 38): what the
+/// subcommand prints and what the method answers are compared against each other, so a field
+/// dropped or renamed on the way through fails here.
+#[tokio::test]
+async fn peek_json_is_the_api_result_verbatim() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.report(
+        pane,
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#,
+    )
+    .await;
+    let out = domux2(&h).args(["peek", "--json"]).output().await.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    // Not vacuous: an empty answer compared against an empty answer would pass.
+    assert_eq!(printed["agents"][0]["session_id"], "s1", "{printed}");
+    let answered = h.api("agent.list", serde_json::json!({})).await.unwrap();
+    assert_eq!(printed, answered);
+}
+
+/// An empty list is a state with a next action (principle 9), and it is not a failure. The
+/// sentence is the one both Agents boxes draw, so a reader who has seen one and then the other
+/// is not told two different things.
+#[tokio::test]
+async fn peek_with_no_agents_says_so_on_stderr_and_exits_zero() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let out = domux2(&h).arg("peek").output().await.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "No agents yet. Start claude or codex in a pane.\n"
+    );
+}
+
+#[tokio::test]
+async fn whoami_prints_this_panes_agent_and_exits_one_when_there_is_none() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let out = domux2(&h)
+        .env("DOMUX_PANE", pane.as_str())
+        .arg("whoami")
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "not_found: no agent is running in this pane\n"
+    );
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionStart","session_id":"s1"}"#,
+    )
+    .await;
+    let out = domux2(&h)
+        .env("DOMUX_PANE", pane.as_str())
+        .arg("whoami")
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("claude"), "{text}");
+    assert!(text.contains(" › "), "the place: {text}");
+}
+
+/// The question whoami answers is "which agent am I", so a shell that is not in a pane is told
+/// where to run it rather than given whichever agent the keyboard is looking at.
+#[tokio::test]
+async fn whoami_outside_a_pane_says_where_to_run_it() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let out = domux2(&h).arg("whoami").output().await.unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "invalid_params: domux2 whoami needs a pane; run it inside a domux pane, where DOMUX_PANE is set\n"
+    );
+}
+
+/// Dismiss and resume from the command line reach the handlers the keys reach: resume types the
+/// relaunch line into the pane the session ran in, and dismiss takes the record out of the list.
+#[tokio::test]
+async fn agent_dismiss_and_agent_resume_reach_the_same_handlers_the_keys_do() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/tmp"}"#,
+    )
+    .await;
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionEnd","session_id":"s1"}"#,
+    )
+    .await;
+    let id = h.agents().await[0].id.to_string();
+
+    let out = domux2(&h)
+        .args(["agent", "resume", &id])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("claude --resume 's1'"), "{text}");
+    assert!(text.starts_with(&format!("{id} in {pane}: ")), "{text}");
+    // The line reached the pane, not only the answer: this is the handler Enter on an exited
+    // row calls, and what it does is type.
+    h.frame(h.client.clone()).await;
+    let typed = String::from_utf8_lossy(&h.pane_input(&pane)).to_string();
+    assert!(typed.contains("claude --resume 's1'"), "{typed:?}");
+
+    let out = domux2(&h)
+        .args(["agent", "dismiss", &id])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "", "quiet on success");
+    assert!(h.agents().await.is_empty(), "the record was dismissed");
+}
+
+/// `resume` with no target resumes this shell's workspace, and prints one line per record it
+/// typed a line for. Nothing to resume is a state with an answer, not silence.
+#[tokio::test]
+async fn resume_takes_the_workspace_from_the_environment_and_says_when_there_is_nothing_to_do() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let workspace = h
+        .model()
+        .pane_location(&pane)
+        .expect("a location")
+        .workspace;
+
+    let out = domux2(&h)
+        .env("DOMUX_WORKSPACE", workspace.as_str())
+        .arg("resume")
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "No exited agents to resume.\n"
+    );
+
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/tmp"}"#,
+    )
+    .await;
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        r#"{"hook_event_name":"SessionEnd","session_id":"s1"}"#,
+    )
+    .await;
+    let out = domux2(&h)
+        .env("DOMUX_WORKSPACE", workspace.as_str())
+        .arg("resume")
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("claude --resume 's1'"), "{text}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
+}
+
+/// One resume over a workspace holding two exited records that ran in the same pane: one line
+/// is typed and the other record says why it was left alone (M3 plan assumption 29). The
+/// reasons are messages, not data, so they go to standard error and the typed lines do not.
+#[tokio::test]
+async fn resume_prints_the_lines_it_typed_and_the_reasons_it_skipped() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let workspace = h
+        .model()
+        .pane_location(&pane)
+        .expect("a location")
+        .workspace;
+    for session in ["s1", "s2"] {
+        h.report(
+            pane.clone(),
+            AgentKind::Claude,
+            &format!(
+                r#"{{"hook_event_name":"SessionStart","session_id":"{session}","cwd":"/tmp"}}"#
+            ),
+        )
+        .await;
+        h.report(
+            pane.clone(),
+            AgentKind::Claude,
+            &format!(r#"{{"hook_event_name":"SessionEnd","session_id":"{session}"}}"#),
+        )
+        .await;
+    }
+    assert_eq!(h.agents().await.len(), 2, "two exited records in one pane");
+
+    let out = domux2(&h)
+        .env("DOMUX_WORKSPACE", workspace.as_str())
+        .arg("resume")
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let typed = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(typed.lines().count(), 1, "one line was typed: {typed}");
+    assert!(typed.contains("claude --resume "), "{typed}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(said.lines().count(), 1, "one record was skipped: {said}");
+    assert!(said.starts_with("skipped a_"), "{said}");
+    assert!(
+        said.contains("already took a relaunch line"),
+        "the reason, not just the fact: {said}"
+    );
+}
+
+/// A fake server that answers every call from `replies`, keyed on the method, and records the
+/// requests it was sent in the order they arrived.
+///
+/// `one_call` answers one request and stops, which cannot pin a subcommand that makes several.
+/// A request is recorded before its answer is written, so the list is complete the moment the
+/// client process has exited.
+fn recording_server(
+    socket: &Path,
+    replies: Vec<(&'static str, serde_json::Value)>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<Mutex<Vec<serde_json::Value>>>,
+) {
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut line = String::new();
+            // The liveness probe connects and sends nothing, so an empty read is not a request.
+            if tokio::io::BufReader::new(r)
+                .read_line(&mut line)
+                .await
+                .unwrap_or(0)
+                == 0
+            {
+                continue;
+            }
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            let method = request["method"].as_str().unwrap_or_default().to_string();
+            let body = replies
+                .iter()
+                .find(|(m, _)| *m == method)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| serde_json::json!({ "result": {} }));
+            seen.lock().unwrap().push(request);
+            let mut response = serde_json::json!({ "id": 1 });
+            for (k, v) in body.as_object().unwrap() {
+                response[k] = v.clone();
+            }
+            let _ = w.write_all(format!("{response}\n").as_bytes()).await;
+        }
+    });
+    (handle, recorded)
+}
+
+/// The handle is deliberately not the id: a workspace is resumed by the id the list answered
+/// with, and a fixture where the two are the same string cannot tell that from a resume by
+/// handle, which is only unique inside one project.
+fn a_workspace(id: &str, handle: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "project": "pr_19f0",
+        "handle": handle,
+        "name": null,
+        "path": "/repo/audrey-app",
+        "branch": "main",
+        "pr": null,
+        "pr_state": null,
+        "tabs": 1,
+    })
+}
+
+fn nothing_resumed() -> serde_json::Value {
+    serde_json::json!({ "result": { "resumed": [], "skipped": [] } })
+}
+
+/// The resume target is expanded by asking the server what the string names, and a project
+/// reaches every one of its workspaces.
+///
+/// What the CLI decides here is the expansion, so the whole call sequence is read off the wire:
+/// the question it asked, and then one resume per workspace the answer held, in that order.
+#[tokio::test]
+async fn resume_with_a_project_target_resumes_every_workspace_of_that_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let (server, seen) = recording_server(
+        &socket,
+        vec![
+            (
+                "workspace.list",
+                serde_json::json!({ "result": [
+                    a_workspace("w_c3a1", "main"),
+                    a_workspace("w_7b02", "workspace-1"),
+                ] }),
+            ),
+            ("workspace.resume", nothing_resumed()),
+        ],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env("DOMUX_WORKSPACE", "w_ffff")
+        .env_remove("TMUX")
+        .args(["resume", "audrey-app"])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert!(out.status.success(), "{out:?}");
+    let calls = seen.lock().unwrap().clone();
+    let shape: Vec<(String, serde_json::Value)> = calls
+        .iter()
+        .map(|c| {
+            (
+                c["method"].as_str().unwrap().to_string(),
+                c["params"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({ "project": "audrey-app" })
+            ),
+            (
+                "workspace.resume".to_string(),
+                serde_json::json!({ "workspace": "w_c3a1" })
+            ),
+            (
+                "workspace.resume".to_string(),
+                serde_json::json!({ "workspace": "w_7b02" })
+            ),
+        ],
+        "the target names a project, so every workspace of it is resumed and the environment's \
+         own workspace is not"
+    );
+}
+
+/// A target that names no project is a workspace target, passed through as the reader typed it:
+/// `workspace.resume` resolves a workspace by id, handle, name or branch, and this must not
+/// resolve it a second time.
+#[tokio::test]
+async fn resume_with_a_workspace_target_resumes_only_that_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let (server, seen) = recording_server(
+        &socket,
+        vec![
+            (
+                "workspace.list",
+                serde_json::json!({ "error": {
+                    "code": "not_found",
+                    "message": "no project called workspace-1; run domux2 project list to see them",
+                    "data": null,
+                }}),
+            ),
+            ("workspace.resume", nothing_resumed()),
+        ],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env("DOMUX_WORKSPACE", "w_ffff")
+        .env_remove("TMUX")
+        .args(["resume", "workspace-1"])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert!(out.status.success(), "{out:?}");
+    let calls = seen.lock().unwrap().clone();
+    let shape: Vec<(String, serde_json::Value)> = calls
+        .iter()
+        .map(|c| {
+            (
+                c["method"].as_str().unwrap().to_string(),
+                c["params"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                "workspace.list".to_string(),
+                serde_json::json!({ "project": "workspace-1" })
+            ),
+            (
+                "workspace.resume".to_string(),
+                serde_json::json!({ "workspace": "workspace-1" })
+            ),
+        ],
+        "one workspace, named as it was typed"
+    );
+}
+
+/// A name two projects share is the reader's to settle. Reading it as a workspace instead would
+/// bury the refusal that says which two it matched, so only `not_found` falls through.
+#[tokio::test]
+async fn resume_with_an_ambiguous_project_name_refuses_rather_than_guessing() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let (server, seen) = recording_server(
+        &socket,
+        vec![
+            (
+                "workspace.list",
+                serde_json::json!({ "error": {
+                    "code": "ambiguous",
+                    "message": "2 projects are called audrey-app: /a/audrey-app, /b/audrey-app; use an id",
+                    "data": ["pr_19f0", "pr_44c1"],
+                }}),
+            ),
+            ("workspace.resume", nothing_resumed()),
+        ],
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        .env("DOMUX_SOCKET", &socket)
+        .env_remove("TMUX")
+        .args(["resume", "audrey-app"])
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "ambiguous: 2 projects are called audrey-app: /a/audrey-app, /b/audrey-app; use an id\n"
+    );
+    let calls = seen.lock().unwrap().clone();
+    let methods: Vec<&str> = calls
+        .iter()
+        .map(|c| c["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(methods, vec!["workspace.list"], "nothing was resumed");
+}
+
+/// The three messaging verbs the `SessionStart` block names. They are not built until M4, and
+/// what they answer says so: without them the block would name three commands clap does not
+/// know, and the reader would be told the subcommand is unrecognised rather than when it
+/// arrives (principle 9).
+#[tokio::test]
+async fn the_messaging_verbs_the_context_block_names_say_when_messaging_arrives() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    for (args, method) in [
+        (vec!["send"], "agent.send"),
+        (vec!["read"], "agent.read"),
+        (vec!["wait"], "agent.wait"),
+    ] {
+        let out = domux2(&h).args(&args).output().await.unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("unavailable: {method} arrives with messaging in M4 and is not built yet\n"),
+            "{args:?}"
+        );
+    }
+}
+
+/// The binary with no socket at all: installing hooks needs no server.
+fn install_cmd(home: &Path) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+    c.env("HOME", home).env_remove("TMUX");
+    c.env_remove("DOMUX_SOCKET");
+    c
+}
+
+#[tokio::test]
+async fn install_without_apply_writes_nothing_and_prints_the_diff() {
+    let home = tempfile::tempdir().unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Would create"), "{text}");
+    assert!(text.contains("+ SessionStart"), "{text}");
+    assert!(text.contains("agent report --agent claude"), "{text}");
+    assert!(
+        !home.path().join(".claude/settings.json").exists(),
+        "a preview writes nothing"
+    );
+    assert!(
+        !home.path().join(".claude").exists(),
+        "a preview makes no directory either"
+    );
+}
+
+#[tokio::test]
+async fn install_apply_writes_the_file_and_names_the_backup() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+    std::fs::write(home.path().join(".claude/settings.json"), "{}\n").unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Patched"), "{text}");
+    assert!(text.contains(".domux-backup-"), "{text}");
+    let written = std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap();
+    assert!(written.contains("agent report --agent claude"), "{written}");
+    // The backup the message names is on disk and holds what was there before.
+    let backup = text
+        .lines()
+        .find_map(|l| l.split_once("is at ").map(|(_, p)| p.trim_end_matches('.')))
+        .unwrap_or_else(|| panic!("no backup path in {text}"));
+    assert_eq!(std::fs::read_to_string(backup).unwrap(), "{}\n");
+
+    // A second apply changes nothing and says so, rather than writing another backup.
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Nothing to change."), "{text}");
+    assert!(!text.contains(".domux-backup-"), "{text}");
+}
+
+/// A home with no settings file at all: the install creates one and says so. "Patched" would be
+/// a claim about a file that was not there.
+#[tokio::test]
+async fn install_apply_creates_the_file_when_there_is_none() {
+    let home = tempfile::tempdir().unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Created "), "{text}");
+    assert!(
+        !text.contains(".domux-backup-"),
+        "there was nothing to back up: {text}"
+    );
+    let written = std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap();
+    assert!(written.contains("agent report --agent claude"), "{written}");
+}
+
+/// The hook command is the symlink in `~/bin` when there is one, because it survives a rebuild
+/// that moves the executable (M3 plan assumption 16). Every other install test falls through to
+/// the running binary, so this is the only place the branch that runs on a real machine is taken.
+#[tokio::test]
+async fn install_writes_the_symlink_path_when_one_is_in_bin() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("bin")).unwrap();
+    let linked = home.path().join("bin/domux2");
+    std::fs::write(&linked, "#!/bin/sh\n").unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!("{} agent report --agent claude", linked.display())),
+        "the symlink, not the running binary: {text}"
+    );
+}
+
+#[tokio::test]
+async fn install_names_the_three_kinds_when_asked_for_another() {
+    let home = tempfile::tempdir().unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "gemini"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "clap rejects an unknown value");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("claude, codex or opencode"), "{said}");
+}
+
 /// MUX-6: attach offers to register the directory it was typed in.
 ///
 /// Decision record 0009. The offer runs before the attach, so the question and its answer are
@@ -1261,7 +2165,7 @@ async fn attach_from_an_unregistered_directory_offers_to_register_it() {
 /// typed in.
 ///
 /// The offer runs `project.add` and then `workspace.focus`, and the focus is made before this
-/// command has attached anything, so before decision record 0017 it was refused with "no
+/// command has attached anything, so before decision record 0021 it was refused with "no
 /// client is attached" and the `?` on it took the whole attach down. The reader was left with
 /// a registered project, no screen, and a sentence telling them to run the command they had
 /// just run.

@@ -6,12 +6,12 @@ use crate::core::CoreMsg;
 use crate::pane::{FakeSpawner, PtySpawner, RealSpawner};
 use crate::process::{FakeInspector, ForegroundProcess, ProcessInspector};
 use crate::{load_config, CoreDeps, FixedClock, LoadedConfig, Server, ServerHandle, ServerOptions};
-use domux_core::api::{ApiError, Request, Response};
+use domux_core::api::{AgentInfo, AgentListResult, AgentReportResult, ApiError, Request, Response};
 use domux_core::config::Config;
 use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::{KeyName, Keymap};
-use domux_core::model::Model;
+use domux_core::model::{AgentKind, ClientView, Focus, Model, TextInput};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, CursorState, Decoder, FrameDiff, Hello, ServerMsg, WireColor,
     PROTOCOL_VERSION,
@@ -160,7 +160,15 @@ pub struct Harness {
     cols: u16,
     rows: u16,
     providers: Vec<Arc<dyn crate::facts::FactProvider>>,
+    /// The next process id `set_foreground_for` hands out. Counts up from `FIRST_FAKE_PID` so
+    /// every process a test puts in a foreground has its own, and the numbers a failure
+    /// prints are the same every run.
+    next_pid: u32,
 }
+
+/// Where `Harness::set_foreground_for` starts numbering. Clear of the pid the harness gives
+/// every pane's default `sh`, and clear of the low numbers a real system uses.
+const FIRST_FAKE_PID: u32 = 5000;
 
 impl Harness {
     pub async fn start(config: Config, cols: u16, rows: u16) -> Harness {
@@ -212,6 +220,7 @@ impl Harness {
             cols: opts.cols,
             rows: opts.rows,
             providers: opts.providers,
+            next_pid: FIRST_FAKE_PID,
         };
         h.start_server().await;
         h.client = h.attach(opts.cols, opts.rows).await;
@@ -444,6 +453,36 @@ impl Harness {
 
     pub async fn detach(&mut self, client: ClientId) {
         self.send(&client, ClientMsg::Detach).await;
+    }
+
+    /// One hook payload from `pane`, the way the agent report subcommand posts it.
+    pub async fn report(
+        &mut self,
+        pane: PaneId,
+        kind: AgentKind,
+        payload: &str,
+    ) -> AgentReportResult {
+        let payload = serde_json::from_str::<Value>(payload)
+            .unwrap_or_else(|_| Value::String(payload.into()));
+        let value = self
+            .api(
+                "agent.report",
+                serde_json::json!({"pane": pane, "kind": kind, "payload": payload}),
+            )
+            .await
+            .expect("agent.report");
+        serde_json::from_value(value).expect("AgentReportResult")
+    }
+
+    /// Every record in the interface's sort order.
+    pub async fn agents(&mut self) -> Vec<AgentInfo> {
+        let value = self
+            .api("agent.list", serde_json::json!({}))
+            .await
+            .expect("agent.list");
+        serde_json::from_value::<AgentListResult>(value)
+            .expect("AgentListResult")
+            .agents
     }
 
     /// One control API call over a fresh connection.
@@ -717,6 +756,36 @@ impl Harness {
         );
     }
 
+    /// Puts a process in front of one pane, or nothing, and answers with its process id. The
+    /// fake inspector answers per PTY descriptor, so two panes can hold two agents.
+    ///
+    /// Every call is a new process id, as a new program in a pane is: a test that puts a tool
+    /// in the foreground and then the agent back is describing three processes, not one.
+    pub async fn set_foreground_for(&mut self, pane: &PaneId, name: Option<&str>) -> u32 {
+        let fd = self
+            .spawner
+            .as_ref()
+            .expect("set_foreground_for needs fake PTYs")
+            .raw_fd(pane)
+            .unwrap_or_else(|| panic!("pane {pane} has no PTY"));
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        self.inspector.set_for(
+            fd,
+            name.map(|n| ForegroundProcess {
+                pid,
+                name: n.into(),
+            }),
+            None,
+        );
+        pid
+    }
+
+    /// The process is gone; the inspector says so from the next tick on.
+    pub async fn kill_process(&mut self, pid: u32) {
+        self.inspector.set_dead(pid);
+    }
+
     /// The directory the server was started in, which is the project it seeded.
     pub fn project_root(&self) -> &Path {
         &self.project_root
@@ -915,6 +984,43 @@ fn attrs_from(m: Modifier) -> Attrs {
         a |= Attrs::STRIKETHROUGH;
     }
     a
+}
+
+/// One `ClientView` with every field at the value a render fixture starts from, for the
+/// tests that draw a surface without a server behind them.
+///
+/// Six render modules and `tests/render_primitives.rs` each built this by hand, so every
+/// field added to `ClientView` had to be written into seven places that were already the
+/// same. Each of them now spreads this and names only the fields its own fixture cares
+/// about, which is also what makes those fixtures readable: what is written down is what the
+/// test is about.
+///
+/// It lives here rather than in a `#[cfg(test)]` module under `render`, because
+/// `tests/render_primitives.rs` is compiled as its own crate and can only see what the
+/// library exports.
+pub fn client_view() -> ClientView {
+    ClientView {
+        id: ClientId("c_0001".into()),
+        size: Size { cols: 80, rows: 24 },
+        caps: Capabilities::default(),
+        workspace: WorkspaceId("w_0001".into()),
+        tab: TabId("t_0001".into()),
+        focus: Focus::Pane(PaneId("p_0001".into())),
+        sidebar_open: false,
+        sidebar_forced: false,
+        overlay: None,
+        chord: None,
+        filter: String::new(),
+        last_active_seq: 0,
+        projects_cursor: None,
+        projects_scroll: 0,
+        agents_cursor: None,
+        agents_scroll: 0,
+        filtering: false,
+        input: TextInput::new(""),
+        overlay_under: None,
+        pill: None,
+    }
 }
 
 /// The nth `|...|` row of a frame, without the trailing newline.
