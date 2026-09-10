@@ -100,8 +100,9 @@ impl fmt::Display for AgentState {
 /// do not agree about which records they can act on. `agent.focus` needs a pane to put the
 /// keys on, so it wants a live record. `agent.resume` and `agent.dismiss` each refuse a live
 /// one, so they want an exited record. `agent.get` reads a record and answers for either.
-/// M3 resolved every target to a live record, which left the workspace and `workspace/tab`
-/// forms unable to reach the two exited-only verbs at all.
+/// M3 filtered the two workspace forms to live records, which left them unable to name anything
+/// the two exited-only verbs would accept. An agent id was answered whatever state it named,
+/// then and now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Liveness {
     Live,

@@ -358,7 +358,9 @@ fn opencode_writes_a_plugin_that_posts_the_payload_domux_reads() {
         "the payload carries the fields the adapter reads:\n{js}"
     );
     // Every OpenCode event `agents::hooks::parse_opencode` maps to a domux event. The list is
-    // the one the adapter and its fixtures walk, so the three cannot come apart.
+    // the one the adapter's fixture loop walks too, so a name in it that the plugin or the
+    // fixtures do not carry fails a test. A name in neither the list nor a test is still
+    // possible: nothing here reads the plugin's own switch.
     for event in EVENTS_OPENCODE {
         assert!(js.contains(event), "{event} is missing from the plugin");
     }

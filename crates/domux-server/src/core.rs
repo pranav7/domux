@@ -1090,8 +1090,9 @@ impl Core {
     /// The pane is read **before** the routing, because the routing can move the focus off it.
     /// Enter on a pane whose child exited closes that pane, and `Model::close_pane` hands the
     /// tab's focus to a neighbour, so reading it afterwards named a pane the key never reached
-    /// and cleared the dot of whatever agent was in it. That is a signal the reader never
-    /// looked at, gone with no trace and no way back.
+    /// and cleared the dot of whatever agent was in it. Nothing on the screen says a dot went,
+    /// and only a state transition sets one (`model::agent::attention`), so the reader cannot
+    /// ask for it back.
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
         self.clear_notes_read_by(client, &key);
         let press = key.action != domux_term::KeyAction::Release;

@@ -143,8 +143,8 @@ pub fn next_region(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 ///
 /// The match below is exhaustive over `RegionKind`, so a third box in the column is a compile
 /// error here rather than a silent landing in Projects. The three kinds that are not sidebar
-/// boxes change nothing: every caller above restricts to `RegionKind::is_sidebar`, so they do
-/// not arrive, and a focus assignment made for one of them would put the keys in a region this
+/// boxes change nothing: all four callers pass one of the two sidebar kinds, so they do not
+/// arrive, and a focus assignment made for one of them would put the keys in a region this
 /// function does not draw a cursor for.
 fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
     let workspace = ctx.model.client(client).map(|v| v.workspace.clone());
