@@ -231,7 +231,7 @@ fn pane_hit(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
         .find(|(_, rect)| {
             column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
         })?;
-    let inner = boxed::Boxed::inner_of(to_rect(rect));
+    let inner = boxed::Boxed::inner_of(to_rect(rect), pane_bottom_rule(rect, area));
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
@@ -301,6 +301,41 @@ pub fn tab_workpanel(model: &Model, tab: &TabId, fallback: Size) -> domux_core::
 /// clamps that. When the rendering view is one of `model.clients` the smallest is already
 /// no larger, but `compose` is public and a caller can pass a view the model does not hold,
 /// in which case a larger client on the tab would otherwise size this buffer's boxes.
+/// Whether the pane box at `rect` draws its bottom rule, given the workpanel its layout was
+/// solved into.
+///
+/// A box standing on the workpanel's last row does not. That row is the screen's last row, so
+/// the rule would be a line along the bottom of the screen with nothing under it, and the row
+/// is worth more as the program's output (MUX-14, decision record 0018). A box with another
+/// box under it keeps its rule, because that rule is what parts the two.
+///
+/// Every caller that measures a pane box asks this one function: `draw_panes` draws to it,
+/// `pane_hit` finds the cell under the pointer with it, and `Core::sync_pane_sizes` sizes the
+/// PTY with it. A second answer is how the rows a program is given stop being the rows drawn
+/// for it.
+pub fn pane_bottom_rule(rect: domux_core::model::Rect, workpanel: domux_core::model::Rect) -> bool {
+    rect.bottom() < workpanel.bottom()
+}
+
+/// The size of the program's own screen inside a pane box at `rect`, solved into `workpanel`.
+///
+/// The one place a layout rectangle has the box's chrome taken off it.
+/// `Core::sync_pane_sizes` resizes a running PTY to this and `Core::provisional_size` spawns
+/// one at it, so a pane is the same size however it got there. Before this the two subtracted
+/// their own constants, and the second one was missed when the bottom rule stopped always
+/// being drawn.
+pub fn pane_screen(rect: domux_core::model::Rect, workpanel: domux_core::model::Rect) -> Size {
+    let chrome = if pane_bottom_rule(rect, workpanel) {
+        2
+    } else {
+        1
+    };
+    Size {
+        cols: rect.width.saturating_sub(2).max(1),
+        rows: rect.height.saturating_sub(chrome).max(1),
+    }
+}
+
 pub fn smallest_workpanel(
     model: &Model,
     tab: &TabId,
@@ -338,6 +373,7 @@ pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<Cursor
             title: &title,
             flag: flag_text.as_deref(),
             focused,
+            bottom_rule: pane_bottom_rule(rect, area),
         }
         .render(to_rect(rect), buf);
         if let Some(rt) = runtime {

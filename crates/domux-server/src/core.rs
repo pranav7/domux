@@ -1910,10 +1910,7 @@ impl Core {
         domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
             .into_iter()
             .find(|(p, _)| p == pane)
-            .map(|(_, r)| Size {
-                cols: r.width.saturating_sub(2).max(1),
-                rows: r.height.saturating_sub(2).max(1),
-            })
+            .map(|(_, r)| render::pane_screen(r, area))
             .unwrap_or(fallback)
     }
 
@@ -2310,10 +2307,10 @@ impl Core {
             for (pane, rect) in
                 domux_core::model::layout::solve(&tab.layout, area, tab.zoomed.as_ref())
             {
-                let inner = Size {
-                    cols: rect.width.saturating_sub(2).max(1),
-                    rows: rect.height.saturating_sub(2).max(1),
-                };
+                // The box's chrome comes off in one place, `render::pane_screen`, which
+                // `provisional_size` uses too: a box standing on the workpanel's last row has
+                // no bottom rule, so its program gets that row (decision record 0018).
+                let inner = render::pane_screen(rect, area);
                 if let Some(rt) = self.panes.get_mut(&pane) {
                     if rt.size() != inner {
                         rt.resize(inner);

@@ -20,6 +20,7 @@ fn boxed_draws_title_one_cell_in_and_the_flag_at_the_right_end() {
         title: "zsh",
         flag: Some("zoomed"),
         focused: false,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 20, 3), &mut buf);
     assert_eq!(row(&buf, 0), "┌ zsh ───── zoomed ┐");
@@ -31,6 +32,33 @@ fn boxed_draws_title_one_cell_in_and_the_flag_at_the_right_end() {
     assert!(!buf[(2, 0)].modifier.contains(Modifier::BOLD));
 }
 
+/// MUX-14: an open box keeps its side rules and gives the bottom rule's row to its content.
+///
+/// The inner rectangle is asserted beside the drawing, because that is the number the grid is
+/// copied into and the number the pane's program is sized to: a box that drew the extra row
+/// without reporting it would leave a blank line, and one that reported it without drawing it
+/// would write over the rule.
+#[test]
+fn an_open_box_draws_no_bottom_rule_and_its_inner_area_gains_that_row() {
+    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+    let inner = Boxed {
+        title: "zsh",
+        flag: None,
+        focused: false,
+        bottom_rule: false,
+    }
+    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    assert_eq!(row(&buf, 0), "┌ zsh ─────────────┐");
+    assert_eq!(row(&buf, 1), "│                  │");
+    assert_eq!(row(&buf, 2), "│                  │");
+    assert_eq!(inner, Rect::new(1, 1, 18, 2));
+    assert_eq!(
+        Boxed::inner_of(Rect::new(0, 0, 20, 3), false),
+        inner,
+        "the measurement the pointer and the pane sizer take is the one that was drawn"
+    );
+}
+
 #[test]
 fn focused_box_uses_the_accent_and_a_bold_title() {
     let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
@@ -38,6 +66,7 @@ fn focused_box_uses_the_accent_and_a_bold_title() {
         title: "sh",
         flag: None,
         focused: true,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 0), "┌ sh ──────┐");
@@ -57,6 +86,7 @@ fn long_titles_are_truncated_by_grapheme_and_tiny_boxes_do_not_panic() {
         title: "漢字漢字漢字",
         flag: None,
         focused: false,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 10, 3), &mut buf);
     // `row` reads one symbol per cell, and `put` calls `reset()` on the cell after each
@@ -69,6 +99,7 @@ fn long_titles_are_truncated_by_grapheme_and_tiny_boxes_do_not_panic() {
         title: "x",
         flag: Some("zoomed"),
         focused: true,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 2, 1), &mut tiny);
     assert_eq!(inner.width, 0);
@@ -167,6 +198,7 @@ fn a_zero_width_title_stays_inside_its_box() {
         title: &title,
         flag: None,
         focused: false,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 5, 3), &mut buf);
     for x in 5..60u16 {
@@ -193,6 +225,7 @@ fn a_control_character_title_never_reaches_a_cell() {
         title: &title,
         flag: None,
         focused: false,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 20, 3), &mut buf);
     for x in 0..20u16 {
@@ -264,6 +297,7 @@ fn a_title_that_sanitizes_to_nothing_leaves_the_border_unbroken() {
         title: "\u{200b}\u{200b}",
         flag: None,
         focused: false,
+        bottom_rule: true,
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 0), "┌──────────┐");

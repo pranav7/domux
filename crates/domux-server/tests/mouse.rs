@@ -31,7 +31,7 @@ async fn pane_with_lines(h: &mut Harness, n: usize) -> domux_core::ids::PaneId {
 async fn a_drag_selects_what_it_covers_and_copies_it_when_the_button_is_let_go() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     let pane = pane_with_lines(&mut h, 20).await;
-    // `line 14` starts at column 1 of row 2; `line 15` ends at column 7 of row 3.
+    // `line 13` starts at column 1 of row 2; `line 14` ends at column 7 of row 3.
     h.mouse(h.client.clone(), MouseAction::Press, 1, 2, 1).await;
     h.mouse(h.client.clone(), MouseAction::Drag, 7, 3, 1).await;
     let f = h
@@ -57,7 +57,7 @@ async fn a_drag_selects_what_it_covers_and_copies_it_when_the_button_is_let_go()
     .await;
     assert_eq!(
         h.clipboard(h.client.clone()).await,
-        vec!["line 14\nline 15".to_string()],
+        vec!["line 13\nline 14".to_string()],
         "the release copied the selection and left copy mode"
     );
     assert!(!h.model().pane(&pane).unwrap().copy_mode);
@@ -99,7 +99,7 @@ async fn a_click_focuses_the_pane_under_it_and_copies_nothing() {
 async fn a_double_click_copies_the_word_under_it() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     pane_with_lines(&mut h, 20).await;
-    // Row 2 reads `line 14`: column 1 is its `l` and column 6 is the `1` of `14`.
+    // Row 2 reads `line 13`: column 1 is its `l` and column 7 is the `3` of `13`.
     h.mouse(h.client.clone(), MouseAction::Press, 2, 2, 1).await;
     h.mouse(h.client.clone(), MouseAction::Press, 2, 2, 2).await;
     h.wait_for(h.client.clone(), |_| true, Duration::from_secs(2))
@@ -121,7 +121,7 @@ async fn a_double_click_copies_the_word_under_it() {
             .await
             .last()
             .map(String::as_str),
-        Some("14"),
+        Some("13"),
         "the word under the second double click, not the first"
     );
 }
@@ -200,7 +200,7 @@ async fn the_wheel_still_opens_copy_mode_over_a_pane_whose_program_wants_no_mous
     h.scroll(h.client.clone(), 5, 5, 3).await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("copy 3/14"),
+        |f| f.contains("copy 3/13"),
         Duration::from_secs(2),
     )
     .await;

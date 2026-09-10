@@ -124,6 +124,7 @@ impl ListBox<'_> {
             title: self.title,
             flag: None,
             focused: self.focused,
+            bottom_rule: true,
         }
         .render(area, buf);
         if inner.width == 0 || inner.height == 0 {
