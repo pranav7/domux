@@ -113,23 +113,7 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
                 let rt = core.panes.get_mut(&pane).expect("pane runtime");
                 copy_mode::handle_key(rt, &key)
             };
-            match outcome {
-                CopyOutcome::Continue => {}
-                CopyOutcome::Copy(text) => {
-                    if let Some(conn) = core.clients.get(client) {
-                        let _ = conn.tx.try_send(ServerMsg::Clipboard(text));
-                    }
-                    leave_copy_mode(core, &pane);
-                }
-                CopyOutcome::NotCopied(why) => {
-                    // An action hint: it answers this key and is gone on the next one.
-                    if let Some(conn) = core.clients.get_mut(client) {
-                        conn.hint = Some(Hint::action(why));
-                    }
-                    leave_copy_mode(core, &pane);
-                }
-                CopyOutcome::Leave => leave_copy_mode(core, &pane),
-            }
+            finish_copy(core, client, &pane, outcome);
             return Route::Pane;
         }
         if core.panes.get(&pane).is_some_and(|rt| rt.exited.is_some()) {
@@ -143,6 +127,31 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
     }
     forward_to_pane(core, client, &key);
     Route::Pane
+}
+
+/// What one copy mode outcome does: the text reaches the pressing client's clipboard, a refusal
+/// reaches its hint row, and copy mode closes unless the outcome was to stay.
+///
+/// Enter and a release of the pointer both arrive here, so a copy cannot mean one thing from the
+/// keys and another from the pointer (decision 0014).
+pub fn finish_copy(core: &mut Core, client: &ClientId, pane: &PaneId, outcome: CopyOutcome) {
+    match outcome {
+        CopyOutcome::Continue => {}
+        CopyOutcome::Copy(text) => {
+            if let Some(conn) = core.clients.get(client) {
+                let _ = conn.tx.try_send(ServerMsg::Clipboard(text));
+            }
+            leave_copy_mode(core, pane);
+        }
+        CopyOutcome::NotCopied(why) => {
+            // An action hint: it answers this gesture and is gone on the next one.
+            if let Some(conn) = core.clients.get_mut(client) {
+                conn.hint = Some(Hint::action(why));
+            }
+            leave_copy_mode(core, pane);
+        }
+        CopyOutcome::Leave => leave_copy_mode(core, pane),
+    }
 }
 
 fn leave_copy_mode(core: &mut Core, pane: &PaneId) {
@@ -289,8 +298,9 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             close_overlay(core, client);
             if confirmed(&key) {
                 let method = Method::ProjectRemove(domux_core::api::ProjectRemoveParams {
-                    project: project.to_string(),
+                    project: Some(project.to_string()),
                     yes: true,
+                    all: false,
                 });
                 let _ = core.dispatch_from_key(method, Some(client.clone()));
             }

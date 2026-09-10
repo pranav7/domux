@@ -97,6 +97,15 @@ impl FactProvider for PrProvider {
             // learned this; the comment is in `currentPRRefreshSessions`).
             return Ok(None);
         }
+        if Some(branch) == target.handle.as_deref() {
+            // A slot handle is recycled the same way: `workspace-4` is the name slot 4 rests
+            // on between jobs, so every piece of work that ever passed through the slot
+            // branched off it and `--head workspace-4` answers with whichever of them `gh`
+            // saw last. `Workspace::is_untouched` already reads a slot on its own branch as
+            // having done nothing, so a number here contradicts the model and costs the row
+            // the `◌` that says the slot is free.
+            return Ok(None);
+        }
         // A workspace whose slot was removed outside domux is absent, not an error: `gh`
         // cannot run in a directory that is gone.
         if !target.path.is_dir() {

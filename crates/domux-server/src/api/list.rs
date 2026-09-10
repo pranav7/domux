@@ -12,7 +12,7 @@
 use super::{ok, Ctx};
 use crate::agents::context::place_of;
 use crate::render::agents_box::{self, RowForm};
-use crate::render::list_box::{filter_rows, scroll_to_show, ListRow};
+use crate::render::list_box::{content_width, filter_rows, scroll_to_show, ListRow};
 use crate::render::projects_box::{self, Extras};
 use domux_core::api::{
     Ack, AgentResumeParams, AgentTargetParams, ApiError, ClientParams, Method, WorkspaceFocusParams,
@@ -136,7 +136,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             crate::render::sidebar::split_column(crate::render::sidebar::sidebar_area(view.size));
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
-        let all = agents_box::rows(&agents, RowForm::Sidebar, area.width.saturating_sub(2));
+        let all = agents_box::rows(&agents, RowForm::Sidebar, content_width(area.width));
         let rows = filter_rows(&all, &view.filter);
         let at = projects_box::filled_index(&rows, view.agents_cursor.as_ref().map(|a| a.as_str()));
         return Ok(Visible {
@@ -151,7 +151,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let width = crate::render::overlay::list_overlay_width(screen);
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
-        let all = agents_box::rows(&agents, RowForm::Overlay, width.saturating_sub(2));
+        let all = agents_box::rows(&agents, RowForm::Overlay, content_width(width));
         // The renderer filters the built rows where `projects_box::rows` takes the filter
         // itself, so this arm filters here for the same reason: one list, filtered once, the
         // way the box on the screen was.
@@ -184,7 +184,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::switcher(width.saturating_sub(2)),
+            Extras::switcher(content_width(width)),
         );
         // The switcher's height follows its rows, the same two passes `switcher::draw` makes:
         // the width does not depend on the rows, and the row count then decides the height.
@@ -201,7 +201,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             ctx.facts,
             &view.filter,
             Some(key),
-            Extras::compact(area.width.saturating_sub(2)),
+            Extras::compact(content_width(area.width)),
         );
         (rows, area.height.saturating_sub(2))
     };

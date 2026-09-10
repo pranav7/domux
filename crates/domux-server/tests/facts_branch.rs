@@ -22,6 +22,7 @@ fn target(path: PathBuf, root: PathBuf) -> FactTarget {
         path,
         root,
         default_branch: Some("main".into()),
+        handle: Some("workspace-1".into()),
         branch: None,
         now: now(),
     }

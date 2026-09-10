@@ -5,6 +5,7 @@ pub mod emulator;
 pub mod ghostty;
 pub mod golden;
 pub mod key;
+pub mod mouse;
 pub mod types;
 
 pub use emulator::{
@@ -12,4 +13,5 @@ pub use emulator::{
 };
 pub use ghostty::GhosttyEmulator;
 pub use key::{Key, KeyAction, KeyEvent, Mods};
+pub use mouse::{MouseAction, MouseButton, MouseEvent};
 pub use types::{Attrs, Cell, Color, Cursor, CursorShape, Grid, Rgb, Size};

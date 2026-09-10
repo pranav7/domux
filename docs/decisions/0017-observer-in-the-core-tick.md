@@ -1,11 +1,11 @@
-# 0009: The observer runs inside the core's tick
+# 0017: The observer runs inside the core's tick
 
 **Date:** 2026-09-10
 **Status:** Accepted
 **Decision:** The observer is a set of plain functions the core calls, not a task of its own.
 `agents::observer::run` runs from the once-a-second tick the core already runs for pane
 titles; `agents::observer::pane_gone` runs from the two places a pane leaves; `any_working`
-is a read the animation timer asks for (decision record 0011).
+is a read the animation timer asks for (decision record 0019).
 
 ## Context
 

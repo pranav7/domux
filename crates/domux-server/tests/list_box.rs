@@ -41,7 +41,7 @@ fn rows() -> Vec<ListRow> {
 
 #[test]
 fn the_box_draws_its_title_its_rows_and_one_filled_row() {
-    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 9));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 22, 9));
     let scroll = ListBox {
         title: "Projects",
         rows: &rows(),
@@ -50,16 +50,16 @@ fn the_box_draws_its_title_its_rows_and_one_filled_row() {
         scroll: 0,
         empty_text: "",
     }
-    .render(Rect::new(0, 0, 20, 9), &mut buf);
+    .render(Rect::new(0, 0, 22, 9), &mut buf);
     assert_eq!(scroll, 0);
-    assert_eq!(row(&buf, 0), "┌ Projects ────────┐");
-    assert_eq!(row(&buf, 1), "│PROJ ─────────    │");
-    assert_eq!(row(&buf, 2), "│main              │");
-    assert_eq!(row(&buf, 3), "│                  │");
-    assert_eq!(row(&buf, 4), "│auth cleanup      │");
-    assert_eq!(row(&buf, 5), "│feat/auth-cleanup │");
-    assert_eq!(row(&buf, 8), "└──────────────────┘");
-    for x in 1..19 {
+    assert_eq!(row(&buf, 0), "┌ Projects ──────────┐");
+    assert_eq!(row(&buf, 1), "│ PROJ ─────────     │");
+    assert_eq!(row(&buf, 2), "│ main               │");
+    assert_eq!(row(&buf, 3), "│                    │");
+    assert_eq!(row(&buf, 4), "│ auth cleanup       │");
+    assert_eq!(row(&buf, 5), "│ feat/auth-cleanup  │");
+    assert_eq!(row(&buf, 8), "└────────────────────┘");
+    for x in 1..21 {
         assert_eq!(
             buf[(x, 4)].bg,
             theme::SURFACE0,
@@ -107,8 +107,8 @@ fn the_box_draws_at_the_area_it_is_given_and_touches_nothing_outside_it() {
         "the row above the box is untouched"
     );
     assert_eq!(row(&buf, 2), "   ┌ Projects ────────┐   ");
-    assert_eq!(row(&buf, 3), "   │PROJ ─────────    │   ");
-    assert_eq!(row(&buf, 6), "   │auth cleanup      │   ");
+    assert_eq!(row(&buf, 3), "   │ PROJ ─────────   │   ");
+    assert_eq!(row(&buf, 6), "   │ auth cleanup     │   ");
     assert_eq!(row(&buf, 10), "   └──────────────────┘   ");
     assert_eq!(row(&buf, 11), " ".repeat(26), "and the row below it");
     assert_eq!(
@@ -236,14 +236,14 @@ fn a_row_taller_than_the_box_shows_its_first_line_so_the_fill_stays_visible() {
     }
     .render(Rect::new(0, 0, 8, 4), &mut buf);
     assert_eq!(scroll, 1);
-    assert_eq!(row(&buf, 1), "│a     │");
-    assert_eq!(row(&buf, 2), "│b     │");
+    assert_eq!(row(&buf, 1), "│ a    │");
+    assert_eq!(row(&buf, 2), "│ b    │");
     assert_eq!(buf[(1, 1)].bg, theme::SURFACE0, "the fill is in view");
 }
 
 #[test]
 fn a_scrolled_box_starts_at_the_scroll_line_and_never_draws_a_sticky_header() {
-    let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 22, 5));
     let scroll = ListBox {
         title: "Projects",
         rows: &rows(),
@@ -252,22 +252,22 @@ fn a_scrolled_box_starts_at_the_scroll_line_and_never_draws_a_sticky_header() {
         scroll: 0,
         empty_text: "",
     }
-    .render(Rect::new(0, 0, 20, 5), &mut buf);
+    .render(Rect::new(0, 0, 22, 5), &mut buf);
     assert_eq!(scroll, 4);
     assert_eq!(
         row(&buf, 1),
-        "│feat/auth-cleanup │",
+        "│ feat/auth-cleanup  │",
         "the view starts at the scroll line"
     );
-    assert_eq!(row(&buf, 2), "│                  │");
-    assert_eq!(row(&buf, 3), "│◌ workspace-2     │");
+    assert_eq!(row(&buf, 2), "│                    │");
+    assert_eq!(row(&buf, 3), "│ ◌ workspace-2      │");
     assert!(
         !row(&buf, 1).contains("PROJ"),
         "the header scrolls away with its rows"
     );
     assert_eq!(
         row(&buf, 4),
-        "└──────────────────┘",
+        "└────────────────────┘",
         "nothing runs past the box"
     );
 }
@@ -290,7 +290,7 @@ fn a_row_above_the_scroll_line_is_not_drawn() {
         scroll, 1,
         "the cursor above the view pulls it back to the row"
     );
-    assert_eq!(row(&buf, 1), "│main              │");
+    assert_eq!(row(&buf, 1), "│ main             │");
     assert_eq!(
         row(&buf, 2),
         "│                  │",
@@ -305,7 +305,7 @@ fn a_row_above_the_scroll_line_is_not_drawn() {
 
 #[test]
 fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
-    let mut buf = Buffer::empty(Rect::new(0, 0, 32, 5));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 34, 5));
     let scroll = ListBox {
         title: "Projects",
         rows: &[],
@@ -314,11 +314,11 @@ fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
         scroll: 2,
         empty_text: "No projects yet. domux2 open .",
     }
-    .render(Rect::new(0, 0, 32, 5), &mut buf);
+    .render(Rect::new(0, 0, 34, 5), &mut buf);
     assert_eq!(scroll, 0, "there is nothing to scroll past");
-    assert_eq!(row(&buf, 1), "│No projects yet. domux2 open .│");
-    assert_eq!(buf[(1, 1)].fg, theme::OVERLAY0);
-    assert_eq!(buf[(1, 1)].fg, Color::Rgb(0x6c, 0x70, 0x86));
+    assert_eq!(row(&buf, 1), "│ No projects yet. domux2 open . │");
+    assert_eq!(buf[(2, 1)].fg, theme::OVERLAY0);
+    assert_eq!(buf[(2, 1)].fg, Color::Rgb(0x6c, 0x70, 0x86));
 }
 
 /// An empty text longer than the box is cut to it, with the mark that says it was cut.
@@ -339,14 +339,14 @@ fn an_empty_text_wider_than_the_box_is_cut_rather_than_written_over_the_border()
         empty_text: "No projects yet. domux2 open .",
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
-    assert_eq!(row(&buf, 1), "│No projec…│");
+    assert_eq!(row(&buf, 1), "│ No proj… │");
 }
 
 /// The same text in a box with rows to spare: every word of it, over as many lines as it
 /// takes, with no mark because nothing was cut.
 #[test]
 fn an_empty_text_wider_than_the_box_wraps_onto_the_rows_below_it() {
-    let mut buf = Buffer::empty(Rect::new(0, 0, 12, 5));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 14, 5));
     ListBox {
         title: "Projects",
         rows: &[],
@@ -355,10 +355,12 @@ fn an_empty_text_wider_than_the_box_wraps_onto_the_rows_below_it() {
         scroll: 0,
         empty_text: "No projects yet. open",
     }
-    .render(Rect::new(0, 0, 12, 5), &mut buf);
-    assert_eq!(row(&buf, 1), "│No        │");
-    assert_eq!(row(&buf, 2), "│projects  │");
-    assert_eq!(row(&buf, 3), "│yet. open │");
+    .render(Rect::new(0, 0, 14, 5), &mut buf);
+    // 14 wide and not 12: the pad takes a column off each side, and at 12 the last line has
+    // one cell too few and ends in the mark, which is the other test's case.
+    assert_eq!(row(&buf, 1), "│ No         │");
+    assert_eq!(row(&buf, 2), "│ projects   │");
+    assert_eq!(row(&buf, 3), "│ yet. open  │");
 }
 
 #[test]
@@ -382,18 +384,18 @@ fn a_line_wider_than_the_box_is_cut_by_grapheme_with_an_ellipsis() {
     // it, so a row read cell by cell has a space between each pair.
     assert_eq!(
         row(&buf, 1),
-        "│漢 字 漢 字 … │",
+        "│ 漢 字 漢 …  │",
         "no half of a wide character survives (principle 6)"
     );
-    assert_eq!(buf[(9, 1)].symbol(), "…");
+    assert_eq!(buf[(8, 1)].symbol(), "…");
     assert_eq!(
-        buf[(10, 1)].symbol(),
+        buf[(9, 1)].symbol(),
         " ",
-        "the fifth wide grapheme does not fit and is dropped whole"
+        "the fourth wide grapheme does not fit and is dropped whole"
     );
     assert_eq!(buf[(11, 1)].symbol(), "│", "the border survives");
     assert_eq!(
-        buf[(2, 1)].bg,
+        buf[(3, 1)].bg,
         theme::SURFACE0,
         "the spacer cell after a wide grapheme keeps the fill, so the band has no hole"
     );
@@ -401,16 +403,17 @@ fn a_line_wider_than_the_box_is_cut_by_grapheme_with_an_ellipsis() {
 
 #[test]
 fn nothing_is_drawn_after_the_span_that_was_cut() {
-    // "漢字漢字" is 8 cells in 6 of room, so the cut keeps two of them and the ellipsis, 5
-    // cells, and leaves one spare. A later span drawn into that spare cell reads as text that
-    // survived the cut when it fits there, and as a second ellipsis when it does not.
+    // "漢字漢字" is 8 cells in the 6 of room a ten-cell box leaves after its border and its
+    // pads, so the cut keeps two of them and the ellipsis, 5 cells, and leaves one spare. A
+    // later span drawn into that spare cell reads as text that survived the cut when it fits
+    // there, and as a second ellipsis when it does not.
     let draw = |tail: &'static str| {
         let rows = vec![ListRow::selectable(
             "w_1",
             "x",
             vec![Line::from(vec![Span::raw("漢字漢字"), Span::raw(tail)])],
         )];
-        let mut buf = Buffer::empty(Rect::new(0, 0, 8, 3));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         ListBox {
             title: "T",
             rows: &rows,
@@ -419,20 +422,20 @@ fn nothing_is_drawn_after_the_span_that_was_cut() {
             scroll: 0,
             empty_text: "",
         }
-        .render(Rect::new(0, 0, 8, 3), &mut buf);
-        (row(&buf, 1), buf[(6, 1)].symbol().to_string())
+        .render(Rect::new(0, 0, 10, 3), &mut buf);
+        (row(&buf, 1), buf[(7, 1)].symbol().to_string())
     };
 
     let (line, spare) = draw("TAIL");
     assert_eq!(
-        line, "│漢 字 … │",
+        line, "│ 漢 字 …  │",
         "a tail too wide for the spare cell would read ……"
     );
     assert_eq!(spare, " ", "the spare cell stays empty");
 
     let (line, spare) = draw("T");
     assert_eq!(
-        line, "│漢 字 … │",
+        line, "│ 漢 字 …  │",
         "a tail that fits the spare cell would read …T"
     );
     assert_eq!(spare, " ", "the spare cell stays empty");
@@ -459,9 +462,9 @@ fn spans_that_fit_are_drawn_one_after_another_in_their_own_styles() {
         empty_text: "",
     }
     .render(Rect::new(0, 0, 20, 3), &mut buf);
-    assert_eq!(row(&buf, 1), "│auth feat/auth    │");
-    assert_eq!(buf[(1, 1)].fg, theme::TEAL, "the workspace name is teal");
-    assert_eq!(buf[(6, 1)].fg, theme::PINK, "the branch name is pink");
+    assert_eq!(row(&buf, 1), "│ auth feat/auth   │");
+    assert_eq!(buf[(2, 1)].fg, theme::TEAL, "the workspace name is teal");
+    assert_eq!(buf[(7, 1)].fg, theme::PINK, "the branch name is pink");
 }
 
 #[test]
@@ -490,36 +493,37 @@ fn the_fill_brightens_the_row_and_leaves_the_rows_around_it_alone() {
     }
     .render(Rect::new(0, 0, 14, 4), &mut buf);
     assert!(
-        buf[(1, 1)].modifier.contains(Modifier::BOLD),
+        buf[(2, 1)].modifier.contains(Modifier::BOLD),
         "bold text on the filled row stays bold"
     );
     assert!(
-        !buf[(6, 1)].modifier.contains(Modifier::DIM),
+        !buf[(7, 1)].modifier.contains(Modifier::DIM),
         "dim text on the filled row loses its dimming (interface spec 5.3)"
     );
     assert_eq!(
-        buf[(6, 1)].bg,
+        buf[(7, 1)].bg,
         theme::SURFACE0,
         "the text takes the fill too"
     );
     assert!(
-        buf[(6, 2)].modifier.contains(Modifier::DIM),
+        buf[(7, 2)].modifier.contains(Modifier::DIM),
         "a row without the fill keeps its dimming"
     );
-    assert_eq!(buf[(6, 2)].bg, Color::Reset);
+    assert_eq!(buf[(7, 2)].bg, Color::Reset);
 }
 
 #[test]
 fn a_row_cannot_write_over_the_border_with_text_a_terminal_cannot_draw() {
     // A control character measures one cell in `display_width` and draws none, so a budget
-    // measured before it is dropped cuts one cell early. The eight cells of room hold
-    // "abcdefg…", not "abcdef…". The write is clipped at the border as a second layer.
+    // measured before it is dropped cuts one cell early. The eight cells of room a twelve-cell
+    // box leaves after its border and its pads hold "abcdefg…", not "abcdef…". The write is
+    // clipped at the border as a second layer.
     let rows = vec![ListRow::selectable(
         "w_1",
         "x",
         vec![Line::from(vec![Span::raw("a\u{7}b\u{200b}cdefghijklmnop")])],
     )];
-    let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+    let mut buf = Buffer::empty(Rect::new(0, 0, 12, 3));
     ListBox {
         title: "T",
         rows: &rows,
@@ -528,21 +532,21 @@ fn a_row_cannot_write_over_the_border_with_text_a_terminal_cannot_draw() {
         scroll: 0,
         empty_text: "",
     }
-    .render(Rect::new(0, 0, 10, 3), &mut buf);
+    .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(
         row(&buf, 1),
-        "│abcdefg…│",
+        "│ abcdefg… │",
         "the cut is measured on the cells that will be drawn"
     );
-    assert_eq!(buf[(9, 1)].symbol(), "│", "the right border survives");
+    assert_eq!(buf[(11, 1)].symbol(), "│", "the right border survives");
     assert_eq!(buf[(0, 1)].symbol(), "│", "the left border survives");
-    for x in 0..10u16 {
+    for x in 0..12u16 {
         assert!(
             !buf[(x, 1)].symbol().chars().any(char::is_control),
             "cell x{x} holds a control character"
         );
     }
-    assert_eq!(row(&buf, 2), "└────────┘");
+    assert_eq!(row(&buf, 2), "└──────────┘");
 }
 
 #[test]
@@ -649,20 +653,25 @@ fn the_filter_keeps_matching_rows_under_their_own_header() {
 }
 
 #[test]
-fn two_matches_under_one_header_keep_the_blank_row_between_them() {
-    // Interface spec 5.2 puts a blank between rows and one before the next header, and the
-    // filter does not change that grammar. A switcher row is up to three lines, so two
-    // matches drawn adjacent would leave the reader nothing but colour to find the boundary.
+fn matches_are_spaced_the_way_the_builder_spaces_them_rather_than_evenly() {
+    // The builder puts a blank before a header and, inside a group, only after a row that
+    // said more than its name. The filter rebuilds to the same rule, so `/` changes what the
+    // list holds and never its shape: a row of three lines still ends somewhere the reader
+    // can see, and two rows of one line still read as one block.
     let groups = vec![
         ListRow::header(vec![Line::from("AUDREY")]),
-        ListRow::selectable("w_1", "auth cleanup", vec![Line::from("auth cleanup")]),
+        ListRow::selectable(
+            "w_1",
+            "auth cleanup",
+            vec![Line::from("auth cleanup"), Line::from("feat/auth-cleanup")],
+        ),
         ListRow::blank(),
         ListRow::selectable("w_2", "auth notes", vec![Line::from("auth notes")]),
-        ListRow::blank(),
-        ListRow::selectable("w_3", "release", vec![Line::from("release")]),
+        ListRow::selectable("w_3", "auth drafts", vec![Line::from("auth drafts")]),
+        ListRow::selectable("w_4", "release", vec![Line::from("release")]),
         ListRow::blank(),
         ListRow::header(vec![Line::from("DOMUX")]),
-        ListRow::selectable("w_4", "auth docs", vec![Line::from("auth docs")]),
+        ListRow::selectable("w_5", "auth docs", vec![Line::from("auth docs")]),
     ];
 
     let kept = filter_rows(&groups, "auth");
@@ -673,18 +682,23 @@ fn two_matches_under_one_header_keep_the_blank_row_between_them() {
             "auth cleanup",
             "",
             "auth notes",
+            "auth drafts",
             "",
             "DOMUX",
             "auth docs"
         ],
-        "a blank between the two matches, and one before the next header"
+        "a blank after the two-line match, none between the two one-line ones, and one \
+         before the next header"
     );
-    assert!(kept[2].is_blank(), "the row between two matches is a blank");
     assert!(
-        kept[4].is_blank(),
+        kept[2].is_blank(),
+        "the row after a match of more than one line is a blank"
+    );
+    assert!(
+        kept[5].is_blank(),
         "and so is the row before the next header"
     );
-    assert_eq!(kept[5].key, None, "which is followed by the header itself");
+    assert_eq!(kept[6].key, None, "which is followed by the header itself");
     assert!(
         !kept[0].is_blank(),
         "and the list never opens on a blank row"
@@ -711,8 +725,8 @@ fn no_filter_returns_the_list_untouched_rather_than_a_list_that_matched_everythi
 
 #[test]
 fn a_blank_row_before_a_match_is_dropped_rather_than_kept_as_its_header() {
-    // The unfiltered Projects box puts a blank between workspaces, so the row just above a
-    // match is usually a blank, not the project's header.
+    // The unfiltered Projects box puts a blank after a workspace that drew more than one
+    // line, so the row just above a match can be a blank rather than the project's header.
     let rows = rows();
     assert_eq!(
         texts(&filter_rows(&rows, "workspace-2")),

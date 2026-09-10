@@ -231,12 +231,12 @@ async fn focusing_a_workspace_with_the_sidebar_open_keeps_it_open_and_moves_the_
             Duration::from_secs(2),
         )
         .await;
-    // `workspace-1` is the third row of the box: the header, `main`, a blank line, then this
-    // one. The fill there is two style runs rather than one, because the handle standing in
-    // the name position brightens and the rest of the row only takes the band. It is not
-    // there before the switch, so the assertion after it is about a row the call filled.
+    // `workspace-1` is the third row of the box: the header, `main`, then this one. The fill
+    // there is more than one style run, because the handle standing in the name position
+    // brightens and the rest of the row only takes the band. It is not there before the
+    // switch, so the assertion after it is about a row the call filled.
     assert!(
-        !before.contains("r4 c12-36 bg=#313244"),
+        !before.contains("r3 c15-36 bg=#313244"),
         "the fill starts on the row the client is in, which is not this one:\n{before}"
     );
     let landing = landing_pane(&h, &w1);
@@ -250,14 +250,14 @@ async fn focusing_a_workspace_with_the_sidebar_open_keeps_it_open_and_moves_the_
     let f = h
         .wait_for(
             client.clone(),
-            |f| f.contains("r4 c12-36 bg=#313244"),
+            |f| f.contains("r3 c15-36 bg=#313244"),
             Duration::from_secs(3),
         )
         .await;
 
     assert!(
-        f.contains("r4 c1-11 bold fg=#93e2d5 bg=#313244"),
-        "the filled row's handle brightens (interface spec 5.3):\n{f}"
+        f.contains("r3 c2-14 bold fg=#93e2d5 bg=#313244"),
+        "the filled row's handle brightens, its indent with it (interface spec 5.3):\n{f}"
     );
     assert!(
         f.contains("┌ Projects"),

@@ -485,16 +485,17 @@ async fn an_empty_agents_box_still_draws_its_border_and_says_why_it_is_empty() {
     let f = sidebar_frame(&mut h).await;
     let agents_top = row_with(&f, "┌ Agents");
     assert_eq!(agents_top, 15, "the border is always there (principle 14)");
-    // Wrapped over two rows and not cut: 36 columns inside the border and 47 cells of text,
-    // and the action is the second half of the sentence (principle 9, plan assumption 22).
+    // Wrapped over two rows and not cut: 34 columns for text inside the border and its pad,
+    // and 47 cells of text, and the action is the second half of the sentence (principle 9,
+    // plan assumption 22). The text starts where a row's text starts, one column in.
     assert_eq!(
         cols(row(&f, agents_top + 1), 1, 36),
-        "No agents yet. Start claude or codex",
+        " No agents yet. Start claude or     ",
         "{f}"
     );
     assert_eq!(
         cols(row(&f, agents_top + 2), 1, 36),
-        "in a pane.                          ",
+        " codex in a pane.                   ",
         "the action is wrapped rather than dropped:\n{f}"
     );
 }

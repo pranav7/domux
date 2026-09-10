@@ -103,10 +103,12 @@ async fn adding_a_repository_registers_main_and_adopts_the_worktrees_on_disk() {
         .map(|w| w.id.to_string())
         .expect("audrey-app has a main workspace");
     assert_eq!(added["workspace"], main);
-    // Adding a registered path again adopts nothing: `project.add` registers a path and
-    // `workspace.create` makes a slot. The worktrees are still on disk, so an
-    // implementation reporting what it found rather than what it registered would answer
-    // `["workspace-1", "workspace-3"]` here.
+    // Adding a registered path again adopts nothing here, because there is nothing left to
+    // adopt: both worktrees are registered already. `adopted` names what the call registered,
+    // not what it found beside the root, so an implementation reporting the second would
+    // answer `["workspace-1", "workspace-3"]` and claim to have made records it did not make.
+    // A worktree that is on disk and *not* registered is the other case, and
+    // `a_worktree_made_after_the_project_was_registered_is_adopted_by_adding_it_again` has it.
     let again = h
         .api("project.add", json!({"path": repo.to_str().unwrap()}))
         .await
@@ -203,6 +205,133 @@ async fn a_plain_folder_becomes_a_project_with_main_only_and_adding_it_twice_is_
         before.len() + 1,
         "and the path that is not there registered nothing"
     );
+}
+
+/// A worktree that appeared after the project was registered is adopted by adding the path
+/// again.
+///
+/// This is what moving over from V1 looks like: V1 makes `workspace-2` beside a repository V2
+/// already holds, and until this the record could never learn about it. `import v1` calls
+/// `project.add` for every project it plans, so the import is the reader who meets this
+/// first - it looks the slot up in `workspace.list` and reports "is not registered under"
+/// when it is not there.
+#[tokio::test]
+async fn a_worktree_made_after_the_project_was_registered_is_adopted_by_adding_it_again() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let added = h
+        .api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        added["adopted"],
+        json!([]),
+        "nothing was beside it yet to adopt"
+    );
+
+    git::worktree_add(
+        &repo,
+        &git::slot_path(&repo, 2),
+        "workspace-2",
+        "origin/main",
+    )
+    .unwrap();
+
+    let again = h
+        .api("project.add", json!({"path": repo.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        again["project"], added["project"],
+        "the same project, not a second one"
+    );
+    assert_eq!(again["adopted"], json!(["workspace-2"]));
+    let listed = h.api("project.list", json!({})).await.unwrap();
+    let after = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == added["project"])
+        .unwrap()
+        .clone();
+    assert_eq!(after["workspaces"], 2, "main and the slot it just adopted");
+    let held = h
+        .api("workspace.list", json!({"project": added["project"]}))
+        .await
+        .unwrap();
+    let slot = held
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["handle"] == "workspace-2")
+        .expect("workspace-2 is registered")
+        .clone();
+    assert_eq!(
+        slot["path"],
+        git::slot_path(&repo, 2)
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "at the path the worktree is really at"
+    );
+    assert_eq!(
+        slot["tabs"], 1,
+        "and it has its tab, like every other workspace"
+    );
+}
+
+/// A folder record at a path that is a repository becomes a git project, with the worktrees
+/// beside it adopted.
+///
+/// Every state file written before decision record 0010 holds this shape, because the seed
+/// registered the directory the server started in without asking git: the author's own state
+/// held `audrey-app` as a folder at a repository root with four `workspace-N` worktrees on
+/// disk and none of them registered. `facts::targets` skips a folder, so the sidebar row had
+/// no branch either.
+#[tokio::test]
+async fn a_folder_record_at_a_repository_becomes_a_git_project_when_it_is_added_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("audrey-app");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let added = h
+        .api("project.add", json!({"path": root.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(added["kind"], "folder", "git had nothing to say about it");
+
+    // The record is now the one the old seed wrote: a folder at a path that is a repository
+    // with a worktree beside it.
+    domux_server::testing::repo_with_origin_at(&root, "develop");
+    git::worktree_add(
+        &root,
+        &git::slot_path(&root, 1),
+        "workspace-1",
+        "origin/develop",
+    )
+    .unwrap();
+
+    let again = h
+        .api("project.add", json!({"path": root.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert_eq!(again["project"], added["project"], "the same project");
+    assert_eq!(again["kind"], "git");
+    assert_eq!(again["adopted"], json!(["workspace-1"]));
+    let listed = h.api("project.list", json!({})).await.unwrap();
+    let after = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == added["project"])
+        .unwrap()
+        .clone();
+    assert_eq!(
+        after["default_branch"], "develop",
+        "read from origin/HEAD, like any other git project"
+    );
+    assert_eq!(after["workspaces"], 2);
 }
 
 /// A path that is a file names the state and what to do about it, and it too registers
@@ -1004,4 +1133,231 @@ async fn the_confirmation_names_the_project_s_root_so_two_of_one_name_are_told_a
         !f.contains(second_root.to_str().unwrap()),
         "and not the other one:\n{f}"
     );
+}
+
+/// `--all` is the way back to an empty domux, for an author who wants to register everything
+/// again from scratch rather than remove one project at a time.
+#[tokio::test]
+async fn removing_every_project_leaves_the_model_empty_and_the_folders_alone() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let other = tempfile::tempdir().unwrap();
+    h.api(
+        "project.add",
+        json!({"path": other.path().to_str().unwrap()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.model().projects.len(), 2);
+
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .unwrap();
+    assert!(
+        h.model().projects.is_empty(),
+        "every project's records are gone"
+    );
+    assert!(
+        other.path().is_dir(),
+        "the folders it registered are still on disk"
+    );
+    h.stop().await;
+}
+
+/// The same consent every other destructive call asks for, and the same shape: the question,
+/// what goes, what stays.
+#[tokio::test]
+async fn removing_every_project_asks_first_and_changes_nothing_when_it_does() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let refused = h
+        .api("project.remove", json!({"all": true}))
+        .await
+        .expect_err("it asks first");
+    assert_eq!(refused.code, ErrorCode::Refused);
+    assert!(
+        refused
+            .message
+            .starts_with("Remove every project? There is 1 project: proj."),
+        "{}",
+        refused.message
+    );
+    assert!(
+        refused
+            .message
+            .contains("The folder and its worktrees stay on disk."),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        h.model().projects.len(),
+        1,
+        "a refusal leaves the model as it found it"
+    );
+    h.stop().await;
+}
+
+/// Removing everything twice is not an error the second time. The caller asked for no
+/// projects and there are none, which is the state they asked for.
+#[tokio::test]
+async fn removing_every_project_when_there_are_none_is_quiet() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .unwrap();
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .expect("nothing to remove is not a failure");
+    h.stop().await;
+}
+
+/// A removal that names nothing and asks for nothing is a mistake, not "remove everything".
+#[tokio::test]
+async fn a_removal_with_no_target_and_no_all_names_both_ways_to_ask() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let refused = h
+        .api("project.remove", json!({}))
+        .await
+        .expect_err("it names no project");
+    assert_eq!(refused.code, ErrorCode::InvalidParams);
+    assert!(
+        refused.message.contains("--all"),
+        "it names the other way to ask: {}",
+        refused.message
+    );
+    assert_eq!(h.model().projects.len(), 1);
+    h.stop().await;
+}
+
+/// A client whose workspace has just gone has nowhere to be moved to, and a later attach has
+/// nothing to seat a client on. The refusal names the way out rather than stating the state
+/// and stopping.
+#[tokio::test]
+async fn attaching_to_a_server_with_no_project_says_how_to_add_one() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    h.api("project.remove", json!({"all": true, "yes": true}))
+        .await
+        .unwrap();
+    let refused = h.attach_refusal(80, 24).await;
+    assert_eq!(
+        refused,
+        "the server holds no project; run domux2 open <path> to add one"
+    );
+    h.stop().await;
+}
+
+/// The keys are in the sidebar's Projects box, with the cursor on the row this client is in.
+async fn in_the_sidebar_box(h: &mut Harness) {
+    h.api("sidebar.show", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Projects"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+}
+
+/// `X` in the Projects box removes the project of the row under the cursor.
+///
+/// The binding carries no project. `leader`-bound `project.remove audrey-app` names one and
+/// has its own tests above; what this pins is the target a key in a box has and a shell does
+/// not, which is the row the reader can see the fill on (interface spec 7.3).
+#[tokio::test]
+async fn x_in_the_projects_box_asks_about_the_project_the_cursor_is_in_and_y_removes_it() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let name = h
+        .model()
+        .project_of_workspace(&w1)
+        .map(|p| p.name.clone())
+        .expect("the slot is in a project");
+    h.api("workspace.focus", json!({"workspace": w1.as_str()}))
+        .await
+        .unwrap();
+    in_the_sidebar_box(&mut h).await;
+
+    h.key(h.client.clone(), "X").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(&format!("Remove {name}?")),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert_eq!(
+        h.model().client(&h.client).map(|v| v.focus.clone()),
+        Some(Focus::Region(RegionKind::Overlay)),
+        "the keys are in the question, not still in the box:\n{f}"
+    );
+    assert!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()).contains(&name),
+        "asking is not doing"
+    );
+
+    h.key(h.client.clone(), "y").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(&format!("Remove {name}?")),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        !project_names(&h.api("project.list", json!({})).await.unwrap()).contains(&name),
+        "and y removes the project the cursor was in"
+    );
+    assert_eq!(
+        h.model()
+            .client(&h.client)
+            .and_then(|v| v.projects_cursor.clone()),
+        None,
+        "the cursor is not left on a workspace that has gone, which would draw no fill at all"
+    );
+    h.stop().await;
+}
+
+/// The same key in the switcher, which shares the sidebar's `[keys.list]` table.
+#[tokio::test]
+async fn x_in_the_switcher_asks_the_same_question_over_the_overlay_it_was_pressed_in() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_root, w1, _w2) = h.git_project_with_two_slots().await;
+    let name = h
+        .model()
+        .project_of_workspace(&w1)
+        .map(|p| p.name.clone())
+        .expect("the slot is in a project");
+    h.api("workspace.focus", json!({"workspace": w1.as_str()}))
+        .await
+        .unwrap();
+    h.api("switcher.open", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Projects"),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    h.key(h.client.clone(), "X").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(&format!("Remove {name}?")),
+        Duration::from_secs(5),
+    )
+    .await;
+    h.key(h.client.clone(), "Esc").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| !f.contains(&format!("Remove {name}?")),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(
+        f.contains("esc close"),
+        "esc closes the question and uncovers the switcher it was asked over:\n{f}"
+    );
+    assert!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()).contains(&name),
+        "and the project is still there"
+    );
+    h.stop().await;
 }

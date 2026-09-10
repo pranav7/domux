@@ -24,7 +24,7 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 
 ## Agents
 
-M3 added the agent records. `docs/milestones/m3.md` says what shipped and what is still open, and `docs/decisions/0009` to `0012` record the four choices the code does not explain on its own. Read them before changing agent behaviour.
+M3 added the agent records. `docs/milestones/m3.md` says what shipped and what is still open, and `docs/decisions/0017` to `0020` record the four choices the code does not explain on its own. Read them before changing agent behaviour.
 
 - One record per AI coding session. `domux_core::model::agent` holds the record and `transition`, a pure function of (state, event), table-tested over every pair. Never add a state or an event without extending that table: a state is a row, an event is a column in every row.
 - Two sources write records: hooks, through `agent.report`, and the observer, in `agents::observer`. The observer does three things and only three: it creates an `unknown` record, it binds a process id to a record a hook made, and it exits a record whose own process is gone. It never sets a state, and `transition` says so: `(s, Observed) => s`.
@@ -40,7 +40,8 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 
 - Work on `v2`, or on a milestone branch (`m1`, `m2`, `m3`) that merges into `v2` by pull request. Never commit to `main`, `master`, or `workspace-*`.
 - Nothing here writes under `~/.local/share/domux`, `~/.config/domux`, `~/.claude`, or `~/.codex`. V2 uses `~/.local/share/domux2`, `~/.config/domux2/domux.toml` and `domux2.sock` until the M3 cut-over; every such name comes from `domux_core::names` and `domux_core::paths`.
-- No tmux. No mouse. No Windows.
+- No tmux. No Windows. The mouse is read: the wheel, a drag that selects, and clicks on the
+  chrome. Read `docs/decisions/0014-the-mouse.md` before changing what any of them do.
 - One implementation per operation: a key, a CLI subcommand and an API call reach the same handler in `domux_server::api`.
 - One core task owns all mutable state. Atomic writes: `path.tmp`, then rename.
 - Test names are `behavior_condition` in snake_case.

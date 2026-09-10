@@ -1589,7 +1589,7 @@ impl Model {
     /// observer's placeholder), else creates one. A second session id on a pane exits the
     /// first record, because one pane hosts at most one live agent. A resumed session, whose
     /// session id an exited record already holds, comes back as that record and the
-    /// observer's placeholder for it goes (decision record 0010).
+    /// observer's placeholder for it goes (decision record 0018).
     pub fn report_agent(
         &mut self,
         pane: &PaneId,

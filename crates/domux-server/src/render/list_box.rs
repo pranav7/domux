@@ -70,6 +70,34 @@ impl ListRow {
     }
 }
 
+/// A cell of empty space between the border and a row's text, on both sides.
+///
+/// Interface spec 5.2 says rows are flush with the box's left padding; before this there was
+/// no padding to be flush with and the text touched the border. One cell puts a row's first
+/// character directly under the first character of the box's title, which `Boxed` draws at
+/// `area.x + 2`.
+pub const PAD: u16 = 1;
+
+/// The cells a row's text has inside a box `width` cells wide: the two borders and the two
+/// pads taken off. Every surface that builds rows asks this, so the width a row truncates to
+/// and the width it is drawn in are one number.
+pub fn content_width(width: u16) -> u16 {
+    width.saturating_sub(2 + 2 * PAD)
+}
+
+/// Whether a blank row goes between two rows of one group.
+///
+/// Either side saying more than its name is enough. A run of one-line rows stays tight and
+/// reads as one block, and the moment a row has a second line the join on both sides of it is
+/// marked: without the blank above, a one-line row sitting on top of a two-line one reads as
+/// that row's first line, which is a workspace the reader can lose entirely.
+///
+/// The row builder writes the list to this rule and `filter_rows` rebuilds it to the same
+/// one, so `/` changes what the list holds and never its shape.
+pub fn needs_gap_between(above: &ListRow, below: &ListRow) -> bool {
+    above.height() > 1 || below.height() > 1
+}
+
 pub struct ListBox<'a> {
     pub title: &'a str,
     pub rows: &'a [ListRow],
@@ -104,13 +132,17 @@ impl ListBox<'_> {
             return self.scroll;
         }
         let right = inner.x + inner.width - 1;
+        // Where the text goes and how much of it fits. The fill still spans `inner`, so the
+        // pad is inside the band rather than beside it.
+        let text_x = inner.x + PAD;
+        let text_width = inner.width.saturating_sub(2 * PAD);
         if self.rows.is_empty() {
             // Wrapped over the box's rows rather than cut at the first. The sentence names
             // the state and then the next action (principle 9), and the action is its second
             // half, so a box too narrow for one line would drop exactly the half the reader
-            // is here for: the sidebar's Agents box has 36 columns inside its border and its
-            // text is 47 cells. Text that fits one line still takes one, so nothing that
-            // fitted before has moved.
+            // is here for: the sidebar's Agents box has 34 columns for text inside its border
+            // and its padding, and its text is 47 cells. Text that fits one line still takes
+            // one, so nothing that fitted before has moved.
             //
             // A box with fewer rows than the text needs fills its last row from everything
             // that is left rather than from the next wrapped line, and ends in the mark that
@@ -118,22 +150,29 @@ impl ListBox<'_> {
             // box one row tall the first wrapped line is one word, where cutting the sentence
             // fills the row. So the rule is "wrap while there is room, then show as much as
             // fits", which is what the reader wants in both cases.
+            //
+            // The pad is the rows' pad: `draw_line` starts every row at `text_x` and stops at
+            // `text_width`, so a box with no rows puts its one sentence where the rows would
+            // have been rather than one column further left.
+            if text_width == 0 {
+                return 0;
+            }
             let text = sanitize_for_display(self.empty_text);
-            let lines = wrap_to_width(&text, inner.width as usize);
+            let lines = wrap_to_width(&text, text_width as usize);
             let room = inner.height as usize;
             for (n, line) in lines.iter().take(room).enumerate() {
                 let cut = n + 1 == room && lines.len() > room;
                 let text = match cut {
                     // `wrap_to_width` splits on whitespace, so joining the rest with one space
                     // is the text it was given, less the runs of spaces it already collapsed.
-                    true => truncate_with_ellipsis(&lines[n..].join(" "), inner.width as usize),
+                    true => truncate_with_ellipsis(&lines[n..].join(" "), text_width as usize),
                     false => line.clone(),
                 };
                 put_within(
                     buf,
-                    inner.x,
+                    text_x,
                     inner.y + n as u16,
-                    right,
+                    text_x + text_width - 1,
                     &text,
                     Style::default().fg(theme::OVERLAY0),
                 );
@@ -160,11 +199,33 @@ impl ListBox<'_> {
                         buf[(x, at)].set_style(Style::default().bg(theme::SURFACE0));
                     }
                 }
-                draw_line(line, inner.x, at, inner.width, fill, buf);
+                draw_line(line, text_x, at, text_width, fill, buf);
             }
         }
         scroll
     }
+}
+
+/// The index of the row drawn at screen row `y`, or `None` when no row is drawn there.
+///
+/// The same walk `render` makes, in the same order, over the same rows and scroll: a row is as
+/// many lines tall as it has, and the lines outside the scrolled window are not drawn. A click
+/// then lands on the row the reader sees, whatever the rows above it are.
+pub fn row_at(rows: &[ListRow], scroll: u16, inner: Rect, y: u16) -> Option<usize> {
+    if inner.height == 0 || y < inner.y || y >= inner.bottom() {
+        return None;
+    }
+    let wanted = (y - inner.y).checked_add(scroll)?;
+    let mut next = 0u16;
+    for (i, row) in rows.iter().enumerate() {
+        for _ in 0..row.height() {
+            if next == wanted {
+                return Some(i);
+            }
+            next = next.saturating_add(1);
+        }
+    }
+    None
 }
 
 /// Draws one line's spans, cut to `width` by grapheme with a trailing ellipsis. The filled
@@ -208,11 +269,10 @@ fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: 
 /// whose rows all went with it. M3's Agents box filters the same way.
 ///
 /// The blanks are rebuilt rather than kept, because the blank above a match is usually the
-/// separator that followed the row the filter just dropped. They are rebuilt to the grammar
-/// of interface spec 5.2, which the filter does not change: one blank between rows and one
-/// before the next header. Dropping the first of those would let `/` change the shape of the
-/// list and not only its contents, and a switcher row is three lines, so two matches would
-/// abut with nothing between them.
+/// separator that led the group the filter just emptied. They are rebuilt to the grammar the
+/// row builder uses, which the filter does not change: one blank before a header, and under
+/// it whatever `needs_gap_between` asks for. Keeping a blank the builder would not have
+/// written would let `/` change the shape of the list and not only its contents.
 pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
     let filter = filter.trim().to_lowercase();
     if filter.is_empty() {
@@ -230,11 +290,18 @@ pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
         if !row.filter_text.contains(&filter) {
             continue;
         }
-        if !out.is_empty() {
-            out.push(ListRow::blank());
-        }
+        // A header opens a group and takes the blank before it; the first row under it sits
+        // straight beneath. Inside a group the builder's own rule decides.
         if let Some(h) = header.take() {
+            if !out.is_empty() {
+                out.push(ListRow::blank());
+            }
             out.push(h);
+        } else if out
+            .last()
+            .is_some_and(|above| needs_gap_between(above, row))
+        {
+            out.push(ListRow::blank());
         }
         out.push(row.clone());
     }

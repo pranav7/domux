@@ -769,6 +769,7 @@ methods! {
     PaneSendText = "pane.send_text": PaneSendTextParams => Ack,
     PaneSendKey = "pane.send_key": PaneSendKeyParams => Ack,
     PaneRead = "pane.read": PaneReadParams => PaneReadResult,
+    PaneClear = "pane.clear": PaneTargetParams => Ack,
     FocusLeft = "focus.left": ClientParams => FocusResult,
     FocusRight = "focus.right": ClientParams => FocusResult,
     FocusUp = "focus.up": ClientParams => FocusResult,
@@ -831,15 +832,25 @@ impl Params for ProjectAddParams {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRemoveParams {
-    pub project: String,
+    /// A project id or name. Absent with `all`, and absent for a key in a Projects box,
+    /// which acts on the project of the row under the cursor.
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub yes: bool,
+    /// Let every project go at once, for starting over. Names no project, because the answer
+    /// to "which one" is all of them.
+    #[serde(default)]
+    pub all: bool,
 }
 impl Params for ProjectRemoveParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
         Ok(ProjectRemoveParams {
-            project: arg::<String>(args, 0, "project")?,
+            // Optional, so `X = "project.remove"` in `[keys.list]` is a binding and not a
+            // parse error: a key in a box names its target by where the cursor is.
+            project: args.first().cloned(),
             yes: false,
+            all: false,
         })
     }
 }
@@ -1243,6 +1254,7 @@ mod tests {
         "pane.send_text",
         "pane.send_key",
         "pane.read",
+        "pane.clear",
         "focus.left",
         "focus.right",
         "focus.up",
@@ -1390,6 +1402,7 @@ mod tests {
             ("pane.send_text", serde_json::json!({"text": "hello"})),
             ("pane.send_key", serde_json::json!({"key": "Enter"})),
             ("pane.read", serde_json::json!({})),
+            ("pane.clear", serde_json::json!({})),
             ("focus.left", serde_json::json!({})),
             ("focus.right", serde_json::json!({})),
             ("focus.up", serde_json::json!({})),
@@ -1520,10 +1533,13 @@ mod tests {
         // `from_action` goes through `Params::from_args`, which every params type in the table
         // has to implement for the macro to compile at all. This pins the arguments each one
         // takes from a key.
-        let cases: [(&str, &[&str]); 20] = [
+        let cases: [(&str, &[&str]); 21] = [
             ("project.list", &[]),
             ("project.add", &["/x"]),
             ("project.remove", &["audrey-app"]),
+            // `X` in the Projects box: the project is the row under the cursor, so the
+            // binding names none.
+            ("project.remove", &[]),
             ("workspace.list", &[]),
             ("workspace.create", &["audrey-app"]),
             ("workspace.clear", &[]),
@@ -1550,13 +1566,10 @@ mod tests {
             let m = Method::from_action(&action).unwrap_or_else(|e| panic!("{name}: {e:?}"));
             assert_eq!(m.name(), name);
         }
-        // The two that need an argument say which one is missing rather than inventing a target.
-        for name in [
-            "workspace.delete",
-            "workspace.focus",
-            "project.add",
-            "project.remove",
-        ] {
+        // The three that need an argument say which one is missing rather than inventing a
+        // target. `project.remove` is not among them: it has a target a key can see, the row
+        // the cursor is on, and `api::project::remove` refuses when the keys are in no box.
+        for name in ["workspace.delete", "workspace.focus", "project.add"] {
             let action = Action {
                 method: name.to_string(),
                 args: Vec::new(),

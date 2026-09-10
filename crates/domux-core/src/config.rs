@@ -103,6 +103,10 @@ impl Default for KeysConfig {
                 ("-", "pane.split down"),
                 ("z", "pane.zoom"),
                 ("[", "pane.copy_mode"),
+                // Empties the pane, screen and scrollback. The key a reader reaches for when
+                // the shell in front of them will not run `clear` because its line editor is
+                // holding something they did not type.
+                ("k", "pane.clear"),
                 ("c", "tab.create"),
                 ("1", "tab.select 1"),
                 ("2", "tab.select 2"),
@@ -148,6 +152,9 @@ impl Default for KeysConfig {
                 ("?", "help"),
                 ("n", "workspace.rename"),
                 ("Tab", "focus.next_region"),
+                // Destructive, so the key asks first: `project.remove` with no project named
+                // opens the confirmation for the project of the row under the cursor.
+                ("X", "project.remove"),
             ]),
         }
     }
@@ -501,8 +508,14 @@ mod tests {
             Some("focus.pane")
         );
         assert_eq!(
+            c.keys.list.get("X").map(String::as_str),
+            Some("project.remove"),
+            "with no project named, so the key acts on the row under the cursor"
+        );
+        assert_eq!(
             c.keys.list.get("Tab").map(String::as_str),
-            Some("focus.next_region")
+            Some("focus.next_region"),
+            "Tab crosses to the Agents box M3 added"
         );
     }
 

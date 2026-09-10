@@ -699,9 +699,12 @@ mod tests {
             AgentKind::Claude,
         );
         e.place_without_tab = "a-very-long-project-name › a very long workspace name".into();
-        let rows = rows(&view(vec![e]), RowForm::Sidebar, 36);
+        // 34, which is `list_box::content_width` of the sidebar's 38: the border takes a
+        // column each side and the box's pad takes another, and the drawing cuts anything
+        // wider, so a row built to 36 would be cut by the drawing rather than laid out.
+        let rows = rows(&view(vec![e]), RowForm::Sidebar, 34);
         for l in text(&rows[0]) {
-            assert!(domux_core::text::display_width(&l) <= 36, "{l:?}");
+            assert!(domux_core::text::display_width(&l) <= 34, "{l:?}");
         }
     }
 

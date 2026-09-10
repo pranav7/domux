@@ -1,4 +1,4 @@
-# 0011: The agent animation timer always runs
+# 0019: The agent animation timer always runs
 
 **Date:** 2026-09-10
 **Status:** Accepted

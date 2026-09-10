@@ -323,3 +323,48 @@ fn a_shell_that_cannot_be_run_is_refused_rather_than_swapped() {
         "{err:#}"
     );
 }
+
+/// The keep list, in a real pane rather than in the predicate. `CARGO_PKG_NAME` stands in for
+/// the session state of the shell that started the server: cargo sets it in this test process,
+/// which is the server for the length of this test, and nothing sets it in a pane.
+#[tokio::test(flavor = "current_thread")]
+async fn a_pane_does_not_inherit_the_servers_own_environment() {
+    assert!(
+        std::env::var("CARGO_PKG_NAME").is_ok(),
+        "the fixture needs a variable this process has and a pane must not"
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let dir = tempfile::tempdir().unwrap();
+    let req = request(
+        "p_0005",
+        &[
+            "sh",
+            "-c",
+            // Three answers in one row: what leaked, what the pane was told, and whether the
+            // pane can still find anything to run.
+            "printf \"[%s][%s][%s]\" \"$CARGO_PKG_NAME\" \"$DOMUX_PANE\" \"${PATH:+PATH}\"",
+        ],
+        dir.path().to_str().unwrap(),
+    );
+    let pty = RealSpawner.spawn(req, tx).unwrap();
+    let mut pane = Reaped(PaneRuntime::new(
+        PaneId("p_0005".into()),
+        emulator(Size { cols: 200, rows: 5 }),
+        pty,
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let msg = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("message before deadline")
+            .expect("open");
+        match msg {
+            CoreMsg::PaneOutput { bytes, .. } => pane.0.feed(&bytes),
+            CoreMsg::PaneExited { .. } => break,
+            _ => {}
+        }
+    }
+    pane.0.snapshot();
+    let row: String = pane.0.grid.row(0).iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(row.trim_end(), "[][p_0005][PATH]");
+}

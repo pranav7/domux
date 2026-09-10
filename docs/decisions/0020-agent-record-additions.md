@@ -1,4 +1,4 @@
-# 0012: Four fields the agent record adds to the spec
+# 0020: Four fields the agent record adds to the spec
 
 **Date:** 2026-09-10
 **Status:** Accepted

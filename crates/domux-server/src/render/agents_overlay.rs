@@ -13,7 +13,7 @@
 //! text is `agents_box::empty_text` for the same reason.
 
 use crate::render::agents_box::{self, rows, RowForm, TITLE};
-use crate::render::list_box::{filter_rows, ListBox};
+use crate::render::list_box::{content_width, filter_rows, ListBox};
 use crate::render::projects_box::filled_index;
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
@@ -37,7 +37,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // Two passes, as the switcher makes them: the rows truncate to the box's inner width and
     // the row count then decides the box's height, so the width answers first because it does
     // not depend on the rows.
-    let inner_width = overlay::list_overlay_width(screen).saturating_sub(2);
+    let inner_width = content_width(overlay::list_overlay_width(screen));
     let all = rows(input.agents, RowForm::Overlay, inner_width);
     let visible = filter_rows(&all, &input.view.filter);
     let lines = visible

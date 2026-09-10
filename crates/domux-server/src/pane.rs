@@ -21,6 +21,56 @@ use tokio::sync::mpsc::Sender;
 pub const PANE_TERM: &str = "xterm-256color";
 const READ_CHUNK: usize = 64 * 1024;
 
+/// The names a pane keeps from the server's own environment. Everything else is dropped.
+///
+/// The server is a daemon, and its environment is an accident of whichever shell started it.
+/// Start it from a shell that had `CLAUDE_CODE_USE_BEDROCK=1` set and, without this list, every
+/// pane opened for the rest of the day runs a shell that has it too, so `claude` in a pane
+/// silently reaches a different provider than `claude` in a terminal. `TMUX` and `TERM_PROGRAM`
+/// are the same defect in an older form: a pane that reports it is inside tmux, or inside
+/// whichever terminal happened to launch the server. Keeping a named few ends the class;
+/// dropping names one at a time only ever catches the ones already found.
+///
+/// A pane runs a login shell, so everything a shell config exports is set again inside the
+/// pane. This list carries only what a login shell cannot work out for itself, and what a pane
+/// started with an explicit command needs.
+const KEPT: &[&str] = &[
+    // Who the pane belongs to, what it runs, and where it writes.
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TMPDIR",
+    // How it formats text and time.
+    "LANG",
+    "TZ",
+    // The agent a pane pushes with, and the display it draws on.
+    "SSH_AUTH_SOCK",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    // Where anything reading the XDG names keeps its config, data and cache.
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    // The macOS login session. `SECURITYSESSIONID` is how a process reaches the keychain,
+    // which is where the credentials of the programs a pane runs are kept, so a pane without
+    // it could be handed a shell that cannot log in to anything.
+    "SECURITYSESSIONID",
+    "__CF_USER_TEXT_ENCODING",
+];
+
+/// Locale is a family, not a name: `LC_ALL`, `LC_CTYPE`, `LC_TIME` and the rest.
+const KEPT_PREFIX: &str = "LC_";
+
+/// Whether a pane keeps `name` from the server's environment (`KEPT`).
+pub fn pane_keeps(name: &str) -> bool {
+    KEPT.contains(&name) || name.starts_with(KEPT_PREFIX)
+}
+
 /// The one place the server builds a pane's emulator. There is one implementation
 /// (docs/decisions/0001-terminal-emulator.md), so this returns it by value and the feed path
 /// has no dispatch.
@@ -120,11 +170,16 @@ impl PtySpawner for RealSpawner {
                 CommandBuilder::new_default_prog()
             }
         };
+        // A pane's environment is built, not inherited (`KEPT`): the server's own is whatever
+        // the shell that started the daemon happened to hold.
+        cmd.env_clear();
+        for (name, value) in std::env::vars() {
+            if pane_keeps(&name) {
+                cmd.env(name, value);
+            }
+        }
         cmd.env("TERM", &req.term);
         cmd.env("COLORTERM", "truecolor");
-        for name in ["TMUX", "TMUX_PANE", "TERM_PROGRAM", "TERM_PROGRAM_VERSION"] {
-            cmd.env_remove(name);
-        }
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
@@ -342,6 +397,10 @@ pub struct PaneRuntime {
     pub exited: Option<Option<i32>>,
     pub pty: Box<dyn PtyHandle>,
     pub copy: Option<CopyMode>,
+    /// Where the left button went down inside this pane, in the pane's own cells, while it is
+    /// still held. The drag that follows anchors its selection there, and a press with no drag
+    /// after it leaves nothing behind (decision 0014).
+    pub pressed_at: Option<(u16, u16)>,
     responses: Vec<u8>,
 }
 
@@ -356,6 +415,7 @@ impl PaneRuntime {
             exited: None,
             pty,
             copy: None,
+            pressed_at: None,
             responses: Vec::new(),
         }
     }
@@ -409,5 +469,62 @@ impl PaneRuntime {
             None => self.emulator.snapshot_grid(&mut self.grid),
         }
         self.dirty = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pane_keeps_what_a_login_shell_cannot_work_out_for_itself() {
+        for name in [
+            "HOME",
+            "PATH",
+            "SHELL",
+            "TMPDIR",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "SSH_AUTH_SOCK",
+            "SECURITYSESSIONID",
+        ] {
+            assert!(pane_keeps(name), "a pane needs {name}");
+        }
+    }
+
+    #[test]
+    fn a_pane_drops_the_session_state_of_the_shell_that_started_the_server() {
+        for name in [
+            // The shell that started the daemon was a Claude Code session on Bedrock. Every
+            // one of these reached the pane before the keep list, and the first two are what
+            // made `claude` in a pane a different provider than `claude` in a terminal.
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDECODE",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "AWS_PROFILE",
+            "AWS_REGION",
+            // The older form of the same defect: a pane that reports the multiplexer or the
+            // terminal that launched the server rather than the one it is in.
+            "TMUX",
+            "TMUX_PANE",
+            "TERM_PROGRAM",
+            "TERM_PROGRAM_VERSION",
+        ] {
+            assert!(!pane_keeps(name), "a pane must not inherit {name}");
+        }
+    }
+
+    /// The pane sets these itself, after the keep list, so keeping them would be reading the
+    /// server's answer to a question the pane has already answered.
+    #[test]
+    fn a_pane_drops_the_names_it_sets_for_itself() {
+        for name in ["TERM", "COLORTERM", "DOMUX_PANE", "DOMUX_SOCKET"] {
+            assert!(!pane_keeps(name), "the pane sets {name} itself");
+        }
     }
 }

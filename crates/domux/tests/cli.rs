@@ -415,11 +415,41 @@ async fn server_status_reports_the_leader_in_force_not_the_one_on_disk() {
     assert!(stopped.status.success());
 }
 
+/// Collects what the pty has written until `wants` shows, or gives up after 20 seconds.
+async fn wait_for_text(rx: &std::sync::mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>, wants: &str) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        while let Ok(chunk) = rx.try_recv() {
+            output.extend(chunk);
+        }
+        if visible(output).contains(wants) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no screen showing {wants:?} within 20 s:\n{}",
+            visible(output)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Runs the client on a real pty, waits for `wants` to show on the screen, sends leader d and
 /// waits for it to exit. Hands back everything the client wrote and how it ended.
 /// Principle 13: the client's own terminal handling is only proved on a real terminal.
 async fn attach_and_detach_in_a_pty(
     cmd: CommandBuilder,
+    wants: &str,
+) -> (Vec<u8>, portable_pty::ExitStatus) {
+    answer_then_attach_and_detach_in_a_pty(cmd, &[], wants).await
+}
+
+/// The same, with questions answered on the way in: each pair waits for its text to show and
+/// then types its answer. `attach` asks one before it attaches, so a test about that question
+/// needs to answer it before there is a screen to wait for.
+async fn answer_then_attach_and_detach_in_a_pty(
+    cmd: CommandBuilder,
+    answers: &[(&str, &str)],
     wants: &str,
 ) -> (Vec<u8>, portable_pty::ExitStatus) {
     let pty = native_pty_system();
@@ -447,23 +477,15 @@ async fn attach_and_detach_in_a_pty(
         }
     });
     let mut output = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        while let Ok(chunk) = rx.try_recv() {
-            output.extend(chunk);
-        }
-        if visible(&output).contains(wants) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "no screen showing {wants:?} within 20 s:\n{}",
-            visible(&output)
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    for (question, answer) in answers {
+        wait_for_text(&rx, &mut output, question).await;
+        writer.write_all(answer.as_bytes()).unwrap();
+        writer.flush().unwrap();
     }
+    wait_for_text(&rx, &mut output, wants).await;
     writer.write_all(b"\x01d").unwrap(); // C-a then d
     writer.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
         while let Ok(chunk) = rx.try_recv() {
             output.extend(chunk);
@@ -503,6 +525,10 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
     cmd.env("DOMUX_SOCKET", h.socket_path());
     cmd.env("TERM", "xterm-256color");
     cmd.env_remove("TMUX");
+    // In the project the server is holding, so the attach is the only thing under test.
+    // `CommandBuilder` starts in the user's home directory when it is given none, and an
+    // attach from a directory the server does not hold asks whether to register it.
+    cmd.cwd(h.project_root());
     let (output, status) = attach_and_detach_in_a_pty(cmd, "\u{250c} sh").await;
     assert!(status.success(), "{status:?}");
     // The lifecycle is in the sequences themselves, so those are read raw.
@@ -2100,4 +2126,68 @@ async fn install_names_the_three_kinds_when_asked_for_another() {
     assert_eq!(out.status.code(), Some(2), "clap rejects an unknown value");
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("claude, codex or opencode"), "{said}");
+}
+
+/// MUX-6: attach offers to register the directory it was typed in.
+///
+/// Decision record 0009. The offer runs before the attach, so the question and its answer are
+/// on the plain terminal rather than over the screen the client is about to draw.
+#[tokio::test]
+async fn attach_from_an_unregistered_directory_offers_to_register_it() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux2"));
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("TMUX");
+    cmd.cwd(elsewhere.path());
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        cmd,
+        &[("is not a project yet. Register it? [y/N]", "y\n")],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    let registered = h
+        .model()
+        .projects
+        .iter()
+        .any(|p| p.root == elsewhere.path().canonicalize().unwrap());
+    assert!(
+        registered,
+        "the directory became a project:\n{}",
+        visible(&output)
+    );
+}
+
+/// The default is the answer that changes nothing, and saying no still attaches.
+#[tokio::test]
+async fn declining_the_offer_leaves_the_directory_alone_and_still_attaches() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let elsewhere = tempfile::tempdir().unwrap();
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux2"));
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("TMUX");
+    cmd.cwd(elsewhere.path());
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        cmd,
+        &[("is not a project yet. Register it? [y/N]", "\n")],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    assert_eq!(
+        h.model().projects.len(),
+        1,
+        "no project was added:\n{}",
+        visible(&output)
+    );
+    assert!(
+        visible(&output).contains("Left unregistered. Run domux2 open . to register it later."),
+        "it names the way to do it later:\n{}",
+        visible(&output)
+    );
 }

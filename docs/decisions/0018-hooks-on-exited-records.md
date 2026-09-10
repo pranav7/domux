@@ -1,4 +1,4 @@
-# 0010: Hooks on an exited record
+# 0018: Hooks on an exited record
 
 **Date:** 2026-09-10
 **Status:** Accepted
@@ -76,7 +76,7 @@ record exits: one pane hosts at most one live agent.
 - Nothing but `SessionStart` moves an exited record, so a record that exited when it should
   not have would be corrected by a new session or by a dismiss, not by a later hook. That is
   the cost of this rule, and what carries it is the narrowness of the exits: a record exits
-  only when its own process id goes away or its pane goes away (decision record 0009), and
+  only when its own process id goes away or its pane goes away (decision record 0017), and
   `SessionEnd` is the agent saying so itself.
 - The observer's way back is separate and does not use this path.
   `(Exited, Observed) => Unknown` says a new process is on the pane, and the observer turns

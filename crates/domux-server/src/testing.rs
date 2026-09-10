@@ -17,7 +17,8 @@ use domux_core::proto::{
     PROTOCOL_VERSION,
 };
 use domux_term::{
-    Attrs, Cell, Color, Cursor, CursorShape, Grid, Key, KeyAction, KeyEvent, Mods, Rgb, Size,
+    Attrs, Cell, Color, Cursor, CursorShape, Grid, Key, KeyAction, KeyEvent, Mods, MouseAction,
+    MouseButton, MouseEvent, Rgb, Size,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -227,6 +228,22 @@ impl Harness {
     }
 
     pub async fn attach(&mut self, cols: u16, rows: u16) -> ClientId {
+        match self.try_attach(cols, rows).await {
+            Ok(id) => id,
+            Err(reason) => panic!("refused: {reason}"),
+        }
+    }
+
+    /// Why the server would not take a client. For a test about a server with nothing to
+    /// seat one on, where the refusal is the behaviour rather than a failure.
+    pub async fn attach_refusal(&mut self, cols: u16, rows: u16) -> String {
+        match self.try_attach(cols, rows).await {
+            Ok(id) => panic!("the server attached client {id} rather than refusing"),
+            Err(reason) => reason,
+        }
+    }
+
+    async fn try_attach(&mut self, cols: u16, rows: u16) -> Result<ClientId, String> {
         let stream = UnixStream::connect(&self.socket).await.expect("connect");
         let (mut reader, mut writer) = stream.into_split();
         let hello = ClientMsg::Hello(Hello {
@@ -272,7 +289,7 @@ impl Harness {
             .expect("open")
         {
             ServerMsg::Welcome { client, .. } => client,
-            ServerMsg::Refused { reason } => panic!("refused: {reason}"),
+            ServerMsg::Refused { reason } => return Err(reason),
             other => panic!("unexpected first message {other:?}"),
         };
         self.clients.insert(id.clone(), client);
@@ -286,7 +303,7 @@ impl Harness {
             "the model never held the new client",
         )
         .await;
-        id
+        Ok(id)
     }
 
     /// Waits until the published model satisfies `ready`, or panics after `SETTLE`.
@@ -354,6 +371,42 @@ impl Harness {
 
     pub async fn scroll(&mut self, client: ClientId, column: u16, row: u16, lines: i16) {
         self.send(&client, ClientMsg::Scroll { column, row, lines })
+            .await;
+    }
+
+    /// One left button event at a screen cell. `count` is which press of a repeated click this
+    /// is, which the client counts and the server is told: 1, 2 for a double, 3 for a triple.
+    pub async fn mouse(
+        &mut self,
+        client: ClientId,
+        action: MouseAction,
+        column: u16,
+        row: u16,
+        count: u8,
+    ) {
+        self.send(
+            &client,
+            ClientMsg::Mouse {
+                event: MouseEvent {
+                    button: MouseButton::Left,
+                    action,
+                    mods: Mods::empty(),
+                    row,
+                    col: column,
+                },
+                count,
+            },
+        )
+        .await;
+    }
+
+    /// A whole drag: press at the first cell, drag to the second, release there.
+    pub async fn drag(&mut self, client: ClientId, from: (u16, u16), to: (u16, u16)) {
+        self.mouse(client.clone(), MouseAction::Press, from.0, from.1, 1)
+            .await;
+        self.mouse(client.clone(), MouseAction::Drag, to.0, to.1, 1)
+            .await;
+        self.mouse(client, MouseAction::Release, to.0, to.1, 1)
             .await;
     }
 
@@ -697,6 +750,11 @@ impl Harness {
         self.inspector.set_dead(pid);
     }
 
+    /// The directory the server was started in, which is the project it seeded.
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
@@ -977,47 +1035,55 @@ pub fn commit(dir: &Path, name: &str, body: &str) {
 /// is what `git::default_branch` reads. Returns the temp dir (keep it alive) and the clone.
 pub fn repo_with_origin(branch: &str) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
-    let origin = tmp.path().join("origin.git");
     let work = tmp.path().join("audrey-app");
-    std::fs::create_dir_all(&origin).unwrap();
     std::fs::create_dir_all(&work).unwrap();
+    repo_with_origin_at(&work, branch);
+    (tmp, work)
+}
+
+/// The same repository, built inside a directory that is already there, with `origin.git`
+/// and the hooks path beside it.
+///
+/// It is separate from `repo_with_origin` so that a test can register a path while it is a
+/// plain folder and then make it the repository it will be found to be, which is the shape
+/// every state file written before decision record 0010 holds.
+pub fn repo_with_origin_at(work: &Path, branch: &str) {
+    let beside = work.parent().expect("the work tree has a parent");
+    let origin = beside.join("origin.git");
+    std::fs::create_dir_all(&origin).unwrap();
     // Every other git call in these tests names its directory with `-C`. This one takes the
     // repository as an argument instead, so it is given an explicit working directory as well:
     // without one it would run in the test binary's own directory, inside a real checkout. A
     // bare init that failed would surface later as a confusing push error, so read its status
     // rather than dropping it.
     let status = Command::new("git")
-        .current_dir(tmp.path())
+        .current_dir(beside)
         .args(["init", "-q", "--bare", "-b", branch])
         .arg(&origin)
         .status()
         .unwrap();
     assert!(status.success(), "git init --bare in {}", origin.display());
-    git(&work, &["init", "-q", "-b", branch]);
-    git(&work, &["config", "user.email", "test@example.com"]);
-    git(&work, &["config", "user.name", "domux test"]);
+    git(work, &["init", "-q", "-b", branch]);
+    git(work, &["config", "user.email", "test@example.com"]);
+    git(work, &["config", "user.name", "domux test"]);
     // The author's own git configuration reaches these repositories otherwise, and a global
     // `commit.gpgsign` would have these tests try to sign, a global `core.hooksPath` would run
     // that machine's hooks inside them. Repository configuration wins over global for every
     // command against this repository, including the ones that go through `git::run` and the
     // ones that run in its worktrees, so the isolation belongs here and not in production code.
-    let no_hooks = tmp.path().join("no-hooks");
+    let no_hooks = beside.join("no-hooks");
     git(
-        &work,
+        work,
         &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
     );
-    git(&work, &["config", "commit.gpgsign", "false"]);
+    git(work, &["config", "commit.gpgsign", "false"]);
     // The push below runs origin's receive hooks, so origin needs the same.
     git(
         &origin,
         &["config", "core.hooksPath", no_hooks.to_str().unwrap()],
     );
-    commit(&work, "README.md", "hello\n");
-    git(
-        &work,
-        &["remote", "add", "origin", origin.to_str().unwrap()],
-    );
-    git(&work, &["push", "-q", "-u", "origin", branch]);
-    git(&work, &["remote", "set-head", "origin", branch]);
-    (tmp, work)
+    commit(work, "README.md", "hello\n");
+    git(work, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(work, &["push", "-q", "-u", "origin", branch]);
+    git(work, &["remote", "set-head", "origin", branch]);
 }

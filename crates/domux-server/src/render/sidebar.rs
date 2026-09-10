@@ -7,7 +7,7 @@
 
 use crate::render::agents_box::{self, RowForm, RESUME_WORD};
 use crate::render::boxed::{put, put_within};
-use crate::render::list_box::{filter_rows, ListBox};
+use crate::render::list_box::{content_width, filter_rows, ListBox};
 use crate::render::projects_box::{filled_index, rows, Extras, PROJECTS_TITLE};
 use crate::render::top_bar::Piece;
 use crate::render::{theme, RenderInput};
@@ -152,6 +152,60 @@ fn focused_box(view: &ClientView) -> Option<RegionKind> {
     }
 }
 
+/// The rows the Projects box is showing, and whether the box has the keys.
+///
+/// The drawing asks, and so does the pointer: the row a reader clicks is the row they see only
+/// while the two build one list. Both halves of the filter rule live here for the same reason.
+fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::Rows, bool) {
+    let focused = focused_box(input.view) == Some(RegionKind::SidebarProjects);
+    // The fill marks the row the keys act on: the cursor while focus is in the box, and the
+    // workspace this client is in otherwise (domain model, section 3.3). `rows` is given the
+    // key and hands back where it put the fill, so the band and the brightening cannot land
+    // on different rows.
+    let key = match focused {
+        true => input.view.projects_cursor.as_ref().map(|w| w.as_str()),
+        false => None,
+    }
+    .unwrap_or(input.view.workspace.as_str());
+    // The filter is the box's and the box has it only while it has the keys. A box the
+    // reader has left draws its whole list: a shortened one with nothing on the screen to say
+    // why would be a mode with no marker (principle 2), and the hint row below has no room to
+    // carry both the keys and a filter. `api::focus::enter_sidebar_box` starts a fresh
+    // filter on the way in, so the two halves of the rule meet.
+    let filter = match focused {
+        true => input.view.filter.as_str(),
+        false => "",
+    };
+    let built = rows(
+        input.model,
+        input.facts,
+        filter,
+        Some(key),
+        Extras::compact(content_width(area.width)),
+    );
+    (built, focused)
+}
+
+/// The workspace whose row is at `row` of the screen, or `None` for a header, a blank, the box's
+/// border, the hint row, or a row past the end of the list.
+pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
+    let area = projects_area(input.view.size);
+    let (built, _) = built_rows(input, area);
+    let inner = crate::render::boxed::Boxed::inner_of(area);
+    let scroll = crate::render::list_box::scroll_to_show(
+        &built.rows,
+        built.filled,
+        inner.height,
+        input.view.projects_scroll,
+    );
+    let at = crate::render::list_box::row_at(&built.rows, scroll, inner, row)?;
+    built
+        .rows
+        .get(at)
+        .and_then(|r| r.key.clone())
+        .map(domux_core::ids::WorkspaceId)
+}
+
 /// The two boxes in the sidebar's column, with the hint row under them.
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let column = sidebar_area(input.view.size);
@@ -179,32 +233,7 @@ fn clear(area: Rect, buf: &mut Buffer) {
 }
 
 fn draw_projects(input: &RenderInput, area: Rect, buf: &mut Buffer) {
-    let focused = focused_box(input.view) == Some(RegionKind::SidebarProjects);
-    // The fill marks the row the keys act on: the cursor while focus is in the box, and the
-    // workspace this client is in otherwise (domain model, section 3.3). `rows` is given the
-    // key and hands back where it put the fill, so the band and the brightening cannot land
-    // on different rows.
-    let key = match focused {
-        true => input.view.projects_cursor.as_ref().map(|w| w.as_str()),
-        false => None,
-    }
-    .unwrap_or(input.view.workspace.as_str());
-    // The filter is the box's and the box has it only while it has the keys. A box the
-    // reader has left draws its whole list: a shortened one with nothing on the screen to say
-    // why would be a mode with no marker (principle 2), and the hint row below has no room to
-    // carry both the keys and a filter. `api::focus::enter_sidebar_box` starts a fresh
-    // filter on the way in, so the two halves of the rule meet.
-    let filter = match focused {
-        true => input.view.filter.as_str(),
-        false => "",
-    };
-    let built = rows(
-        input.model,
-        input.facts,
-        filter,
-        Some(key),
-        Extras::compact(area.width.saturating_sub(2)),
-    );
+    let (built, focused) = built_rows(input, area);
     let empty = format!(
         "No projects yet. {} open <path>",
         domux_core::names::BIN_NAME
@@ -235,7 +264,7 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         true => input.view.filter.as_str(),
         false => "",
     };
-    let all = agents_box::rows(input.agents, RowForm::Sidebar, area.width.saturating_sub(2));
+    let all = agents_box::rows(input.agents, RowForm::Sidebar, content_width(area.width));
     let visible = filter_rows(&all, filter);
     let cursor = match focused {
         true => input.view.agents_cursor.as_ref().map(|id| id.to_string()),
@@ -946,7 +975,7 @@ mod tests {
         draw_two(&mut buf, |v, slot| v.projects_cursor = Some(slot.clone()));
         assert_eq!(
             filled_row(&buf).as_deref(),
-            Some("main"),
+            Some("   main"),
             "the keys are in a pane, so the fill stays on the workspace this client is in"
         );
 
@@ -957,7 +986,7 @@ mod tests {
         });
         assert_eq!(
             filled_row(&buf).as_deref(),
-            Some("workspace-1"),
+            Some("   workspace-1"),
             "with the keys in the box the fill follows the cursor"
         );
     }
@@ -1049,25 +1078,28 @@ mod tests {
     ///
     /// The fourth no-writer field: `projects_scroll` is only ever set by list navigation,
     /// which M2 has not built. The screen here is short enough that the box cannot show
-    /// every row, which is the only condition under which the field can matter at all. It is
-    /// 12 rows and not 6: the column splits in half from M3, so the Projects box shows every
-    /// row of this fixture on anything taller and the field would not matter.
+    /// every row, which is the only condition under which the field can matter at all.
+    ///
+    /// 11 rows and not 12. The column splits between the two boxes from M3, and the Agents
+    /// box keeps its five rows on a column too short for both minimums, so 11 leaves the
+    /// Projects box two lines for this fixture's three and 12 leaves it exactly three. At 12
+    /// a hard-coded scroll of 0 passes the test.
     #[test]
     fn the_scroll_the_client_remembers_moves_the_view() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 12));
-        draw_sized(&mut buf, 12, |_, _| {});
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 11));
+        draw_sized(&mut buf, 11, |_, _| {});
         let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
         assert!(
-            top.starts_with("AUDREY-APP"),
+            top.starts_with(" AUDREY-APP"),
             "unscrolled, the box starts at the project header: {top:?}"
         );
 
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 12));
-        draw_sized(&mut buf, 12, |v, _| v.projects_scroll = 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 11));
+        draw_sized(&mut buf, 11, |v, _| v.projects_scroll = 1);
         let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
         assert_eq!(
             top.trim_end(),
-            "main",
+            "   main",
             "scrolled by one, the header has moved off the top"
         );
     }

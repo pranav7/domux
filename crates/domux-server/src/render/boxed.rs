@@ -14,6 +14,18 @@ pub struct Boxed<'a> {
 }
 
 impl Boxed<'_> {
+    /// The area inside the border, without drawing anything. `render` returns this, and the
+    /// pointer hit test asks for it: a cell hits the grid cell the reader sees under it only
+    /// while the two agree about where the border is.
+    pub fn inner_of(area: Rect) -> Rect {
+        Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        )
+    }
+
     /// Draws the box and returns the inner area. Areas under 2x2 draw what fits.
     pub fn render(&self, area: Rect, buf: &mut Buffer) -> Rect {
         if area.width == 0 || area.height == 0 {
@@ -92,12 +104,7 @@ impl Boxed<'_> {
                 title_style,
             );
         }
-        Rect::new(
-            area.x + 1,
-            area.y + 1,
-            area.width.saturating_sub(2),
-            area.height.saturating_sub(2),
-        )
+        Self::inner_of(area)
     }
 }
 

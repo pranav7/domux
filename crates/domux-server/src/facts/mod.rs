@@ -104,6 +104,9 @@ pub struct FactTarget {
     pub root: PathBuf,
     /// The project's default branch, so a provider can skip a workspace sitting on it.
     pub default_branch: Option<String>,
+    /// The workspace's handle as it spells a branch name, so a provider can skip a slot still
+    /// resting on its own. `None` for a project or server target, which has no handle.
+    pub handle: Option<String>,
     /// The branch fact if one has arrived, so the pull request provider does not shell out
     /// to git a second time.
     pub branch: Option<String>,
@@ -346,6 +349,7 @@ fn targets(
             path: PathBuf::new(),
             root: PathBuf::new(),
             default_branch: None,
+            handle: None,
             branch: None,
             now,
         }];
@@ -363,6 +367,7 @@ fn targets(
                 path: project.root.clone(),
                 root: project.root.clone(),
                 default_branch: default_branch.clone(),
+                handle: None,
                 branch: None,
                 now,
             }),
@@ -376,6 +381,7 @@ fn targets(
                         path: w.path.clone(),
                         root: project.root.clone(),
                         default_branch: default_branch.clone(),
+                        handle: Some(w.handle.to_string()),
                         branch,
                         now,
                     });
@@ -611,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_target_carries_the_paths_the_default_branch_and_the_branch_fact() {
+    fn a_workspace_target_carries_the_paths_the_handle_the_default_branch_and_the_branch_fact() {
         let mut r = FactRegistry::new();
         r.register(Arc::new(Watcher {
             name: FACT_PR.into(),
@@ -650,6 +656,11 @@ mod tests {
         );
         assert_eq!(t.default_branch.as_deref(), Some("main"));
         assert_eq!(
+            t.handle.as_deref(),
+            Some("workspace-1"),
+            "spelled as a branch name, which is what the pull request provider compares it to"
+        );
+        assert_eq!(
             t.branch.as_deref(),
             Some("feat/x"),
             "the branch fact rides along, so the pull request provider does not run git again"
@@ -665,6 +676,7 @@ mod tests {
             None,
             "a branch that has not arrived is absent, not a guess at the handle"
         );
+        assert_eq!(target(&main).handle.as_deref(), Some("main"));
     }
 
     #[test]

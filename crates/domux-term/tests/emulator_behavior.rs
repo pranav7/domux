@@ -2,7 +2,7 @@
 
 use domux_term::{
     Color, CursorShape, Emulator, EmulatorConfig, GhosttyEmulator, Grid, Key, KeyEvent, Mode, Mods,
-    Rgb, ScrollbackPos, Size,
+    MouseAction, MouseButton, MouseEvent, Rgb, ScrollbackPos, Size,
 };
 
 fn make(cols: u16, rows: u16) -> GhosttyEmulator {
@@ -557,4 +557,123 @@ fn text_in_range_reads_a_blank_range_as_empty_text_and_a_failed_read_as_absent()
         ),
         None
     );
+}
+
+/// The wheel over a pane belongs to the pane's program when the program asked for the mouse
+/// (decision 0014), so the one question the server asks has to answer for every tracking mode
+/// a program can set, and has to be false before any of them is set.
+#[test]
+fn mouse_tracking_is_active_for_every_tracking_mode_a_program_can_set() {
+    for enable in [
+        &b"\x1b[?9h"[..],
+        &b"\x1b[?1000h"[..],
+        &b"\x1b[?1002h"[..],
+        &b"\x1b[?1003h"[..],
+    ] {
+        let mut e = make(20, 5);
+        assert!(
+            !e.mode_active(Mode::MouseTracking),
+            "a program that asked for nothing has not asked for the mouse"
+        );
+        e.feed(enable);
+        assert!(
+            e.mode_active(Mode::MouseTracking),
+            "{} turns mouse tracking on",
+            String::from_utf8_lossy(&enable[1..])
+        );
+    }
+}
+
+/// A program that asked for no mouse is sent no mouse. Anything else would type rubbish into
+/// its input: a program that never enabled tracking reads a report as the characters it is
+/// made of.
+#[test]
+fn encode_mouse_writes_nothing_when_the_program_asked_for_no_mouse() {
+    let mut e = make(20, 5);
+    let mut out = Vec::new();
+    e.encode_mouse(&wheel_up(2, 3), &mut out);
+    assert!(out.is_empty(), "got {out:?}");
+}
+
+/// The report Claude Code answered with a redraw when it was sent by hand, which is the
+/// gesture this whole change exists for. SGR because the program asked for SGR; the columns
+/// and rows are one-based in the protocol and zero-based in the pane.
+#[test]
+fn encode_mouse_writes_the_sgr_wheel_report_the_program_asked_for() {
+    let mut e = make(20, 5);
+    e.feed(b"\x1b[?1000h\x1b[?1006h");
+    let mut out = Vec::new();
+    e.encode_mouse(&wheel_up(2, 3), &mut out);
+    assert_eq!(String::from_utf8_lossy(&out), "\x1b[<64;4;3M");
+    out.clear();
+    e.encode_mouse(
+        &MouseEvent {
+            button: MouseButton::WheelDown,
+            action: MouseAction::Press,
+            mods: Mods::empty(),
+            row: 0,
+            col: 0,
+        },
+        &mut out,
+    );
+    assert_eq!(String::from_utf8_lossy(&out), "\x1b[<65;1;1M");
+}
+
+/// Normal tracking with no SGR is the older report, and the format is the program's choice
+/// rather than domux2's: the encoder is configured from the terminal every time.
+#[test]
+fn encode_mouse_follows_the_report_format_the_program_set() {
+    let mut e = make(20, 5);
+    e.feed(b"\x1b[?1000h");
+    let mut out = Vec::new();
+    e.encode_mouse(&wheel_up(2, 3), &mut out);
+    assert_eq!(
+        out,
+        b"\x1b[M\x60$#".to_vec(),
+        "x10 encoding: 32 + 64 for wheel up, then column and row at 32 + one-based"
+    );
+}
+
+fn wheel_up(row: u16, col: u16) -> MouseEvent {
+    MouseEvent {
+        button: MouseButton::WheelUp,
+        action: MouseAction::Press,
+        mods: Mods::empty(),
+        row,
+        col,
+    }
+}
+
+/// What a triple click selects. A line the screen wrapped is one line, however many rows it
+/// was drawn on, and a row the writer ended is one row however full it is.
+#[test]
+fn logical_line_covers_every_row_a_wrapped_line_was_drawn_on() {
+    let mut e = make(5, 4);
+    // 12 cells with no break in them: rows 0, 1 and 2 are one line. Then a line of its own.
+    e.feed(b"abcdefghijkl\r\nend");
+    assert_eq!(e.logical_line(0), (0, 2), "asked about the first row");
+    assert_eq!(e.logical_line(1), (0, 2), "asked about the middle row");
+    assert_eq!(e.logical_line(2), (0, 2), "asked about the last row");
+    assert_eq!(e.logical_line(3), (3, 3), "the line after it stands alone");
+}
+
+/// A row that exactly fills the width is not a wrapped line: the writer ended it. Nothing but
+/// the emulator's own wrap flag can tell the two apart, which is why this question is asked of
+/// the emulator rather than measured from the text.
+#[test]
+fn logical_line_is_one_row_when_a_line_exactly_fills_the_width() {
+    let mut e = make(5, 4);
+    e.feed(b"abcde\r\nfg");
+    assert_eq!(e.logical_line(0), (0, 0));
+    assert_eq!(e.logical_line(1), (1, 1));
+}
+
+/// A row past the end of the screen clamps rather than answering about a row that is not
+/// there, the same clamp `text_in_range` makes.
+#[test]
+fn logical_line_clamps_a_row_past_the_end() {
+    let mut e = make(5, 3);
+    e.feed(b"hi");
+    let last = e.scrollback_len() + 2;
+    assert_eq!(e.logical_line(9_999), (last, last));
 }

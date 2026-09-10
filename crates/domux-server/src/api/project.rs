@@ -110,15 +110,25 @@ pub fn removal_copy(name: &str, workspaces: usize, root: &Path) -> RemovalCopy {
 /// overlay, and a caller with a command line is refused with the question and told to add
 /// `--yes`. Both refusals leave the model exactly as they found it.
 pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> {
-    let project = ctx.resolve_project_param(&p.project)?;
-    // Unreachable: `resolve_project_param` has already answered with the id of a project
-    // the model holds, and nothing runs between the two. Kept because the alternative is an
-    // `expect` in a destructive handler, and written out rather than left silent so the next
-    // reader can tell a considered choice from an oversight.
+    if p.all {
+        return remove_all(ctx, p.yes);
+    }
+    let project = match p.project.as_deref() {
+        Some(target) => ctx.resolve_project_param(target)?,
+        // `X` in the Projects box (interface spec 7.3). The cursor is the only target a key
+        // carries, and it is a target the reader can see, because the fill is on the row it
+        // names. Anywhere else a removal that names nothing stays a mistake rather than
+        // becoming a removal of whichever project the caller happened to be in.
+        None => ctx.project_of_cursor()?,
+    };
+    // Unreachable: both arms above answer with the id of a project the model holds, and
+    // nothing runs between the two. Kept because the alternative is an `expect` in a
+    // destructive handler, and written out rather than left silent so the next reader can
+    // tell a considered choice from an oversight.
     let target = ctx
         .model
         .project(&project)
-        .ok_or_else(|| ApiError::not_found(format!("no project called {}", p.project)))?;
+        .ok_or_else(|| ApiError::not_found(format!("no project with id {project}")))?;
     let (name, count, root) = (
         target.name.clone(),
         target.workspaces.len(),
@@ -194,7 +204,89 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
     ok(Ack { ok: true })
 }
 
-/// Moves every client whose workspace has just gone onto a workspace that is still there.
+/// The question `--all` asks, in one place so the refusal and any later surface agree.
+fn removes_everything(names: &[String]) -> String {
+    format!(
+        "Remove every project? There {} {}: {}. {KEEPS_THE_FOLDER}",
+        if names.len() == 1 { "is" } else { "are" },
+        projects_phrase(names.len()),
+        names.join(", ")
+    )
+}
+
+/// `1 project` or `3 projects`.
+fn projects_phrase(count: usize) -> String {
+    match count {
+        1 => "1 project".to_string(),
+        n => format!("{n} projects"),
+    }
+}
+
+/// Lets every project go at once: the way back to an empty domux without deleting the state
+/// file by hand.
+///
+/// It removes records and never files, exactly as removing one project does. What is left is
+/// a server with no workspace, which is a state the screen already has words for: the
+/// Projects box says "No projects yet" and names the command that ends it, and `attach`
+/// offers to register the directory it was typed in. So this does not seed a replacement
+/// project on the way out; inventing one would answer a different question from the one that
+/// was asked.
+///
+/// There is no key for it and there is not going to be one. A key that removed every record
+/// on the screen is not a key anybody should be one keystroke away from; the command line
+/// asks first and takes `--yes`.
+fn remove_all(ctx: &mut Ctx, yes: bool) -> Result<Value, ApiError> {
+    let names: Vec<String> = ctx.model.projects.iter().map(|p| p.name.clone()).collect();
+    // Nothing to remove is not a failure: the caller asked for no projects and there are
+    // none. It answers without asking, because a question about an empty list has no answer
+    // worth giving.
+    if names.is_empty() {
+        return ok(Ack { ok: true });
+    }
+    if !yes {
+        return Err(ApiError::needs_confirmation(
+            removes_everything(&names),
+            names
+                .iter()
+                .map(|name| format!("the record of {name}"))
+                .collect(),
+            ctx.model
+                .projects
+                .iter()
+                .map(|p| {
+                    format!(
+                        "the folder at {} and every worktree under it",
+                        p.root.display()
+                    )
+                })
+                .collect(),
+        ));
+    }
+    let projects: Vec<ProjectId> = ctx.model.projects.iter().map(|p| p.id.clone()).collect();
+    for project in projects {
+        // Every pane under the project, before the records go, for the reason the single
+        // removal gives: `remove_project` takes the tabs and the panes with it without
+        // passing through `close_pane`, so nothing else would ever kill these PTYs.
+        let doomed: Vec<domux_core::ids::PaneId> = ctx
+            .model
+            .workspaces_of(&project)
+            .flat_map(|w| w.tabs.iter())
+            .flat_map(|t| t.layout.pane_ids())
+            .collect();
+        ctx.events.extend(ctx.model.remove_project(&project)?);
+        ctx.pending_kills.extend(doomed);
+    }
+    // Nothing to reseat a client onto once the last project is gone, and `reseat_stranded_clients`
+    // says so by leaving every client where it is. Called anyway, because it is the one rule
+    // about a stranded client and this path must not grow a second.
+    let moved = reseat_stranded_clients(ctx.model);
+    ctx.events.extend(moved);
+    ctx.view_dirty = true;
+    ok(Ack { ok: true })
+}
+
+/// Leaves no client pointing at a workspace that is gone: the one it is in, and the one its
+/// cursor rests on.
 ///
 /// A client points at a workspace and a tab. Removing the project a client is in leaves it
 /// pointing at neither, and a frame drawn for such a client has no tab to draw and no pane
@@ -202,12 +294,35 @@ pub fn remove(ctx: &mut Ctx, p: ProjectRemoveParams) -> Result<Value, ApiError> 
 /// is left where it is: `render::draw_panes` draws no panes for a tab the model does not
 /// hold, which is the honest picture of a domux with nothing in it.
 ///
+/// The cursor is the same question asked of the Projects box. A cursor on a row that has
+/// just gone draws no fill at all, so `X` on the last row of a project would answer the
+/// question and then leave the box with nothing marked in it. Clearing it puts the fill back
+/// on the workspace the client is in, which is what the box shows when nobody has moved the
+/// cursor (domain model, section 3.3).
+///
 /// Over the model rather than over a `Ctx`, because `workspace.delete` strands a client the
 /// same way and answers from the core's `Deleted` arm, where there is no `Ctx`. One rule,
 /// one implementation.
 pub fn reseat_stranded_clients(
     model: &mut domux_core::model::Model,
 ) -> Vec<domux_core::api::Event> {
+    // The cursors first, and before the early return below: with the last project gone every
+    // cursor is stale, and that is the case where leaving one behind lasts longest.
+    let stale: Vec<domux_core::ids::ClientId> = model
+        .clients
+        .iter()
+        .filter(|view| {
+            view.projects_cursor
+                .as_ref()
+                .is_some_and(|w| model.workspace(w).is_none())
+        })
+        .map(|view| view.id.clone())
+        .collect();
+    for client in stale {
+        if let Some(view) = model.client_mut(&client) {
+            view.projects_cursor = None;
+        }
+    }
     let landing = model
         .projects
         .iter()

@@ -10,6 +10,7 @@ pub mod ffi;
 
 use crate::emulator::{focus_report, osc7_path, Emulator, EmulatorConfig, Mode, ScrollbackPos};
 use crate::key::{Key, KeyAction, KeyEvent, Mods};
+use crate::mouse::{MouseAction, MouseButton, MouseEvent};
 use crate::types::{Attrs, Cell, Color, Cursor, CursorShape, Grid, Rgb, Size};
 use std::ffi::c_void;
 use std::path::PathBuf;
@@ -67,6 +68,7 @@ fn new_handle<T: Copy>(
 /// frees them in the order libghostty expects, and `callbacks` outlives the terminal that
 /// holds its address.
 pub struct GhosttyEmulator {
+    mouse_encoder: Handle<ffi::GhosttyMouseEncoder>,
     key_encoder: Handle<ffi::GhosttyKeyEncoder>,
     row_cells: Handle<ffi::GhosttyRenderStateRowCells>,
     row_iterator: Handle<ffi::GhosttyRenderStateRowIterator>,
@@ -219,6 +221,11 @@ impl GhosttyEmulator {
                 ffi::ghostty_key_encoder_new,
                 ffi::ghostty_key_encoder_free,
             )?,
+            mouse_encoder: new_handle(
+                "ghostty_mouse_encoder_new",
+                ffi::ghostty_mouse_encoder_new,
+                ffi::ghostty_mouse_encoder_free,
+            )?,
             terminal,
             callbacks,
             size: config.size,
@@ -306,6 +313,25 @@ impl GhosttyEmulator {
             && screen == ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE
     }
 
+    /// True while the program has asked to be told about the mouse in any tracking mode: X10
+    /// (9), normal (1000), button (1002) or any (1003).
+    ///
+    /// One question rather than four mode reads, because the four are one decision: whether the
+    /// wheel over this pane belongs to the program or to copy mode. Reporting no tracking when
+    /// the call fails keeps the wheel with copy mode, which is the answer that still moves
+    /// something on the screen.
+    fn mouse_tracking_active(&self) -> bool {
+        let mut tracking = false;
+        let rc = unsafe {
+            ffi::ghostty_terminal_get(
+                self.terminal.raw,
+                ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
+                &mut tracking as *mut _ as *mut c_void,
+            )
+        };
+        rc == ffi::GhosttyResult_GHOSTTY_SUCCESS && tracking
+    }
+
     /// Resolves a scrollback position to a grid reference. `ScrollbackPos::row` counts from
     /// the top of the scrollback, which is exactly what `GHOSTTY_POINT_TAG_SCREEN` means
     /// ("Full screen including scrollback", `vt/point.h:53`), so the row needs no arithmetic.
@@ -326,6 +352,24 @@ impl GhosttyEmulator {
         };
         let rc = unsafe { ffi::ghostty_terminal_grid_ref(self.terminal.raw, point, &mut out) };
         (rc == ffi::GhosttyResult_GHOSTTY_SUCCESS).then_some(out)
+    }
+
+    /// One boolean from the row at a scrollback row: the soft-wrap flags. False when the row
+    /// cannot be resolved, which stops a walk rather than extending it past what is known.
+    fn row_flag(&self, row: usize, data: ffi::GhosttyRowData) -> bool {
+        let Some(reference) = self.grid_ref_at(ScrollbackPos { row, col: 0 }) else {
+            return false;
+        };
+        let mut handle: ffi::GhosttyRow = unsafe { std::mem::zeroed() };
+        if unsafe { ffi::ghostty_grid_ref_row(&reference, &mut handle) }
+            != ffi::GhosttyResult_GHOSTTY_SUCCESS
+        {
+            return false;
+        }
+        let mut flag = false;
+        let rc =
+            unsafe { ffi::ghostty_row_get(handle, data, &mut flag as *mut bool as *mut c_void) };
+        rc == ffi::GhosttyResult_GHOSTTY_SUCCESS && flag
     }
 
     /// Fills `out` with whatever the viewport currently shows. `snapshot_grid` and
@@ -517,6 +561,87 @@ impl Emulator for GhosttyEmulator {
         }
     }
 
+    /// The tracking mode and the report format both come from the terminal itself, so a
+    /// program that asked for SGR reports gets SGR and one that asked for none gets nothing.
+    /// Nothing here decides whether the program wanted the mouse: `setopt_from_terminal`
+    /// carries that, and the encoder writes no bytes when the answer is no tracking.
+    ///
+    /// The encoder works in pixels because it was written for a renderer that has them. One
+    /// cell is one pixel here, which makes a cell coordinate its own surface position and
+    /// leaves the mapping the encoder does an identity rather than a second geometry to keep in
+    /// step with the layout.
+    fn encode_mouse(&mut self, event: &MouseEvent, out: &mut Vec<u8>) {
+        unsafe {
+            ffi::ghostty_mouse_encoder_setopt_from_terminal(
+                self.mouse_encoder.raw,
+                self.terminal.raw,
+            );
+            let size = ffi::GhosttyMouseEncoderSize {
+                size: std::mem::size_of::<ffi::GhosttyMouseEncoderSize>(),
+                screen_width: self.size.cols as u32,
+                screen_height: self.size.rows as u32,
+                cell_width: 1,
+                cell_height: 1,
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_right: 0,
+                padding_left: 0,
+            };
+            ffi::ghostty_mouse_encoder_setopt(
+                self.mouse_encoder.raw,
+                ffi::GhosttyMouseEncoderOption_GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
+                &size as *const _ as *const c_void,
+            );
+            // A drag is motion, and motion is only reported at all while a button is down, so
+            // the encoder is told a button is held for exactly that case.
+            let held = event.action == MouseAction::Drag;
+            ffi::ghostty_mouse_encoder_setopt(
+                self.mouse_encoder.raw,
+                ffi::GhosttyMouseEncoderOption_GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                &held as *const bool as *const c_void,
+            );
+            let mut raw: ffi::GhosttyMouseEvent = ptr::null_mut();
+            if ffi::ghostty_mouse_event_new(ptr::null(), &mut raw)
+                != ffi::GhosttyResult_GHOSTTY_SUCCESS
+            {
+                return;
+            }
+            ffi::ghostty_mouse_event_set_action(
+                raw,
+                match event.action {
+                    MouseAction::Press => ffi::GhosttyMouseAction_GHOSTTY_MOUSE_ACTION_PRESS,
+                    MouseAction::Release => ffi::GhosttyMouseAction_GHOSTTY_MOUSE_ACTION_RELEASE,
+                    MouseAction::Drag => ffi::GhosttyMouseAction_GHOSTTY_MOUSE_ACTION_MOTION,
+                },
+            );
+            ffi::ghostty_mouse_event_set_button(raw, button_to_ghostty(event.button));
+            ffi::ghostty_mouse_event_set_mods(raw, mods_to_ghostty(event.mods));
+            ffi::ghostty_mouse_event_set_position(
+                raw,
+                ffi::GhosttyMousePosition {
+                    x: event.col as f32,
+                    y: event.row as f32,
+                },
+            );
+            let mut buf = [0u8; 64];
+            let mut written: usize = 0;
+            let rc = ffi::ghostty_mouse_encoder_encode(
+                self.mouse_encoder.raw,
+                raw,
+                buf.as_mut_ptr() as *mut std::os::raw::c_char,
+                buf.len(),
+                &mut written,
+            );
+            // No retry at a larger size: a mouse report is a dozen bytes and the buffer is 64.
+            // A report that did not fit is a vendor bump changing the protocol, which the
+            // suite has to fail on rather than paper over.
+            if rc == ffi::GhosttyResult_GHOSTTY_SUCCESS {
+                out.extend_from_slice(&buf[..written]);
+            }
+            ffi::ghostty_mouse_event_free(raw);
+        }
+    }
+
     fn encode_paste(&self, text: &str, out: &mut Vec<u8>) {
         crate::emulator::wrap_paste(text, self.mode_enabled(MODE_BRACKETED_PASTE), out);
     }
@@ -551,6 +676,27 @@ impl Emulator for GhosttyEmulator {
         // lands on row 0, the top of the scrollback.
         let row = self.scrollback_len().saturating_sub(offset_from_bottom);
         self.with_viewport_at(row, |s| s.fill_grid_from_render_state(out));
+    }
+
+    fn logical_line(&self, row: usize) -> (usize, usize) {
+        let last = self.scrollback_len() + self.size.rows.max(1) as usize - 1;
+        let row = row.min(last);
+        let mut first = row;
+        // A row that continues the one above it is part of the same line, so walk up while the
+        // row is a continuation and down while the row itself wraps into the next.
+        while first > 0
+            && self.row_flag(
+                first,
+                ffi::GhosttyRowData_GHOSTTY_ROW_DATA_WRAP_CONTINUATION,
+            )
+        {
+            first -= 1;
+        }
+        let mut end = row;
+        while end < last && self.row_flag(end, ffi::GhosttyRowData_GHOSTTY_ROW_DATA_WRAP) {
+            end += 1;
+        }
+        (first, end)
     }
 
     fn text_in_range(&mut self, start: ScrollbackPos, end: ScrollbackPos) -> Option<String> {
@@ -669,6 +815,7 @@ impl Emulator for GhosttyEmulator {
             Mode::BracketedPaste => self.mode_enabled(MODE_BRACKETED_PASTE),
             Mode::FocusEvents => self.mode_enabled(MODE_FOCUS_EVENT),
             Mode::AppCursor => self.mode_enabled(MODE_APP_CURSOR),
+            Mode::MouseTracking => self.mouse_tracking_active(),
         }
     }
 
@@ -981,6 +1128,18 @@ fn mods_to_ghostty(m: Mods) -> ffi::GhosttyMods {
         out |= ffi::GHOSTTY_MODS_SUPER as ffi::GhosttyMods;
     }
     out
+}
+
+/// The wheel is buttons four and five in every mouse protocol, which is what Ghostty's
+/// encoder turns into report codes 64 and 65.
+fn button_to_ghostty(b: MouseButton) -> ffi::GhosttyMouseButton {
+    match b {
+        MouseButton::Left => ffi::GhosttyMouseButton_GHOSTTY_MOUSE_BUTTON_LEFT,
+        MouseButton::Middle => ffi::GhosttyMouseButton_GHOSTTY_MOUSE_BUTTON_MIDDLE,
+        MouseButton::Right => ffi::GhosttyMouseButton_GHOSTTY_MOUSE_BUTTON_RIGHT,
+        MouseButton::WheelUp => ffi::GhosttyMouseButton_GHOSTTY_MOUSE_BUTTON_FOUR,
+        MouseButton::WheelDown => ffi::GhosttyMouseButton_GHOSTTY_MOUSE_BUTTON_FIVE,
+    }
 }
 
 /// Maps a logical key to Ghostty's physical key code plus the text it produces. Letters,
