@@ -34,6 +34,23 @@ async fn one_agent(h: &mut Harness) -> Agent {
     agents.into_iter().next().unwrap()
 }
 
+/// One `SessionStart` on the record the observer made, so it holds a session id.
+///
+/// MUX-22 removes an exited record nothing can be done with, and a record with no session id is
+/// exactly that: it cannot be resumed and no hook can find it again. So a test that wants to
+/// watch a record exit has to give it the session id a real hooked agent has, or the record it
+/// is watching is gone by the time it looks. `report_agent` adopts the live record already on
+/// the pane rather than making a second one, so the id and the process this binds to are the
+/// observer's own.
+async fn hooked(h: &mut Harness, pane: &domux_core::ids::PaneId, kind: AgentKind, session: &str) {
+    h.report(
+        pane.clone(),
+        kind,
+        &format!("{{\"hook_event_name\":\"SessionStart\",\"session_id\":\"{session}\"}}"),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn a_known_agent_command_with_no_hooks_creates_an_unknown_record() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
@@ -90,6 +107,7 @@ async fn a_record_whose_process_is_gone_is_marked_exited() {
         .pid
         .expect("the observer recorded the pid");
     assert_eq!(pid, claude);
+    hooked(&mut h, &pane, AgentKind::Claude, "s1").await;
     h.kill_process(pid).await;
     h.set_foreground_for(&pane, Some("zsh")).await;
     tokio::time::sleep(A_TICK).await;
@@ -254,6 +272,7 @@ async fn a_restarted_agent_of_the_same_kind_gets_a_record_of_its_own() {
     let first_pid = h.set_foreground_for(&pane, Some("claude")).await;
     tokio::time::sleep(A_TICK).await;
     let first = one_agent(&mut h).await;
+    hooked(&mut h, &pane, AgentKind::Claude, "s1").await;
     h.kill_process(first_pid).await;
     let second_pid = h.set_foreground_for(&pane, Some("claude")).await;
     tokio::time::sleep(A_TICK).await;
@@ -279,6 +298,7 @@ async fn a_process_that_is_named_in_front_and_reported_gone_does_not_multiply_re
     let pid = h.set_foreground_for(&pane, Some("claude")).await;
     tokio::time::sleep(A_TICK).await;
     let first = one_agent(&mut h).await;
+    hooked(&mut h, &pane, AgentKind::Claude, "s1").await;
     // Still in the foreground, and gone.
     h.kill_process(pid).await;
     tokio::time::sleep(A_TICK * 3).await;
@@ -355,6 +375,7 @@ async fn a_second_kind_taking_the_pane_exits_the_first_record_and_creates_a_seco
     let pane = h.focused_pane(h.client.clone());
     h.set_foreground_for(&pane, Some("claude")).await;
     tokio::time::sleep(A_TICK).await;
+    hooked(&mut h, &pane, AgentKind::Claude, "s1").await;
     let first = one_agent(&mut h).await;
     h.kill_process(first.pid.expect("the observer recorded the pid"))
         .await;
@@ -432,4 +453,57 @@ async fn until_pane_is_gone(h: &mut Harness, pane: &domux_core::ids::PaneId) {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+/// MUX-22: an exited record nothing can be done with goes, rather than sitting in the list
+/// offering a key that refuses.
+///
+/// Two records, both exited, and only the one with a session id stays. The other never reported
+/// a hook, so it cannot be resumed and no hook can bring it back either.
+#[tokio::test]
+async fn an_exited_record_with_no_session_id_is_dropped_and_a_hooked_one_stays() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let first = h.focused_pane(h.client.clone());
+    h.api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .expect("pane.split");
+    let second = h.focused_pane(h.client.clone());
+
+    let bare = h.set_foreground_for(&first, Some("claude")).await;
+    let reported = h.set_foreground_for(&second, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(agents(&mut h).await.len(), 2);
+    hooked(&mut h, &second, AgentKind::Claude, "s1").await;
+
+    h.kill_process(bare).await;
+    h.kill_process(reported).await;
+    h.set_foreground_for(&first, Some("zsh")).await;
+    h.set_foreground_for(&second, Some("zsh")).await;
+    tokio::time::sleep(A_TICK * 2).await;
+
+    let a = one_agent(&mut h).await;
+    assert_eq!(a.state, AgentState::Exited);
+    assert_eq!(
+        a.session_id.as_deref(),
+        Some("s1"),
+        "the record that can come back is the one that stayed"
+    );
+}
+
+/// And a kind that does not resume keeps its row, because that is a gap in this release rather
+/// than a fact about the record: the row says how long ago it went, and `agent.resume` says
+/// which kinds resume yet.
+#[tokio::test]
+async fn an_exited_record_of_a_kind_that_does_not_resume_keeps_its_row() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let pid = h.set_foreground_for(&pane, Some("codex")).await;
+    tokio::time::sleep(A_TICK).await;
+    hooked(&mut h, &pane, AgentKind::Codex, "c1").await;
+    h.kill_process(pid).await;
+    h.set_foreground_for(&pane, Some("zsh")).await;
+    tokio::time::sleep(A_TICK * 2).await;
+    let a = one_agent(&mut h).await;
+    assert_eq!(a.state, AgentState::Exited);
+    assert_eq!(a.session_id.as_deref(), Some("c1"));
 }

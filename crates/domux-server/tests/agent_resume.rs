@@ -447,60 +447,63 @@ async fn auto_resume_at_start_types_one_line_per_pane() {
     );
 }
 
+/// A record the observer made and no hook ever reported on leaves the list when it exits, so
+/// there is nothing left to resume (MUX-22).
+///
+/// It could never have resumed: `agent.resume` needs a session id and this record has none, and
+/// no hook can find it again either, because a returning session is matched by that same id. The
+/// refusal `plan_resume` still carries for it is a guard on a state the prune reaches first.
 #[tokio::test]
-async fn resuming_a_record_with_no_session_id_says_what_is_missing() {
+async fn a_record_the_observer_made_alone_leaves_the_list_when_it_exits() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     let pane = h.focused_pane(h.client.clone());
     let pid = h.set_foreground_for(&pane, Some("claude")).await;
     tokio::time::sleep(A_TICK).await;
     let id = h.agents().await[0].id.clone();
+    assert_eq!(
+        h.agents().await[0].session_id,
+        None,
+        "no hook, no session id"
+    );
     // The process, not the foreground. A record exits when its own process id goes away and
-    // never because something else came to the front, so clearing the foreground alone leaves
-    // this record `unknown`, and `unknown` is live. Without the kill and the tick after it the
-    // refusal below would be the live one, and this test would pass on a message it does not
-    // name.
+    // never because something else came to the front, so clearing the foreground alone would
+    // leave this record `unknown`, and `unknown` is live.
     h.set_foreground_for(&pane, None).await;
     h.kill_process(pid).await;
-    tokio::time::sleep(A_TICK).await;
-    assert_eq!(h.agents().await[0].state, AgentState::Exited);
+    tokio::time::sleep(A_TICK * 2).await;
+    assert!(h.agents().await.is_empty(), "the record went with the exit");
     let err = h
         .api("agent.resume", json!({"agent": id.to_string()}))
         .await
         .unwrap_err();
-    assert_eq!(err.code, ErrorCode::Unavailable);
-    assert_eq!(err.message, "this agent has no session id, so there is nothing to resume; it was seen by the observer and never reported a hook. Run domux2 install claude to install the hooks");
+    assert_eq!(err.code, ErrorCode::NotFound);
     assert!(
         h.pane_input(&pane).is_empty(),
         "a refusal types nothing into the pane"
     );
 }
 
-/// A Codex record the observer made has two reasons it cannot resume: its kind carries no
-/// resume command, and it has no session id. The kind is the one worth reading, because nothing
-/// the reader does about the session id would help, so the kind is asked about first. This pins
-/// that order; without it the two checks could be swapped and every other test would pass.
+/// The kind is asked about before the session id, and the kind is the one worth reading:
+/// nothing the reader does about a session id would make Codex resume in V2.0.
+///
+/// The two reasons no longer meet on one record - a record with no session id leaves the list
+/// as it exits (MUX-22) - so this pins the order the only way that is still reachable: a Codex
+/// record that has a session id and still refuses on its kind.
 #[tokio::test]
-async fn a_kind_that_cannot_resume_says_so_even_when_it_also_has_no_session_id() {
+async fn a_kind_that_cannot_resume_says_so_rather_than_naming_the_session() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     let pane = h.focused_pane(h.client.clone());
-    let pid = h.set_foreground_for(&pane, Some("codex")).await;
-    tokio::time::sleep(A_TICK).await;
+    an_exited(&mut h, &pane, AgentKind::Codex, "c1").await;
     let record = h.agents().await[0].clone();
     assert_eq!(record.kind, AgentKind::Codex);
-    assert_eq!(
-        record.session_id, None,
-        "the observer records no session id"
-    );
-    h.set_foreground_for(&pane, None).await;
-    h.kill_process(pid).await;
-    tokio::time::sleep(A_TICK).await;
+    assert_eq!(record.session_id.as_deref(), Some("c1"));
     let err = h
         .api("agent.resume", json!({"agent": record.id.to_string()}))
         .await
         .unwrap_err();
     assert_eq!(
-        err.message, "codex does not resume yet; only claude does. Start it yourself in its pane",
-        "the kind is asked about before the session id"
+        err.message,
+        "codex does not resume yet; only claude does. Start it yourself in its pane"
     );
 }
 

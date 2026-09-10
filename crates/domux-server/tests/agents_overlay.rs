@@ -162,13 +162,18 @@ async fn the_rows_are_the_three_line_form_with_the_waiting_agent_first() {
     let codex_line = row_holding(&f, "● codex");
     let claude_line = row_holding(&f, "● claude");
     assert!(codex_line < claude_line, "waiting sorts first:\n{f}");
-    // Line 2 is the place **with its tab**, which is what tells the overlay's row form from
-    // the sidebar's: `project › workspace › tab` has two separators where the sidebar's
-    // `project › workspace` has one.
+    // Line 2 is `workspace › tab`, which is what tells the overlay's row form from the
+    // sidebar's: the project is on the header above the group (MUX-21), where the sidebar's
+    // `project › workspace` carries it on the row.
     assert_eq!(
         row(&f, codex_line + 1).matches(" › ").count(),
-        2,
-        "line 2 is the place with its tab:\n{f}"
+        1,
+        "line 2 is the workspace and the tab:\n{f}"
+    );
+    // And the header is above them both, in upper case with a rule to the box's edge.
+    assert!(
+        row(&f, codex_line - 1).contains("PROJ "),
+        "the project heads the group:\n{f}"
     );
     // One blank row between the two agents and nothing else between them (interface spec
     // 6.2): two lines of codex, then the blank, then claude.
@@ -472,7 +477,8 @@ async fn enter_on_an_exited_row_reaches_resume_and_leaves_the_overlay_open() {
 /// `list.down` keeps the filled row in view by moving `ClientView.agents_scroll`, the same way
 /// M2's handlers keep `projects_scroll` (interface spec 12.2). A 12 row screen leaves the box
 /// two lines for rows, once its border and its end pads are off (decision record 0023), which
-/// two agents of two lines each overflow by three.
+/// the project header, two agents of two lines each and the blank between them overflow by
+/// four.
 #[tokio::test]
 async fn list_down_scrolls_the_box_to_keep_the_filled_row_in_view() {
     let mut h = Harness::start(Config::default(), 100, 12).await;
@@ -494,7 +500,7 @@ async fn list_down_scrolls_the_box_to_keep_the_filled_row_in_view() {
         .await;
     assert_eq!(
         h.model().client(&h.client).unwrap().agents_scroll,
-        3,
+        4,
         "the box scrolled to bring the second row in:\n{f}"
     );
     assert!(
@@ -619,7 +625,7 @@ async fn reopening_the_overlay_starts_with_no_filter_and_the_box_at_the_top() {
         .await;
     let view = h.model().client(&h.client).unwrap().clone();
     assert_eq!(view.filter, "claude", "{f}");
-    assert_eq!(view.agents_scroll, 3, "the box is scrolled:\n{f}");
+    assert_eq!(view.agents_scroll, 4, "the box is scrolled:\n{f}");
     // `agents.close` and not Esc: Esc while `/` is open clears the filter itself, and what
     // this is about is the filter that survives the overlay.
     h.api("agents.close", json!({})).await.unwrap();
@@ -700,8 +706,8 @@ async fn the_box_draws_from_the_remembered_scroll_when_the_cursor_names_no_row()
         r#"{"hook_event_name":"SessionEnd","session_id":"c2"}"#,
     )
     .await;
-    // Waiting, then working, then exited (interface spec 6.7): three rows of two lines with a
-    // blank between them, in a box two lines high.
+    // Waiting, then working, then exited (interface spec 6.7): a project header, then three
+    // rows of two lines with a blank between them, in a box two lines high.
     let listed = h.agents().await;
     assert_eq!(listed.len(), 3);
     assert_eq!(listed[2].state, AgentState::Exited);
@@ -713,7 +719,7 @@ async fn the_box_draws_from_the_remembered_scroll_when_the_cursor_names_no_row()
     h.frame(h.client.clone()).await;
     let view = h.model().client(&h.client).unwrap().clone();
     assert_eq!(view.agents_cursor.as_ref(), Some(&doomed));
-    assert_eq!(view.agents_scroll, 6, "the box scrolled to the last row");
+    assert_eq!(view.agents_scroll, 7, "the box scrolled to the last row");
     h.api("agent.dismiss", json!({"agent": doomed.to_string()}))
         .await
         .unwrap();
@@ -726,7 +732,7 @@ async fn the_box_draws_from_the_remembered_scroll_when_the_cursor_names_no_row()
         .await;
     assert_eq!(
         h.model().client(&h.client).unwrap().agents_scroll,
-        6,
+        7,
         "nothing reset the remembered scroll:\n{f}"
     );
     assert!(

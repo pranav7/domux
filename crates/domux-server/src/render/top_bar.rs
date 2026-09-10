@@ -62,23 +62,6 @@ impl Piece {
 /// to read as a message, and the mark that says the rest was cut.
 const RIGHT_FLOOR: usize = 8;
 
-/// `● 3`: the agent list folded to one cell (interface spec 6.8), on a `surface0` fill with
-/// the dot in red. Only while the sidebar is not drawn - `sidebar_visible`, not the
-/// remembered `sidebar_open` intent, because a client auto-hidden on a narrow screen still
-/// draws this bar and has nothing else to show the count in - and only while there is
-/// something to count. Never on a tab: this is the agent list folded, not a tab notification.
-pub fn count_piece(input: &RenderInput) -> Option<Vec<Piece>> {
-    if input.view.sidebar_visible() || input.agents.red_dots == 0 {
-        return None;
-    }
-    let fill = Style::default().bg(theme::SURFACE0);
-    Some(vec![
-        Piece::new(" ", fill),
-        Piece::new("●", fill.fg(theme::RED)),
-        Piece::new(format!(" {} ", input.agents.red_dots), fill.fg(theme::TEXT)),
-    ])
-}
-
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // The buffer is the authority on how wide the bar may be, not the client's reported
     // size: the fill below indexes cells directly, so a width taken from anywhere else
@@ -97,15 +80,9 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let Some(location) = location_label(input) else {
         return;
     };
-    let mut x = area.x;
-    if let Some(pieces) = count_piece(input) {
-        for p in pieces {
-            x = put(buf, x, y, &p.text, p.style);
-        }
-    }
     let x = put(
         buf,
-        x,
+        area.x,
         y,
         &location,
         Style::default()
@@ -151,31 +128,16 @@ pub fn tab_row_of(input: &RenderInput) -> Option<TabRow> {
     Some(TabRow::new(&ws.tabs, current, prompt, pane_focus))
 }
 
-/// The cells the count takes before the location label, and 0 on a bar that draws no count.
-///
-/// Measured by the rule `put` draws by, as the label is: `bar_tab_hit` starts the tab row after
-/// both, so a click lands on the tab the reader sees whether or not the count is there.
-fn count_width(input: &RenderInput) -> usize {
-    count_piece(input)
-        .map(|pieces| {
-            pieces
-                .iter()
-                .map(|p| display_width(&sanitize_for_display(&p.text)))
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
 /// What a click at `column` on the full-width bar's row acts on.
 ///
-/// The tab row starts after the count and the location label, so both are measured by the rule
-/// `put` draws them by: the graphemes they drop are the graphemes `sanitize_for_display` drops.
+/// The tab row starts after the location label, so the label is measured by the rule `put`
+/// draws it by: the graphemes it drops are the graphemes `sanitize_for_display` drops.
 /// Clamped to the screen, because a label wider than the screen leaves the tab row no cells and
 /// `put` stops at the edge.
 pub fn bar_tab_hit(input: &RenderInput, column: u16) -> Option<TabTarget> {
     let right_edge = input.view.size.cols;
     let label = location_label(input)?;
-    let start = count_width(input) + display_width(&sanitize_for_display(&label));
+    let start = display_width(&sanitize_for_display(&label));
     let x = start.min(right_edge as usize) as u16;
     tab_target_at(input, &tab_row_of(input)?, x, right_edge, column)
 }

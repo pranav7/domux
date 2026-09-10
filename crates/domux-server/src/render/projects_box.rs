@@ -22,7 +22,7 @@ const SEP: &str = " · ";
 /// project ends and the next begins without counting blank rows. It is two cells rather than
 /// four because the sidebar has 34 cells of text and a branch line is the widest thing in the
 /// box.
-const INDENT: usize = 2;
+pub(crate) const INDENT: usize = 2;
 
 /// The fewest cells worth spending on a pull request title. Under this the title is dropped
 /// whole, because a title cut to one syllable and an ellipsis says less than the room it
@@ -124,7 +124,7 @@ pub fn rows(
 /// `AUDREY-APP ─────────`: the name in upper case, one space, a rule to the box's edge.
 /// A name too long for the box is shortened like any other (interface spec 5.6), and the
 /// rule then has nothing left to draw.
-fn header(name: &str, width: usize) -> ListRow {
+pub(crate) fn header(name: &str, width: usize) -> ListRow {
     let label = truncate_with_ellipsis(&format!("{} ", name.to_uppercase()), width);
     let rule = "─".repeat(width.saturating_sub(display_width(&label)));
     ListRow::header(vec![Line::from(vec![

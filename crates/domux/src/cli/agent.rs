@@ -11,7 +11,7 @@ use domux_core::api::{
     WorkspaceResumeResult,
 };
 use domux_core::model::agent::AgentKind;
-use domux_server::render::agents_box::{empty_text, DOT, RECAP_GLYPH};
+use domux_server::render::agents_box::{empty_text, RowForm, DOT, RECAP_GLYPH};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 
@@ -136,8 +136,9 @@ pub async fn peek(as_json: bool) -> anyhow::Result<()> {
     let result: AgentListResult = call_as("agent.list", json!({})).await?;
     if result.agents.is_empty() {
         // The sentence both Agents boxes draw, from the one function that writes it: the state
-        // and the next action (principle 9), read one way wherever the reader meets it.
-        eprintln!("{}", empty_text(""));
+        // and the next action (principle 9), read one way wherever the reader meets it. The
+        // overlay's wording, because `peek` lists the exited records too.
+        eprintln!("{}", empty_text("", RowForm::Overlay));
         return Ok(());
     }
     for a in &result.agents {

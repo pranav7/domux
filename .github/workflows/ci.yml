@@ -63,7 +63,7 @@ jobs:
           --test agent_install
           --test agents_overlay
           --test agents_sidebar
-          --test agents_count
+          --test agents_top_bar
           --test agents_animation
         timeout-minutes: 10
       - run: cargo test --workspace --locked

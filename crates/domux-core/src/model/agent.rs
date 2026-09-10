@@ -293,9 +293,16 @@ impl Agent {
             .unwrap_or_else(|| self.kind.as_str().to_string())
     }
 
-    /// Waiting, or unseen: the row's dot is red and the count includes it (interface 6.8).
+    /// Waiting: the agent has asked you something and is stopped until you answer, which is
+    /// the one thing a red dot means.
+    ///
+    /// `unseen` used to count here too, so a record that had merely finished while you were
+    /// looking elsewhere, or had exited, carried the same red dot as one holding a permission
+    /// prompt. Every row in a busy list ended up red and the mark stopped saying anything.
+    /// `unseen` still lifts a row in `sorted_agents` and still brightens its recap; what it no
+    /// longer does is claim the agent is blocked on you.
     pub fn needs_you(&self) -> bool {
-        self.state == AgentState::Waiting || self.unseen
+        self.state == AgentState::Waiting
     }
 }
 

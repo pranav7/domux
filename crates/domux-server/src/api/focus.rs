@@ -59,8 +59,8 @@ pub fn step(ctx: &mut Ctx, _p: ClientParams, dir: Direction) -> Result<Value, Ap
             .map(|(_, rect)| *rect);
         let region = match (size, pane_rect) {
             (Some(size), Some(pane)) => {
-                let (projects, agents, _) = sidebar::split_column(sidebar::sidebar_area(size));
-                sidebar::region_for_rows(as_ratatui(pane), projects, agents)
+                let (_, agents, _) = sidebar::split_for(ctx.model, ctx.facts, size);
+                sidebar::region_for_rows(as_ratatui(pane), agents)
             }
             // No rectangle to measure, which is a tab with no panes. The upper box is where
             // `C-h` went before there were two (interface spec 12.29's tie).
@@ -148,16 +148,26 @@ pub fn next_region(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// function does not draw a cursor for.
 fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
     let workspace = ctx.model.client(client).map(|v| v.workspace.clone());
-    let first_agent = ctx.model.sorted_agents().first().map(|a| a.id.clone());
-    let known = |id: &domux_core::ids::AgentId| ctx.model.agent(id).is_some();
+    // Live, both times. The sidebar's box draws the running records and the agents overlay
+    // draws the exited ones too (MUX-22), and this is the sidebar's box: a cursor kept on a
+    // record that has since exited would mark a row that is not on this screen, which is the
+    // same defect as a cursor on a record that has been dismissed.
+    let live =
+        |id: &domux_core::ids::AgentId| ctx.model.agent(id).is_some_and(|a| a.state.is_live());
+    let first_agent = ctx
+        .model
+        .sorted_agents()
+        .iter()
+        .find(|a| a.state.is_live())
+        .map(|a| a.id.clone());
     let cursor = match ctx
         .model
         .client(client)
         .and_then(|v| v.agents_cursor.clone())
     {
-        Some(held) if known(&held) => Some(held),
-        // No cursor yet, or one naming a record that is gone: the first row (interface spec
-        // 12.32). A cursor on a row the box is not showing marks nothing (principle 2).
+        Some(held) if live(&held) => Some(held),
+        // No cursor yet, or one naming a row the box is not showing: the first row (interface
+        // spec 12.32). A cursor on a row nobody can see marks nothing (principle 2).
         _ => first_agent,
     };
     let Some(view) = ctx.model.client_mut(client) else {

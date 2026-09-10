@@ -49,7 +49,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // keeps the fill on the agent it was on (principle 2).
     let cursor = input.view.agents_cursor.as_ref().map(|id| id.to_string());
     let filled = filled_index(&visible, cursor.as_deref());
-    let empty = agents_box::empty_text(&input.view.filter);
+    let empty = agents_box::empty_text(&input.view.filter, RowForm::Overlay);
     // `clear` and not `frame_at`: a `ListBox` draws its own border, so the agents overlay and
     // the sidebar share one drawing of the Agents box.
     overlay::clear(area, buf);

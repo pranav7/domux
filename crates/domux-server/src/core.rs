@@ -2195,7 +2195,10 @@ impl Core {
     /// not the model still has that pane, and each record keeps the workspace it started in.
     fn agents_gone_with_pane(&mut self, pane: &PaneId) {
         let now = self.deps.clock.now().to_rfc3339();
-        let events = observer::pane_gone(&mut self.model, pane, &now);
+        let mut events = observer::pane_gone(&mut self.model, pane, &now);
+        // The same rule the tick runs, on the same terms: a record that exits and can never be
+        // reached again goes with the exit rather than waiting for a tick to notice (MUX-22).
+        events.extend(observer::prune_unresumable(&mut self.model));
         if self.agents_changed(events) {
             self.view_dirty = true;
         }
@@ -2262,13 +2265,17 @@ impl Core {
         // The agent question, off the same walk: the inspector was asked once and both the
         // pane boxes and the records read that one answer.
         let now = self.deps.clock.now().to_rfc3339();
-        let events = observer::run(
+        let mut events = observer::run(
             &mut self.model,
             &seen,
             &self.agents.manifests,
             self.deps.inspector.as_ref(),
             &now,
         );
+        // After the pass and not inside it: a record the walk above has just exited is one this
+        // may take, and asking here means one rule runs over the whole list however the record
+        // came to be exited (MUX-22).
+        events.extend(observer::prune_unresumable(&mut self.model));
         changed |= self.agents_changed(events);
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
@@ -3071,7 +3078,6 @@ pub(crate) fn agents_view(
 ) -> crate::render::agents_box::AgentsView {
     use crate::render::agents_box::{AgentEntry, AgentsView};
     let glyph = crate::agents::labels::frame_at(state.glyph_tick);
-    let red_dots = model.red_dot_count();
     let sorted = model.sorted_agents();
     let mut entries = Vec::with_capacity(sorted.len());
     for a in sorted {
@@ -3089,8 +3095,10 @@ pub(crate) fn agents_view(
             state: a.state,
             unseen: a.unseen,
             recap: a.recap.clone(),
+            project: crate::agents::context::project_of(model, a),
             place_with_tab: crate::agents::context::place_of(model, a),
             place_without_tab: crate::agents::context::place_without_tab(model, a),
+            place_in_project: crate::agents::context::place_in_project(model, a),
             last_activity_at: a.last_activity_at.clone(),
             word,
         });
@@ -3099,7 +3107,6 @@ pub(crate) fn agents_view(
         agents: entries,
         glyph,
         now,
-        red_dots,
         // One lookup a frame, so an exited row and the sidebar's hint row name the same key
         // for one action (principle 3).
         resume_key: keymap.list_key_for(crate::render::agents_box::RESUME_ACTION),

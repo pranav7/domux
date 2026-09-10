@@ -1957,7 +1957,10 @@ impl Model {
         agents
     }
 
-    /// The number in the top bar: agents with a red dot across every project.
+    /// Agents with a red dot across every project: the number `agent.list` answers with.
+    ///
+    /// It was the top bar's count too until MUX-23 took that off the bar. Nothing on a screen
+    /// reads it now; a caller with a command line still does.
     pub fn red_dot_count(&self) -> usize {
         self.agents.iter().filter(|a| a.needs_you()).count()
     }
@@ -3937,7 +3940,7 @@ mod tests {
     }
 
     #[test]
-    fn sorted_agents_follow_interface_spec_6_7_and_12_28_and_the_count_is_the_red_dots() {
+    fn sorted_agents_follow_interface_spec_6_7_and_12_28_and_the_count_is_the_waiting_ones() {
         let (mut m, ws, _, pane) = model_with_one_tab();
         let mut ids = Vec::new();
         for i in 0..8 {
@@ -4063,8 +4066,9 @@ mod tests {
         );
         assert_eq!(
             m.red_dot_count(),
-            4,
-            "waiting, idle-unseen and both exited ones (exit sets unseen)"
+            1,
+            "the waiting one alone: unseen no longer counts, so an idle record you have not \
+             looked at and an exited one carry no red dot"
         );
     }
 

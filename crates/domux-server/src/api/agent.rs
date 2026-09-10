@@ -75,10 +75,26 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     }
 
     // Recap and session name, re-read on the events the architecture spec names, plus
-    // `SessionStart` so a resumed session shows its recap at once (M3 plan assumption 6).
+    // `SessionStart` so a resumed session shows its recap at once (M3 plan assumption 6), plus
+    // the three MUX-20 added.
+    //
+    // `Notification` is the one that matters: an agent that has stopped to ask you something is
+    // the row you read hardest, and M3 left it showing whatever the last `Stop` had found. The
+    // two compact events come along because a compaction is a gap in the conversation and the
+    // recap on the far side of it is worth re-reading; they cost nothing, being rare.
+    //
+    // `PreToolUse` and `PostToolUse` are deliberately not here. They fire many times a turn
+    // over a transcript the agent is appending to, so the modification time has always moved
+    // and every one of them would read the file whole. The row is turning a glyph while they
+    // arrive, which already says the recap is a turn behind.
     if matches!(
         event,
-        AgentEvent::Stop | AgentEvent::UserPromptSubmit | AgentEvent::SessionStart
+        AgentEvent::Stop
+            | AgentEvent::UserPromptSubmit
+            | AgentEvent::SessionStart
+            | AgentEvent::Notification
+            | AgentEvent::PreCompact
+            | AgentEvent::PostCompact
     ) {
         let source = ctx
             .agents
