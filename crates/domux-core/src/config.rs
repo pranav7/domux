@@ -11,8 +11,8 @@ pub struct Config {
     pub keys: KeysConfig,
     pub terminal: TerminalConfig,
     pub worktrees: WorktreesConfig,
-    pub resume: ResumeConfig,
     pub stay_awake: StayAwakeConfig,
+    pub navigator: NavigatorConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,28 +53,22 @@ pub struct WorktreesConfig {
     pub base: Option<String>,
 }
 
-/// `[resume]` (architecture spec section 9).
+/// `[navigator]` (decision record 0028).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ResumeConfig {
-    pub agents: ResumeMode,
+pub struct NavigatorConfig {
+    /// One list of projects, workspaces and agents, in the sidebar and in the switcher.
+    ///
+    /// `false` restores the separate Projects and Agents boxes and the agents overlay. It is
+    /// here so the author can live with the one list before the two boxes are deleted, and
+    /// decision record 0028 records that deletion as already decided.
+    pub enabled: bool,
 }
 
-impl Default for ResumeConfig {
-    fn default() -> ResumeConfig {
-        ResumeConfig {
-            agents: ResumeMode::Manual,
-        }
+impl Default for NavigatorConfig {
+    fn default() -> NavigatorConfig {
+        NavigatorConfig { enabled: true }
     }
-}
-
-/// `manual`: the author presses Enter on an exited row or runs the resume subcommand.
-/// `auto`: every resumable record is resumed when the server starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResumeMode {
-    Manual,
-    Auto,
 }
 
 /// `[stay_awake]` (architecture spec section 9, renamed by decision 0029).
@@ -255,7 +249,7 @@ pub struct Parsed {
     pub warnings: Vec<ConfigWarning>,
 }
 
-pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees", "resume", "stay_awake"];
+pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees", "stay_awake", "navigator"];
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "keys",
@@ -264,8 +258,8 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("keys.passthrough", &["commands", "keys"]),
     ("terminal", &["shell", "scrollback", "remain_on_exit"]),
     ("worktrees", &["base"]),
-    ("resume", &["agents"]),
     ("stay_awake", &["mode"]),
+    ("navigator", &["enabled"]),
 ];
 
 impl Config {
@@ -312,8 +306,8 @@ impl Config {
             keys,
             terminal: user.terminal,
             worktrees: user.worktrees,
-            resume: user.resume,
             stay_awake: user.stay_awake,
+            navigator: user.navigator,
         };
         Ok(Parsed { config, warnings })
     }
@@ -763,27 +757,14 @@ mod tests {
     }
 
     #[test]
-    fn resume_agents_defaults_to_manual_and_parses_auto() {
-        let c = Config::default();
-        assert_eq!(
-            c.resume.agents,
-            ResumeMode::Manual,
-            "nothing is resumed until someone asks for it"
-        );
-        let p = Config::parse("[resume]\nagents = \"auto\"\n").unwrap();
-        assert_eq!(p.config.resume.agents, ResumeMode::Auto);
-        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
-    }
-
-    #[test]
-    fn an_unknown_resume_mode_names_the_line_and_the_two_values() {
-        let err = Config::parse("[resume]\nagents = \"sometimes\"\n").unwrap_err();
-        assert_eq!(err.line, Some(2));
+    fn the_navigator_is_on_by_default_and_can_be_turned_off() {
         assert!(
-            err.message.contains("manual") && err.message.contains("auto"),
-            "{}",
-            err.message
+            Config::default().navigator.enabled,
+            "one list is what a reader gets without editing anything"
         );
+        let p = Config::parse("[navigator]\nenabled = false\n").unwrap();
+        assert!(!p.config.navigator.enabled);
+        assert!(p.warnings.is_empty(), "{:?}", p.warnings);
     }
 
     #[test]
@@ -836,13 +817,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_key_under_resume_warns_with_its_line_and_keeps_the_rest() {
-        let parsed = Config::parse("[resume]\nagents = \"auto\"\nwhen = \"friday\"\n").unwrap();
-        assert_eq!(parsed.config.resume.agents, ResumeMode::Auto);
+    fn an_unknown_key_under_navigator_warns_with_its_line_and_keeps_the_rest() {
+        let parsed = Config::parse("[navigator]\nenabled = false\nwhen = \"friday\"\n").unwrap();
+        assert!(!parsed.config.navigator.enabled);
         assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
         assert_eq!(
             parsed.warnings[0].0,
-            "unknown key resume.when (line 3) is ignored"
+            "unknown key navigator.when (line 3) is ignored"
         );
     }
 

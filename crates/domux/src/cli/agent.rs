@@ -1,15 +1,11 @@
-//! `agent ...`, `peek`, `whoami`, `resume` and the three messaging verbs M4 fills in.
+//! `agent ...`, `peek`, `whoami` and the three messaging verbs M4 fills in.
 //!
 //! Each one is a single API call to the handler a keybinding reaches, so a key, a subcommand
 //! and an API call are one implementation (architecture spec section 8).
 
-use super::{answer, api_error, call, call_as, location, print_line};
-use anyhow::Context;
+use super::{call, call_as, location, print_line};
 use clap::{Args, Subcommand};
-use domux_core::api::{
-    AgentInfo, AgentListResult, AgentReportResult, AgentResumeResult, ErrorCode, WorkspaceInfo,
-    WorkspaceResumeResult,
-};
+use domux_core::api::{AgentInfo, AgentListResult, AgentReportResult};
 use domux_core::model::agent::AgentKind;
 use domux_server::render::agents_box::{empty_text, RowForm, DOT, RECAP_GLYPH};
 use serde_json::{json, Value};
@@ -37,18 +33,8 @@ pub enum AgentAction {
     },
     /// Switch to an agent's workspace, tab and pane
     Focus {
-        /// An agent id, a workspace with one live agent, or workspace/tab; the default is
-        /// the agent in this pane
-        agent: Option<String>,
-    },
-    /// Take an exited agent's record out of the list
-    Dismiss {
-        /// An agent id, a workspace with one exited agent, or workspace/tab
-        agent: Option<String>,
-    },
-    /// Type an exited agent's relaunch line into the pane it ran in
-    Resume {
-        /// An agent id, a workspace with one exited agent, or workspace/tab
+        /// An agent id, a workspace with one agent, or workspace/tab; the default is the
+        /// agent in this pane
         agent: Option<String>,
     },
 }
@@ -68,19 +54,10 @@ pub async fn run(cmd: AgentCmd) -> anyhow::Result<()> {
         // two spellings are one rendering.
         AgentAction::List { json } => peek(json).await,
         AgentAction::Report { kind } => report(kind).await,
-        // Quiet on success: what a focus did is on the screen, and what a dismiss did is the
-        // record no longer being in the list.
+        // Quiet on success: what a focus did is on the screen.
         AgentAction::Focus { agent } => {
             call("agent.focus", json!({ "agent": agent })).await?;
             Ok(())
-        }
-        AgentAction::Dismiss { agent } => {
-            call("agent.dismiss", json!({ "agent": agent })).await?;
-            Ok(())
-        }
-        AgentAction::Resume { agent } => {
-            let r: AgentResumeResult = call_as("agent.resume", json!({ "agent": agent })).await?;
-            print_line(&resumed_line(&r))
         }
     }
 }
@@ -170,78 +147,6 @@ pub async fn whoami() -> anyhow::Result<()> {
     let pane = location::pane_from_env();
     let a: AgentInfo = call_as("agent.self", json!({ "pane": pane })).await?;
     print_line(&lines_for(&a))
-}
-
-/// `resume [target]`: the exited agents of a workspace, or of every workspace of a project.
-///
-/// With no target it is this shell's workspace, and the view's own when the shell is outside a
-/// pane, which is what the server reads a null workspace as.
-pub async fn resume_target(target: Option<String>) -> anyhow::Result<()> {
-    let mut said_something = false;
-    for workspace in expand_target(target).await? {
-        let r: WorkspaceResumeResult =
-            call_as("workspace.resume", json!({ "workspace": workspace })).await?;
-        for one in &r.resumed {
-            print_line(&resumed_line(one))?;
-            said_something = true;
-        }
-        // The reason each record was left alone, one to a line (principle 9). On standard
-        // error, because the lines that were typed are the data and these are not.
-        for line in &r.skipped {
-            eprintln!("skipped {line}");
-            said_something = true;
-        }
-    }
-    if !said_something {
-        eprintln!("No exited agents to resume.");
-    }
-    Ok(())
-}
-
-/// The workspaces a target names: every workspace of a project when the target is one, and the
-/// target itself otherwise, which `workspace.resume` resolves as a workspace id, handle, name or
-/// branch.
-///
-/// The question "is this string a project" is asked by asking, not answered here.
-/// `workspace.list` takes a project target and puts it through `Model::resolve_project`, whose
-/// rules are an exact id first, then a name without case, and a refusal when a name matches two
-/// projects. A copy of those rules on this side would be a second resolver, and the weaker one
-/// would be the one a reader reaches from a shell.
-///
-/// A target that could name both a project and a workspace is read as the project, because that
-/// is the question asked first. Only `not_found` falls through to the workspace: an ambiguous
-/// project name is the reader's to settle, and reading it as a workspace instead would bury the
-/// refusal that says which two projects it matched.
-///
-/// Reading `not_found` as "then it is a workspace" rests on `resolve_project` being the only
-/// place `workspace.list` can raise that code for a target it was given. It is not the only place
-/// in the method: `api::workspace::info` raises it twice more, on workspace ids `list` collected
-/// from the model a moment earlier, so both are unreachable while the model is self-consistent.
-/// That is unreachability rather than construction, so here is the bound if one ever did fire.
-/// The target would go to `workspace.resume`, which resolves a workspace by the same model and
-/// would refuse it in turn, so the reader gets a status of 1 and a less accurate sentence, never
-/// a resume that quietly did nothing.
-async fn expand_target(target: Option<String>) -> anyhow::Result<Vec<Option<String>>> {
-    let Some(target) = target else {
-        return Ok(vec![location::workspace_from_env()]);
-    };
-    let listed = match answer("workspace.list", json!({ "project": target })).await? {
-        Ok(v) => v,
-        Err(e) if e.code == ErrorCode::NotFound => return Ok(vec![Some(target)]),
-        Err(e) => return Err(api_error(e)),
-    };
-    let workspaces: Vec<WorkspaceInfo> = serde_json::from_value(listed)
-        .context("the server's answer to workspace.list does not match this build")?;
-    Ok(workspaces
-        .into_iter()
-        .map(|w| Some(w.id.to_string()))
-        .collect())
-}
-
-/// What a resume answers with: the record, the pane, and the line that was typed into it. The
-/// line is the fact of the call that no later call reports (architecture spec section 5).
-fn resumed_line(r: &AgentResumeResult) -> String {
-    format!("{} in {}: {}", r.agent, r.pane, r.command)
 }
 
 // `send`, `read` and `wait`: the three messaging verbs the `SessionStart` block names. Their
@@ -380,18 +285,6 @@ mod tests {
         assert_eq!(
             parse_kind("gemini"),
             Err(r#"unknown agent kind "gemini"; expected claude, codex or opencode"#.to_string())
-        );
-    }
-
-    #[test]
-    fn a_resumed_record_prints_its_pane_and_the_line_that_was_typed() {
-        assert_eq!(
-            resumed_line(&AgentResumeResult {
-                agent: AgentId("a_5e21".into()),
-                pane: PaneId("p_8f2a".into()),
-                command: "cd '/repo' && claude --resume 's1'".into(),
-            }),
-            "a_5e21 in p_8f2a: cd '/repo' && claude --resume 's1'"
         );
     }
 }

@@ -148,18 +148,10 @@ pub fn next_region(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// function does not draw a cursor for.
 fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
     let workspace = ctx.model.client(client).map(|v| v.workspace.clone());
-    // Live, both times. The sidebar's box draws the running records and the agents overlay
-    // draws the exited ones too (MUX-22), and this is the sidebar's box: a cursor kept on a
-    // record that has since exited would mark a row that is not on this screen, which is the
-    // same defect as a cursor on a record that has been dismissed.
-    let live =
-        |id: &domux_core::ids::AgentId| ctx.model.agent(id).is_some_and(|a| a.state.is_live());
-    let first_agent = ctx
-        .model
-        .sorted_agents()
-        .iter()
-        .find(|a| a.state.is_live())
-        .map(|a| a.id.clone());
+    // A cursor kept on a record that has since gone would mark a row that is not on this
+    // screen. Every record is live now, so the question is only whether it is still there.
+    let live = |id: &domux_core::ids::AgentId| ctx.model.agent(id).is_some();
+    let first_agent = ctx.model.sorted_agents().first().map(|a| a.id.clone());
     let cursor = match ctx
         .model
         .client(client)

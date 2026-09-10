@@ -18,7 +18,8 @@ use ratatui::text::{Line, Span};
 
 /// The box's title, in the sidebar and in the agents overlay both (principle 14).
 pub const TITLE: &str = "Agents";
-/// Every row starts with one (interface spec 6.1: never empty of dots).
+/// The waiting mark. It is the only dot there is, and a row draws it only while its agent is
+/// waiting on you (decision record 0028).
 pub const DOT: &str = "●";
 /// The recap's glyph.
 pub const RECAP_GLYPH: &str = "※";
@@ -26,16 +27,6 @@ pub const RECAP_GLYPH: &str = "※";
 pub const RECAP_LINES: usize = 2;
 /// Between the name and the activity on line 1 (interface spec 6.2).
 const GAP: &str = "  ";
-/// Between `exited 12 min ago` and the resume key (interface spec 6.2).
-const RESUME_GAP: &str = "   ";
-/// The list action an exited row's resume label names. `Enter` on an agent row switches to
-/// the agent, and resumes it when the row has exited (interface spec 6.8), so it is that one
-/// binding the label reads. Named here once, so the row and the sidebar's hint row cannot
-/// name different keys for one action (principle 3).
-pub const RESUME_ACTION: &str = "list.activate";
-/// The word after the key on an exited row. The sidebar's hint row carries the same pair,
-/// so both surfaces read it from here (interface spec 12.6).
-pub const RESUME_WORD: &str = "resume";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
@@ -43,23 +34,6 @@ pub enum RowForm {
     Sidebar,
     /// Three lines, recap included, exited records among them.
     Overlay,
-}
-
-impl RowForm {
-    /// Whether a record in this state gets a row on this surface.
-    ///
-    /// **The sidebar's box is what is running** (MUX-22). It is on the screen all day beside
-    /// the panes, and every session that ends leaves a row on it, so an afternoon's work
-    /// buried the running agents under an hour of dead ones. The exited records are not lost:
-    /// the agents overlay lists them, and resume and dismiss are both there. Asked here rather
-    /// than at each surface, because `api::list` walks the same rows the sidebar draws and a
-    /// cursor that could rest on a row nobody can see is worse than no cursor at all.
-    fn shows(self, state: AgentState) -> bool {
-        match self {
-            RowForm::Sidebar => state.is_live(),
-            RowForm::Overlay => true,
-        }
-    }
 }
 
 /// One agent, with everything the row needs already looked up, so drawing touches no Model.
@@ -96,10 +70,6 @@ pub struct AgentsView {
     /// This frame's glyph (`labels::frame_at`).
     pub glyph: &'static str,
     pub now: DateTime<Local>,
-    /// The configured key for `RESUME_ACTION`, as hint text, or `None` when the reader has
-    /// bound the action to nothing. The core looks it up once a frame so that this row and
-    /// the sidebar's hint row name one key (principle 3).
-    pub resume_key: Option<String>,
 }
 
 impl AgentsView {
@@ -110,7 +80,6 @@ impl AgentsView {
             agents: Vec::new(),
             glyph: crate::agents::labels::frame_at(0),
             now,
-            resume_key: None,
         }
     }
 }
@@ -158,7 +127,7 @@ pub fn row_key(id: &AgentId) -> String {
 /// the headers by name instead would put a waiting agent below two idle projects.
 pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
     let mut out: Vec<ListRow> = Vec::with_capacity(view.agents.len().saturating_mul(2));
-    let shown = || view.agents.iter().filter(|a| form.shows(a.state));
+    let shown = || view.agents.iter();
     if form == RowForm::Sidebar {
         for a in shown() {
             if !out.is_empty() {
@@ -226,7 +195,7 @@ fn indented(row: ListRow) -> ListRow {
 fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
     let width = width as usize;
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + RECAP_LINES);
-    lines.push(Line::from(line_one(a, view, form, width)));
+    lines.push(Line::from(line_one(a, view, width)));
     lines.push(Line::from(line_two(a, form, width)));
     if form == RowForm::Overlay {
         if let Some(recap) = &a.recap {
@@ -252,27 +221,30 @@ fn filter_text(a: &AgentEntry) -> String {
     out
 }
 
-/// `[dot] [name] [activity]`, two spaces before the activity. The name is what gives way when
-/// the row is too narrow: the activity says what the agent is doing and is short.
-fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> Vec<Span<'static>> {
+/// `[name]  [activity]`, two spaces between them. The name is what gives way when the row is
+/// too narrow: the activity says what the agent is doing and is short.
+///
+/// No leading dot. A dot is drawn only while the agent is waiting, and `activity` puts it in
+/// the slot the working word would have taken, because a waiting agent draws no word and a
+/// mark in front of the name would push that name out of the column every other row keeps it
+/// in (decision record 0028).
+fn line_one(a: &AgentEntry, view: &AgentsView, width: usize) -> Vec<Span<'static>> {
     let label = a
         .name
         .clone()
         .unwrap_or_else(|| a.kind.as_str().to_string());
-    let activity = activity(a, view, form);
+    let activity = activity(a, view);
     let activity_width: usize = activity.iter().map(|s| display_width(&s.content)).sum();
-    let lead = display_width(DOT) + 1;
     let gap = if activity.is_empty() {
         0
     } else {
         display_width(GAP)
     };
-    let room = width.saturating_sub(lead + gap + activity_width);
-    let mut spans = vec![
-        Span::styled(DOT, Style::default().fg(dot_color(a))),
-        Span::raw(" "),
-        Span::styled(truncate_with_ellipsis(&label, room), label_style(a)),
-    ];
+    let room = width.saturating_sub(gap + activity_width);
+    let mut spans = vec![Span::styled(
+        truncate_with_ellipsis(&label, room),
+        label_style(a),
+    )];
     if !activity.is_empty() {
         spans.push(Span::raw(GAP));
         spans.extend(activity);
@@ -281,10 +253,10 @@ fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> V
 }
 
 /// The name in `text` bold, a kind standing in for one in the agent's colour, and both dimmed
-/// on an exited or unknown row (interface spec 6.2).
+/// on an unknown row (interface spec 6.2).
 fn label_style(a: &AgentEntry) -> Style {
     match a.state {
-        AgentState::Exited | AgentState::Unknown => Style::default().fg(theme::OVERLAY0),
+        AgentState::Unknown => Style::default().fg(theme::OVERLAY0),
         _ if a.name.is_some() => Style::default()
             .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
@@ -294,40 +266,23 @@ fn label_style(a: &AgentEntry) -> Style {
     }
 }
 
-/// The activity, present only when it adds something (interface spec 6.2). A waiting or idle
-/// row stops after the name, because "waiting" and "idle" are what the dot already says.
-fn activity(a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'static>> {
+/// What the row says after the name, and the only place a state is written down.
+///
+/// One slot, five answers. Working and compacting turn a glyph beside their word. Waiting is
+/// the red dot, and it is the only dot in the box: the agent has asked you something and is
+/// stopped until you answer. Idle says nothing, because nothing is happening and "idle" would
+/// be a word for the absence of one (principle 5). Unknown says so, because an agent domux can
+/// see and cannot hear is a fact worth reporting rather than a quiet row.
+fn activity(a: &AgentEntry, view: &AgentsView) -> Vec<Span<'static>> {
     match a.state {
         AgentState::Working => working(view.glyph, a.word, theme::agent_color(a.kind)),
         AgentState::Compacting => working(view.glyph, "Compacting", theme::COMPACTING),
-        AgentState::Exited => {
-            let ago = relative_time(&a.last_activity_at, view.now);
-            // A timestamp that would not parse leaves the row saying `exited` and no more,
-            // rather than an age nobody measured (principle 4).
-            let since = if ago.is_empty() {
-                "exited".to_string()
-            } else {
-                format!("exited {ago}")
-            };
-            let mut spans = vec![Span::styled(since, Style::default().fg(theme::OVERLAY1))];
-            // The sidebar has no room for the key; its hint row carries it while the cursor
-            // is on the row (interface spec 12.6). A key the reader has bound to nothing
-            // drops the label rather than naming a key that does nothing, which is what
-            // `overlay::footer` does with the same question (principle 3).
-            if let (RowForm::Overlay, Some(key)) = (form, &view.resume_key) {
-                spans.push(Span::raw(RESUME_GAP));
-                spans.push(Span::styled(
-                    format!("{key} {RESUME_WORD}"),
-                    Style::default().fg(theme::BLUE),
-                ));
-            }
-            spans
-        }
+        AgentState::Waiting => vec![Span::styled(DOT, Style::default().fg(theme::RED))],
         AgentState::Unknown => vec![Span::styled(
             "unknown",
             Style::default().fg(theme::OVERLAY0),
         )],
-        AgentState::Waiting | AgentState::Idle => Vec::new(),
+        AgentState::Idle => Vec::new(),
     }
 }
 
@@ -393,13 +348,13 @@ fn recap_lines(recap: &str, a: &AgentEntry, width: usize) -> Vec<Vec<Span<'stati
 }
 
 /// Bright while the agent is working, waiting, compacting or unseen; `subtext0` once you have
-/// seen it or it has exited (interface spec 6.2).
+/// seen it (interface spec 6.2).
 fn recap_color(a: &AgentEntry) -> Color {
-    let live = matches!(
+    let busy = matches!(
         a.state,
         AgentState::Working | AgentState::Waiting | AgentState::Compacting
     );
-    if a.unseen || live {
+    if a.unseen || busy {
         theme::RECAP
     } else {
         theme::RECAP_SEEN
@@ -441,22 +396,6 @@ fn wrap(text: &str, room: usize) -> Vec<String> {
         lines.push(truncate_with_ellipsis(&words[at..].join(" "), room));
     }
     lines
-}
-
-/// The dot's colour is the state, and nothing else (interface spec 6.4).
-///
-/// Red means one thing: the agent asked you something and is stopped until you answer.
-/// `unseen` used to win over the state here, which made the dot red on a record that had
-/// merely finished while you were looking elsewhere, and on every exited record. In a list of
-/// a dozen sessions almost every row was red and the mark said nothing. `unseen` still lifts a
-/// row in the sort order and still brightens its recap; it no longer colours the dot.
-fn dot_color(a: &AgentEntry) -> Color {
-    match a.state {
-        AgentState::Waiting => theme::RED,
-        AgentState::Working => theme::agent_color(a.kind),
-        AgentState::Compacting => theme::COMPACTING,
-        AgentState::Idle | AgentState::Exited | AgentState::Unknown => theme::OVERLAY0,
-    }
 }
 
 /// `12 min ago`, the way the artboard writes it. Both sides are instants, so a record stamped

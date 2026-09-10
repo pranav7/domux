@@ -11,7 +11,6 @@ use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use chrono::{DateTime, Local};
 use domux_core::api::{ApiError, ErrorCode, Event, Method, Request, Response};
-use domux_core::config::ResumeMode;
 use domux_core::facts::{Fact, FactKey, FactState};
 use domux_core::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use domux_core::keymap::Action;
@@ -575,7 +574,6 @@ impl Core {
             core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
         }
         core.take_the_hold_the_state_file_remembers();
-        core.resume_agents_on_start();
         core.pending_events.push(Event::ServerStarted {
             version: domux_core::VERSION.into(),
             socket: core.socket_path.clone(),
@@ -613,73 +611,6 @@ impl Core {
             Err(e) => {
                 tracing::warn!("stay awake was on when this server last stopped, and the hold could not be taken again: {e}");
                 self.model.stay_awake = false;
-            }
-        }
-    }
-
-    /// `[resume] agents = "auto"`: every record the server starts holding gets its relaunch line
-    /// typed into its pane (architecture spec section 5). `manual` is the default and this does
-    /// nothing.
-    ///
-    /// At start only, and not on every attach (plan assumption 30). A reader who attaches a
-    /// second terminal to a running server has not asked for anything to be relaunched, and
-    /// resuming on attach would type a second `claude --resume` into a pane where the first one
-    /// is already running.
-    ///
-    /// One `workspace.resume` per workspace, which is every record the model holds: a record's
-    /// workspace is one the model has, because `state_file::restore` drops a record whose
-    /// workspace is gone rather than restoring it dangling.
-    ///
-    /// **`workspace.resume` and not one `agent.resume` per record**, because resuming a set of
-    /// records is not the same operation as resuming one, and the difference is a rule that has to
-    /// live in one place: a pane takes one relaunch line, so a set has to keep the first record for
-    /// each pane and skip the rest. That rule needs to know what the loop has already typed, which
-    /// `agent.resume` cannot know and `plan_resume` must not, so it belongs to a loop - and one
-    /// loop is better than two copies of it.
-    ///
-    /// It carries no filter of what may be resumed either, and for the same reason: one rule, one
-    /// home. `agent::plan_resume` is the one judge, `workspace.resume` collects its refusals, and a
-    /// live record reaching this would produce a skipped line rather than a write. That does not
-    /// lean on `state_file::restore` exiting every live record it reads, which is that function's
-    /// behaviour today rather than a promise to this one.
-    ///
-    /// This runs after the pane loop above because the line goes into a shell, and until each
-    /// pane has been spawned there is no shell to type into.
-    ///
-    /// Everything it could not do is logged, because there is nobody to tell: no client has
-    /// attached - `Core::new` returns before `socket::listen` runs - so there is no screen for a
-    /// pill and no caller waiting for a reply.
-    fn resume_agents_on_start(&mut self) {
-        if self.config.config.resume.agents != ResumeMode::Auto {
-            return;
-        }
-        let workspaces: Vec<WorkspaceId> = self
-            .model
-            .projects
-            .iter()
-            .flat_map(|p| p.workspaces.iter())
-            .map(|w| w.id.clone())
-            .collect();
-        for workspace in workspaces {
-            let method = Method::WorkspaceResume(domux_core::api::WorkspaceTargetParams {
-                workspace: Some(workspace.to_string()),
-            });
-            match self.dispatch(method, None) {
-                Ok(value) => {
-                    for line in value
-                        .get("skipped")
-                        .and_then(|s| s.as_array())
-                        .map(|s| s.as_slice())
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|line| line.as_str())
-                    {
-                        tracing::info!(workspace = %workspace, "not resumed at start: {line}");
-                    }
-                }
-                Err(e) => {
-                    tracing::info!(workspace = %workspace, "not resumed at start: {}", e.message)
-                }
             }
         }
     }
@@ -1254,7 +1185,7 @@ impl Core {
     /// starts after that count.
     pub fn hit_at(&mut self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
         let now = self.deps.clock.now();
-        let agents = agents_view(&self.model, &mut self.agents, &self.config.keymap, now);
+        let agents = agents_view(&self.model, &mut self.agents, now);
         let view = self.model.client(client)?;
         let input = RenderInput {
             model: &self.model,
@@ -1722,15 +1653,9 @@ impl Core {
     /// record, its number, its name and its tabs are what a clear keeps, and the rest of the
     /// work all happened on disk.
     ///
-    /// Those records go because a clear puts the slot back at its base, so the work the
-    /// sessions that ended there were about is gone too (M3 plan assumption 32; the
-    /// architecture spec says an exited record stays "until you dismiss it or clear the
-    /// workspace").
-    ///
-    /// **Here rather than in `api::workspace::clear`**, which is where the plan put it. That
-    /// handler only queues the job: it does not know yet whether the slot will be reset, and a
-    /// clear the job refuses - a dirty tree without `--yes` is the common one - would have
-    /// taken the records with it and left the work in place.
+    /// **No record goes.** A clear keeps the workspace and its panes, so every agent running
+    /// in the slot is still running and still owns its record. It used to take the records
+    /// whose session was over, and decision record 0028 left none of those to take.
     ///
     /// The event still goes out, because a subscriber cannot see the disk: `workspace.cleared`
     /// carries the base the slot was put back at, which is the one thing about the reset that
@@ -1742,8 +1667,6 @@ impl Core {
         name: String,
         base: String,
     ) -> Result<serde_json::Value, ApiError> {
-        let gone = self.dismiss_exited_agents_of(&workspace);
-        self.pending_events.extend(gone);
         self.pending_events
             .push(Event::WorkspaceCleared { workspace, base });
         self.set_pill(client.as_ref(), format!("Cleared {name}"), true);
@@ -1751,58 +1674,10 @@ impl Core {
         api::ok(domux_core::api::Ack { ok: true })
     }
 
-    /// Dismisses every record of a workspace whose session is over, as a clear does.
-    ///
-    /// **Exited only.** A clear keeps the workspace and its panes, so an agent running in the
-    /// slot is still running, and taking its record would destroy the session id, the recap
-    /// and the name a resume needs. The observer would then put a bare record in its place:
-    /// a live, resumable session made unresumable because the reader reset a worktree. The
-    /// spec's sentence is about how long an exited record lasts, not a licence over a live
-    /// one. A delete is the other case and takes everything, because the workspace itself is
-    /// gone.
-    ///
-    /// `Model::dismiss_agent` rather than a removal of its own: taking away an exited record
-    /// is one operation, and this is a clear asking for it once per record.
-    ///
-    /// Of the two caches `forget_agent_caches` drops below, only the transcript is ever there
-    /// on this route: the filter takes records whose session is over, and such a record holds
-    /// no working word, for the reason `api::agent::dismiss` sets out. The word half is live
-    /// on the other caller, `forget_agent_caches_of`, which a delete uses and which takes
-    /// working records too.
-    ///
-    /// That choice leaves the filter and the removal as two guards over one rule, and the
-    /// removal's is the stronger: `dismiss_agent` refuses a live record on its own, so
-    /// deleting the filter here would not let one through. The filter is what says which
-    /// records a clear is asking about, and it is what keeps the `Err` arm below unreached -
-    /// without it every live agent in the slot would log a warning on every clear, which is a
-    /// normal outcome reported as a failure.
-    fn dismiss_exited_agents_of(&mut self, workspace: &WorkspaceId) -> Vec<Event> {
-        let doomed: Vec<(AgentId, Option<PathBuf>)> = self
-            .model
-            .agents_in_workspace(workspace)
-            .into_iter()
-            .filter(|a| !a.state.is_live())
-            .map(|a| (a.id.clone(), a.transcript_path.clone()))
-            .collect();
-        let mut events = Vec::new();
-        for (id, transcript) in doomed {
-            // Both of `dismiss_agent`'s refusals are unreachable here: every id came from the
-            // model a line ago, and the filter already excluded a live record. Written as a
-            // match rather than an `expect` so a clear cannot panic the core if that ever
-            // stops being true.
-            match self.model.dismiss_agent(&id) {
-                Ok(dismissed) => events.extend(dismissed),
-                Err(e) => tracing::warn!("clearing {workspace}: {id} was not dismissed: {e}"),
-            }
-            self.forget_agent_caches(&id, transcript.as_deref());
-        }
-        events
-    }
-
     /// Drops the working word and the cached transcript keyed to a record that has just gone.
-    /// `api::agent::dismiss` does the same for the record it removes and says why: an agent id
-    /// is never reissued, so nothing will ever ask for either again, and the pool of working
-    /// words is finite, so a word never released is a slot lost for the life of the server.
+    /// An agent id is never reissued, so nothing will ever ask for either again, and the pool
+    /// of working words is finite, so a word never released is a slot lost for the life of the
+    /// server.
     fn forget_agent_caches(&mut self, agent: &AgentId, transcript: Option<&Path>) {
         self.agents.forget_record(agent, transcript);
     }
@@ -2260,11 +2135,9 @@ impl Core {
     /// that is gone. The records are found by the pane they hold, so this answers whether or
     /// not the model still has that pane, and each record keeps the workspace it started in.
     fn agents_gone_with_pane(&mut self, pane: &PaneId) {
-        let now = self.deps.clock.now().to_rfc3339();
-        let mut events = observer::pane_gone(&mut self.model, pane, &now);
+        let events = observer::pane_gone(&mut self.model, pane);
         // The same rule the tick runs, on the same terms: a record that exits and can never be
         // reached again goes with the exit rather than waiting for a tick to notice (MUX-22).
-        events.extend(observer::prune_unresumable(&mut self.model));
         if self.agents_changed(events) {
             self.view_dirty = true;
         }
@@ -2331,17 +2204,13 @@ impl Core {
         // The agent question, off the same walk: the inspector was asked once and both the
         // pane boxes and the records read that one answer.
         let now = self.deps.clock.now().to_rfc3339();
-        let mut events = observer::run(
+        let events = observer::run(
             &mut self.model,
             &seen,
             &self.agents.manifests,
             self.deps.inspector.as_ref(),
             &now,
         );
-        // After the pass and not inside it: a record the walk above has just exited is one this
-        // may take, and asking here means one rule runs over the whole list however the record
-        // came to be exited (MUX-22).
-        events.extend(observer::prune_unresumable(&mut self.model));
         changed |= self.agents_changed(events);
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
@@ -2751,7 +2620,7 @@ impl Core {
         // One view for every client on this server: the agent list is the same list
         // wherever it is drawn, and the glyph is the core's frame, not each client's.
         let now = self.deps.clock.now();
-        let agents = agents_view(&self.model, &mut self.agents, &self.config.keymap, now);
+        let agents = agents_view(&self.model, &mut self.agents, now);
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
@@ -3169,7 +3038,6 @@ fn slot_directory(root: &Path, slot: u32) -> PathBuf {
 pub(crate) fn agents_view(
     model: &Model,
     state: &mut crate::agents::AgentsState,
-    keymap: &domux_core::keymap::Keymap,
     now: DateTime<Local>,
 ) -> crate::render::agents_box::AgentsView {
     use crate::render::agents_box::{AgentEntry, AgentsView};
@@ -3205,7 +3073,6 @@ pub(crate) fn agents_view(
         now,
         // One lookup a frame, so an exited row and the sidebar's hint row name the same key
         // for one action (principle 3).
-        resume_key: keymap.list_key_for(crate::render::agents_box::RESUME_ACTION),
     }
 }
 
@@ -3278,8 +3145,7 @@ fn param_client(method: &Method) -> Option<ClientId> {
         SwitcherOpen(p) | SwitcherClose(p) | SidebarToggle(p) | SidebarShow(p) | SidebarHide(p)
         | ListDown(p) | ListUp(p) | ListActivate(p) | ListFilter(p) | AgentsOpen(p)
         | AgentsClose(p) | FocusNextRegion(p) => p.client.clone(),
-        AgentGet(p) | AgentFocus(p) | AgentDismiss(p) => p.client.clone(),
-        AgentResume(p) => p.client.clone(),
+        AgentGet(p) | AgentFocus(p) => p.client.clone(),
         ServerInfo(_)
         | ServerStop(_)
         | EventsSubscribe(_)
@@ -3291,7 +3157,6 @@ fn param_client(method: &Method) -> Option<ClientId> {
         | WorkspaceClear(_)
         | WorkspaceDelete(_)
         | WorkspaceClearName(_)
-        | WorkspaceResume(_)
         | AgentList(_)
         | AgentSelf(_)
         | AgentReport(_)
@@ -5455,7 +5320,7 @@ mod tests {
     /// the pool turns on, and it is the same function.
     fn drawn(core: &mut Core) -> crate::render::agents_box::AgentsView {
         let now = core.deps.clock.now();
-        agents_view(&core.model, &mut core.agents, &core.config.keymap, now)
+        agents_view(&core.model, &mut core.agents, now)
     }
 
     /// A core and the pane its implicit workspace starts with, for a hook to report from.

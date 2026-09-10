@@ -39,7 +39,7 @@ enum Command {
     Workspace(cli::workspace::WorkspaceCmd),
     /// Register a path as a project and switch to it
     Open(cli::open::OpenCmd),
-    /// Agents: list, report, focus, dismiss, resume
+    /// Agents: list, get, report, focus
     Agent(cli::agent::AgentCmd),
     /// Every agent: kind, place, state, recap
     Peek {
@@ -49,11 +49,6 @@ enum Command {
     },
     /// This pane's agent: project, workspace, tab and pane
     Whoami,
-    /// Resume the exited agents of a workspace or a project
-    Resume {
-        /// A workspace or a project; the default is this shell's workspace
-        target: Option<String>,
-    },
     /// Send a message to an agent. Messaging arrives in M4
     Send(cli::agent::SendCmd),
     /// Read an agent's last output. Messaging arrives in M4
@@ -88,7 +83,6 @@ async fn main() {
         Some(Command::Agent(c)) => cli::agent::run(c).await,
         Some(Command::Peek { json }) => cli::agent::peek(json).await,
         Some(Command::Whoami) => cli::agent::whoami().await,
-        Some(Command::Resume { target }) => cli::agent::resume_target(target).await,
         Some(Command::Send(c)) => cli::agent::send(c).await,
         Some(Command::Read(c)) => cli::agent::read(c).await,
         Some(Command::Wait(c)) => cli::agent::wait(c).await,

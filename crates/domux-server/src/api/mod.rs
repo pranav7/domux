@@ -283,7 +283,6 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         WorkspaceFocus(p) => workspace::focus(ctx, p),
         WorkspaceRename(p) => workspace::rename(ctx, p),
         WorkspaceClearName(p) => workspace::clear_name(ctx, p),
-        WorkspaceResume(p) => workspace::resume(ctx, p),
         ListDown(p) => list::down(ctx, p),
         ListUp(p) => list::up(ctx, p),
         ListActivate(p) => list::activate(ctx, p),
@@ -298,8 +297,6 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         AgentSelf(p) => agent::self_(ctx, p),
         AgentReport(p) => agent::report(ctx, p),
         AgentFocus(p) => agent::focus(ctx, p),
-        AgentDismiss(p) => agent::dismiss(ctx, p),
-        AgentResume(p) => agent::resume(ctx, p),
         AgentSend(_) => Err(ApiError::unavailable(
             "agent.send arrives with messaging in M4 and is not built yet",
         )),

@@ -1,17 +1,13 @@
 //! `agent.*`: the records namespace. `agents.*` (Task 14) opens the overlay that lists them.
 
 use super::{ok, Ctx};
-// `crate::agents::resume` is named in full below rather than imported: the handler in this
-// file is called `resume` too, and one of the two would have to be renamed to something it is
-// not.
 use crate::agents::{context, hooks, manifests::RecapSource};
 use domux_core::api::{
-    Ack, AgentInfo, AgentListParams, AgentListResult, AgentReportParams, AgentReportResult,
-    AgentResumeParams, AgentResumeResult, AgentSelfParams, AgentTargetParams, ApiError,
-    FocusResult,
+    AgentInfo, AgentListParams, AgentListResult, AgentReportParams, AgentReportResult,
+    AgentSelfParams, AgentTargetParams, ApiError, FocusResult,
 };
-use domux_core::ids::{AgentId, PaneId};
-use domux_core::model::agent::{Agent, AgentEvent, AgentState, Liveness};
+use domux_core::ids::AgentId;
+use domux_core::model::agent::{Agent, AgentEvent};
 use domux_core::model::{AgentReportOutcome, Model};
 use domux_core::names::BIN_NAME;
 use serde_json::Value;
@@ -42,20 +38,14 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     };
     let now = ctx.deps.clock.now().to_rfc3339();
     let AgentReportOutcome {
-        agent,
-        from,
-        to,
-        events,
-        ..
+        agent, to, events, ..
     } = ctx.model.report_agent(&pane, p.kind, parsed, &now)?;
-    // `Model::report_agent` leaves a record whose session is over alone for every hook but
-    // `SessionStart`, down to its last activity time (M3 plan assumption 7), and says so by
-    // answering `exited` to `exited`. So nothing below may touch that record either: a hook
-    // that arrives after the session ended must not rewrite its recap or its session name,
-    // which outlive the session and are what the exited row shows.
-    let applied = from != AgentState::Exited || to != AgentState::Exited;
-    // Any events it did produce belong to another record it exited on the way, so they
-    // travel and the screen changed even when this record did not.
+    // `to` is `None` when the report ended the session, in which case `Model::report_agent`
+    // has already removed the record. Nothing below may run: there is no row left to write a
+    // recap or a session name onto (decision record 0028).
+    let applied = to.is_some();
+    // Any events it did produce belong to another record it ended on the way, so they travel
+    // and the screen changed even when this record did not.
     let changed = applied || !events.is_empty();
     // Every record these events touched, and not only the one the hook named. A report exits
     // the record whose pane a new session took, and that record was working and holding a
@@ -63,16 +53,16 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     // about its own record still displaced the other one.
     ctx.agents.release_words_of(&events);
     ctx.events.extend(events);
-    // The Agents box, the agents overlay and the top bar's count all read the records, and
-    // nothing turns an event into a redraw, so a report that changed one says so here.
+    // The Navigator reads the records and nothing turns an event into a redraw, so a report
+    // that changed one says so here.
     ctx.view_dirty |= changed;
-    if !applied {
+    let Some(to) = to else {
         return ok(AgentReportResult {
             agent: Some(agent),
-            state: Some(to),
+            state: None,
             context: None,
         });
-    }
+    };
 
     // Recap and session name, re-read on the events the architecture spec names, plus
     // `SessionStart` so a resumed session shows its recap at once (M3 plan assumption 6), plus
@@ -198,10 +188,10 @@ pub fn list(ctx: &mut Ctx, p: AgentListParams) -> Result<Value, ApiError> {
 
 /// One record, named the way every `agent.*` target is named.
 ///
-/// `Liveness::Any`: this reads a record rather than acting on it, and the exited ones are
+/// This reads a record rather than acting on it, and the ones
 /// exactly what a reader asks about after a session ends.
 pub fn get(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
-    let id = resolve(ctx, &p, Liveness::Any)?;
+    let id = resolve(ctx, &p)?;
     let model: &Model = ctx.model;
     // Reachable: `resolve` also answers from the calling client's Agents box cursor, which
     // holds an agent id and can outlive the record it named.
@@ -224,7 +214,7 @@ pub fn self_(ctx: &mut Ctx, p: AgentSelfParams) -> Result<Value, ApiError> {
     })?;
     let model: &Model = ctx.model;
     let a = model
-        .live_agent_on_pane(&pane)
+        .agent_on_pane(&pane)
         .ok_or_else(|| ApiError::not_found("no agent is running in this pane"))?;
     ok(info_for(model, a))
 }
@@ -238,7 +228,7 @@ pub fn self_(ctx: &mut Ctx, p: AgentSelfParams) -> Result<Value, ApiError> {
 /// `Liveness::Live`: an exited record has no pane, so a workspace form that answered one would
 /// resolve to a record this refuses two lines later.
 pub fn focus(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
-    let id = resolve(ctx, &p, Liveness::Live)?;
+    let id = resolve(ctx, &p)?;
     let client = ctx.view()?;
     let agent = ctx.model.agent(&id).ok_or_else(|| {
         ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
@@ -280,165 +270,12 @@ pub fn focus(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
 /// never ran it are the same state in the list. That is the honest answer: domux typed a
 /// command, it did not start an agent, and only the hook can say one is running (principle 4).
 ///
-/// Nothing here clears the record's dot either. The dot means "something changed since you last
-/// looked", and what changed about this record is that it exited - which is still true after the
-/// line is typed and stays true until the hook says the session is back.
-pub fn resume(ctx: &mut Ctx, p: AgentResumeParams) -> Result<Value, ApiError> {
-    // `AgentResumeParams` carries no pane, so this is the target or the calling client's
-    // cursor. A record is resumed by name or by the row you are looking at; the pane you happen
-    // to be typing in does not name one, because the record that would answer for it is the
-    // live agent there and a live agent is exactly what this refuses.
-    //
-    // `Liveness::Exited` for the same reason: the workspace and `workspace/tab` forms name the
-    // records this can act on, which are the ones whose session is over.
-    let id = resolve(
-        ctx,
-        &AgentTargetParams {
-            agent: p.agent,
-            pane: None,
-            client: p.client,
-        },
-        Liveness::Exited,
-    )?;
-    let (command, pane) = plan_resume(ctx, &id)?;
-    // One carriage return, which is what Enter sends: the shell reads the whole thing as one
-    // line and runs it, and the line is in the history afterwards.
-    ctx.write_to_pane(&pane, format!("{command}\r").as_bytes())?;
-    ok(AgentResumeResult {
-        agent: id,
-        pane,
-        command,
-    })
-}
-
-/// The line and the pane to type it into, or the reason there is neither. Shared with
-/// `workspace.resume`, which collects these refusals instead of stopping at one.
-///
-/// The order of the four refusals is the order the reader can act on them. A live record is
-/// asking for the wrong verb. A kind that does not resume in V2.0 cannot be helped by anything
-/// the reader does, so it is next, and it comes before the session id because a Codex record
-/// with no session id has two reasons and only one of them is worth reading. A missing session
-/// id is fixable by installing the hooks, which the message says. A pane that is gone is last,
-/// because it is the only one where the line exists and there is nowhere to put it.
-pub(crate) fn plan_resume(ctx: &Ctx, id: &AgentId) -> Result<(String, PaneId), ApiError> {
-    let agent = ctx.model.agent(id).ok_or_else(|| {
-        ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
-    })?;
-    // Refused rather than not found, and it names the verb that does work: the record is
-    // there, it is just already running. The mirror image of `focus`, which refuses an exited
-    // record and names this one.
-    if agent.state.is_live() {
-        return Err(ApiError::refused(format!(
-            "agent {id} is {}, not exited; open it with {BIN_NAME} agent focus {id}",
-            agent.state
-        )));
-    }
-    let manifest = ctx
-        .agents
-        .manifests
-        .for_kind(agent.kind)
-        .ok_or_else(|| ApiError::internal(format!("no manifest for {}", agent.kind)))?;
-    if manifest.resume_command.is_none() {
-        return Err(ApiError::unavailable(format!(
-            "{} {}",
-            agent.kind,
-            crate::agents::resume::RESUME_UNAVAILABLE
-        )));
-    }
-    let session = agent.session_id.as_deref().ok_or_else(|| {
-        ApiError::unavailable(format!(
-            "this agent has no session id, so there is nothing to resume; it was seen by the observer and never reported a hook. Run {BIN_NAME} install {} to install the hooks",
-            agent.kind
-        ))
-    })?;
-    // `last_pane` and not `pane`: an exited record has no pane, and the point of resume is to
-    // put the agent back where it was working.
-    let pane = agent.last_pane.clone().ok_or_else(|| {
-        ApiError::not_found(
-            "this agent never ran in a pane domux knows, so there is nowhere to type the line",
-        )
-    })?;
-    if ctx.model.pane(&pane).is_none() {
-        return Err(ApiError::not_found(format!(
-            "pane {pane} is gone; open a pane and run the command yourself"
-        )));
-    }
-    // The pane has to be free, and this is the question that says so. Resume types a line and
-    // submits it with a carriage return; a pane with a live agent in it is not at a shell prompt,
-    // so the line would arrive as a message in that agent's conversation - text the reader never
-    // typed, in a session that is not the one being resumed.
-    //
-    // Reachable in ordinary use, because a record keeps its `last_pane` when it exits
-    // (`Model::exit_record` clears `pane` and not `last_pane`, which is what resume types into).
-    // Exit claude in a pane, start another agent there, and the first record still names that
-    // pane. The agent found here is always a different record: this function has already refused
-    // a live one, so the record being resumed is exited and holds no `pane` of its own.
-    if let Some(running) = ctx.model.live_agent_on_pane(&pane) {
-        return Err(ApiError::refused(format!(
-            "{} is running in pane {pane}, so the line would go into its prompt instead of a shell; close it and resume again",
-            running.kind
-        )));
-    }
-    let command =
-        crate::agents::resume::resume_line(manifest, session, &agent.cwd).ok_or_else(|| {
-            ApiError::internal("the manifest carries a resume command and no process name")
-        })?;
-    Ok((command, pane))
-}
-
-/// Removes an exited record from the list. `Model::dismiss_agent` refuses a live one.
-///
-/// `Liveness::Exited`, so the workspace and `workspace/tab` forms name the records this can
-/// act on rather than the ones it is about to refuse.
-pub fn dismiss(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
-    let id = resolve(ctx, &p, Liveness::Exited)?;
-    // Read before the record goes, and used only after the refusal has had its chance: a
-    // path read afterwards is always absent, so the cached transcript would outlive every
-    // record that could ever ask for it again.
-    let transcript = ctx.model.agent(&id).and_then(|a| a.transcript_path.clone());
-    let events = ctx.model.dismiss_agent(&id)?;
-    // The word and the transcript were keyed to a record that no longer exists, and an agent
-    // id is never reissued, so nothing will ask for either again. The word goes through the
-    // one rule that reads these events; the transcript is keyed by path, which no event
-    // carries, so it is dropped here.
-    //
-    // **The word half frees nothing today, and it is kept anyway.** `Model::dismiss_agent`
-    // refuses a live record, and every path that leaves the record in the list frees the word
-    // on the way, so a record that can be dismissed is one that holds none. Not every path out
-    // of `working`: a removal takes the record with it, and `api::project::remove` and
-    // `Core::workspace_deleted` free the word themselves for exactly that reason. The three
-    // paths that leave a record behind are held by
-    // `a_stop_hook_gives_the_working_word_back_to_the_pool`,
-    // `a_pane_that_exits_gives_back_the_working_words_of_its_agents` and
-    // `a_session_that_takes_a_pane_gives_back_the_word_of_the_one_it_displaced`. The last of
-    // those was a real leak until Task 17, which is the argument for keeping this: the pool is
-    // 186 words, an agent id is never reissued, and a slot lost here is lost for the life of
-    // the server, so a change that makes this path reachable must not depend on someone
-    // remembering to add the release back. `dismissing_a_record_gives_its_working_word_back_
-    // to_the_pool` puts a word in the pool by hand to hold the intent.
-    ctx.agents.release_words_of(&events);
-    if let Some(path) = transcript {
-        ctx.agents.recaps.forget(&path);
-    }
-    ctx.events.extend(events);
-    ctx.view_dirty = true;
-    ok(Ack { ok: true })
-}
-
-/// `agent` names a record, a workspace with one agent `want` accepts, or `workspace/tab`. With
-/// no `agent`, the pane the caller is in, then the cursor row of the calling client's Agents
-/// box.
-///
-/// `want` reaches the workspace forms only. The pane holds a live record by definition, and
-/// the cursor row is the row the reader is looking at whatever state it is in; both answer one
-/// record, so the verb's own refusal names the state and says which verb to use instead, which
-/// a not-found from here could not.
-fn resolve(ctx: &Ctx, p: &AgentTargetParams, want: Liveness) -> Result<AgentId, ApiError> {
+fn resolve(ctx: &Ctx, p: &AgentTargetParams) -> Result<AgentId, ApiError> {
     if let Some(target) = &p.agent {
-        return ctx.model.resolve_agent_target(target, want);
+        return ctx.model.resolve_agent_target(target);
     }
     if let Some(pane) = &p.pane {
-        if let Some(a) = ctx.model.live_agent_on_pane(pane) {
+        if let Some(a) = ctx.model.agent_on_pane(pane) {
             return Ok(a.id.clone());
         }
     }
@@ -454,7 +291,6 @@ fn resolve(ctx: &Ctx, p: &AgentTargetParams, want: Liveness) -> Result<AgentId, 
         }
     }
     Err(ApiError::invalid_params(format!(
-        "name an agent: an agent id, a workspace with one {}agent, or workspace/tab; run {BIN_NAME} peek for the list",
-        want.adjective()
+        "name an agent: an agent id, a workspace with one agent, or workspace/tab; run {BIN_NAME} peek for the list"
     )))
 }
