@@ -2067,6 +2067,28 @@ async fn install_apply_creates_the_file_when_there_is_none() {
     assert!(written.contains("agent report --agent claude"), "{written}");
 }
 
+/// The hook command is the symlink in `~/bin` when there is one, because it survives a rebuild
+/// that moves the executable (M3 plan assumption 16). Every other install test falls through to
+/// the running binary, so this is the only place the branch that runs on a real machine is taken.
+#[tokio::test]
+async fn install_writes_the_symlink_path_when_one_is_in_bin() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("bin")).unwrap();
+    let linked = home.path().join("bin/domux2");
+    std::fs::write(&linked, "#!/bin/sh\n").unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!("{} agent report --agent claude", linked.display())),
+        "the symlink, not the running binary: {text}"
+    );
+}
+
 #[tokio::test]
 async fn install_names_the_three_kinds_when_asked_for_another() {
     let home = tempfile::tempdir().unwrap();
