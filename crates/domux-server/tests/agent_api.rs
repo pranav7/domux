@@ -328,6 +328,51 @@ async fn a_dot_survives_reading_the_records_and_working_in_another_pane() {
     assert!(!any_unseen(&mut h).await, "and this one is");
 }
 
+/// Unseen clears on focus and on input, and on nothing else. Enter on a pane whose child
+/// exited is input to that pane, and closing it hands the tab's focus to a neighbour, so the
+/// key must not reach the neighbour's agent: the reader cleared a dead pane away and never
+/// looked at the record next door. The last two lines do the one thing that does clear it, so
+/// this cannot pass by nothing ever clearing a dot.
+///
+/// The pane that dies holds no record of its own, which is the point: a record there would
+/// take a dot from exiting and get it cleared by the same key, and either outcome would leave
+/// something unseen in the model whichever pane the clearing read.
+#[tokio::test]
+async fn closing_an_exited_pane_leaves_the_dot_of_the_agent_in_the_next_one() {
+    let mut cfg = Config::default();
+    cfg.terminal.remain_on_exit = true;
+    let mut h = Harness::start(cfg, 80, 24).await;
+    let shell = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let b = h.focused_pane(h.client.clone());
+    h.report(b.clone(), AgentKind::Codex, START_CODEX).await;
+    h.api("pane.focus", json!({"pane": shell.to_string()}))
+        .await
+        .unwrap();
+    h.report(b.clone(), AgentKind::Codex, CODEX_WAITS).await;
+    assert!(codex_of(&mut h).await.unseen, "waiting set the dot");
+
+    // The pane the keys are on dies, and Enter closes it. Focus lands on pane b, which is
+    // where the dot is.
+    h.exit_pane(shell.clone(), Some(0)).await;
+    h.key(h.client.clone(), "Enter").await;
+    h.api("server.info", json!({})).await.unwrap();
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        b,
+        "closing the dead pane moved the keys to pane b"
+    );
+    assert!(
+        codex_of(&mut h).await.unseen,
+        "the key was aimed at the dead pane, so the record in pane b is still unseen"
+    );
+
+    h.api("pane.focus", json!({"pane": b.to_string()}))
+        .await
+        .unwrap();
+    assert!(!codex_of(&mut h).await.unseen, "and focusing it clears it");
+}
+
 #[tokio::test]
 async fn agent_dismiss_removes_an_exited_record_and_refuses_a_live_one() {
     let mut h = Harness::start(Config::default(), 80, 24).await;

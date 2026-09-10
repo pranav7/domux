@@ -1086,12 +1086,19 @@ impl Core {
     /// is reading that pane. Presses only: a release arrives after whichever key it belongs
     /// to and always routes to the pane, so clearing on one would take the dot away for
     /// `leader a` as well.
+    ///
+    /// The pane is read **before** the routing, because the routing can move the focus off it.
+    /// Enter on a pane whose child exited closes that pane, and `Model::close_pane` hands the
+    /// tab's focus to a neighbour, so reading it afterwards named a pane the key never reached
+    /// and cleared the dot of whatever agent was in it. That is a signal the reader never
+    /// looked at, gone with no trace and no way back.
     fn key(&mut self, client: &ClientId, key: domux_term::KeyEvent) {
         self.clear_notes_read_by(client, &key);
         let press = key.action != domux_term::KeyAction::Release;
+        let aimed_at = self.focused_pane(client);
         let route = crate::input::route_key(self, client, key);
         if press && route == crate::input::Route::Pane {
-            if let Some(pane) = self.focused_pane(client) {
+            if let Some(pane) = aimed_at {
                 self.seen_by_input(&pane);
             }
         }
