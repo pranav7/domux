@@ -211,6 +211,15 @@ pub async fn resume_target(target: Option<String>) -> anyhow::Result<()> {
 /// is the question asked first. Only `not_found` falls through to the workspace: an ambiguous
 /// project name is the reader's to settle, and reading it as a workspace instead would bury the
 /// refusal that says which two projects it matched.
+///
+/// Reading `not_found` as "then it is a workspace" rests on `resolve_project` being the only
+/// place `workspace.list` can raise that code for a target it was given. It is not the only place
+/// in the method: `api::workspace::info` raises it twice more, on workspace ids `list` collected
+/// from the model a moment earlier, so both are unreachable while the model is self-consistent.
+/// That is unreachability rather than construction, so here is the bound if one ever did fire.
+/// The target would go to `workspace.resume`, which resolves a workspace by the same model and
+/// would refuse it in turn, so the reader gets a status of 1 and a less accurate sentence, never
+/// a resume that quietly did nothing.
 async fn expand_target(target: Option<String>) -> anyhow::Result<Vec<Option<String>>> {
     let Some(target) = target else {
         return Ok(vec![location::workspace_from_env()]);
