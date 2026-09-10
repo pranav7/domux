@@ -5,6 +5,7 @@
 //! reads or writes the author's own home directory.
 
 use domux_core::model::agent::AgentKind;
+use domux_server::agents::hooks::EVENTS_OPENCODE;
 use domux_server::agents::install::{
     apply, backup_path, hook_command, is_v1_line, is_v2_line, opencode_plugin, plan, preview,
 };
@@ -356,20 +357,21 @@ fn opencode_writes_a_plugin_that_posts_the_payload_domux_reads() {
         js.contains("session_id") && js.contains("cwd"),
         "the payload carries the fields the adapter reads:\n{js}"
     );
-    // Every OpenCode event `agents::hooks::parse_opencode` maps to a domux event.
-    for event in [
-        "session.created",
-        "tool.execute.before",
-        "tool.execute.after",
-        "message.updated",
-        "permission.asked",
-        "permission.replied",
-        "session.idle",
-        "session.error",
-        "session.deleted",
-    ] {
+    // Every OpenCode event `agents::hooks::parse_opencode` maps to a domux event. The list is
+    // the one the adapter and its fixtures walk, so the three cannot come apart.
+    for event in EVENTS_OPENCODE {
         assert!(js.contains(event), "{event} is missing from the plugin");
     }
+    // The adapter reads `message` as a string and answers absent for anything else, so the
+    // plugin sends text rather than whatever the event carried.
+    assert!(
+        js.contains("message: messageText(input?.message)"),
+        "the payload's message goes through the helper:\n{js}"
+    );
+    assert!(
+        js.contains(r#"typeof message === "string""#) && js.contains("JSON.stringify(message)"),
+        "the helper passes a string through and turns anything else into text:\n{js}"
+    );
 }
 
 #[test]

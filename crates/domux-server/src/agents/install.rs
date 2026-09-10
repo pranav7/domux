@@ -418,14 +418,31 @@ pub fn opencode_plugin(bin: &Path) -> String {
 
 /// The plugin below the line that names the binary. OpenCode runs on Bun, so the plugin spawns
 /// the command and writes the payload to its standard input, as V1's plugin does.
+///
+/// `messageText` is why the plugin has a helper at all. `agents::hooks::string` answers absent
+/// for a field that is not a JSON string, and it is right to: the rule is never to fabricate a
+/// value the payload did not carry. So a `message` that arrives as an object reaches the record
+/// as no reason, and the reason of a permission request is exactly what M4's toast reads. The
+/// plugin is domux's own file, so it is the end that owes the adapter a string, and JSON text is
+/// the one form that keeps whatever the event carried without guessing at a field inside it.
 const PLUGIN_BODY: &str = r#"
+function messageText(message) {
+  if (message === null || message === undefined) return null
+  if (typeof message === "string") return message
+  try {
+    return JSON.stringify(message) ?? null
+  } catch {
+    return null
+  }
+}
+
 async function report(event, input) {
   try {
     const payload = JSON.stringify({
       hook_event_name: event,
       session_id: input?.sessionID ?? input?.session?.id ?? null,
       cwd: input?.directory ?? process.cwd(),
-      message: input?.message ?? null,
+      message: messageText(input?.message),
     })
     const proc = Bun.spawn([domux, "agent", "report", "--agent", "opencode"], {
       stdin: "pipe",

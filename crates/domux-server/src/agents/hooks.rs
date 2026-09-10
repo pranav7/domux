@@ -36,6 +36,26 @@ pub const EVENTS_CODEX: [&str; 7] = [
     "Stop",
 ];
 
+/// The OpenCode events the generated plugin emits, in the order it lists them: its two tool
+/// handlers, then the seven its `event` switch takes.
+///
+/// OpenCode has no hooks file, so nothing installs these; the plugin is domux's own file
+/// (`agents::install::opencode_plugin`) and this is the list it and `parse_opencode` share. The
+/// tests walk it, so an event added to the plugin without a fixture is a failure rather than a
+/// gap: `session.error` was in the plugin and in the adapter with no fixture, and the loop that
+/// looked complete covered eight of nine.
+pub const EVENTS_OPENCODE: [&str; 9] = [
+    "tool.execute.before",
+    "tool.execute.after",
+    "session.created",
+    "message.updated",
+    "permission.asked",
+    "permission.replied",
+    "session.idle",
+    "session.error",
+    "session.deleted",
+];
+
 /// A hook payload that could not become a report. The Claude, Codex and OpenCode names carry
 /// their reason in prose, not their variant name, so a caller can log or print it as is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,8 +357,14 @@ mod tests {
             ("permission_asked", Some(AgentEvent::Notification)),
             ("permission_replied", Some(AgentEvent::PostToolUse)),
             ("session_idle", Some(AgentEvent::Stop)),
+            ("session_error", Some(AgentEvent::Stop)),
             ("session_deleted", Some(AgentEvent::SessionEnd)),
         ];
+        assert_eq!(
+            cases.len(),
+            EVENTS_OPENCODE.len(),
+            "one fixture per event the plugin emits"
+        );
         for (name, expected) in cases {
             assert_eq!(
                 parse(AgentKind::Opencode, &fixture("opencode", name))
@@ -348,6 +374,34 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// A permission request is what an OpenCode reason is for, and the plugin is what has to
+    /// send one: `string` answers absent for a value that is not a string, so a `message` that
+    /// arrives as an object leaves the record with no reason at all. Nothing renders `reason`
+    /// in M3, so this is the pin that says what the plugin owes the adapter.
+    #[test]
+    fn an_opencode_permission_request_carries_its_message_as_the_reason() {
+        let r = parse(
+            AgentKind::Opencode,
+            &fixture("opencode", "permission_asked"),
+        )
+        .unwrap();
+        assert_eq!(
+            r.reason.as_deref(),
+            Some("opencode wants to edit src/auth.ts")
+        );
+        let r = parse(AgentKind::Opencode, &fixture("opencode", "session_idle")).unwrap();
+        assert_eq!(r.reason, None, "only a permission request has a reason");
+        let r = parse(
+            AgentKind::Opencode,
+            r#"{"hook_event_name":"permission.asked","session_id":"s","message":{"title":"edit"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.reason, None,
+            "a message that is not a string is absent, which is why the plugin sends text"
+        );
     }
 
     #[test]
