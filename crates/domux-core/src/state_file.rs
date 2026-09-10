@@ -84,8 +84,7 @@ pub fn v4_to_v5(v: &mut Value) -> Result<(), String> {
 
 /// Migrations from version N to N+1, in order. M1 had none; M2 adds the sidebar; M3 adds
 /// agents; stay awake adds its flag; and 5 takes the agents away again.
-pub const MIGRATIONS: &[Migration] =
-    &[(1, v1_to_v2), (2, v2_to_v3), (3, v3_to_v4), (4, v4_to_v5)];
+pub const MIGRATIONS: &[Migration] = &[(1, v1_to_v2), (2, v2_to_v3), (3, v3_to_v4), (4, v4_to_v5)];
 
 pub fn snapshot(model: &Model, saved_at: &str) -> StateFile {
     StateFile {

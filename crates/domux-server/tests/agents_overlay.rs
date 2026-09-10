@@ -14,6 +14,17 @@ use domux_server::testing::{row, Harness};
 use serde_json::json;
 use std::time::Duration;
 
+/// The agents overlay is the surface `[navigator] enabled = false` keeps: with the Navigator on
+/// there is one list and `leader a` does nothing (decision record 0028). Every test in this file
+/// is about the overlay, so every one of them turns the Navigator off.
+///
+/// It goes when the two boxes go, and this file goes with it.
+fn two_boxes() -> Config {
+    let mut config = Config::default();
+    config.navigator.enabled = false;
+    config
+}
+
 const CLAUDE_STARTS: &str = r#"{"hook_event_name":"SessionStart","session_id":"c1"}"#;
 const CLAUDE_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"c1"}"#;
 const CODEX_STARTS: &str = r#"{"hook_event_name":"SessionStart","session_id":"x1"}"#;
@@ -101,7 +112,7 @@ fn style_at(frame: &str, y: usize, x: usize) -> String {
 
 #[tokio::test]
 async fn leader_a_opens_one_box_with_a_footer_and_the_cursor_on_the_first_row() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     h.key(h.client.clone(), "C-a").await;
     h.key(h.client.clone(), "a").await;
@@ -146,7 +157,7 @@ async fn leader_a_opens_one_box_with_a_footer_and_the_cursor_on_the_first_row() 
 
 #[tokio::test]
 async fn the_rows_are_the_three_line_form_with_the_waiting_agent_first() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     let f = open_overlay(&mut h).await;
     let codex_line = row_holding(&f, "codex ");
@@ -176,7 +187,7 @@ async fn the_rows_are_the_three_line_form_with_the_waiting_agent_first() {
 
 #[tokio::test]
 async fn j_and_k_move_the_cursor_and_enter_opens_the_agents_pane_and_clears_unseen() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     let (first, _) = two_agents(&mut h).await;
     let waiting = h.agents().await[0].id.clone();
     // Away from the codex's own pane, so the dot it carries is still there to be cleared.
@@ -243,7 +254,7 @@ async fn j_and_k_move_the_cursor_and_enter_opens_the_agents_pane_and_clears_unse
 
 #[tokio::test]
 async fn esc_closes_the_overlay_and_gives_focus_back_to_the_pane() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     let before = h.focused_pane(h.client.clone());
     open_overlay(&mut h).await;
@@ -266,7 +277,7 @@ async fn esc_closes_the_overlay_and_gives_focus_back_to_the_pane() {
 /// keystroke and the key and the call reach one handler.
 #[tokio::test]
 async fn agents_close_closes_the_overlay_and_gives_focus_back_to_the_pane() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     let before = h.focused_pane(h.client.clone());
     open_overlay(&mut h).await;
@@ -287,7 +298,7 @@ async fn agents_close_closes_the_overlay_and_gives_focus_back_to_the_pane() {
 
 #[tokio::test]
 async fn slash_filters_the_box_and_esc_restores_the_footer() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.key(h.client.clone(), "/").await;
@@ -325,7 +336,7 @@ async fn slash_filters_the_box_and_esc_restores_the_footer() {
 
 #[tokio::test]
 async fn a_filter_with_no_matches_says_so_and_offers_the_key_that_clears_it() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.key(h.client.clone(), "/").await;
@@ -349,7 +360,7 @@ async fn a_filter_with_no_matches_says_so_and_offers_the_key_that_clears_it() {
 
 #[tokio::test]
 async fn with_no_agents_the_box_says_so_and_names_how_to_get_one() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     let f = open_overlay(&mut h).await;
     assert!(
         f.contains("No agents yet. Start claude or codex in a pane."),
@@ -359,7 +370,7 @@ async fn with_no_agents_the_box_says_so_and_names_how_to_get_one() {
 
 #[tokio::test]
 async fn the_overlay_is_centred_between_60_and_120_columns_and_three_rows_down() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     let f = open_overlay(&mut h).await;
     let top = row_holding(&f, "┌ Agents");
@@ -404,7 +415,7 @@ async fn the_overlay_is_centred_between_60_and_120_columns_and_three_rows_down()
 /// four.
 #[tokio::test]
 async fn list_down_scrolls_the_box_to_keep_the_filled_row_in_view() {
-    let mut h = Harness::start(Config::default(), 100, 12).await;
+    let mut h = Harness::start(two_boxes(), 100, 12).await;
     two_agents(&mut h).await;
     let f = open_overlay(&mut h).await;
     assert_eq!(
@@ -436,7 +447,7 @@ async fn list_down_scrolls_the_box_to_keep_the_filled_row_in_view() {
 /// alone, the way `switcher.close` does.
 #[tokio::test]
 async fn agents_close_leaves_another_overlay_alone() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     h.api("switcher.open", json!({})).await.unwrap();
     let f = h
@@ -464,7 +475,7 @@ async fn agents_close_leaves_another_overlay_alone() {
 /// whose row is nowhere on the screen.
 #[tokio::test]
 async fn n_in_the_agents_overlay_names_the_clients_own_workspace_and_not_a_projects_row() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     let mine = h.model().client(&h.client).unwrap().workspace.clone();
     // A second project, so the Projects cursor has somewhere to go that is not the client's
@@ -532,7 +543,7 @@ async fn n_in_the_agents_overlay_names_the_clients_own_workspace_and_not_a_proje
 /// it, would hide the agent the reader came for.
 #[tokio::test]
 async fn reopening_the_overlay_starts_with_no_filter_and_the_box_at_the_top() {
-    let mut h = Harness::start(Config::default(), 100, 12).await;
+    let mut h = Harness::start(two_boxes(), 100, 12).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.key(h.client.clone(), "j").await;
@@ -571,7 +582,7 @@ async fn reopening_the_overlay_starts_with_no_filter_and_the_box_at_the_top() {
 /// the API can reach this: an open overlay takes every key, and `a` is not in `[keys.list]`.
 #[tokio::test]
 async fn the_overlay_opens_over_another_and_gives_it_back_when_it_closes() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
@@ -611,7 +622,7 @@ async fn the_overlay_opens_over_another_and_gives_it_back_when_it_closes() {
 /// it and every key the reader presses goes into that field.
 #[tokio::test]
 async fn reopening_after_a_switch_out_of_the_filter_comes_back_with_the_keys_row() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.api("list.filter", json!({})).await.unwrap();
@@ -647,7 +658,7 @@ async fn reopening_after_a_switch_out_of_the_filter_comes_back_with_the_keys_row
 /// placed last is gone rather than merely late.
 #[tokio::test]
 async fn help_inside_the_box_lists_the_box_keys_first_after_the_help_has_been_closed_once() {
-    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 24).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.key(h.client.clone(), "?").await;

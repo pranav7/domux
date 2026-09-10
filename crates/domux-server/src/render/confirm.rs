@@ -382,6 +382,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, 24));
         for cell in buf.content.iter_mut() {

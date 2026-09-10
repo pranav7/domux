@@ -1024,6 +1024,8 @@ impl Core {
             projects_cursor: None,
             projects_scroll: 0,
             agents_cursor: None,
+            navigator_cursor: None,
+            navigator_scroll: 0,
             agents_scroll: 0,
             filtering: false,
             input: domux_core::model::TextInput::new(""),
@@ -1200,6 +1202,7 @@ impl Core {
             notes: &self.notes,
             stay_awake: self.stay_awake.on(),
             toast: self.toast.as_ref(),
+            navigator: self.config.config.navigator.enabled,
         };
         render::hit_at(&input, column, row)
     }
@@ -2638,6 +2641,7 @@ impl Core {
                 notes: &self.notes,
                 stay_awake: self.stay_awake.on(),
                 toast: self.toast.as_ref(),
+                navigator: self.config.config.navigator.enabled,
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -3059,6 +3063,7 @@ pub(crate) fn agents_view(
             state: a.state,
             unseen: a.unseen,
             recap: a.recap.clone(),
+            workspace: a.workspace.clone(),
             project: crate::agents::context::project_of(model, a),
             place_with_tab: crate::agents::context::place_of(model, a),
             place_without_tab: crate::agents::context::place_without_tab(model, a),
@@ -3071,8 +3076,6 @@ pub(crate) fn agents_view(
         agents: entries,
         glyph,
         now,
-        // One lookup a frame, so an exited row and the sidebar's hint row name the same key
-        // for one action (principle 3).
     }
 }
 

@@ -10,7 +10,7 @@ use domux_core::api::{
 use domux_core::facts::{FactKey, FACT_BRANCH, FACT_PR};
 use domux_core::ids::{ProjectId, WorkspaceId};
 use domux_core::model::{
-    ConfirmKind, Focus, Overlay, ProjectKind, RegionKind, TextInput, WorkspaceHandle,
+    ConfirmKind, Focus, Overlay, ProjectKind, RegionKind, RowTarget, TextInput, WorkspaceHandle,
     MAIN_CANNOT_BE_DELETED,
 };
 use serde_json::Value;
@@ -709,8 +709,18 @@ impl Ctx<'_> {
             .model
             .client(&client)
             .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
-        match &view.projects_cursor {
-            Some(cursor) if super::list::in_a_projects_box(self, &client) => Ok(cursor.clone()),
+        // The Navigator's cursor rests on either kind of row, and only a workspace row answers
+        // here: `leader N` on an agent row names the workspace that agent runs in, which is the
+        // row above it and the one this client would rename anyway (decision record 0028).
+        let cursor = match self.config.config.navigator.enabled {
+            true => view.navigator_cursor.as_ref().and_then(|c| match c {
+                RowTarget::Workspace(w) => Some(w.clone()),
+                RowTarget::Agent(a) => self.model.agent(a).map(|a| a.workspace.clone()),
+            }),
+            false => view.projects_cursor.clone(),
+        };
+        match cursor {
+            Some(cursor) if super::list::in_a_projects_box(self, &client) => Ok(cursor),
             _ => Ok(view.workspace.clone()),
         }
     }

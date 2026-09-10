@@ -6,7 +6,7 @@ pub mod focus;
 pub mod layout;
 
 pub use agent::{transition, Agent, AgentEvent, AgentKind, AgentReport, AgentSource, AgentState};
-pub use focus::{ConfirmKind, Focus, Overlay, PromptKind, RegionKind, TextInput};
+pub use focus::{ConfirmKind, Focus, Overlay, PromptKind, RegionKind, RowTarget, TextInput};
 pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir};
 
 use crate::api::{ApiError, Event};
@@ -302,6 +302,17 @@ pub struct ClientView {
     /// when the cursor leaves the view.
     #[serde(default)]
     pub agents_scroll: u16,
+    /// The row the keys act on in the Navigator, which lists workspaces and the agents
+    /// running in them, so its cursor holds either (decision record 0028).
+    ///
+    /// Its own field rather than a widened `projects_cursor`, because the two boxes the
+    /// `[navigator]` key turns back on keep their own cursors until they are deleted.
+    #[serde(default)]
+    pub navigator_cursor: Option<RowTarget>,
+    /// The first visible line inside the Navigator, as `projects_scroll` is beside
+    /// `projects_cursor`.
+    #[serde(default)]
+    pub navigator_scroll: u16,
     /// True while `/` is being typed into. `filter` holds the text either way.
     #[serde(default)]
     pub filtering: bool,
@@ -2076,6 +2087,8 @@ mod tests {
             projects_scroll: 0,
             agents_cursor: None,
             agents_scroll: 0,
+            navigator_cursor: None,
+            navigator_scroll: 0,
             filtering: false,
             input: TextInput::new(""),
             overlay_under: None,

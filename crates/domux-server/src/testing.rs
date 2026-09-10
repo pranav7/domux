@@ -1118,6 +1118,8 @@ pub fn client_view() -> ClientView {
         projects_cursor: None,
         projects_scroll: 0,
         agents_cursor: None,
+        navigator_cursor: None,
+        navigator_scroll: 0,
         agents_scroll: 0,
         filtering: false,
         input: TextInput::new(""),

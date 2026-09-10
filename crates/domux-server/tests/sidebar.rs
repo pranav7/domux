@@ -58,7 +58,7 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     // `cols(line, 0, 37)` takes 38 cells, the sidebar's whole width.
     assert_eq!(
         cols(row(&f, 0), 0, 37),
-        "┌ Projects ──────────────────────────┐",
+        "┌ Navigator ─────────────────────────┐",
         "{f}"
     );
     assert_eq!(
@@ -165,7 +165,7 @@ async fn a_screen_narrower_than_the_sidebar_plus_a_pane_hides_it_without_forgett
         .await;
     assert_eq!(
         cols(row(&f, 0), 0, 37),
-        "┌ Projects ──────────────────────────┐",
+        "┌ Navigator ─────────────────────────┐",
         "the sidebar the reader asked for, on a screen that would not show it alone:\n{f}"
     );
     let result = h
@@ -471,7 +471,7 @@ async fn asking_for_the_sidebar_on_a_narrow_screen_leaves_another_narrow_client_
         .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     assert!(
-        f.contains("┌ Projects"),
+        f.contains("┌ Navigator"),
         "the client that asked gets it at 119 columns:\n{f}"
     );
     let g = h.frame(other).await;
@@ -526,7 +526,7 @@ async fn a_client_that_did_not_ask_keeps_no_override_across_another_clients_show
     );
     let g = h.wait_for(wide, on_the_panes, Duration::from_secs(2)).await;
     assert!(
-        g.contains("┌ Projects"),
+        g.contains("┌ Navigator"),
         "while the wide client that asked has it:\n{g}"
     );
 }

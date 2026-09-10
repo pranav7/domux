@@ -1249,7 +1249,7 @@ async fn in_the_sidebar_box(h: &mut Harness) {
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -1331,7 +1331,7 @@ async fn x_in_the_switcher_asks_the_same_question_over_the_overlay_it_was_presse
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;

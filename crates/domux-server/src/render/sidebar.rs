@@ -8,7 +8,7 @@
 use crate::render::agents_box::{self, RowForm};
 use crate::render::boxed::{put, put_within};
 use crate::render::list_box::{content_width, filter_rows, text_area, ListBox, SIDEBAR_PAD};
-use crate::render::projects_box::{filled_index, rows, Extras, PROJECTS_TITLE};
+use crate::render::projects_box::{filled_index, rows, Extras};
 use crate::render::top_bar::Piece;
 use crate::render::{theme, RenderInput};
 use domux_core::model::{ClientView, Focus, RegionKind, SIDEBAR_WIDTH};
@@ -90,6 +90,7 @@ pub fn wanted_projects_height(
         "",
         None,
         Extras::compact(content_width(width, SIDEBAR_PAD)),
+        None,
     );
     let lines = built
         .rows
@@ -103,12 +104,33 @@ pub fn wanted_projects_height(
 ///
 /// Every caller goes through it - the drawing, the pointer and the two handlers that walk these
 /// rows - so nobody measures the split a second way (principle 14).
+/// **With the Navigator on there is one box and it takes the column**, so the height the
+/// Projects box would have asked for is not measured at all: `agents` comes back empty and
+/// nothing draws into it (decision record 0028). The two-box split below it is what the
+/// `[navigator]` key turns back on, and it goes when that key does.
 pub fn split_for(
     model: &domux_core::model::Model,
     facts: &crate::facts::FactRegistry,
     size: Size,
+    navigator: bool,
 ) -> (Rect, Rect, Rect) {
     let column = sidebar_area(size);
+    if navigator {
+        let hint = Rect::new(
+            column.x,
+            column.y + column.height.saturating_sub(HINT_ROW_HEIGHT),
+            column.width,
+            HINT_ROW_HEIGHT.min(column.height),
+        );
+        let box_area = Rect::new(
+            column.x,
+            column.y,
+            column.width,
+            column.height.saturating_sub(HINT_ROW_HEIGHT),
+        );
+        let none = Rect::new(column.x, hint.y, column.width, 0);
+        return (box_area, none, hint);
+    }
     split_column(column, wanted_projects_height(model, facts, column.width))
 }
 
@@ -117,8 +139,9 @@ pub fn projects_area(
     model: &domux_core::model::Model,
     facts: &crate::facts::FactRegistry,
     size: Size,
+    navigator: bool,
 ) -> Rect {
-    split_for(model, facts, size).0
+    split_for(model, facts, size, navigator).0
 }
 
 /// Which box a pane occupying `pane`'s rows enters on `C-h`: the Agents box when the pane
@@ -172,7 +195,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
     // key and hands back where it put the fill, so the band and the brightening cannot land
     // on different rows.
     let key = match focused {
-        true => input.view.projects_cursor.as_ref().map(|w| w.as_str()),
+        true => input.list_cursor(),
         false => None,
     }
     .unwrap_or(input.view.workspace.as_str());
@@ -191,6 +214,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         filter,
         Some(key),
         Extras::compact(content_width(area.width, SIDEBAR_PAD)),
+        input.navigator.then_some(input.agents),
     );
     (built, focused)
 }
@@ -198,7 +222,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
 /// The workspace whose row is at `row` of the screen, or `None` for a header, a blank, the box's
 /// border, the hint row, or a row past the end of the list.
 pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
-    let area = projects_area(input.model, input.facts, input.view.size);
+    let area = projects_area(input.model, input.facts, input.view.size, input.navigator);
     let (built, _) = built_rows(input, area);
     let inner = text_area(area, SIDEBAR_PAD);
     let scroll = crate::render::list_box::scroll_to_show(
@@ -218,7 +242,8 @@ pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::Wo
 /// The two boxes in the sidebar's column, with the hint row under them.
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let column = sidebar_area(input.view.size);
-    let (projects, agents, hint) = split_for(input.model, input.facts, input.view.size);
+    let (projects, agents, hint) =
+        split_for(input.model, input.facts, input.view.size, input.navigator);
     // The column's own rectangle first, the way `overlay::frame` clears before drawing its
     // box. `ListBox` paints its border and the text of each row, and leaves the cells after a
     // row's text as it found them, so the region has to be cleared by whoever owns it. The
@@ -226,7 +251,11 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // `hint_row` clears its own.
     clear(column, buf);
     draw_projects(input, projects, buf);
-    draw_agents(input, agents, buf);
+    // One box with the Navigator on, so there is nothing under it to draw (decision record
+    // 0028) and `agents` is the empty rectangle `split_for` hands back.
+    if !input.navigator {
+        draw_agents(input, agents, buf);
+    }
     hint_row(input, hint, buf);
 }
 
@@ -248,11 +277,11 @@ fn draw_projects(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         domux_core::names::BIN_NAME
     );
     ListBox {
-        title: PROJECTS_TITLE,
+        title: crate::render::projects_box::title(input.navigator),
         rows: &built.rows,
         filled: built.filled,
         focused,
-        scroll: input.view.projects_scroll,
+        scroll: input.list_scroll(),
         empty_text: &empty,
         pad: SIDEBAR_PAD,
     }
@@ -509,6 +538,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         draw(&input, buf);
     }
@@ -534,6 +564,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         draw(&input, buf);
     }
@@ -557,7 +588,7 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("no {title} box was drawn"))
         };
-        let top = title_row(PROJECTS_TITLE);
+        let top = title_row(crate::render::projects_box::PROJECTS_TITLE);
         let agents_y = title_row(agents_box::TITLE);
         let hint_y = buf.area.height - HINT_ROW_HEIGHT;
         (
@@ -605,6 +636,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         hint_row(&input, area, buf);
     }
@@ -1121,6 +1153,7 @@ mod tests {
             state,
             unseen: false,
             recap: Some("read the transcript".into()),
+            workspace: domux_core::ids::WorkspaceId("w_c3a1".into()),
             project: "audrey-app".into(),
             place_with_tab: "audrey-app › main › pr1".into(),
             place_without_tab: "audrey-app › main".into(),
@@ -1164,6 +1197,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 38, 1));
         hint_row(&input, Rect::new(0, 0, 38, 1), &mut buf);
@@ -1234,6 +1268,7 @@ mod tests {
                 notes: &[],
                 stay_awake: false,
                 toast: None,
+                navigator: false,
             };
             let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
             draw(&input, &mut buf);

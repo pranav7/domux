@@ -7,7 +7,7 @@
 //! sidebar's 38 columns have no room for.
 
 use crate::render::list_box::{box_lines, content_width, footer_area, ListBox, OVERLAY_PAD};
-use crate::render::projects_box::{rows, Extras, PROJECTS_TITLE};
+use crate::render::projects_box::{rows, Extras};
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
 
@@ -28,10 +28,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // The cursor carries the fill while focus is in the box; with no cursor it is the
     // workspace this client is in (domain model, section 3.3).
     let filled = input
-        .view
-        .projects_cursor
-        .as_ref()
-        .map(|w| w.as_str())
+        .list_cursor()
         .unwrap_or_else(|| input.view.workspace.as_str());
     let rows = rows(
         input.model,
@@ -39,6 +36,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         &input.view.filter,
         Some(filled),
         Extras::switcher(inner_width),
+        input.navigator.then_some(input.agents),
     );
     let lines = rows
         .rows
@@ -50,11 +48,11 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // the background and lets the box own the border.
     overlay::clear(area, buf);
     ListBox {
-        title: PROJECTS_TITLE,
+        title: crate::render::projects_box::title(input.navigator),
         rows: &rows.rows,
         filled: rows.filled,
         focused: true,
-        scroll: input.view.projects_scroll,
+        scroll: input.list_scroll(),
         empty_text: &empty,
         pad: OVERLAY_PAD,
     }
@@ -159,6 +157,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         draw(&input, &mut buf);
@@ -347,6 +346,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);

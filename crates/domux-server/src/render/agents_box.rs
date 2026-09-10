@@ -10,7 +10,7 @@ use crate::render::list_box::ListRow;
 use crate::render::projects_box::{self, INDENT};
 use crate::render::theme;
 use chrono::{DateTime, Local};
-use domux_core::ids::AgentId;
+use domux_core::ids::{AgentId, WorkspaceId};
 use domux_core::model::agent::{AgentKind, AgentState};
 use domux_core::text::{display_width, truncate_with_ellipsis};
 use ratatui::style::{Color, Modifier, Style};
@@ -28,12 +28,28 @@ pub const RECAP_LINES: usize = 2;
 /// Between the name and the activity on line 1 (interface spec 6.2).
 const GAP: &str = "  ";
 
+/// The arrow an agent row wears under its workspace in the Navigator. Two cells, like the
+/// hollow glyph on an untouched slot, so every name in the box starts in one column.
+pub const NEST: &str = "↳ ";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
-    /// Two lines: no tab, no recap, and live records only.
+    /// The sidebar's Agents box: two lines, no tab, no recap. Retires with `[navigator]`.
     Sidebar,
-    /// Three lines, recap included, exited records among them.
+    /// The agents overlay: three lines, recap included. Retires with `[navigator]`.
     Overlay,
+    /// One line under its workspace in the Navigator's sidebar: the arrow, the name, the
+    /// activity. The rows above it say the project and the workspace (decision record 0028).
+    Nested,
+    /// The same in the switcher, which has the width for the kind, the tab and the recap.
+    NestedWide,
+}
+
+impl RowForm {
+    /// Whether this form nests the row under a workspace rather than listing it flat.
+    fn nested(self) -> bool {
+        matches!(self, RowForm::Nested | RowForm::NestedWide)
+    }
 }
 
 /// One agent, with everything the row needs already looked up, so drawing touches no Model.
@@ -47,6 +63,8 @@ pub struct AgentEntry {
     pub unseen: bool,
     /// Absent when no recap arrived. An absent recap draws no line at all.
     pub recap: Option<String>,
+    /// The workspace the agent runs in, which is the row the Navigator nests it under.
+    pub workspace: WorkspaceId,
     /// The project the record's workspace belongs to: the header the agents overlay groups
     /// under (MUX-21). Empty when the model no longer holds the workspace, and a group with an
     /// empty name is drawn with no header rather than a blank one.
@@ -96,9 +114,11 @@ pub fn empty_text(filter: &str, form: RowForm) -> String {
         return format!("No agent matches {filter:?}. esc clears the filter");
     }
     match form {
-        // The sidebar drops the exited records, so "no agents yet" would be a lie told to a
-        // reader who has a list of them one key away (principle 4).
-        RowForm::Sidebar => "Nothing running. Start claude or codex in a pane.".to_string(),
+        // The Navigator's empty text is the Projects box's: an empty Navigator has no
+        // projects in it, which is a bigger thing to say than having no agents.
+        RowForm::Nested | RowForm::NestedWide | RowForm::Sidebar => {
+            "Nothing running. Start claude or codex in a pane.".to_string()
+        }
         RowForm::Overlay => "No agents yet. Start claude or codex in a pane.".to_string(),
     }
 }
@@ -192,8 +212,18 @@ fn indented(row: ListRow) -> ListRow {
     }
 }
 
+/// One agent's row, for a caller that places it itself. `render::projects_box` uses it to put
+/// an agent under the workspace it runs in, so the Navigator draws the same grammar this box
+/// draws and there is still one place it is written (principle 14).
+pub fn one_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
+    row(a, view, form, width)
+}
+
 fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
     let width = width as usize;
+    if form.nested() {
+        return nested_row(a, view, form, width);
+    }
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + RECAP_LINES);
     lines.push(Line::from(line_one(a, view, width)));
     lines.push(Line::from(line_two(a, form, width)));
@@ -203,6 +233,71 @@ fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow 
         }
     }
     ListRow::selectable(row_key(&a.id), filter_text(a), lines)
+}
+
+/// One agent under the workspace it runs in: the arrow, then the name and the activity
+/// (decision record 0028; artboard 9, frame 9.2 is the specification).
+///
+/// The place is not on it. The project is the header above and the workspace is the row above
+/// that, so repeating either here is the reading MUX-21 complained of, one level deeper. What
+/// the switcher adds is what the sidebar has no room for and the rows above never said: which
+/// kind this is, which tab it is in, and what it did last.
+fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> ListRow {
+    let lead = display_width(NEST);
+    let room = width.saturating_sub(lead);
+    let mut first = vec![Span::styled(NEST, Style::default().fg(theme::OVERLAY0))];
+    let tail = if form == RowForm::NestedWide {
+        kind_and_tab(a)
+    } else {
+        Vec::new()
+    };
+    let tail_width: usize = tail.iter().map(|s| display_width(&s.content)).sum();
+    first.extend(line_one(a, view, room.saturating_sub(tail_width)));
+    first.extend(tail);
+    let mut lines = vec![Line::from(first)];
+    if form == RowForm::NestedWide {
+        if let Some(recap) = &a.recap {
+            // The same two-cell lead the arrow takes, so the recap sits under the name.
+            lines.extend(recap_lines(recap, a, room).into_iter().map(|spans| {
+                let mut line = vec![Span::raw(" ".repeat(lead))];
+                line.extend(spans);
+                Line::from(line)
+            }));
+        }
+    }
+    ListRow::selectable(row_key(&a.id), filter_text(a), lines)
+}
+
+/// `  claude › pr1` after the activity, in the switcher only.
+///
+/// The kind is dropped when the row's label is already the kind, which is the rule `line_two`
+/// follows for the same reason: an unnamed agent would otherwise read `codex  codex › pr2`.
+/// The tab is dropped when the record names no pane the model still holds, which is what
+/// `place_in_project` already says by leaving it off.
+fn kind_and_tab(a: &AgentEntry) -> Vec<Span<'static>> {
+    let tab = a.place_in_project.rsplit_once(" › ").map(|(_, t)| t);
+    let mut spans = vec![Span::raw(GAP)];
+    if a.name.is_some() {
+        spans.push(Span::styled(
+            a.kind.as_str(),
+            Style::default().fg(theme::agent_color(a.kind)),
+        ));
+    }
+    if let Some(tab) = tab {
+        if a.name.is_some() {
+            spans.push(Span::styled(" › ", Style::default().fg(theme::SURFACE1)));
+        }
+        spans.push(Span::styled(
+            tab.to_string(),
+            Style::default().fg(theme::OVERLAY1),
+        ));
+    }
+    // Nothing to add, so not even the gap: a trailing pair of spaces would take two cells of
+    // the name's budget for a field that is not there.
+    if spans.len() == 1 {
+        return Vec::new();
+    }
+    spans
 }
 
 /// What `/` matches: the session name when there is one, the kind, and the place. Each field
@@ -297,15 +392,17 @@ fn working(glyph: &'static str, word: &str, color: Color) -> Vec<Span<'static>> 
 }
 
 /// `[kind] · [place]`, or the place alone when line 1 already showed the kind.
+///
+/// The two flat forms only. A nested row's place is the rows above it (decision record 0028).
 fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
     let place = match form {
-        RowForm::Sidebar => &a.place_without_tab,
         // The header above the row has already said the project (MUX-21).
         RowForm::Overlay => &a.place_in_project,
+        _ => &a.place_without_tab,
     };
     let place_style = Style::default().fg(match form {
         RowForm::Overlay => theme::OVERLAY1,
-        RowForm::Sidebar => theme::OVERLAY0,
+        _ => theme::OVERLAY0,
     });
     if a.name.is_none() {
         return vec![Span::styled(
@@ -443,6 +540,7 @@ mod tests {
             recap: Some(
                 "Replaced three session checks with one guard in auth/middleware.go.".into(),
             ),
+            workspace: WorkspaceId("w_c3a1".into()),
             project: "audrey-app".into(),
             place_with_tab: "audrey-app › auth cleanup › pr1".into(),
             place_without_tab: "audrey-app › auth cleanup".into(),

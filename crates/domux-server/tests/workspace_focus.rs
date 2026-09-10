@@ -86,7 +86,7 @@ async fn focusing_a_workspace_from_the_switcher_switches_it_and_closes_the_switc
         .unwrap();
     h.wait_for(
         client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -108,7 +108,7 @@ async fn focusing_a_workspace_from_the_switcher_switches_it_and_closes_the_switc
     let f = h
         .wait_for(
             client.clone(),
-            |f| !f.contains("┌ Projects"),
+            |f| !f.contains("┌ Navigator"),
             Duration::from_secs(3),
         )
         .await;
@@ -227,7 +227,7 @@ async fn focusing_a_workspace_with_the_sidebar_open_keeps_it_open_and_moves_the_
     let before = h
         .wait_for(
             client.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -260,7 +260,7 @@ async fn focusing_a_workspace_with_the_sidebar_open_keeps_it_open_and_moves_the_
         "the filled row's handle brightens, its indent with it (interface spec 5.3):\n{f}"
     );
     assert!(
-        f.contains("┌ Projects"),
+        f.contains("┌ Navigator"),
         "the sidebar stays open (interface spec 12.26):\n{f}"
     );
     assert!(
