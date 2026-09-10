@@ -19,7 +19,8 @@ const A_TICK: Duration = Duration::from_millis(1200);
 const PILL_OK: &str = "bg=#a6e3a1";
 const PILL_REFUSED: &str = "bg=#f38ba8";
 
-/// The frame row directly under the overlay's box, which is the footer.
+/// The frame row the footer is on, which is the overlay box's last row, directly above its
+/// bottom rule (MUX-16).
 ///
 /// Asked for by position rather than by searching the frame for the words, because the same
 /// words are also in the top bar: a failed key puts its message in the hint there as well, so a
@@ -30,22 +31,23 @@ fn footer_row(frame: &str) -> usize {
         .lines()
         .filter(|l| l.starts_with('|'))
         .position(|l| l.contains('└'))
-        .map(|bottom| bottom + 1)
+        .map(|bottom| bottom - 1)
         .unwrap_or_else(|| panic!("no box bottom in:\n{frame}"))
 }
 
-/// The first column of the footer's pill: one inside the left edge of the Agents box, which is
-/// the padding `overlay::footer` leaves. Read off the box's own top border rather than written
-/// down, because the overlay is centred and the number moves with the screen width.
+/// The first column of the footer's pill: the box's side pad in from its left border, which is
+/// where the rows above the footer start too. Read off the box's own top border rather than
+/// written down, because the overlay is centred and the number moves with the screen width.
 fn pill_col(frame: &str) -> usize {
     let top = frame
         .lines()
         .filter(|l| l.starts_with('|'))
         .find(|l| l.contains("┌ Agents"))
         .unwrap_or_else(|| panic!("no Agents box in:\n{frame}"));
-    // The dump's leading `|` shifts every column by one, and the pill starts one cell inside the
-    // border. The two cancel, so the border's index in the line is the pill's own column.
-    top.chars().position(|c| c == '┌').expect("a top border")
+    // The dump's leading `|` shifts every column by one, so the border's index in the line is
+    // one past its own column. The pill is one border cell and two pad cells further in, so the
+    // shift takes one of those three back and two are left.
+    top.chars().position(|c| c == '┌').expect("a top border") + 2
 }
 
 fn row_text(frame: &str, y: usize) -> String {

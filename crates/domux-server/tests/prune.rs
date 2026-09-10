@@ -480,9 +480,11 @@ async fn every_worktree_that_is_gone_is_pruned_and_named_not_only_the_first() {
         )
         .await;
     let y = row_holding(&f, "Pruned");
+    // The footer is inside the box now (MUX-16), so the pane's border, the screen behind it,
+    // the box's own border and its two pad cells all come before the note.
     assert_eq!(
-        cells(&row(&f, y), 0, 95),
-        "│            Pruned workspace-1: its worktree is gone · Pruned workspace-2: its worktree is gone",
+        cells(&row(&f, y), 0, 97),
+        "│           │  Pruned workspace-1: its worktree is gone · Pruned workspace-2: its worktree is gone",
         "both are named, in slot order:\n{f}"
     );
 }
@@ -569,7 +571,7 @@ async fn the_sidebar_hint_row_shows_the_note_under_a_pill_and_over_the_keys() {
 /// The mutant this is here for lives in `overlay::footer`, and every test of the ordering in
 /// the sidebar's hint row is on the far side of a boundary from it: the two rows are drawn by
 /// different functions. Both worktrees are gone rather than one, so the note is 83 cells in a
-/// 58 cell row and the cut is visible: `put_within` clips at the row's end whatever it is
+/// 54 cell row and the cut is visible: `put_within` clips at the row's end whatever it is
 /// handed, so only the ellipsis tells a note that was shortened from one that was chopped.
 #[tokio::test]
 async fn the_switcher_footer_shows_the_note_under_a_pill_and_over_the_keys() {
@@ -590,13 +592,13 @@ async fn the_switcher_footer_shows_the_note_under_a_pill_and_over_the_keys() {
     let y = row_holding(&f, "Pruned workspace-1");
     assert_eq!(
         row(&f, y),
-        "│          Pruned workspace-1: its worktree is gone · Pruned workspa…          │",
+        "│         │  Pruned workspace-1: its worktree is gone · Pruned wor…  │         │",
         "the note has the footer row, not a share of it, and ends in an ellipsis:\n{f}"
     );
     assert_eq!(
-        style_at(&f, y, 11),
+        style_at(&f, y, 13),
         "fg=#cdd6f4 bg=#1e1e2e",
-        "drawn in text, one cell in from the footer's edge:\n{f}"
+        "drawn in text, from the footer's first column:\n{f}"
     );
 
     let _ = h
@@ -610,7 +612,7 @@ async fn the_switcher_footer_shows_the_note_under_a_pill_and_over_the_keys() {
         )
         .await;
     assert_eq!(
-        style_at(&f, y, 11),
+        style_at(&f, y, 13),
         "bold fg=#1e1e2e bg=#f38ba8",
         "and gives the row up to a pill:\n{f}"
     );
@@ -655,7 +657,7 @@ async fn every_record_gone_at_one_start_is_named_in_the_note_row() {
     let y = row_holding(&f, "Removed alpha");
     assert_eq!(
         row(&f, y),
-        "│               Removed alpha: its folder is gone · Removed beta: its folder is gone · Pruned workspace-2: its worktree is gone                      │",
+        "│              │  Removed alpha: its folder is gone · Removed beta: its folder is gone · Pruned workspace-2: its worktree is gone     │              │",
         "all three, in one line, the projects first and in the order the model holds them:\n{f}"
     );
 }

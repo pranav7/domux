@@ -76,20 +76,23 @@ async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
         cols(row(&f, 6), 10, 69),
         "│    main                                                  │"
     );
-    // And the blank row above the bottom rule.
+    // The blank row the padding puts under the rows, which is also what parts them from
+    // the footer.
     assert_eq!(
         cols(row(&f, 7), 10, 69),
         "│                                                          │"
     );
-    // 60 = "└" (1) + 58 dashes + "┘" (1)
+    // The footer is the box's last row, inside the border, starting at the same pad the
+    // rows above it start from (MUX-16).
+    // 60 = "│" (1) + two pad cells + the hints (38) + 18 spaces + "│" (1)
     assert_eq!(
         cols(row(&f, 8), 10, 69),
-        "└──────────────────────────────────────────────────────────┘"
+        "│  ⏎ open · / filter · ? help · esc close                  │"
     );
-    // `cols(line, 11, 48)` takes 38 cells, and the footer is 38.
+    // 60 = "└" (1) + 58 dashes + "┘" (1)
     assert_eq!(
-        cols(row(&f, 9), 11, 48),
-        "⏎ open · / filter · ? help · esc close"
+        cols(row(&f, 9), 10, 69),
+        "└──────────────────────────────────────────────────────────┘"
     );
     assert!(
         f.contains("r3 c10-10 fg=#cba6f7"),
@@ -100,7 +103,7 @@ async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
         "and the pane behind it is not: the keys are in the box, so nothing else is drawn as a focus target (principle 2):\n{f}"
     );
     assert!(
-        f.contains("r9 c11-11 fg=#89b4fa"),
+        f.contains("r8 c13-13 fg=#89b4fa"),
         "the footer belongs to the overlay, not to the screen behind it, so its keys are not dimmed either:\n{f}"
     );
     assert_eq!(
@@ -220,22 +223,22 @@ async fn the_switcher_covers_the_panes_text_and_leaves_the_rest_of_the_screen_wh
     assert_eq!(
         cols(row(&f, 7), 10, 69),
         "│                                                          │",
-        "and the pad row above the rule, which is blank all the way across:\n{f}"
+        "and the pad row above the footer, which is blank all the way across:\n{f}"
     );
     assert_eq!(
-        cols(row(&f, 9), 11, 48),
+        cols(row(&f, 8), 13, 50),
         "⏎ open · / filter · ? help · esc close",
         "and the footer's row is the footer's:\n{f}"
     );
     assert_eq!(
-        cols(row(&f, 9), 49, 69),
-        " ".repeat(21),
+        cols(row(&f, 8), 51, 68),
+        " ".repeat(18),
         "the rest of the footer's row is cleared too, not left showing the pane:\n{f}"
     );
     assert_eq!(
-        cols(row(&f, 9), 70, 78),
+        cols(row(&f, 8), 70, 78),
         "XXXXXXXXX",
-        "and the footer clears its own 60 columns and no more:\n{f}"
+        "and the box clears its own 60 columns and no more:\n{f}"
     );
     // The other half: outside the overlay the screen is still there, dimmed rather than
     // painted over.
@@ -292,8 +295,8 @@ async fn the_switcher_is_never_narrower_than_the_sidebar_and_never_taller_than_t
         "nothing is drawn past the screen"
     );
     assert!(
-        row(&f, 9).contains("⏎ open"),
-        "and the footer still has its row inside the screen:\n{f}"
+        row(&f, 7).contains("⏎ open") && row(&f, 8).contains("└"),
+        "and the footer still has its row, inside the box and inside the screen:\n{f}"
     );
 }
 
@@ -350,7 +353,7 @@ async fn the_switcher_reads_its_keys_from_the_config_rather_than_naming_esc_itse
     let mut h = Harness::start(config, 80, 24).await;
     let f = open_switcher(&mut h).await;
     assert_eq!(
-        cols(row(&f, 9), 11, 48),
+        cols(row(&f, 8), 13, 50),
         "f filter · ? help · q close           ",
         "{f}"
     );

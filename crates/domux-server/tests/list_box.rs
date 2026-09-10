@@ -1,5 +1,5 @@
 use domux_server::render::list_box::{
-    filter_rows, scroll_to_show, text_area, ListBox, ListRow, OVERLAY_PAD, SIDEBAR_PAD,
+    filter_rows, footer_area, scroll_to_show, text_area, ListBox, ListRow, OVERLAY_PAD, SIDEBAR_PAD,
 };
 use domux_server::render::theme;
 use ratatui::buffer::Buffer;
@@ -42,13 +42,14 @@ fn rows() -> Vec<ListRow> {
 }
 
 /// MUX-12: the overlay's padding is two cells in from each border and a blank row at each
-/// end, where the sidebar's is one cell and no blank rows.
+/// end, where the sidebar's is one cell and no blank rows. MUX-16: it also keeps the box's
+/// last row for the footer, which the caller draws and `ListBox` leaves alone.
 ///
 /// The fill band is asserted beside the text, because the pad is inside the band and not
 /// beside it: a filled row still reaches both borders (decision record 0012), and only its
 /// text starts two cells in.
 #[test]
-fn the_overlay_pad_puts_a_blank_row_at_each_end_and_two_cells_at_each_side() {
+fn the_overlay_pad_keeps_a_blank_row_a_footer_row_and_two_cells_at_each_side() {
     let area = Rect::new(0, 0, 22, 10);
     let mut buf = Buffer::empty(area);
     let scroll = ListBox {
@@ -70,12 +71,32 @@ fn the_overlay_pad_puts_a_blank_row_at_each_end_and_two_cells_at_each_side() {
     );
     assert_eq!(row(&buf, 2), "│  PROJ ─────────    │");
     assert_eq!(row(&buf, 3), "│  main              │");
-    assert_eq!(row(&buf, 8), "│                    │", "and one above it");
+    assert_eq!(
+        row(&buf, 7),
+        "│                    │",
+        "and one under the rows"
+    );
+    assert_eq!(
+        row(&buf, 8),
+        "│                    │",
+        "then the footer's row, which this box draws nothing in"
+    );
     assert_eq!(row(&buf, 9), "└────────────────────┘");
     assert_eq!(
         text_area(area, OVERLAY_PAD),
-        Rect::new(1, 2, 20, 6),
+        Rect::new(1, 2, 20, 5),
         "the rectangle the pointer is measured against is the one that was drawn"
+    );
+    assert_eq!(
+        footer_area(area, OVERLAY_PAD),
+        Some(Rect::new(3, 8, 16, 1)),
+        "the footer's row is the last inside the border, in by the side pad at each end so it \
+         starts in the column the rows above it start in"
+    );
+    assert_eq!(
+        footer_area(area, SIDEBAR_PAD),
+        None,
+        "and the sidebar's boxes keep no such row: its hint row is under both of them"
     );
     assert_eq!(
         (buf[(1, 3)].bg, buf[(20, 3)].bg),

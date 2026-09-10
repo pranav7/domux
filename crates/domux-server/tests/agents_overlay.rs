@@ -684,7 +684,9 @@ async fn the_overlay_opens_over_another_and_gives_it_back_when_it_closes() {
 /// cursor is on is how a reader gets there.
 #[tokio::test]
 async fn the_box_draws_from_the_remembered_scroll_when_the_cursor_names_no_row() {
-    let mut h = Harness::start(Config::default(), 100, 12).await;
+    // 13 rows and not 12: the box spends its last row on the footer (MUX-16), so a screen one
+    // row taller is what leaves it the two lines of rows this fixture is counted in.
+    let mut h = Harness::start(Config::default(), 100, 13).await;
     two_agents(&mut h).await;
     h.api("pane.split", json!({"dir": "down"})).await.unwrap();
     let third = h.focused_pane(h.client.clone());

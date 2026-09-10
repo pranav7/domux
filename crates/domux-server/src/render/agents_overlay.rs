@@ -1,9 +1,9 @@
-//! The agents overlay: one overlay holding the Agents box and its footer, under `leader a`
-//! (domain model, section 3.6).
+//! The agents overlay: one overlay holding the Agents box with its footer on the box's last
+//! row, under `leader a` (domain model, section 3.6).
 //!
 //! It is the switcher's shape with a different box in it, and `render::switcher` is the
 //! worked example this follows: the same `list_overlay_area` geometry, the same `clear` and
-//! `dim`, the same `ListBox`, the same footer row under it. Only the rows and the footer's
+//! `dim`, the same `ListBox`, the same footer row inside it. Only the rows and the footer's
 //! words differ, so an overlay cannot start reading one way and the switcher another
 //! (principle 14).
 //!
@@ -13,11 +13,12 @@
 //! text is `agents_box::empty_text` for the same reason.
 
 use crate::render::agents_box::{self, rows, RowForm, TITLE};
-use crate::render::list_box::{box_lines, content_width, filter_rows, ListBox, OVERLAY_PAD};
+use crate::render::list_box::{
+    box_lines, content_width, filter_rows, footer_area, ListBox, OVERLAY_PAD,
+};
 use crate::render::projects_box::filled_index;
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 
 /// `⏎ open · / filter · esc close` (interface spec 6.8). Each entry is an action, looked up
 /// in `[keys.list]` when the row is drawn, so a rebinding shows here (principle 3).
@@ -44,7 +45,6 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .iter()
         .fold(0u16, |sum, r| sum.saturating_add(r.height()));
     let area = overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
-    let footer = Rect::new(area.x, area.y + area.height, area.width, 1);
     // The cursor is the agent under it, not a row number, so a re-sort between two frames
     // keeps the fill on the agent it was on (principle 2).
     let cursor = input.view.agents_cursor.as_ref().map(|id| id.to_string());
@@ -63,9 +63,13 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         pad: OVERLAY_PAD,
     }
     .render(area, buf);
-    overlay::footer(input, &FOOTER, footer, buf);
+    // The footer's row is the box's last, inside the border, the same as the switcher's
+    // (MUX-16).
+    if let Some(footer) = footer_area(area, OVERLAY_PAD) {
+        overlay::footer(input, &FOOTER, footer, buf);
+    }
     // Last, so that what is dimmed is what the overlay did not draw. The corrected scroll
     // `render` returns is dropped on purpose: a renderer does not write to the model, and
     // `list.down` and `list.up` own `agents_scroll`.
-    overlay::dim(buf, &[area, footer]);
+    overlay::dim(buf, &[area]);
 }

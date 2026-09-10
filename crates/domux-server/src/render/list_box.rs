@@ -86,13 +86,27 @@ pub struct Pad {
     pub side: u16,
     /// Blank rows under the top rule and above the bottom one.
     pub ends: u16,
+    /// Whether the box keeps its last inner row for a footer the caller draws, which
+    /// `footer_area` answers for (MUX-16). An overlay does, so the keys read as part of the
+    /// thing they act on rather than as loose text over the dimmed screen. The sidebar does
+    /// not: its hint row sits under both of its boxes and belongs to neither.
+    pub footer: bool,
 }
 
 /// One cell in from each border, no blank rows: the sidebar's 38 columns have none to give.
-pub const SIDEBAR_PAD: Pad = Pad { side: 1, ends: 0 };
+pub const SIDEBAR_PAD: Pad = Pad {
+    side: 1,
+    ends: 0,
+    footer: false,
+};
 
-/// Two cells in from each border and a blank row at each end (MUX-12).
-pub const OVERLAY_PAD: Pad = Pad { side: 2, ends: 1 };
+/// Two cells in from each border, a blank row at each end (MUX-12), and the last row for the
+/// footer (MUX-16).
+pub const OVERLAY_PAD: Pad = Pad {
+    side: 2,
+    ends: 1,
+    footer: true,
+};
 
 /// The cells a row's text has inside a box `width` cells wide: the two borders and the two
 /// side pads taken off. Every surface that builds rows asks this, so the width a row
@@ -102,27 +116,58 @@ pub fn content_width(width: u16, pad: Pad) -> u16 {
 }
 
 /// The lines a box has to be tall enough for, when its rows come to `lines`: the end pads
-/// added. Both the switcher's drawing and the `list.*` handlers that scroll it ask this, so
-/// the box a reader sees and the height the cursor is walked against are one number.
+/// and the footer's row added. Both the switcher's drawing and the `list.*` handlers that
+/// scroll it ask this, so the box a reader sees and the height the cursor is walked against
+/// are one number.
 pub fn box_lines(lines: u16, pad: Pad) -> u16 {
     // At least one, because a box with no rows draws its empty text on the first row it has,
     // and a box sized to nothing would say nothing at all.
-    lines.max(1).saturating_add(2 * pad.ends)
+    lines
+        .max(1)
+        .saturating_add(2 * pad.ends)
+        .saturating_add(u16::from(pad.footer))
 }
 
-/// The rows' own rectangle inside a box at `area`: the border off, then the end pads.
+/// The rows' own rectangle inside a box at `area`: the border off, then the end pads, then
+/// the footer's row where the box keeps one.
 ///
 /// The drawing walks it and so does `row_at`, so a click lands on the row the reader sees.
-/// The fill band is not measured from here: it spans the whole inner width, so a filled row
-/// still reads as one band reaching both borders (decision record 0012).
+/// `list.up` and `list.down` walk it too, so the page the cursor moves by is the rows the
+/// reader can see and not the rows plus the footer. The fill band is not measured from here:
+/// it spans the whole inner width, so a filled row still reads as one band reaching both
+/// borders (decision record 0012).
 pub fn text_area(area: Rect, pad: Pad) -> Rect {
     let inner = Boxed::inner_of(area, true);
+    let chrome = 2 * pad.ends + u16::from(pad.footer);
     Rect::new(
         inner.x,
         inner.y.saturating_add(pad.ends),
         inner.width,
-        inner.height.saturating_sub(2 * pad.ends),
+        inner.height.saturating_sub(chrome),
     )
+}
+
+/// The row the caller draws the footer in: the box's last inner row, in by `side` at each end
+/// so the footer starts in the column the rows above it start in. `None` for a box that keeps
+/// no such row, and for one too small to hold it.
+///
+/// The footer is inside the border because outside it the keys read as text lying over the
+/// dimmed panes rather than as part of the box they act on (MUX-16). It is the caller that
+/// draws it, because `ListBox` knows nothing of keys, pills or the filter.
+pub fn footer_area(area: Rect, pad: Pad) -> Option<Rect> {
+    if !pad.footer {
+        return None;
+    }
+    let inner = Boxed::inner_of(area, true);
+    if inner.height == 0 || inner.width <= 2 * pad.side {
+        return None;
+    }
+    Some(Rect::new(
+        inner.x + pad.side,
+        inner.bottom() - 1,
+        inner.width - 2 * pad.side,
+        1,
+    ))
 }
 
 /// Whether a blank row goes between two rows of one group.
