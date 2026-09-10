@@ -253,11 +253,11 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
     assert!(!f.contains("C-b |"), "the unbound default is gone:\n{f}");
     assert!(f.contains("C-h        focus.left"), "{f}");
     assert!(
-        f.contains("S-Up/S-Down/S-Left/S-Right pane.resize <dir> 2"),
+        f.contains("S-Up/Down/Left/Right pane.resize <dir> 2"),
         "the four directions at one step collapse into one row:\n{f}"
     );
     assert!(
-        f.contains("C-S-Up/C-S-Down/C-S-Left/C-S-Right pane.resize <dir> 8"),
+        f.contains("C-S-Up/Down/Left/Right pane.resize <dir> 8"),
         "and the coarse step gets its own row:\n{f}"
     );
     assert!(
@@ -722,5 +722,31 @@ async fn the_tab_row_leaves_the_last_column_empty_when_it_wants_the_whole_row() 
         row(&f, 0),
         "| proj › main  1 a-very-long-branch-nam… |",
         "{f}"
+    );
+}
+
+/// The narrowest screen the help box is drawn at. Written out in full the four coarse keys
+/// and their action are 54 cells, and the box has 52 to give here, so the row lost its `8` to
+/// the ellipsis - and the step size is the only thing telling the two resize rows apart. The
+/// shared modifier is written once for exactly this reason.
+#[tokio::test]
+async fn the_resize_rows_keep_their_step_size_on_a_narrow_screen() {
+    let mut h = Harness::start(Config::default(), 60, 54).await;
+    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "?").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("┌ Keys"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("S-Up/Down/Left/Right pane.resize <dir> 2"),
+        "{f}"
+    );
+    assert!(
+        f.contains("C-S-Up/Down/Left/Right pane.resize <dir> 8"),
+        "neither row is cut short of its step size:\n{f}"
     );
 }
