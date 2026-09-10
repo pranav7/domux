@@ -96,11 +96,7 @@ fn step_from_region(
     region: RegionKind,
     dir: Direction,
 ) -> Result<Value, ApiError> {
-    let sidebar = matches!(
-        region,
-        RegionKind::SidebarProjects | RegionKind::SidebarAgents
-    );
-    if sidebar && dir == Direction::Right {
+    if region.is_sidebar() && dir == Direction::Right {
         return pane(
             ctx,
             ClientParams {
@@ -144,6 +140,12 @@ pub fn next_region(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// Every way in comes through here - `focus.left`, `focus.next_region`, `focus.up`,
 /// `focus.down` and `focus.region` - so the two boxes are entered one way and a reader
 /// cannot land in one with no fill on it.
+///
+/// The match below is exhaustive over `RegionKind`, so a third box in the column is a compile
+/// error here rather than a silent landing in Projects. The three kinds that are not sidebar
+/// boxes change nothing: every caller above restricts to `RegionKind::is_sidebar`, so they do
+/// not arrive, and a focus assignment made for one of them would put the keys in a region this
+/// function does not draw a cursor for.
 fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
     let workspace = ctx.model.client(client).map(|v| v.workspace.clone());
     let first_agent = ctx.model.sorted_agents().first().map(|a| a.id.clone());
@@ -168,10 +170,12 @@ fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
         }
         // The Projects box, whose cursor starts on the row the fill was already on: the
         // workspace this client is in (domain model, section 3.3).
-        _ => {
+        RegionKind::SidebarProjects => {
             view.focus = Focus::Region(RegionKind::SidebarProjects);
             view.projects_cursor = workspace;
         }
+        // Not a box in this column, so there is none to enter and no filter to clear.
+        RegionKind::Switcher | RegionKind::AgentsOverlay | RegionKind::Overlay => return,
     }
     // The filter starts empty, the same decision `api::switcher::open` makes for the same
     // reason: a box reopened showing only what the last search matched would hide the row the

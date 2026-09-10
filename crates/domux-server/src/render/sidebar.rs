@@ -147,9 +147,7 @@ pub fn region_for_rows(pane: Rect, projects: Rect, agents: Rect) -> RegionKind {
 /// cannot come to disagree about what "focused" means.
 fn focused_box(view: &ClientView) -> Option<RegionKind> {
     match view.focus {
-        Focus::Region(kind @ (RegionKind::SidebarProjects | RegionKind::SidebarAgents)) => {
-            Some(kind)
-        }
+        Focus::Region(kind) if kind.is_sidebar() => Some(kind),
         _ => None,
     }
 }

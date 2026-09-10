@@ -3,7 +3,7 @@
 use super::{ok, Ctx};
 use domux_core::api::{ApiError, ClientParams, Event, SidebarResult};
 use domux_core::ids::{ClientId, PaneId};
-use domux_core::model::{Focus, RegionKind, SIDEBAR_MIN_COLS};
+use domux_core::model::{Focus, SIDEBAR_MIN_COLS};
 use serde_json::Value;
 
 /// Shows the sidebar when it is hidden and hides it when it is shown.
@@ -79,22 +79,18 @@ fn set(ctx: &mut Ctx, open: bool) -> Result<Value, ApiError> {
         // overwritten before anything can read it. Kept for the invariant, not for a
         // behaviour, and said here so the next reader does not go looking for the test.
         view.sidebar_forced = open && asked && view.size.cols < SIDEBAR_MIN_COLS;
-        if !open
-            && matches!(
-                view.focus,
-                Focus::Region(RegionKind::SidebarProjects | RegionKind::SidebarAgents)
-            )
-        {
+        if !open && matches!(view.focus, Focus::Region(kind) if kind.is_sidebar()) {
             // Hiding the box the keys were in gives them back to the pane, so no frame is
             // drawn with the keys in a region nothing on the screen marks (principle 2).
             //
-            // Both of the sidebar's boxes, and the match is over `RegionKind` rather than a
-            // `sidebar_visible` test so that adding a third box to this column is a change
-            // that has to come through here. M2 wrote this arm for the Projects box alone,
-            // from the rule and with nothing able to reach it; M3 gave the column a second
-            // box and the arm went on naming one, which left `leader b` from the Agents box
-            // with the keys in a region the screen no longer draws and every key after it
-            // swallowed by `input::list_key`.
+            // Both of the sidebar's boxes, asked through `RegionKind::is_sidebar` rather than
+            // by naming them here, which is what M2 did: it wrote this arm for the Projects
+            // box alone, from the rule and with nothing able to reach it, and when M3 gave
+            // the column a second box the arm went on naming one. That left `leader b` from
+            // the Agents box with the keys in a region the screen no longer draws and every
+            // key after it swallowed by `input::list_key`. The predicate is one place to
+            // change, not a forcing function: a third box in the column is still a change
+            // that has to be made there, and nothing here would fail to compile without it.
             if let Some(pane) = pane {
                 view.focus = Focus::Pane(pane);
             }

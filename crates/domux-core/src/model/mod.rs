@@ -391,10 +391,7 @@ impl ClientView {
     /// are overlays and `focus_after_pop` answers for them above, so what is left is what the
     /// sidebar draws under an overlay and still owns once it closes.
     pub fn focus_returning_from_overlay(&self, pane: Option<PaneId>) -> Focus {
-        if matches!(
-            self.focus,
-            Focus::Region(RegionKind::SidebarProjects | RegionKind::SidebarAgents)
-        ) && self.sidebar_visible()
+        if matches!(self.focus, Focus::Region(kind) if kind.is_sidebar()) && self.sidebar_visible()
         {
             return self.focus.clone();
         }
@@ -3252,6 +3249,27 @@ mod tests {
             assert!(kind.is_box(), "{kind:?} holds a list of its own");
         }
         assert!(!RegionKind::Overlay.is_box());
+    }
+
+    /// The two boxes in the sidebar's column and no others. The match inside is the forcing
+    /// function: a region kind added later makes it non-exhaustive, so whoever adds one has to
+    /// come here and say which side of the line it is on. The list above it is written out, so
+    /// they have to add the kind there too for the assertion to reach it.
+    #[test]
+    fn only_the_two_boxes_in_the_column_are_sidebar_regions() {
+        for kind in [
+            RegionKind::Switcher,
+            RegionKind::AgentsOverlay,
+            RegionKind::SidebarProjects,
+            RegionKind::SidebarAgents,
+            RegionKind::Overlay,
+        ] {
+            let in_the_column = match kind {
+                RegionKind::SidebarProjects | RegionKind::SidebarAgents => true,
+                RegionKind::Switcher | RegionKind::AgentsOverlay | RegionKind::Overlay => false,
+            };
+            assert_eq!(kind.is_sidebar(), in_the_column, "{kind:?}");
+        }
     }
 
     /// The cases are derived from `Display` rather than written out beside it, so a change to
