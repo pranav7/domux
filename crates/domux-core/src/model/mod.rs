@@ -5,7 +5,9 @@ pub mod agent;
 pub mod focus;
 pub mod layout;
 
-pub use agent::{transition, Agent, AgentEvent, AgentKind, AgentReport, AgentSource, AgentState};
+pub use agent::{
+    transition, Agent, AgentEvent, AgentKind, AgentReport, AgentSource, AgentState, Liveness,
+};
 pub use focus::{ConfirmKind, Focus, Overlay, PromptKind, RegionKind, TextInput};
 pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir};
 
@@ -1963,9 +1965,15 @@ impl Model {
         self.agents.iter().filter(|a| a.needs_you()).count()
     }
 
-    /// An agent id; or a workspace (id, handle, name or branch) holding exactly one live
-    /// agent; or `workspace/tab` when it holds more (architecture spec section 7).
-    pub fn resolve_agent_target(&self, target: &str) -> Result<AgentId, ApiError> {
+    /// An agent id; or a workspace (id, handle, name or branch) holding exactly one record
+    /// `want` accepts; or `workspace/tab` when it holds more (architecture spec section 7).
+    ///
+    /// `want` is the calling verb's own precondition, and it narrows the workspace forms
+    /// only. An agent id names one record and is answered whatever state it is in, because
+    /// the verb's own refusal is the better answer there: `agent dismiss a_5e21` on a working
+    /// record reads "agent a_5e21 is working, not exited", which says what to do, where "no
+    /// exited agent in a_5e21" would send the reader looking for a record they had just named.
+    pub fn resolve_agent_target(&self, target: &str, want: Liveness) -> Result<AgentId, ApiError> {
         if let Ok(id) = target.parse::<AgentId>() {
             return self.agent(&id).map(|a| a.id.clone()).ok_or_else(|| {
                 ApiError::not_found(format!(
@@ -1982,37 +1990,41 @@ impl Model {
                 None => return Err(first),
             },
         };
-        let mut live: Vec<&Agent> = self
+        let mut found: Vec<&Agent> = self
             .agents
             .iter()
-            .filter(|a| a.state.is_live() && a.workspace == ws)
+            .filter(|a| want.accepts(a.state) && a.workspace == ws)
             .collect();
+        // `pane`, then `last_pane`: an exited record holds no pane and ran in the one it kept,
+        // so a tab-qualified target reaches it the same way `api::agent::info_for` reports its
+        // tab. Without the fallback the qualified form found no exited record at all.
+        let tab_of = |a: &Agent| {
+            a.pane
+                .as_ref()
+                .or(a.last_pane.as_ref())
+                .and_then(|p| self.pane_location(p))
+                .map(|l| l.tab)
+        };
         if let Some(t) = tab {
             let tab_id = self.resolve_tab(&ws, t)?;
-            live.retain(|a| {
-                a.pane
-                    .as_ref()
-                    .and_then(|p| self.pane_location(p))
-                    .is_some_and(|l| l.tab == tab_id)
-            });
+            found.retain(|a| tab_of(a).is_some_and(|id| id == tab_id));
         }
-        match live.len() {
+        let adjective = want.adjective();
+        match found.len() {
             0 => Err(ApiError::not_found(format!(
-                "no live agent in {target}; run {BIN_NAME} peek"
+                "no {adjective}agent in {target}; run {BIN_NAME} peek"
             ))),
-            1 => Ok(live[0].id.clone()),
+            1 => Ok(found[0].id.clone()),
             n => {
-                let tabs: Vec<Option<String>> = live
+                let tabs: Vec<Option<String>> = found
                     .iter()
                     .map(|a| {
-                        a.pane
-                            .as_ref()
-                            .and_then(|p| self.pane_location(p))
-                            .and_then(|l| self.tab(&l.tab))
+                        tab_of(a)
+                            .and_then(|id| self.tab(&id))
                             .map(|t| t.name.clone().unwrap_or_else(|| t.id.to_string()))
                     })
                     .collect();
-                let candidates = live
+                let candidates = found
                     .iter()
                     .zip(&tabs)
                     .map(|(a, tab)| {
@@ -2037,10 +2049,10 @@ impl Model {
                 };
                 let message = match example {
                     Some(t) => format!(
-                        "{n} agents are in {target}; qualify with the tab, for example \
-                         \"{target}/{t}\", or use an agent id"
+                        "{n} {adjective}agents are in {target}; qualify with the tab, for \
+                         example \"{target}/{t}\", or use an agent id"
                     ),
-                    None => format!("{n} agents are in {target}; use an agent id"),
+                    None => format!("{n} {adjective}agents are in {target}; use an agent id"),
                 };
                 Err(ApiError::ambiguous(message, candidates))
             }
@@ -3531,7 +3543,9 @@ mod tests {
         assert!(!view.filtering, "and neither must a half-typed filter");
     }
 
-    use crate::model::agent::{AgentEvent, AgentKind, AgentReport, AgentSource, AgentState};
+    use crate::model::agent::{
+        AgentEvent, AgentKind, AgentReport, AgentSource, AgentState, Liveness,
+    };
 
     const T0: &str = "2026-09-04T14:32:00+00:00";
     const T1: &str = "2026-09-04T14:33:00+00:00";
@@ -4049,9 +4063,12 @@ mod tests {
             )
             .unwrap()
             .agent;
-        assert_eq!(m.resolve_agent_target(a.as_str()).unwrap(), a);
         assert_eq!(
-            m.resolve_agent_target("main").unwrap(),
+            m.resolve_agent_target(a.as_str(), Liveness::Live).unwrap(),
+            a
+        );
+        assert_eq!(
+            m.resolve_agent_target("main", Liveness::Live).unwrap(),
             a,
             "one live agent in the workspace"
         );
@@ -4066,16 +4083,25 @@ mod tests {
             )
             .unwrap()
             .agent;
-        let err = m.resolve_agent_target("main").unwrap_err();
+        let err = m.resolve_agent_target("main", Liveness::Live).unwrap_err();
         assert_eq!(err.code, crate::api::ErrorCode::Ambiguous);
         assert_eq!(
             err.message,
-            "2 agents are in main; qualify with the tab, for example \"main/pr1\", or use an agent id"
+            "2 live agents are in main; qualify with the tab, for example \"main/pr1\", or use an agent id"
         );
         assert_eq!(err.data.unwrap().as_array().unwrap().len(), 2);
-        assert_eq!(m.resolve_agent_target("main/pr1").unwrap(), a);
-        assert_eq!(m.resolve_agent_target("main/tests").unwrap(), b);
-        let err = m.resolve_agent_target("a_ffff").unwrap_err();
+        assert_eq!(
+            m.resolve_agent_target("main/pr1", Liveness::Live).unwrap(),
+            a
+        );
+        assert_eq!(
+            m.resolve_agent_target("main/tests", Liveness::Live)
+                .unwrap(),
+            b
+        );
+        let err = m
+            .resolve_agent_target("a_ffff", Liveness::Live)
+            .unwrap_err();
         assert_eq!(err.message, "agent a_ffff does not exist; run domux2 peek");
         m.report_agent(
             &p2,
@@ -4085,9 +4111,89 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            m.resolve_agent_target("main").unwrap(),
+            m.resolve_agent_target("main", Liveness::Live).unwrap(),
             a,
-            "exited agents are not targets"
+            "exited agents are not live targets"
+        );
+    }
+
+    /// The polarity the two exited-only verbs need. `agent.resume` and `agent.dismiss` both
+    /// refuse a live record, so a resolver that only ever answered live ones left their
+    /// workspace and `workspace/tab` forms unable to name anything they would accept.
+    #[test]
+    fn resolve_agent_target_takes_the_polarity_the_calling_verb_asks_for() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        m.rename_tab(&tab, Some("pr1".into())).unwrap();
+        let (t2, p2, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.rename_tab(&t2, Some("tests".into())).unwrap();
+        let live = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "s1"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        let gone = m
+            .report_agent(
+                &p2,
+                AgentKind::Codex,
+                hook(AgentEvent::SessionStart, "s2"),
+                T0,
+            )
+            .unwrap()
+            .agent;
+        m.report_agent(
+            &p2,
+            AgentKind::Codex,
+            hook(AgentEvent::SessionEnd, "s2"),
+            T0,
+        )
+        .unwrap();
+        assert_eq!(
+            m.resolve_agent_target("main", Liveness::Exited).unwrap(),
+            gone,
+            "the one record whose session is over"
+        );
+        assert_eq!(
+            m.resolve_agent_target("main", Liveness::Live).unwrap(),
+            live
+        );
+        // The record kept `last_pane` when it exited and holds no `pane`, so the qualified
+        // form reaches it only through the fallback.
+        assert_eq!(
+            m.resolve_agent_target("main/tests", Liveness::Exited)
+                .unwrap(),
+            gone,
+            "an exited record is still in the tab it ran in"
+        );
+        let err = m
+            .resolve_agent_target("main/pr1", Liveness::Exited)
+            .unwrap_err();
+        assert_eq!(err.message, "no exited agent in main/pr1; run domux2 peek");
+        let err = m
+            .resolve_agent_target("main/tests", Liveness::Live)
+            .unwrap_err();
+        assert_eq!(err.message, "no live agent in main/tests; run domux2 peek");
+        // An id is answered whatever state the record is in: the verb refuses it by name and
+        // says which verb does work, which is more use than a not-found here.
+        assert_eq!(
+            m.resolve_agent_target(live.as_str(), Liveness::Exited)
+                .unwrap(),
+            live
+        );
+        assert_eq!(
+            m.resolve_agent_target(gone.as_str(), Liveness::Live)
+                .unwrap(),
+            gone
+        );
+        assert_eq!(
+            m.resolve_agent_target("main", Liveness::Any)
+                .unwrap_err()
+                .code,
+            crate::api::ErrorCode::Ambiguous,
+            "both records are candidates for a verb that takes either"
         );
     }
 
@@ -4395,9 +4501,14 @@ mod tests {
             T0,
         )
         .unwrap();
-        let err = m.resolve_agent_target("main/pr1").unwrap_err();
+        let err = m
+            .resolve_agent_target("main/pr1", Liveness::Live)
+            .unwrap_err();
         assert_eq!(err.code, crate::api::ErrorCode::Ambiguous);
-        assert_eq!(err.message, "2 agents are in main/pr1; use an agent id");
+        assert_eq!(
+            err.message,
+            "2 live agents are in main/pr1; use an agent id"
+        );
         assert_eq!(err.data.unwrap().as_array().unwrap().len(), 2);
     }
 }

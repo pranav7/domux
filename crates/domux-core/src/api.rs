@@ -1048,6 +1048,11 @@ impl Params for AgentListParams {}
 /// Every method that acts on one record. `agent` accepts an agent id, a workspace, or
 /// `workspace/tab` (`Model::resolve_agent_target`). Omitted means the agent in the calling
 /// pane, when the caller is in one.
+///
+/// The two workspace forms answer the records the calling method can act on and no others,
+/// which is not the same set for all of them: `agent.focus` wants a live record, `agent.resume`
+/// and `agent.dismiss` want an exited one, and `agent.get` takes either. Each handler passes
+/// its own `Liveness`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTargetParams {
@@ -1059,8 +1064,10 @@ pub struct AgentTargetParams {
     pub client: Option<ClientId>,
 }
 // One optional positional target, as M2's `WorkspaceTargetParams` takes one: a key bound to
-// `agent.dismiss a_5e21` names the record it means, and one bound to `agent.dismiss` means
-// the record in this pane.
+// `agent.dismiss a_5e21` names the record it means. A key bound with no argument names none:
+// `pane` is set to `None` here, and only a caller that fills it over the wire takes the pane
+// route, so `api::agent::resolve` falls through to the cursor row of the calling client's
+// Agents box, which is the row the reader is looking at.
 impl Params for AgentTargetParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
         Ok(AgentTargetParams {

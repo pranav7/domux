@@ -490,6 +490,56 @@ async fn an_ambiguous_target_lists_the_candidates() {
     assert_eq!(err.data.unwrap().as_array().unwrap().len(), 2);
 }
 
+/// The addressing rule answers the records the calling verb can act on. A workspace holding one
+/// live record and one exited one names the live one for `agent.focus` and the exited one for
+/// `agent.dismiss`, and the tab-qualified form reaches the exited record through the pane it
+/// last ran in, which is the only pane it has left.
+#[tokio::test]
+async fn a_workspace_target_names_the_record_the_calling_verb_can_act_on() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (claude_pane, codex_pane) = two_agents(&mut h).await;
+    let claude = h
+        .agents()
+        .await
+        .into_iter()
+        .find(|a| a.kind == AgentKind::Claude)
+        .expect("the claude record")
+        .id;
+    h.report(claude_pane, AgentKind::Claude, CLAUDE_ENDS).await;
+    let (ws, tab) = {
+        let model = h.model();
+        let view = model.client(&h.client).expect("the client");
+        (view.workspace.to_string(), view.tab.to_string())
+    };
+
+    h.api("agent.focus", json!({"agent": ws})).await.unwrap();
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        codex_pane,
+        "focus took the live record, which is the only one it can open"
+    );
+
+    // Both records are in the one tab, and the exited claude holds no pane of its own, so the
+    // qualified form finds it only through `last_pane`.
+    h.api("agent.dismiss", json!({"agent": format!("{ws}/{tab}")}))
+        .await
+        .unwrap();
+    let left = h.agents().await;
+    assert_eq!(left.len(), 1, "dismiss took the exited record");
+    assert!(left.iter().all(|a| a.id != claude));
+
+    let err = h
+        .api("agent.dismiss", json!({"agent": ws}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
+    assert_eq!(
+        err.message,
+        format!("no exited agent in {ws}; run domux2 peek"),
+        "the refusal says which records it looked at, because the live one is still listed"
+    );
+}
+
 /// Every way input reaches a pane clears the dot on the agent there. Each round puts the dot
 /// back through working, because a record that is already idle does not raise a second one.
 #[tokio::test]

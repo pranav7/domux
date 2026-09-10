@@ -37,18 +37,18 @@ pub enum AgentAction {
     },
     /// Switch to an agent's workspace, tab and pane
     Focus {
-        /// An agent id, a workspace with one agent, or workspace/tab; the default is the
-        /// agent in this pane
+        /// An agent id, a workspace with one live agent, or workspace/tab; the default is
+        /// the agent in this pane
         agent: Option<String>,
     },
     /// Take an exited agent's record out of the list
     Dismiss {
-        /// An agent id, a workspace with one agent, or workspace/tab
+        /// An agent id, a workspace with one exited agent, or workspace/tab
         agent: Option<String>,
     },
     /// Type an exited agent's relaunch line into the pane it ran in
     Resume {
-        /// An agent id, a workspace with one agent, or workspace/tab
+        /// An agent id, a workspace with one exited agent, or workspace/tab
         agent: Option<String>,
     },
 }

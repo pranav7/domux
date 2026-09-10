@@ -11,7 +11,7 @@ use domux_core::api::{
     FocusResult,
 };
 use domux_core::ids::{AgentId, PaneId};
-use domux_core::model::agent::{Agent, AgentEvent, AgentState};
+use domux_core::model::agent::{Agent, AgentEvent, AgentState, Liveness};
 use domux_core::model::{AgentReportOutcome, Model};
 use domux_core::names::BIN_NAME;
 use serde_json::Value;
@@ -181,8 +181,11 @@ pub fn list(ctx: &mut Ctx, p: AgentListParams) -> Result<Value, ApiError> {
 }
 
 /// One record, named the way every `agent.*` target is named.
+///
+/// `Liveness::Any`: this reads a record rather than acting on it, and the exited ones are
+/// exactly what a reader asks about after a session ends.
 pub fn get(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
-    let id = resolve(ctx, &p)?;
+    let id = resolve(ctx, &p, Liveness::Any)?;
     let model: &Model = ctx.model;
     // Reachable: `resolve` also answers from the calling client's Agents box cursor, which
     // holds an agent id and can outlive the record it named.
@@ -215,8 +218,11 @@ pub fn self_(ctx: &mut Ctx, p: AgentSelfParams) -> Result<Value, ApiError> {
 ///
 /// Nothing here clears the dot. `Model::focus_pane` does, for every route to a pane at once,
 /// and this is one of those routes.
+///
+/// `Liveness::Live`: an exited record has no pane, so a workspace form that answered one would
+/// resolve to a record this refuses two lines later.
 pub fn focus(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
-    let id = resolve(ctx, &p)?;
+    let id = resolve(ctx, &p, Liveness::Live)?;
     let client = ctx.view()?;
     let agent = ctx.model.agent(&id).ok_or_else(|| {
         ApiError::not_found(format!("agent {id} does not exist; run {BIN_NAME} peek"))
@@ -266,6 +272,9 @@ pub fn resume(ctx: &mut Ctx, p: AgentResumeParams) -> Result<Value, ApiError> {
     // cursor. A record is resumed by name or by the row you are looking at; the pane you happen
     // to be typing in does not name one, because the record that would answer for it is the
     // live agent there and a live agent is exactly what this refuses.
+    //
+    // `Liveness::Exited` for the same reason: the workspace and `workspace/tab` forms name the
+    // records this can act on, which are the ones whose session is over.
     let id = resolve(
         ctx,
         &AgentTargetParams {
@@ -273,6 +282,7 @@ pub fn resume(ctx: &mut Ctx, p: AgentResumeParams) -> Result<Value, ApiError> {
             pane: None,
             client: p.client,
         },
+        Liveness::Exited,
     )?;
     let (command, pane) = plan_resume(ctx, &id)?;
     // One carriage return, which is what Enter sends: the shell reads the whole thing as one
@@ -361,8 +371,11 @@ pub(crate) fn plan_resume(ctx: &Ctx, id: &AgentId) -> Result<(String, PaneId), A
 }
 
 /// Removes an exited record from the list. `Model::dismiss_agent` refuses a live one.
+///
+/// `Liveness::Exited`, so the workspace and `workspace/tab` forms name the records this can
+/// act on rather than the ones it is about to refuse.
 pub fn dismiss(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
-    let id = resolve(ctx, &p)?;
+    let id = resolve(ctx, &p, Liveness::Exited)?;
     // Read before the record goes, and used only after the refusal has had its chance: a
     // path read afterwards is always absent, so the cached transcript would outlive every
     // record that could ever ask for it again.
@@ -396,11 +409,17 @@ pub fn dismiss(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
     ok(Ack { ok: true })
 }
 
-/// `agent` names a record, a workspace with one live agent, or `workspace/tab`. With no
-/// `agent`, the pane the caller is in, then the cursor row of the calling client's Agents box.
-fn resolve(ctx: &Ctx, p: &AgentTargetParams) -> Result<AgentId, ApiError> {
+/// `agent` names a record, a workspace with one agent `want` accepts, or `workspace/tab`. With
+/// no `agent`, the pane the caller is in, then the cursor row of the calling client's Agents
+/// box.
+///
+/// `want` reaches the workspace forms only. The pane holds a live record by definition, and
+/// the cursor row is the row the reader is looking at whatever state it is in; both answer one
+/// record, so the verb's own refusal names the state and says which verb to use instead, which
+/// a not-found from here could not.
+fn resolve(ctx: &Ctx, p: &AgentTargetParams, want: Liveness) -> Result<AgentId, ApiError> {
     if let Some(target) = &p.agent {
-        return ctx.model.resolve_agent_target(target);
+        return ctx.model.resolve_agent_target(target, want);
     }
     if let Some(pane) = &p.pane {
         if let Some(a) = ctx.model.live_agent_on_pane(pane) {
@@ -419,6 +438,7 @@ fn resolve(ctx: &Ctx, p: &AgentTargetParams) -> Result<AgentId, ApiError> {
         }
     }
     Err(ApiError::invalid_params(format!(
-        "name an agent: an agent id, a workspace with one agent, or workspace/tab; run {BIN_NAME} peek for the list"
+        "name an agent: an agent id, a workspace with one {}agent, or workspace/tab; run {BIN_NAME} peek for the list",
+        want.adjective()
     )))
 }

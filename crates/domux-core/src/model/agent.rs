@@ -94,6 +94,43 @@ impl fmt::Display for AgentState {
     }
 }
 
+/// Which records a target may name, said by the verb that is about to act on one.
+///
+/// The addressing rule is one rule (`Model::resolve_agent_target`) and the verbs that use it
+/// do not agree about which records they can act on. `agent.focus` needs a pane to put the
+/// keys on, so it wants a live record. `agent.resume` and `agent.dismiss` each refuse a live
+/// one, so they want an exited record. `agent.get` reads a record and answers for either.
+/// M3 resolved every target to a live record, which left the workspace and `workspace/tab`
+/// forms unable to reach the two exited-only verbs at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    Live,
+    Exited,
+    Any,
+}
+
+impl Liveness {
+    /// Whether a record in this state is one the verb can act on.
+    pub fn accepts(self, state: AgentState) -> bool {
+        match self {
+            Liveness::Live => state.is_live(),
+            Liveness::Exited => !state.is_live(),
+            Liveness::Any => true,
+        }
+    }
+
+    /// The adjective a refusal carries, so "no live agent in main" and "2 exited agents are in
+    /// main" both say which records were looked at. The reader can see the rest of them in the
+    /// list, and a refusal that did not say would read as a contradiction of what is there.
+    pub fn adjective(self) -> &'static str {
+        match self {
+            Liveness::Live => "live ",
+            Liveness::Exited => "exited ",
+            Liveness::Any => "",
+        }
+    }
+}
+
 /// What a hook or the observer reports. Hook events carry Claude Code's names; Codex and
 /// OpenCode payloads are adapted onto them (domux-server `agents::hooks`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
