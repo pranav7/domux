@@ -150,7 +150,7 @@ async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
     let transcript = dir.path().join("s.jsonl");
     std::fs::write(
         &transcript,
-        "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n",
+        "{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"Session check cleanup.\"}\n",
     )
     .unwrap();
     let payload = format!(
@@ -187,11 +187,13 @@ async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
     // The other half: the overlay's wider form keeps both, so the fixture did have a tab and
     // a recap for the sidebar to drop.
     h.api("agents.open", json!({})).await.unwrap();
+    // The recap reaches the record on the core's tick, not on the hook that was sent above
+    // (decision record 0034), so this waits longer than a frame.
     let f = h
         .wait_for(
             h.client.clone(),
             |f| f.contains("※"),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
         )
         .await;
     let line = row_with(&f, "claude ");

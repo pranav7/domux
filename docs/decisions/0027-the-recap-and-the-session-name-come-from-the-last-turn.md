@@ -1,8 +1,11 @@
 # 0027: The recap is the last turn's, and the session name is the checkpoint's
 
 **Date:** 2026-09-10
-**Status:** Accepted. Amends M3 plan assumption 6 and closes the M3 open item "the `/rename`
-shape is unverified against real usage".
+**Status:** The name half stands. **The recap half is replaced by decision record 0034**, which
+takes the fallbacks away, drops the rule about which turn a summary belongs to, and moves the
+reading off the hooks and onto the tick. Read 0034 for what the reader does now; what is below
+about the recap is the state MUX-28 was raised against. Amends M3 plan assumption 6 and closes
+the M3 open item "the `/rename` shape is unverified against real usage".
 **Decision:** A summary counts as the recap only when it was written after the last prompt;
 otherwise the recap is the last thing the agent said in words. The session name is the last
 `custom-title` entry, then `agent-name`, then the `/rename` command's arguments. The transcript

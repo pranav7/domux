@@ -217,11 +217,17 @@ async fn the_switcher_adds_the_tab_and_the_recap_the_sidebar_has_no_room_for() {
     );
     h.report(pane, AgentKind::Claude, &payload).await;
     h.api("switcher.open", json!({})).await.unwrap();
+    // The recap reaches the record on the core's tick rather than on the hook above (decision
+    // record 0034), so the row arrives before the line under it does.
     let f = h
-        .wait_for(h.client.clone(), |f| f.contains("└ claude"), WAIT)
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Replaced three session checks"),
+            Duration::from_secs(5),
+        )
         .await;
     assert!(
-        f.contains("Replaced three session checks"),
-        "the recap has its own line here:\n{f}"
+        f.contains("└ claude"),
+        "the recap is a line of the agent's own row:\n{f}"
     );
 }

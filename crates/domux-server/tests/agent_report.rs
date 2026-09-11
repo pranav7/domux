@@ -8,6 +8,10 @@ use domux_core::config::Config;
 use domux_core::model::agent::{Agent, AgentKind, AgentState};
 use domux_server::testing::{Harness, HarnessOptions};
 use serde_json::json;
+use std::time::Duration;
+
+/// Long enough for the core's once-a-second tick to have run, which is what reads a transcript.
+const TICK: Duration = Duration::from_secs(5);
 
 fn payload(event: &str, extra: serde_json::Value) -> String {
     let mut v = json!({
@@ -125,15 +129,21 @@ async fn the_hook_sequence_of_one_turn_walks_the_state_machine() {
     assert_eq!(a.reason, None, "the reason went with the waiting state");
 }
 
+/// MUX-28, both halves, at the level the author met them.
+///
+/// A turn the agent has not recapped shows no recap, however much it has said: M3 filled the
+/// slot with the last thing the agent said in words, and a row whose session had never written
+/// a recap said a sentence out of the middle of a turn.
+///
+/// And the recap that does arrive arrives late. Claude Code writes the entry minutes after the
+/// hook that ended the turn, so nothing reads it here: the tick does, and the second half of
+/// this test sends no hook at all (decision record 0034).
 #[tokio::test]
-async fn a_stop_reads_the_recap_and_the_session_name_from_the_transcript() {
+async fn a_recap_the_agent_writes_after_its_last_hook_still_reaches_the_record() {
     let dir = tempfile::tempdir().unwrap();
     let transcript = dir.path().join("s.jsonl");
-    std::fs::write(
-        &transcript,
-        "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n",
-    )
-    .unwrap();
+    let said = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"tidy the session checks\"}}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I will read the file first.\"}]}}\n";
+    std::fs::write(&transcript, said).unwrap();
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let pane = h.focused_pane(h.client.clone());
     let with_path = |event: &str| {
@@ -152,13 +162,19 @@ async fn a_stop_reads_the_recap_and_the_session_name_from_the_transcript() {
     .await;
     h.report(pane.clone(), AgentKind::Claude, &with_path("Stop"))
         .await;
-    let a = only_agent(&h);
-    assert_eq!(a.recap.as_deref(), Some("Session check cleanup"));
-    assert_eq!(a.name, None, "no rename yet, so the kind stands in");
-    std::fs::write(&transcript, "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:21:00.000Z\",\"content\":\"Replaced three session checks with one guard.\"}\n").unwrap();
-    h.report(pane.clone(), AgentKind::Claude, &with_path("Stop"))
+    let a = h
+        .wait_for_agent(|a| a.state == AgentState::Idle, TICK)
         .await;
-    let a = only_agent(&h);
+    assert_eq!(
+        a.recap, None,
+        "the agent said plenty and recapped none of it"
+    );
+    assert_eq!(a.name, None, "no rename yet, so the kind stands in");
+
+    // The turn is over and its hooks have all been sent. The agent writes its recap now, and
+    // checkpoints the name it was given, and nothing reports either.
+    std::fs::write(&transcript, format!("{said}{}", "{\"type\":\"custom-title\",\"customTitle\":\"auth-cleanup\",\"sessionId\":\"c1\"}\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:21:00.000Z\",\"content\":\"Replaced three session checks with one guard.\"}\n")).unwrap();
+    let a = h.wait_for_agent(|a| a.recap.is_some(), TICK).await;
     assert_eq!(
         a.recap.as_deref(),
         Some("Replaced three session checks with one guard")
@@ -166,15 +182,14 @@ async fn a_stop_reads_the_recap_and_the_session_name_from_the_transcript() {
     assert_eq!(a.name.as_deref(), Some("auth-cleanup"));
 }
 
-/// Plan assumption 6, which the architecture spec does not name: the transcript is re-read on
-/// `SessionStart` too, because a resumed session already has a recap and a name and would
-/// otherwise show neither until its first turn ended. Only `SessionStart` is sent here, so
-/// neither of the two events the spec does name can be what read the file.
+/// A resumed session already has a recap and a name, and shows both without waiting for a turn
+/// to end. M3 read them on `SessionStart` for this; the tick reads them whether a hook arrives
+/// or not, and only `SessionStart` is sent here.
 #[tokio::test]
-async fn a_session_start_alone_reads_the_recap_and_the_name_a_resumed_session_already_has() {
+async fn a_resumed_session_shows_the_recap_and_the_name_it_already_has() {
     let dir = tempfile::tempdir().unwrap();
     let transcript = dir.path().join("s.jsonl");
-    std::fs::write(&transcript, "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n").unwrap();
+    std::fs::write(&transcript, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"Replaced three session checks with one guard.\"}\n").unwrap();
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let pane = h.focused_pane(h.client.clone());
     h.report(
@@ -186,8 +201,11 @@ async fn a_session_start_alone_reads_the_recap_and_the_name_a_resumed_session_al
         ),
     )
     .await;
-    let a = only_agent(&h);
-    assert_eq!(a.recap.as_deref(), Some("Session check cleanup"));
+    let a = h.wait_for_agent(|a| a.recap.is_some(), TICK).await;
+    assert_eq!(
+        a.recap.as_deref(),
+        Some("Replaced three session checks with one guard")
+    );
     assert_eq!(a.name.as_deref(), Some("auth-cleanup"));
 }
 
@@ -322,29 +340,29 @@ async fn a_hook_that_arrives_after_the_session_ended_writes_to_nothing() {
 }
 
 /// Never fabricate cuts both ways: a session name is durable, and a read that did not find
-/// one is not evidence that the agent cleared it. A transcript over `recap::FULL_SCAN_BYTES`
-/// is read as a head and a tail, so an early `/rename` can fall outside the window.
+/// one is not evidence that the agent cleared it. A transcript domux meets for the first time
+/// is read from `recap::TAIL_BYTES` before its end, so an early `/rename` can fall outside the
+/// window.
 #[tokio::test]
 async fn a_session_name_survives_a_transcript_read_that_does_not_name_it() {
     let dir = tempfile::tempdir().unwrap();
     let transcript = dir.path().join("s.jsonl");
-    std::fs::write(&transcript, "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n").unwrap();
+    std::fs::write(&transcript, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n").unwrap();
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let pane = h.focused_pane(h.client.clone());
-    let with_path = |event: &str| {
-        payload(
-            event,
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        &payload(
+            "SessionStart",
             json!({"transcript_path": transcript.to_str().unwrap()}),
-        )
-    };
-    h.report(pane.clone(), AgentKind::Claude, &with_path("SessionStart"))
-        .await;
-    assert_eq!(only_agent(&h).name.as_deref(), Some("auth-cleanup"));
-    // The window the reader sees no longer holds the rename.
+        ),
+    )
+    .await;
+    h.wait_for_agent(|a| a.name.is_some(), TICK).await;
+    // A transcript the reader has to start again on, and this one names no rename.
     std::fs::write(&transcript, "{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:21:00.000Z\",\"content\":\"Replaced three session checks with one guard.\"}\n").unwrap();
-    h.report(pane.clone(), AgentKind::Claude, &with_path("Stop"))
-        .await;
-    let a = only_agent(&h);
+    let a = h.wait_for_agent(|a| a.recap.is_some(), TICK).await;
     assert_eq!(
         a.name.as_deref(),
         Some("auth-cleanup"),
@@ -353,7 +371,7 @@ async fn a_session_name_survives_a_transcript_read_that_does_not_name_it() {
     assert_eq!(
         a.recap.as_deref(),
         Some("Replaced three session checks with one guard"),
-        "the recap summarises the last turn, so it does follow the transcript"
+        "and the recap is whatever the transcript now holds"
     );
 }
 
