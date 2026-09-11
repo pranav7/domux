@@ -3058,6 +3058,11 @@ pub(crate) fn agents_view(
         };
         entries.push(AgentEntry {
             id: a.id.clone(),
+            pane_name: a
+                .pane
+                .as_ref()
+                .and_then(|pane| model.pane(pane))
+                .and_then(|pane| pane.command.clone()),
             kind: a.kind,
             name: a.name.clone(),
             state: a.state,

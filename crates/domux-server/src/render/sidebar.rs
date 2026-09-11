@@ -1162,6 +1162,7 @@ mod tests {
         let mut view = crate::render::agents_box::AgentsView::empty(chrono::Local::now());
         view.agents.push(crate::render::agents_box::AgentEntry {
             id: domux_core::ids::AgentId("a_0001".into()),
+            pane_name: Some("claude".into()),
             kind: domux_core::model::agent::AgentKind::Claude,
             name: None,
             state,

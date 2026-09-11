@@ -58,6 +58,8 @@ impl RowForm {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentEntry {
     pub id: AgentId,
+    /// The name on the pane box. Wide rows show it after the tab.
+    pub pane_name: Option<String>,
     pub kind: AgentKind,
     /// The session name the agent set. Absent until it does, and then the kind stands in.
     pub name: Option<String>,
@@ -251,7 +253,7 @@ fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) ->
     let room = width.saturating_sub(lead);
     let mut first = vec![Span::styled(NEST, Style::default().fg(theme::OVERLAY0))];
     let tail = if form == RowForm::NestedWide {
-        kind_and_tab(a)
+        kind_tab_and_pane(a)
     } else {
         Vec::new()
     };
@@ -272,13 +274,13 @@ fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) ->
     ListRow::selectable(row_key(&a.id), filter_text(a), lines)
 }
 
-/// `  claude › pr1` after the activity, in the switcher only.
+/// `  claude › pr1 › node` after the activity, in the switcher only.
 ///
 /// The kind is dropped when the row's label is already the kind, which is the rule `line_two`
 /// follows for the same reason: an unnamed agent would otherwise read `codex  codex › pr2`.
 /// The tab is dropped when the record names no pane the model still holds, which is what
 /// `place_in_project` already says by leaving it off.
-fn kind_and_tab(a: &AgentEntry) -> Vec<Span<'static>> {
+fn kind_tab_and_pane(a: &AgentEntry) -> Vec<Span<'static>> {
     let tab = a.place_in_project.rsplit_once(" › ").map(|(_, t)| t);
     let mut spans = vec![Span::raw(GAP)];
     if a.name.is_some() {
@@ -293,6 +295,13 @@ fn kind_and_tab(a: &AgentEntry) -> Vec<Span<'static>> {
         }
         spans.push(Span::styled(
             tab.to_string(),
+            Style::default().fg(theme::OVERLAY1),
+        ));
+    }
+    if let Some(pane) = &a.pane_name {
+        spans.push(Span::styled(" › ", Style::default().fg(theme::SURFACE1)));
+        spans.push(Span::styled(
+            pane.clone(),
             Style::default().fg(theme::OVERLAY1),
         ));
     }
@@ -317,6 +326,10 @@ fn filter_text(a: &AgentEntry) -> String {
     out.push_str(a.kind.as_str());
     out.push(' ');
     out.push_str(&a.place_with_tab);
+    if let Some(pane) = &a.pane_name {
+        out.push(' ');
+        out.push_str(pane);
+    }
     out
 }
 
@@ -418,7 +431,7 @@ fn working(tick: u64, word: &str, glyph: Color, band: theme::Shimmer) -> Vec<Spa
     spans
 }
 
-/// `[kind] · [place]`, or the place alone when line 1 already showed the kind.
+/// `[kind] · [place] › [pane]`, or the place and pane when line 1 showed the kind.
 ///
 /// The two flat forms only. A nested row's place is the rows above it (decision record 0030).
 fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
@@ -431,20 +444,32 @@ fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
         RowForm::Overlay => theme::OVERLAY1,
         _ => theme::OVERLAY0,
     });
-    if a.name.is_none() {
-        return vec![Span::styled(
-            truncate_with_ellipsis(place, width),
-            place_style,
-        )];
+    let mut spans = Vec::new();
+    let mut room = width;
+    if a.name.is_some() {
+        let kind = a.kind.as_str();
+        let sep = " · ";
+        room = room.saturating_sub(display_width(kind) + display_width(sep));
+        spans.push(Span::styled(
+            kind,
+            Style::default().fg(theme::agent_color(a.kind)),
+        ));
+        spans.push(Span::styled(sep, Style::default().fg(theme::SURFACE1)));
     }
-    let kind = a.kind.as_str();
-    let sep = " · ";
-    let room = width.saturating_sub(display_width(kind) + display_width(sep));
-    vec![
-        Span::styled(kind, Style::default().fg(theme::agent_color(a.kind))),
-        Span::styled(sep, Style::default().fg(theme::SURFACE1)),
-        Span::styled(truncate_with_ellipsis(place, room), place_style),
-    ]
+    let pane = match form {
+        RowForm::Overlay => a.pane_name.as_deref(),
+        _ => None,
+    };
+    let suffix = pane.map(|pane| format!(" › {pane}"));
+    let place_room = room.saturating_sub(suffix.as_deref().map(display_width).unwrap_or(0));
+    spans.push(Span::styled(
+        truncate_with_ellipsis(place, place_room),
+        place_style,
+    ));
+    if let Some(suffix) = suffix {
+        spans.push(Span::styled(suffix, Style::default().fg(theme::OVERLAY1)));
+    }
+    spans
 }
 
 /// `※ ` and the recap, wrapping onto a second line indented two spaces (interface spec 12.20).
@@ -560,6 +585,7 @@ mod tests {
     fn entry(state: AgentState, name: Option<&str>, kind: AgentKind) -> AgentEntry {
         AgentEntry {
             id: AgentId("a_5e21".into()),
+            pane_name: None,
             kind,
             name: name.map(String::from),
             state,
@@ -985,6 +1011,19 @@ mod tests {
         );
         assert!(one[0].key.is_none());
         assert_eq!(one[1].key.as_deref(), Some("a_9c04"));
+    }
+
+    #[test]
+    fn wide_rows_name_the_pane_after_the_tab() {
+        let mut agent = entry(AgentState::Idle, None, AgentKind::Codex);
+        agent.pane_name = Some("node".into());
+        let view = view(vec![agent]);
+        let wide = overlay_rows(&view, 72);
+        assert_eq!(text(&wide[0])[1], "auth cleanup › pr1 › node");
+        assert!(wide[0].filter_text.contains("node"));
+
+        let narrow = rows(&view, RowForm::Sidebar, 34);
+        assert_eq!(text(&narrow[0])[1], "audrey-app › auth cleanup");
     }
 
     /// Two projects are two groups, and the group order is the row order: the project holding

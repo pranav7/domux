@@ -14,7 +14,7 @@ use domux_core::config::Config;
 use domux_core::ids::PaneId;
 use domux_core::model::agent::AgentKind;
 use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
-use domux_server::testing::{row, Harness};
+use domux_server::testing::{row, Harness, HarnessOptions};
 use serde_json::json;
 use std::time::Duration;
 
@@ -166,13 +166,13 @@ async fn the_rows_are_the_three_line_form_with_the_waiting_agent_first() {
     let codex_line = row_holding(&f, "codex ");
     let claude_line = row_holding(&f, "claude ");
     assert!(codex_line < claude_line, "waiting sorts first:\n{f}");
-    // Line 2 is `workspace › tab`, which is what tells the overlay's row form from the
+    // Line 2 is `workspace › tab › pane`, which is what tells the overlay's row form from the
     // sidebar's: the project is on the header above the group (MUX-21), where the sidebar's
     // `project › workspace` carries it on the row.
     assert_eq!(
         row(&f, codex_line + 1).matches(" › ").count(),
-        1,
-        "line 2 is the workspace and the tab:\n{f}"
+        2,
+        "line 2 is the workspace, tab and pane:\n{f}"
     );
     // And the header is above them both, in upper case with a rule to the box's edge.
     assert!(
@@ -185,6 +185,25 @@ async fn the_rows_are_the_three_line_form_with_the_waiting_agent_first() {
         claude_line - codex_line,
         3,
         "one blank row between the agents:\n{f}"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_row_names_its_pane_after_its_tab() {
+    let mut h = Harness::start_with(HarnessOptions {
+        foreground: Some("node".into()),
+        ..HarnessOptions::new(Config::default(), 100, 24)
+    })
+    .await;
+    let pane = h.focused_pane(h.client.clone());
+    let tab = h.current_tab(h.client.clone());
+    h.report(pane, AgentKind::Codex, CODEX_STARTS).await;
+
+    let f = open_overlay(&mut h).await;
+    let place = format!("main › {tab} › node");
+    assert!(
+        row(&f, row_holding(&f, &place)).contains(&place),
+        "the pane follows the tab:\n{f}"
     );
 }
 
