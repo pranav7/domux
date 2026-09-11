@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 1 at the end of M1, 2 at M2, 3 at M3 (agent records), 4 with stay awake (decision 0029),
-/// 5 when the agent records went again (decision 0028).
+/// 5 when the agent records went again (decision 0030).
 pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ pub fn v3_to_v4(v: &mut Value) -> Result<(), String> {
 
 /// 4 to 5: the `agents` list goes. A record only ever described a session that was running,
 /// and every one of them died with the server that wrote the file, so a restored record named
-/// a session that was already over (decision record 0028).
+/// a session that was already over (decision record 0030).
 pub fn v4_to_v5(v: &mut Value) -> Result<(), String> {
     let obj = v
         .as_object_mut()

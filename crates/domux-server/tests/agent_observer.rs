@@ -461,7 +461,7 @@ async fn until_pane_is_gone(h: &mut Harness, pane: &domux_core::ids::PaneId) {
 }
 
 /// Every session that ends takes its record with it, whatever it reported and whatever kind it
-/// was (decision record 0028). Two records, one hooked and one the observer found alone, and
+/// was (decision record 0030). Two records, one hooked and one the observer found alone, and
 /// neither is left behind.
 #[tokio::test]
 async fn a_hooked_record_and_a_bare_one_both_go_when_their_processes_do() {

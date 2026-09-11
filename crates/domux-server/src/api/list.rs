@@ -365,7 +365,7 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// leaves the overlay where it was, which is what a reader who pressed Enter on a record that
 /// has just gone should see.
 ///
-/// It had a second arm, resume on an exited row, until decision record 0028 removed both the
+/// It had a second arm, resume on an exited row, until decision record 0030 removed both the
 /// verb and the row.
 fn activate_agent(ctx: &mut Ctx, client: &ClientId, agent: AgentId) -> Result<Value, ApiError> {
     super::agent::focus(

@@ -21,7 +21,7 @@ use std::time::Duration;
 
 /// The sidebar's Agents box is the other surface `[navigator] enabled = false` keeps: with the
 /// Navigator on there is one box and the agents are nested under their workspaces in it
-/// (decision record 0028). Every test in this file is about the two-box sidebar.
+/// (decision record 0030). Every test in this file is about the two-box sidebar.
 ///
 /// It goes when the two boxes go, and this file goes with it.
 fn two_boxes() -> Config {
@@ -482,7 +482,7 @@ async fn the_hint_row_shows_the_cursor_rows_key_while_focus_is_in_the_agents_box
     // row went. A bare `claude` check would match the pane box's own title in the same frame.
     assert!(
         h.agents().await.is_empty(),
-        "the session ended, so the record went with it (decision record 0028):\n{f}"
+        "the session ended, so the record went with it (decision record 0030):\n{f}"
     );
 }
 

@@ -365,7 +365,7 @@ async fn a_note_clears_on_the_first_key_in_the_sidebar_agents_box() {
 /// keys the way the sidebar's hint row does, so it hides them the same way.
 #[tokio::test]
 async fn a_note_clears_on_the_first_key_in_the_agents_overlay() {
-    // The agents overlay is the surface the two-box layout keeps (decision record 0028).
+    // The agents overlay is the surface the two-box layout keeps (decision record 0030).
     let mut config = Config::default();
     config.navigator.enabled = false;
     let mut h = Harness::start(config, 80, 24).await;
