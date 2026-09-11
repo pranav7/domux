@@ -170,7 +170,11 @@ async fn attach_hello_gets_welcome_then_a_full_frame() {
 async fn version_mismatch_is_refused_with_the_restart_instruction() {
     let (server, _dir) = start().await;
     let mut s = UnixStream::connect(&server.socket_path).await.unwrap();
-    s.write_all(&encode(&hello("1.0.0")).unwrap())
+    // Built from this build's own version, so the two can never be equal whatever the workspace
+    // version becomes. A literal here was the server's real version once, and the test then
+    // asserted a refusal that never came.
+    let other_version = format!("{}-not-this-build", domux_core::VERSION);
+    s.write_all(&encode(&hello(&other_version)).unwrap())
         .await
         .unwrap();
     let mut dec = Decoder::default();
@@ -178,7 +182,7 @@ async fn version_mismatch_is_refused_with_the_restart_instruction() {
         ServerMsg::Refused { reason } => assert_eq!(
             reason,
             format!(
-                "the server is domux {} and this client is 1.0.0; run domux server restart",
+                "the server is domux {} and this client is {other_version}; run domux server restart",
                 domux_core::VERSION
             )
         ),
