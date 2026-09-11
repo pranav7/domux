@@ -31,11 +31,11 @@ ISSUES="https://github.com/$REPO/issues"
 
 # --- the look ---------------------------------------------------------------------------------
 #
-# Four things and no more: the logo, a spinner while something is happening, a faint dot on a
-# step that is done, and the red dot when domux is waiting on you. The spinner is the braille
-# set every command line spinner uses, rather than a second animation invented here. Only the
-# spinner moves: a pipe or a log file gets the same lines once, in order, with no color and no
-# redrawing.
+# Three things and no more: the logo, a faint dot on a step, and the red dot when domux is
+# waiting on you. Nothing moves. An installer that runs for a couple of seconds has no step
+# long enough to read an animation on, and a shell script cannot take a dependency on a
+# library that would draw one, so the line says the word and is replaced by the result. A
+# pipe or a log file gets the same lines once, in order, with no color and no redrawing.
 
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   MAUVE=$(printf '\033[38;2;203;166;247m')      # the domux mauve
@@ -50,36 +50,16 @@ else
   LIVE=""
 fi
 
-SPINNER='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏'
-TICK=0
-
-# set_spinner <tick>: SPIN becomes the frame for that tick.
-set_spinner() {
-  s_want=$(($1 % 10))
-  s_i=0
-  for s_frame in $SPINNER; do
-    if [ "$s_i" = "$s_want" ]; then
-      SPIN=$s_frame
-      return 0
-    fi
-    s_i=$((s_i + 1))
-  done
-}
-
 logo() {
   printf '\n   %s█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀%s\n' "$MAUVE" "$OFF" >&2
   printf '   %s█▄▀ █▄█ █ ▀ █ █▄█ █ █%s  %s%s%s\n\n' \
     "$MAUVE" "$OFF" "$FAINT" "github.com/$REPO" "$OFF" >&2
 }
 
-# step <word>: the line that is redrawn while something happens. Only ever on a terminal.
-step() {
-  set_spinner "$TICK"
-  printf '\r   %s%s%s  %s%s' "$MAUVE" "$SPIN" "$OFF" "$1" "$EOL" >&2
-}
-
-# working <word> <command...>: runs the command while the step turns, and answers its status.
-# Without a terminal the command runs on its own and nothing is drawn.
+# working <word> <command...>: says what is happening, runs the command, and answers its
+# status. The word stands still while the command runs, and the line is cleared after it so
+# the step's own done line takes its place. Without a terminal the command runs on its own
+# and nothing is drawn.
 working() {
   w_word=$1
   shift
@@ -87,15 +67,9 @@ working() {
     "$@"
     return $?
   fi
-  "$@" &
-  w_pid=$!
-  while kill -0 "$w_pid" 2>/dev/null; do
-    step "$w_word"
-    TICK=$((TICK + 1))
-    sleep 0.08 2>/dev/null || true
-  done
+  printf '   %s·%s  %s%s' "$FAINT" "$OFF" "$w_word" "$EOL" >&2
   w_code=0
-  wait "$w_pid" || w_code=$?
+  "$@" || w_code=$?
   printf '\r%s' "$EOL" >&2
   return $w_code
 }
