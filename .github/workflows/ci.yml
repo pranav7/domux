@@ -90,3 +90,44 @@ jobs:
             target/zig-global-cache
           key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/zig-pin.toml', 'vendor/ghostty-pin.toml') }}
       - run: cargo build --workspace --locked --target x86_64-apple-darwin
+
+  # The shell half of the repository: the installer, the release scripts and the license files.
+  # It runs on both platforms because the installer has to work under dash, bash and macOS's sh.
+  shell:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: License files
+        run: sh tests/license/run.sh
+      - name: Release scripts
+        run: sh tests/release/run.sh
+      - name: Installer under sh
+        run: sh tests/install/run.sh
+      - name: Installer under bash
+        run: TEST_SHELL=bash sh tests/install/run.sh
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh install.sh scripts/release/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*
+
+  # Every crate compiled into a release binary carries a license the project accepts, and the
+  # attribution file the archives ship can be generated.
+  license:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1          # keep equal to rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: true     # keeps the installed cargo-about in the cache
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.2 --locked --features cli
+      - name: Every compiled license is accepted
+        run: cargo about generate --fail -o /dev/null about.hbs

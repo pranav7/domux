@@ -1,0 +1,179 @@
+name: release
+
+# Builds, smoke-tests and publishes a domux release. A version tag publishes. A manual run
+# (workflow_dispatch) builds and smoke-tests the same way and publishes nothing.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build and smoke-test without publishing, for example 1.0.0. It must equal Cargo.toml's [workspace.package].version and have a CHANGELOG.md section.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.98.1        # keep equal to rust-toolchain.toml; the check job fails otherwise
+  CARGO_ABOUT_VERSION: 0.9.2    # keep equal to ci.yml and AGENTS.md
+  ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/target/zig-global-cache
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Toolchain pin equals rust-toolchain.toml
+        run: grep -Fxq "channel = \"$RUST_TOOLCHAIN\"" rust-toolchain.toml
+      - name: Tag equals Cargo.toml version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then tag="$GITHUB_REF_NAME"; else tag="v$INPUT_VERSION"; fi
+          version=$(sh scripts/release/check-version.sh "$tag")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case $version in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: CHANGELOG.md has this version's section
+        run: sh scripts/release/changelog-section.sh "${{ steps.version.outputs.version }}" > /dev/null
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15          # cross build: Zig cross-compiles libghostty-vt, Apple's linker links x86_64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04      # oldest hosted image: the binary's glibc floor is 2.35
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    env:
+      # The checkout is shallow and has no tags to describe; the tag is the truth here.
+      DOMUX_GIT_DESCRIBE: v${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          cache-all-crates: true
+      - name: Cache Zig and the pinned Ghostty source
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/domux/zig
+            ~/.cache/domux/ghostty
+            target/zig-global-cache
+          key: ghostty-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vendor/zig-pin.toml', 'vendor/ghostty-pin.toml') }}
+      - name: Install cargo-about
+        # The cli feature carries the binary; without it cargo install compiles the library and
+        # installs nothing.
+        run: cargo install cargo-about --version "$CARGO_ABOUT_VERSION" --locked --features cli
+      - name: Build the archive
+        run: sh scripts/release/build-archive.sh "${{ matrix.target }}" "${{ needs.check.outputs.version }}" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/domux_*
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    needs: [check, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist
+      - name: Run the archive on this platform
+        run: sh scripts/release/smoke.sh dist/domux_*.tar.gz "${{ needs.check.outputs.version }}"
+
+  publish:
+    needs: [check, build, smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: archive-*
+          merge-multiple: true
+      - name: Every target is present
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          missing=0
+          for name in darwin_arm64 darwin_amd64 linux_amd64 linux_arm64; do
+            for f in "dist/domux_${VERSION}_${name}.tar.gz" "dist/domux_${VERSION}_${name}.sha256"; do
+              [ -f "$f" ] || { echo "release: missing $f" >&2; missing=1; }
+            done
+          done
+          if [ "$missing" != 0 ]; then
+            echo "release: a target is missing; nothing is published. Rerun the failed build job, then this workflow." >&2
+            exit 1
+          fi
+          count=$(find dist -maxdepth 1 -name 'domux_*.tar.gz' | wc -l | tr -d ' ')
+          if [ "$count" != 4 ]; then
+            echo "release: expected 4 archives, found $count:" >&2; ls -l dist >&2; exit 1
+          fi
+      - name: Assemble and verify SHA256SUMS
+        run: |
+          cd dist
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          rm -f ./*.sha256
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        run: sh scripts/release/changelog-section.sh "${{ needs.check.outputs.version }}" > release-notes.md
+      - name: Publish the GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.check.outputs.prerelease }}
+        run: |
+          if [ "$PRERELEASE" = true ]; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease \
+              --title "$GITHUB_REF_NAME" --notes-file release-notes.md dist/domux_*.tar.gz dist/SHA256SUMS
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$GITHUB_REF_NAME" --notes-file release-notes.md dist/domux_*.tar.gz dist/SHA256SUMS
+          fi
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json url,assets --jq '{url, assets: [.assets[].name]}'
+      - name: Dry run summary
+        if: github.event_name != 'push'
+        run: |
+          echo "dry run for ${{ needs.check.outputs.version }}: built, smoke-tested and checksum-verified; nothing published"
+          ls -l dist
+          echo "--- release notes ---"
+          cat release-notes.md
