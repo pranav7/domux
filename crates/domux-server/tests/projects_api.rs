@@ -134,15 +134,19 @@ async fn adding_a_repository_registers_main_and_adopts_the_worktrees_on_disk() {
     // Nothing draws the Projects box until a surface holding it is open, and a fresh model
     // starts with the top bar (Task 2).
     h.api("sidebar.show", json!({})).await.unwrap();
+    // Both glyphs, not one. A slot draws its hollow glyph only once its branch fact says the
+    // branch is still the handle, and the provider answers per workspace: waiting for slot 1
+    // and then asserting slot 2 in the same frame is a race, and it is one that lost on a
+    // macOS runner.
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("◌ workspace-1"),
+            |f| f.contains("◌ workspace-1") && f.contains("◌ workspace-3"),
             Duration::from_secs(5),
         )
         .await;
     assert!(
-        f.contains("AUDREY-APP") && f.contains("◌ workspace-3"),
+        f.contains("AUDREY-APP"),
         "and the numbers keep their gap:\n{f}"
     );
     // Slot 2 was never on disk, so nothing invented it.
