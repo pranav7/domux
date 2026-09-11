@@ -213,6 +213,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     } else {
         let area =
             crate::render::sidebar::projects_area(ctx.model, ctx.facts, view.size, navigator);
+        let pad = crate::render::sidebar::pad_for(navigator);
         let rows = projects_box::rows(
             ctx.model,
             ctx.facts,
@@ -221,7 +222,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             Extras::compact(content_width(area.width, SIDEBAR_PAD)),
             nested.as_ref(),
         );
-        (rows, text_area(area, SIDEBAR_PAD).height)
+        (rows, text_area(area, pad).height)
     };
     Ok(Visible {
         surface,

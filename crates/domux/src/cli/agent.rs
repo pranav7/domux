@@ -238,7 +238,7 @@ mod tests {
     fn a_record_with_nothing_to_add_prints_two_lines() {
         assert_eq!(
             lines_for(&info()),
-            "● claude  waiting\n  claude · audrey-app › main › 1  (a_5e21)"
+            "• claude  waiting\n  claude · audrey-app › main › 1  (a_5e21)"
         );
     }
 
@@ -252,7 +252,7 @@ mod tests {
         a.recap = Some("Replaced three session checks with one guard.".into());
         assert_eq!(
             lines_for(&a),
-            "● auth refactor  waiting  unseen\n\
+            "• auth refactor  waiting  unseen\n\
              \x20 claude · audrey-app › main › 1  (a_5e21)\n\
              \x20 ※ Replaced three session checks with one guard."
         );
@@ -273,7 +273,7 @@ mod tests {
             a.state = state;
             assert_eq!(
                 lines_for(&a).lines().next().unwrap(),
-                format!("● claude  {word}")
+                format!("• claude  {word}")
             );
         }
     }

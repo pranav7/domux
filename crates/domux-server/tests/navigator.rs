@@ -57,11 +57,17 @@ async fn one_box_called_navigator_takes_the_column_and_the_switcher() {
         !f.contains("┌ Agents"),
         "the Agents box is gone, so the one box takes the column:\n{f}"
     );
-    // Its border runs to the hint row, which is the last row of the column.
+    // The hint row is the box's own footer now, so its border reaches the column's last row,
+    // aligned with the workpanel's own bottom border.
     let bottom = row_with(&f, "└─────");
     assert_eq!(
-        bottom, 22,
-        "the box ends one row above the hint row on a 24-row screen:\n{f}"
+        bottom, 23,
+        "the box's border reaches the last row of a 24-row screen:\n{f}"
+    );
+    let hint = row_with(&f, "leader b hide");
+    assert_eq!(
+        hint, 22,
+        "the hint row is the row just inside that border:\n{f}"
     );
 
     h.api("switcher.open", json!({})).await.unwrap();
@@ -79,11 +85,11 @@ async fn an_agent_is_a_row_under_the_workspace_it_runs_in() {
     one_agent(&mut h).await;
     let f = h.frame(h.client.clone()).await;
     let main = row_with(&f, "  main");
-    let agent = row_with(&f, "⌞ claude");
+    let agent = row_with(&f, "└ claude");
     assert_eq!(agent, main + 1, "directly under its workspace:\n{f}");
     let line = row(&f, agent);
     assert!(
-        line.starts_with("|│   ⌞ claude  "),
+        line.starts_with("|│   └ claude  "),
         "two cells of workspace indent, then the arrow, then the label: {line:?}"
     );
     assert!(
@@ -99,26 +105,26 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
     let pane = one_agent(&mut h).await;
     let f = h.frame(h.client.clone()).await;
     assert!(
-        !row(&f, row_with(&f, "⌞ claude")).contains('●'),
+        !row(&f, row_with(&f, "└ claude")).contains('•'),
         "a working row says so with its glyph and its word:\n{f}"
     );
 
     h.report(pane.clone(), AgentKind::Claude, WAITS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| f.contains("claude  ●"), WAIT)
+        .wait_for(h.client.clone(), |f| f.contains("claude  •"), WAIT)
         .await;
-    let line = row(&f, row_with(&f, "⌞ claude"));
+    let line = row(&f, row_with(&f, "└ claude"));
     assert!(
-        line.contains("⌞ claude  ●"),
+        line.contains("└ claude  •"),
         "the dot is two cells after the label, in the working word's slot: {line:?}"
     );
 
     h.report(pane, AgentKind::Claude, STOPS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| !f.contains("claude  ●"), WAIT)
+        .wait_for(h.client.clone(), |f| !f.contains("claude  •"), WAIT)
         .await;
     assert!(
-        f.contains("⌞ claude"),
+        f.contains("└ claude"),
         "an idle row is still there and says nothing:\n{f}"
     );
 }
@@ -130,7 +136,7 @@ async fn a_session_that_ends_takes_its_row_out_of_the_list() {
     let pane = one_agent(&mut h).await;
     h.report(pane, AgentKind::Claude, ENDS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| !f.contains("⌞ claude"), WAIT)
+        .wait_for(h.client.clone(), |f| !f.contains("└ claude"), WAIT)
         .await;
     assert!(f.contains("  main"), "the workspace stays:\n{f}");
     assert!(h.agents().await.is_empty(), "and the record is gone");
@@ -212,7 +218,7 @@ async fn the_switcher_adds_the_tab_and_the_recap_the_sidebar_has_no_room_for() {
     h.report(pane, AgentKind::Claude, &payload).await;
     h.api("switcher.open", json!({})).await.unwrap();
     let f = h
-        .wait_for(h.client.clone(), |f| f.contains("⌞ claude"), WAIT)
+        .wait_for(h.client.clone(), |f| f.contains("└ claude"), WAIT)
         .await;
     assert!(
         f.contains("Replaced three session checks"),

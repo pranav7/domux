@@ -100,6 +100,15 @@ pub const SIDEBAR_PAD: Pad = Pad {
     footer: false,
 };
 
+/// `SIDEBAR_PAD` with the footer kept: the Navigator's one box takes the whole column
+/// (decision record 0030), so its hint row is the box's own footer rather than a row under
+/// it, and the border reaches the column's last row the way the workpanel's does.
+pub const NAVIGATOR_PAD: Pad = Pad {
+    side: 1,
+    ends: 0,
+    footer: true,
+};
+
 /// Two cells in from each border, a blank row at each end (MUX-12), and the last row for the
 /// footer (MUX-16).
 pub const OVERLAY_PAD: Pad = Pad {
