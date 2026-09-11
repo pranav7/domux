@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "domux"
-version = "2.0.0-alpha.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "domux-client"
-version = "2.0.0-alpha.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "domux-core"
-version = "2.0.0-alpha.0"
+version = "1.0.0"
 dependencies = [
  "bincode",
  "domux-term",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "domux-server"
-version = "2.0.0-alpha.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "domux-term"
-version = "2.0.0-alpha.0"
+version = "1.0.0"
 dependencies = [
  "bitflags 2.13.1",
  "clap",

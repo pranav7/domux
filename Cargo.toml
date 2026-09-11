@@ -3,9 +3,9 @@ resolver = "2"
 members = ["crates/domux-term", "crates/domux-core", "crates/domux-server", "crates/domux-client", "crates/domux"]
 
 [workspace.package]
-version = "2.0.0-alpha.0"
+version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/pranav7/domux"
 publish = false
 
@@ -15,5 +15,18 @@ unsafe_op_in_unsafe_fn = "warn"
 [workspace.lints.clippy]
 all = "warn"
 
+# Release builds: the four archives the pipeline ships. Decision record 0039 has the reasons.
 [profile.release]
-debug = 1          # symbols for profiling
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "debuginfo"
+panic = "unwind"
+
+# Release code with symbols and debug info, for profiling and DOMUX_PROFILE=1 sessions:
+# cargo build --profile profiling
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"

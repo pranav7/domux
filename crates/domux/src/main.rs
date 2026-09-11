@@ -1,13 +1,14 @@
 //! The domux V2 binary: attach with no arguments; everything else is a socket client.
 
 mod cli;
+mod version;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
     name = domux_core::names::BIN_NAME,
-    version = domux_core::VERSION,
+    version = version::long_version(),
     about = "A terminal multiplexer for engineers who direct AI agents"
 )]
 struct Cli {

@@ -1,0 +1,30 @@
+# cargo-about configuration. `cargo about generate --fail -o THIRD_PARTY_LICENSES.md about.hbs`
+# renders the attribution file the release archive ships and exits non-zero when a compiled
+# crate carries a license outside `accepted`. Adding a license here is a deliberate commit;
+# GPL, LGPL, AGPL and SSPL are refused: the author rules on anything not listed.
+accepted = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+
+# Only what a release binary contains: the four release targets, no build or dev dependencies.
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# The workspace crates are not published and carry the LICENSE at the root.
+private = { ignore = true }
