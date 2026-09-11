@@ -5,7 +5,7 @@
 //! between: `theme::Shimmer` holds the two ends and turns a lit fraction into a colour.
 //!
 //! The band runs from before the first character to past the last and back. It moves on the
-//! same 80 ms tick the glyph counts (`agents::labels::ANIMATION_INTERVAL`), which is why the glyph
+//! same 70 ms tick the glyph counts (`agents::labels::ANIMATION_INTERVAL`), which is why the glyph
 //! holds each of its frames for two of them: at one frame a tick the glyph flickers under a
 //! band that glides.
 

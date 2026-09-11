@@ -19,18 +19,20 @@ use ratatui::text::{Line, Span};
 /// The box's title, in the sidebar and in the agents overlay both (principle 14).
 pub const TITLE: &str = "Agents";
 /// The waiting mark. It is the only dot there is, and a row draws it only while its agent is
-/// waiting on you (decision record 0030). Smaller than a full circle, MUX-29, so it reads as
-/// a mark beside the name rather than a shape competing with it.
-pub const DOT: &str = "•";
+/// waiting on you (decision record 0030). A ringed disc: MUX-29 made it a small dot and the
+/// author asked for a bigger one, so it stops the eye without being the full circle that
+/// competed with the name (decision record 0038).
+pub const DOT: &str = "◉";
 /// The recap's glyph.
 pub const RECAP_GLYPH: &str = "※";
 /// Two lines of recap, then an ellipsis (interface spec 12.20).
 pub const RECAP_LINES: usize = 2;
-/// Between the name and the activity on line 1 (interface spec 6.2).
-const GAP: &str = "  ";
-/// Between the name and the dot, which is a mark rather than a word: two cells of nothing in
-/// front of one cell of dot read as a hole in the row, so the dot sits one cell out (MUX-29).
-const DOT_GAP: &str = " ";
+/// Between the name and the activity on line 1. Interface spec 6.2 said two cells; the author
+/// asked for one on 2026-09-11, so the glyph and the dot both sit one cell after the name
+/// (decision record 0038).
+const GAP: &str = " ";
+/// Between the activity and what the switcher adds after it: the kind, the tab and the pane.
+const TAIL_GAP: &str = "  ";
 
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
 /// hollow glyph on an untouched slot, so every name in the box starts in one column.
@@ -54,6 +56,13 @@ impl RowForm {
     /// Whether this form nests the row under a workspace rather than listing it flat.
     fn nested(self) -> bool {
         matches!(self, RowForm::Nested | RowForm::NestedWide)
+    }
+
+    /// Whether a working or compacting row carries its word after the glyph. The two sidebar
+    /// forms draw the glyph alone: the sidebar is narrow and the turning glyph says enough
+    /// there. The overlays have the width and keep the word (decision record 0038).
+    fn shows_word(self) -> bool {
+        matches!(self, RowForm::Overlay | RowForm::NestedWide)
     }
 }
 
@@ -234,7 +243,7 @@ fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow 
         return nested_row(a, view, form, width);
     }
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + RECAP_LINES);
-    lines.push(Line::from(line_one(a, view, width)));
+    lines.push(Line::from(line_one(a, view, form, width)));
     lines.push(Line::from(line_two(a, form, width)));
     if form == RowForm::Overlay {
         if let Some(recap) = &a.recap {
@@ -261,7 +270,7 @@ fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) ->
         Vec::new()
     };
     let tail_width: usize = tail.iter().map(|s| display_width(&s.content)).sum();
-    first.extend(line_one(a, view, room.saturating_sub(tail_width)));
+    first.extend(line_one(a, view, form, room.saturating_sub(tail_width)));
     first.extend(tail);
     let mut lines = vec![Line::from(first)];
     if form == RowForm::NestedWide {
@@ -285,7 +294,7 @@ fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) ->
 /// `place_in_project` already says by leaving it off.
 fn kind_tab_and_pane(a: &AgentEntry) -> Vec<Span<'static>> {
     let tab = a.place_in_project.rsplit_once(" › ").map(|(_, t)| t);
-    let mut spans = vec![Span::raw(GAP)];
+    let mut spans = vec![Span::raw(TAIL_GAP)];
     if a.name.is_some() {
         spans.push(Span::styled(
             a.kind.as_str(),
@@ -336,28 +345,24 @@ fn filter_text(a: &AgentEntry) -> String {
     out
 }
 
-/// `[name]  [activity]`, two spaces between them, or one before a dot. The name is what gives
-/// way when the row is too narrow: the activity says what the agent is doing and is short.
+/// `[name] [activity]`, one space between them. The name is what gives way when the row is
+/// too narrow: the activity says what the agent is doing and is short.
 ///
 /// No leading dot. A dot is drawn only while the agent is waiting, and `activity` puts it in
-/// the slot the working word would have taken, because a waiting agent draws no word and a
-/// mark in front of the name would push that name out of the column every other row keeps it
-/// in (decision record 0030).
-fn line_one(a: &AgentEntry, view: &AgentsView, width: usize) -> Vec<Span<'static>> {
+/// the slot the glyph would have taken, because a waiting agent draws no glyph and a mark in
+/// front of the name would push that name out of the column every other row keeps it in
+/// (decision record 0030).
+fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> Vec<Span<'static>> {
     let label = a
         .name
         .clone()
         .unwrap_or_else(|| a.kind.as_str().to_string());
-    let activity = activity(a, view);
+    let activity = activity(a, view, form);
     let activity_width: usize = activity.iter().map(|s| display_width(&s.content)).sum();
-    let gap = match a.state {
-        AgentState::Waiting => DOT_GAP,
-        _ => GAP,
-    };
     let lead = if activity.is_empty() {
         0
     } else {
-        display_width(gap)
+        display_width(GAP)
     };
     let room = width.saturating_sub(lead + activity_width);
     let mut spans = vec![Span::styled(
@@ -365,7 +370,7 @@ fn line_one(a: &AgentEntry, view: &AgentsView, width: usize) -> Vec<Span<'static
         label_style(a),
     )];
     if !activity.is_empty() {
-        spans.push(Span::raw(gap));
+        spans.push(Span::raw(GAP));
         spans.extend(activity);
     }
     spans
@@ -387,22 +392,23 @@ fn label_style(a: &AgentEntry) -> Style {
 
 /// What the row says after the name, and the only place a state is written down.
 ///
-/// One slot, five answers. Working and compacting turn a glyph beside their word. Waiting is
-/// the red dot, and it is the only dot in the box: the agent has asked you something and is
-/// stopped until you answer. Idle says nothing, because nothing is happening and "idle" would
-/// be a word for the absence of one (principle 5). Unknown says so, because an agent domux can
-/// see and cannot hear is a fact worth reporting rather than a quiet row.
-fn activity(a: &AgentEntry, view: &AgentsView) -> Vec<Span<'static>> {
+/// One slot, five answers. Working and compacting turn a glyph beside their word, or the glyph
+/// alone where the form has no room for a word. Waiting is the red dot, and it is the only dot
+/// in the box: the agent has asked you something and is stopped until you answer. Idle says
+/// nothing, because nothing is happening and "idle" would be a word for the absence of one
+/// (principle 5). Unknown says so, because an agent domux can see and cannot hear is a fact
+/// worth reporting rather than a quiet row.
+fn activity(a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'static>> {
     match a.state {
         AgentState::Working => working(
             view.tick,
-            a.word,
+            form.shows_word().then_some(a.word),
             theme::agent_color(a.kind),
             theme::agent_shimmer(a.kind),
         ),
         AgentState::Compacting => working(
             view.tick,
-            "Compacting",
+            form.shows_word().then_some("Compacting"),
             theme::COMPACTING,
             theme::SHIMMER_COMPACTING,
         ),
@@ -416,20 +422,29 @@ fn activity(a: &AgentEntry, view: &AgentsView) -> Vec<Span<'static>> {
 }
 
 /// `✶ Percolating…`: the frame's glyph in the kind's colour, then the word and the ellipsis it
-/// is drawn with, under a bright band that runs along them (MUX-26, V1's `shimmerText`).
+/// is drawn with, under a bright band that runs along them (MUX-26, V1's `shimmerText`). With
+/// no word, the glyph alone.
 ///
 /// One span per grapheme, because each one is lit differently. Every caller measures a row by
 /// summing `display_width` over its spans, so a word split this way measures what the same
 /// word in one span measured.
-fn working(tick: u64, word: &str, glyph: Color, band: theme::Shimmer) -> Vec<Span<'static>> {
+fn working(
+    tick: u64,
+    word: Option<&str>,
+    glyph: Color,
+    band: theme::Shimmer,
+) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
-    let text = format!("{word}…");
-    let lit: Vec<&str> = text.graphemes(true).collect();
-    let mut spans = Vec::with_capacity(lit.len() + 2);
-    spans.push(Span::styled(
+    let mut spans = vec![Span::styled(
         crate::agents::labels::frame_at(tick),
         Style::default().fg(glyph),
-    ));
+    )];
+    let Some(word) = word else {
+        return spans;
+    };
+    let text = format!("{word}…");
+    let lit: Vec<&str> = text.graphemes(true).collect();
+    spans.reserve(lit.len() + 1);
     spans.push(Span::raw(" "));
     for (i, g) in lit.iter().enumerate() {
         let colour = band.at(crate::render::shimmer::lit(lit.len(), i, tick));
@@ -672,7 +687,7 @@ mod tests {
         assert_eq!(
             text(&rows[0]),
             vec![
-                "auth-cleanup  ✶ Percolating…",
+                "auth-cleanup ✶ Percolating…",
                 "claude · auth cleanup › pr1",
                 "※ Replaced three session checks with one guard in auth/middleware.go.",
             ]
@@ -699,7 +714,7 @@ mod tests {
     fn an_unnamed_agent_puts_the_kind_on_line_1_and_the_place_alone_on_line_2() {
         let v = view(vec![entry(AgentState::Working, None, AgentKind::Codex)]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "codex  ✶ Percolating…");
+        assert_eq!(text(&rows[0])[0], "codex ✶ Percolating…");
         assert_eq!(
             text(&rows[0])[1],
             "auth cleanup › pr1",
@@ -715,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_form_drops_the_tab_and_the_recap() {
+    fn the_sidebar_form_drops_the_tab_the_recap_and_the_word() {
         let v = view(vec![entry(
             AgentState::Working,
             Some("auth-cleanup"),
@@ -724,10 +739,7 @@ mod tests {
         let rows = rows(&v, RowForm::Sidebar, 36);
         assert_eq!(
             text(&rows[0]),
-            vec![
-                "auth-cleanup  ✶ Percolating…",
-                "claude · audrey-app › auth cleanup"
-            ]
+            vec!["auth-cleanup ✶", "claude · audrey-app › auth cleanup"]
         );
         assert_eq!(
             rows[0].lines[1].spans[2].style.fg,
@@ -739,7 +751,7 @@ mod tests {
     #[test]
     fn waiting_and_idle_rows_carry_no_state_word() {
         for (state, line) in [
-            (AgentState::Waiting, "auth-cleanup •"),
+            (AgentState::Waiting, "auth-cleanup ◉"),
             (AgentState::Idle, "auth-cleanup"),
         ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
@@ -755,7 +767,7 @@ mod tests {
             AgentKind::Claude,
         )]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "auth-cleanup  ✶ Compacting…");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup ✶ Compacting…");
         let spans = &rows[0].lines[0].spans;
         assert!(
             spans.iter().all(|s| s.content != DOT),
@@ -830,10 +842,7 @@ mod tests {
         e.recap = None;
         let v = view(vec![e]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(
-            text(&rows[0]),
-            vec!["claude  unknown", "auth cleanup › pr1"]
-        );
+        assert_eq!(text(&rows[0]), vec!["claude unknown", "auth cleanup › pr1"]);
         let label = &rows[0].lines[0].spans[0];
         assert_eq!(label.content, "claude");
         assert_eq!(
@@ -841,6 +850,32 @@ mod tests {
             Some(theme::OVERLAY0),
             "the kind stands in dimmed, not in its own colour"
         );
+    }
+
+    /// The two sidebar forms draw a working or compacting row's glyph without its word, so
+    /// the row stays short where the box is narrow; the overlays keep the word (decision
+    /// record 0038). The glyph is the same frame in every form.
+    #[test]
+    fn the_sidebar_forms_draw_the_glyph_alone_and_the_overlays_keep_the_word() {
+        for (state, word) in [
+            (AgentState::Working, "Percolating…"),
+            (AgentState::Compacting, "Compacting…"),
+        ] {
+            let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
+            let first = |form: RowForm| text(&one_row(&v.agents[0], &v, form, 72))[0].clone();
+            assert_eq!(first(RowForm::Nested), "└ auth-cleanup ✶", "{state}");
+            assert_eq!(first(RowForm::Sidebar), "auth-cleanup ✶", "{state}");
+            assert_eq!(
+                first(RowForm::Overlay),
+                format!("auth-cleanup ✶ {word}"),
+                "{state}"
+            );
+            assert!(
+                first(RowForm::NestedWide).starts_with(&format!("└ auth-cleanup ✶ {word}")),
+                "{state}: {}",
+                first(RowForm::NestedWide)
+            );
+        }
     }
 
     /// A dot is drawn only while an agent is waiting on you, and it is red (decision record
@@ -1000,7 +1035,7 @@ mod tests {
         );
         assert!(text(&rows[0])[0].starts_with("AUDREY-APP "));
         assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
-        assert_eq!(text(&rows[1])[0], "  auth-cleanup •", "indented under it");
+        assert_eq!(text(&rows[1])[0], "  auth-cleanup ◉", "indented under it");
         assert!(rows[2].is_blank(), "{:?}", text(&rows[2]));
         assert_eq!(rows[3].key.as_deref(), Some("a_9c04"));
         assert_eq!(text(&rows[3])[0], "  billing-export");
@@ -1062,7 +1097,7 @@ mod tests {
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
         let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
         assert_eq!(rows.len(), 3, "two agents and the blank between them");
-        assert_eq!(text(&rows[0])[0], "auth-cleanup •");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup ◉");
         assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
     }
 

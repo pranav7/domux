@@ -1,4 +1,4 @@
-//! The working row's animation: one tick every 80 ms while an agent works or compacts, which
+//! The working row's animation: one tick every 70 ms while an agent works or compacts, which
 //! moves the band along the word and turns the glyph on every second one.
 //!
 //! What these tests can and cannot see. The animation reaches the screen, so a frame test
@@ -82,7 +82,7 @@ async fn the_glyph_turns_while_an_agent_works_and_stands_still_when_it_stops() {
         .await;
     open_overlay(&mut h).await;
 
-    // Fourteen looks 90 ms apart over a glyph that turns every 160 ms: eight turns, so a
+    // Fourteen looks 90 ms apart over a glyph that turns every 140 ms: nine turns, so a
     // static glyph leaves one frame in the set and fails here.
     let seen = glyphs_over(&mut h, 14, Duration::from_millis(90)).await;
     assert!(
@@ -114,7 +114,7 @@ async fn the_word_stands_still_while_the_glyph_turns() {
     let f = open_overlay(&mut h).await;
     let first = word_on(row_of(&f, "claude ")).to_string();
 
-    // Fourteen looks rather than eight, for the same eight turns the test above samples: the
+    // Fourteen looks rather than eight, for the same nine turns the test above samples: the
     // glyph holds each frame for two ticks (MUX-26), so eight looks see half as many.
     let mut glyphs = HashSet::new();
     for _ in 0..14 {

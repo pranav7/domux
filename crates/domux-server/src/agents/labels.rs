@@ -1,7 +1,7 @@
 //! The working word and the animated glyph, carried over from V1 unchanged.
 //!
-//! The list is V1's `aiWorkingLabels` (`ai_working_labels.go`); the frames and the 80 ms
-//! interval are V1's `picker.go` `claudeSpinnerFrames` and `pickerSpinnerInterval`. The word
+//! The list is V1's `aiWorkingLabels` (`ai_working_labels.go`); the frames are V1's `picker.go`
+//! `claudeSpinnerFrames`, and the interval is a little quicker than its `pickerSpinnerInterval`. The word
 //! is picked per agent, stays the same while the agent works, and is never the same word
 //! twice on screen. The words carry no ellipsis; the row appends `…` when it draws them.
 
@@ -203,17 +203,19 @@ pub const GLYPH_FRAMES: [&str; 13] = [
     "·", "✦", "✶", "✳", "✢", "✻", "✽", "✻", "✢", "✳", "✶", "✦", "·",
 ];
 
-/// One animation tick every 80 ms (V1's `pickerSpinnerInterval`). The band along a working
-/// word moves on every one of them and the glyph turns on every second one.
+/// One animation tick every 70 ms. V1 ticked every 80 (`pickerSpinnerInterval`) and so did
+/// this until the author asked for a slightly quicker glyph on 2026-09-11 (decision record
+/// 0038). The band along a working word moves on every tick and the glyph turns on every
+/// second one, so both are a little quicker and their ratio is what it was.
 ///
 /// It has a floor that is not V1's. While anything works the core pushes a frame every
 /// interval, and `testing::Harness::pump` returns only after 50 ms with no message, so an
 /// interval at or below that window would leave every `frame()` call during work reading
 /// frames until the test timed out. Lowering this number means raising that one.
-pub const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
+pub const ANIMATION_INTERVAL: Duration = Duration::from_millis(70);
 
-/// Ticks per frame of the glyph, so it turns every 160 ms while the band along the working
-/// word moves every 80 ms (V1's `renderAIBadges`, "icon advances every 2 ticks").
+/// Ticks per frame of the glyph, so it turns every 140 ms while the band along the working
+/// word moves every 70 ms (V1's `renderAIBadges`, "icon advances every 2 ticks").
 ///
 /// Two animations on one counter rather than two tickers. The band has to move on every tick
 /// to glide, and a glyph that turned that fast flickered under it (MUX-26).
@@ -297,7 +299,7 @@ mod tests {
                 "·", "✦", "✶", "✳", "✢", "✻", "✽", "✻", "✢", "✳", "✶", "✦", "·"
             ]
         );
-        assert_eq!(ANIMATION_INTERVAL, std::time::Duration::from_millis(80));
+        assert_eq!(ANIMATION_INTERVAL, std::time::Duration::from_millis(70));
     }
 
     #[test]

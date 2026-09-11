@@ -89,7 +89,7 @@ async fn an_agent_is_a_row_under_the_workspace_it_runs_in() {
     assert_eq!(agent, main + 1, "directly under its workspace:\n{f}");
     let line = row(&f, agent);
     assert!(
-        line.starts_with("|│   └ claude  "),
+        line.starts_with("|│   └ claude "),
         "two cells of workspace indent, then the arrow, then the label: {line:?}"
     );
     assert!(
@@ -105,23 +105,23 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
     let pane = one_agent(&mut h).await;
     let f = h.frame(h.client.clone()).await;
     assert!(
-        !row(&f, row_with(&f, "└ claude")).contains('•'),
+        !row(&f, row_with(&f, "└ claude")).contains('◉'),
         "a working row says so with its glyph and its word:\n{f}"
     );
 
     h.report(pane.clone(), AgentKind::Claude, WAITS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| f.contains("claude •"), WAIT)
+        .wait_for(h.client.clone(), |f| f.contains("claude ◉"), WAIT)
         .await;
     let line = row(&f, row_with(&f, "└ claude"));
     assert!(
-        line.contains("└ claude •"),
+        line.contains("└ claude ◉"),
         "the dot is one cell after the label, in the working word's slot: {line:?}"
     );
 
     h.report(pane, AgentKind::Claude, STOPS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| !f.contains("claude •"), WAIT)
+        .wait_for(h.client.clone(), |f| !f.contains("claude ◉"), WAIT)
         .await;
     assert!(
         f.contains("└ claude"),

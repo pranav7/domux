@@ -47,7 +47,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # The agent suites, ahead of the workspace run and as a step of their own, because they
       # are the slow ones: the observer tests wait real seconds for the core's once-a-second
-      # tick and the animation tests wait on an 80 ms ticker. A failure here names itself
+      # tick and the animation tests wait on a 70 ms ticker. A failure here names itself
       # instead of arriving inside a run of every suite. The workspace run below runs them
       # again and reuses the binaries this step built, so the repeat costs their run time and
       # not a rebuild. macOS and Linux both matter for these in particular: the process

@@ -273,7 +273,7 @@ impl Server {
                 }
             }
         });
-        // The working glyph, one frame every 80 ms. It runs from here to shutdown whether or
+        // The working glyph, one tick every 70 ms. It runs from here to shutdown whether or
         // not anything is working: the core is what decides that, so there is no timer to
         // start and stop and no state about it to get wrong (M3 plan assumption 35). A tick
         // the core was too busy to take is skipped rather than queued, so a server that falls
