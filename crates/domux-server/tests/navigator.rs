@@ -79,11 +79,11 @@ async fn an_agent_is_a_row_under_the_workspace_it_runs_in() {
     one_agent(&mut h).await;
     let f = h.frame(h.client.clone()).await;
     let main = row_with(&f, "  main");
-    let agent = row_with(&f, "↳ claude");
+    let agent = row_with(&f, "⌞ claude");
     assert_eq!(agent, main + 1, "directly under its workspace:\n{f}");
     let line = row(&f, agent);
     assert!(
-        line.starts_with("|│   ↳ claude  "),
+        line.starts_with("|│   ⌞ claude  "),
         "two cells of workspace indent, then the arrow, then the label: {line:?}"
     );
     assert!(
@@ -99,7 +99,7 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
     let pane = one_agent(&mut h).await;
     let f = h.frame(h.client.clone()).await;
     assert!(
-        !row(&f, row_with(&f, "↳ claude")).contains('●'),
+        !row(&f, row_with(&f, "⌞ claude")).contains('●'),
         "a working row says so with its glyph and its word:\n{f}"
     );
 
@@ -107,9 +107,9 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
     let f = h
         .wait_for(h.client.clone(), |f| f.contains("claude  ●"), WAIT)
         .await;
-    let line = row(&f, row_with(&f, "↳ claude"));
+    let line = row(&f, row_with(&f, "⌞ claude"));
     assert!(
-        line.contains("↳ claude  ●"),
+        line.contains("⌞ claude  ●"),
         "the dot is two cells after the label, in the working word's slot: {line:?}"
     );
 
@@ -118,7 +118,7 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
         .wait_for(h.client.clone(), |f| !f.contains("claude  ●"), WAIT)
         .await;
     assert!(
-        f.contains("↳ claude"),
+        f.contains("⌞ claude"),
         "an idle row is still there and says nothing:\n{f}"
     );
 }
@@ -130,7 +130,7 @@ async fn a_session_that_ends_takes_its_row_out_of_the_list() {
     let pane = one_agent(&mut h).await;
     h.report(pane, AgentKind::Claude, ENDS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| !f.contains("↳ claude"), WAIT)
+        .wait_for(h.client.clone(), |f| !f.contains("⌞ claude"), WAIT)
         .await;
     assert!(f.contains("  main"), "the workspace stays:\n{f}");
     assert!(h.agents().await.is_empty(), "and the record is gone");
@@ -222,7 +222,7 @@ async fn the_switcher_adds_the_tab_and_the_recap_the_sidebar_has_no_room_for() {
     h.report(pane, AgentKind::Claude, &payload).await;
     h.api("switcher.open", json!({})).await.unwrap();
     let f = h
-        .wait_for(h.client.clone(), |f| f.contains("↳ claude"), WAIT)
+        .wait_for(h.client.clone(), |f| f.contains("⌞ claude"), WAIT)
         .await;
     assert!(
         f.contains("Replaced three session checks"),

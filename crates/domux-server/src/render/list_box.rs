@@ -137,7 +137,7 @@ pub fn box_lines(lines: u16, pad: Pad) -> u16 {
 /// it spans the whole inner width, so a filled row still reads as one band reaching both
 /// borders (decision record 0012).
 pub fn text_area(area: Rect, pad: Pad) -> Rect {
-    let inner = Boxed::inner_of(area, true);
+    let inner = Boxed::inner_of(area);
     let chrome = 2 * pad.ends + u16::from(pad.footer);
     Rect::new(
         inner.x,
@@ -158,7 +158,7 @@ pub fn footer_area(area: Rect, pad: Pad) -> Option<Rect> {
     if !pad.footer {
         return None;
     }
-    let inner = Boxed::inner_of(area, true);
+    let inner = Boxed::inner_of(area);
     if inner.height == 0 || inner.width <= 2 * pad.side {
         return None;
     }
@@ -213,7 +213,6 @@ impl ListBox<'_> {
             title: self.title,
             flag: None,
             focused: self.focused,
-            bottom_rule: true,
         }
         .render(area, buf);
         if inner.width == 0 || inner.height == 0 {

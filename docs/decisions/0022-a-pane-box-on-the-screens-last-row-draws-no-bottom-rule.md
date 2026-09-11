@@ -1,7 +1,8 @@
-# 0018: A pane box on the screen's last row draws no bottom rule
+# 0022: A pane box on the screen's last row draws no bottom rule
 
 **Date:** 2026-09-10
-**Status:** Accepted
+**Status:** Retired by decision record 0030, which closes every pane box again and takes
+the open box out of `Boxed` altogether. Everything below is what the build did until then.
 **Decision:** A pane box whose last row is the workpanel's last row draws no bottom rule. Its
 side rules run to that row and the row holds the program's output. A box with another box
 under it keeps its rule. `render::pane_bottom_rule` is the one answer, and

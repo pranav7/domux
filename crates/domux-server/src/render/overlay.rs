@@ -111,7 +111,6 @@ pub fn frame_at(title: &str, area: Rect, buf: &mut Buffer) -> Rect {
         title,
         flag: None,
         focused: true,
-        bottom_rule: true,
     }
     .render(area, buf)
 }

@@ -29,8 +29,10 @@ pub struct AgentsState {
     pub words: WorkingWords,
     pub recaps: RecapReader,
     pub manifests: Registry,
-    /// Counts up once every `labels::GLYPH_INTERVAL` while an agent works (Task 17).
-    pub glyph_tick: u64,
+    /// Counts up once every `labels::ANIMATION_INTERVAL` while an agent works. The glyph's
+    /// frame and the place of the band along a working word are both read off it, so every
+    /// client on the server draws one animation (Task 17, MUX-26).
+    pub tick: u64,
 }
 
 impl AgentsState {
@@ -77,7 +79,7 @@ impl Default for AgentsState {
             words: WorkingWords::default(),
             recaps: RecapReader::default(),
             manifests: Registry::builtin(),
-            glyph_tick: 0,
+            tick: 0,
         }
     }
 }

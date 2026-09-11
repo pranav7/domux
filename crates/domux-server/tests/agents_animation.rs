@@ -1,12 +1,13 @@
-//! The working glyph animation: one frame every 80 ms while an agent works or compacts.
+//! The working row's animation: one tick every 80 ms while an agent works or compacts, which
+//! moves the band along the word and turns the glyph on every second one.
 //!
 //! What these tests can and cannot see. The animation reaches the screen, so a frame test
-//! holds it: the glyph on a working row turns, and the word beside it does not. What no
-//! frame shows is the core's own counting, because a server with nothing working draws no
-//! glyph at all, so the screen stands still whether the core counted or not. The rule that
-//! an idle server does no work is pinned where it is visible, in `core`'s own tests
-//! (`an_animation_tick_leaves_a_server_with_nothing_working_alone`), and so is the pool of
-//! working words.
+//! holds it: the glyph on a working row turns, the band along the word moves, and the word
+//! itself does not change. What no frame shows is the core's own counting, because a server
+//! with nothing working draws no glyph at all, so the screen stands still whether the core
+//! counted or not. The rule that an idle server does no work is pinned where it is visible,
+//! in `core`'s own tests (`an_animation_tick_leaves_a_server_with_nothing_working_alone`),
+//! and so is the pool of working words.
 //!
 //! An assertion that something did **not** change passes on a screen that never changes, so
 //! the standing half of the first test stands after the turning half, on the same fixture.
@@ -81,8 +82,8 @@ async fn the_glyph_turns_while_an_agent_works_and_stands_still_when_it_stops() {
         .await;
     open_overlay(&mut h).await;
 
-    // Fourteen looks 90 ms apart over an 80 ms animation: the glyph moves on between every
-    // pair, so a static glyph leaves one frame in the set and fails here.
+    // Fourteen looks 90 ms apart over a glyph that turns every 160 ms: eight turns, so a
+    // static glyph leaves one frame in the set and fails here.
     let seen = glyphs_over(&mut h, 14, Duration::from_millis(90)).await;
     assert!(
         seen.len() >= 3,
@@ -113,8 +114,10 @@ async fn the_word_stands_still_while_the_glyph_turns() {
     let f = open_overlay(&mut h).await;
     let first = word_on(row_of(&f, "claude ")).to_string();
 
+    // Fourteen looks rather than eight, for the same eight turns the test above samples: the
+    // glyph holds each frame for two ticks (MUX-26), so eight looks see half as many.
     let mut glyphs = HashSet::new();
-    for _ in 0..8 {
+    for _ in 0..14 {
         tokio::time::sleep(Duration::from_millis(90)).await;
         let f = h.frame(h.client.clone()).await;
         let line = row_of(&f, "claude ");
@@ -134,6 +137,67 @@ async fn the_word_stands_still_while_the_glyph_turns() {
     assert!(
         glyphs.len() >= 3,
         "the glyph was turning throughout, saw {glyphs:?}"
+    );
+}
+
+/// The band reaches the screen, which no test above can see: the characters of the working
+/// word are one string however they are lit, so only the styles say whether it is drawn.
+///
+/// Two claims, and the second is the one that costs anything. That the characters differ from
+/// each other says a band is drawn; that the whole run differs a moment later says it moves.
+/// A word painted in one colour fails the first, and one lit by a band nothing advances fails
+/// the second.
+#[tokio::test]
+async fn the_band_lights_the_working_word_and_moves_along_it() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.report(pane.clone(), AgentKind::Claude, CLAUDE_WORKS)
+        .await;
+    let f = open_overlay(&mut h).await;
+
+    // Where the word is: the screen row the claude row is drawn on, and the cells from the
+    // one after the glyph's space to the ellipsis. A frame row is bracketed by `|`, so cell
+    // zero is character one.
+    let rows: Vec<&str> = f.lines().filter(|l| l.starts_with('|')).collect();
+    let row = rows
+        .iter()
+        .position(|l| l.contains("claude "))
+        .expect("a claude row is on the screen") as u16;
+    let cells: Vec<char> = rows[row as usize].chars().collect();
+    let last = cells
+        .iter()
+        .position(|c| *c == '…')
+        .expect("the word ends with an ellipsis");
+    let first = cells[..last]
+        .iter()
+        .rposition(|c| *c == ' ')
+        .expect("a space parts the glyph from the word")
+        + 1;
+    let word = |h: &Harness| {
+        let buf = h.buffer(&h.client.clone());
+        (first..=last)
+            .map(|c| buf[(c as u16 - 1, row)].fg)
+            .collect::<Vec<_>>()
+    };
+
+    // Ten looks 90 ms apart, because a pass leaves the word dark at each end of its travel
+    // and one look can land there: what is claimed is that the band crosses the word over a
+    // pass, not that it is on it at every moment.
+    let mut looks = Vec::new();
+    for _ in 0..10 {
+        h.frame(h.client.clone()).await;
+        looks.push(word(&h));
+        tokio::time::sleep(Duration::from_millis(90)).await;
+    }
+    assert!(
+        looks
+            .iter()
+            .any(|w| w.iter().collect::<HashSet<_>>().len() > 3),
+        "the word is lit unevenly, so a band is on it: {looks:?}"
+    );
+    assert!(
+        looks.windows(2).any(|pair| pair[0] != pair[1]),
+        "and it moves along the word: {looks:?}"
     );
 }
 
