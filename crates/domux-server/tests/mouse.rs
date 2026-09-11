@@ -378,7 +378,7 @@ async fn a_click_on_a_sidebar_row_switches_to_that_workspace() {
     let f = h
         .wait_for(
             client.clone(),
-            |f| f.contains("Projects") && f.contains("workspace-1"),
+            |f| f.contains("Navigator") && f.contains("workspace-1"),
             Duration::from_secs(2),
         )
         .await;
@@ -410,7 +410,7 @@ async fn a_click_on_a_sidebar_header_does_nothing() {
     let client = h.client.clone();
     h.wait_for(
         client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;

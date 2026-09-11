@@ -20,8 +20,17 @@ use serde_json::Value;
 /// `push_overlay` and not an assignment, so an overlay this one was opened over comes back
 /// when it closes (interface spec 12.7) rather than being stranded in `overlay_under` where
 /// nothing draws it and nothing closes it.
+///
+/// **With the Navigator on it does nothing, silently** (decision record 0030). The agents
+/// overlay is gone: every record is in the one list the switcher opens, under the workspace it
+/// runs in. It answers `ok` rather than refusing, because a key that only ever prints "this is
+/// off now" is a key with nothing to say, and the reader who pressed it finds the same records
+/// one key away. It is the `[navigator]` key that keeps this handler, and both go together.
 pub fn open(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     let client = ctx.view()?;
+    if ctx.config.config.navigator.enabled {
+        return ok(Ack { ok: true });
+    }
     let first = ctx.model.sorted_agents().first().map(|a| a.id.clone());
     let view = ctx
         .model

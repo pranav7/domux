@@ -14,7 +14,7 @@
 
 use domux_core::api::ErrorCode;
 use domux_core::config::Config;
-use domux_core::model::{Focus, Overlay, RegionKind};
+use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
 use domux_server::testing::{row, Harness};
 use serde_json::json;
 use std::time::Duration;
@@ -185,7 +185,7 @@ async fn n_in_the_sidebar_box_names_the_cursor_row_and_takes_the_keys_off_the_si
     let (_root, w1, _w2) = h.git_project_with_two_slots().await;
     let client = h.client.clone();
     h.api("sidebar.show", serde_json::json!({})).await.unwrap();
-    h.wait_for(client.clone(), |f| f.contains("Projects"), WAIT)
+    h.wait_for(client.clone(), |f| f.contains("Navigator"), WAIT)
         .await;
     h.key(client.clone(), "C-h").await;
     h.wait_for(client.clone(), |f| f.contains("r0 c0-0 fg=#cba6f7"), WAIT)
@@ -195,8 +195,8 @@ async fn n_in_the_sidebar_box_names_the_cursor_row_and_takes_the_keys_off_the_si
     h.key(client.clone(), "k").await;
     h.frame(client.clone()).await;
     assert_eq!(
-        h.model().client(&client).unwrap().projects_cursor.as_ref(),
-        Some(&w1),
+        h.model().client(&client).unwrap().navigator_cursor.as_ref(),
+        Some(&RowTarget::Workspace(w1.clone())),
         "the cursor is on workspace-1 before the key under test"
     );
 
@@ -320,8 +320,8 @@ async fn n_on_a_row_names_that_row_and_the_box_sits_over_the_switcher_it_came_fr
     h.key(client.clone(), "k").await;
     h.frame(client.clone()).await;
     assert_eq!(
-        h.model().client(&client).unwrap().projects_cursor.as_ref(),
-        Some(&w1),
+        h.model().client(&client).unwrap().navigator_cursor.as_ref(),
+        Some(&RowTarget::Workspace(w1.clone())),
         "the cursor is on workspace-1 before the key under test"
     );
 
@@ -331,7 +331,7 @@ async fn n_on_a_row_names_that_row_and_the_box_sits_over_the_switcher_it_came_fr
         .wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
         .await;
     assert!(
-        f.contains("Projects"),
+        f.contains("Navigator"),
         "the switcher stays open beneath it (interface spec 12.7):\n{f}"
     );
     {
@@ -405,7 +405,7 @@ async fn esc_over_the_switcher_gives_the_switcher_back() {
         "esc goes back one step (interface spec 12.7)"
     );
     assert_eq!(view.overlay_under, None, "and nothing is left under it");
-    assert!(f.contains("Projects"), "the switcher is drawn again:\n{f}");
+    assert!(f.contains("Navigator"), "the switcher is drawn again:\n{f}");
     assert_eq!(
         h.model().workspace(&w1).unwrap().name,
         None,
@@ -665,11 +665,11 @@ async fn the_cursor_row_is_the_target_only_while_the_keys_are_in_a_box() {
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "Esc").await;
-    h.wait_for(client.clone(), |f| !f.contains("Projects"), WAIT)
+    h.wait_for(client.clone(), |f| !f.contains("Navigator"), WAIT)
         .await;
     assert_eq!(
-        h.model().client(&client).unwrap().projects_cursor.as_ref(),
-        Some(&w1),
+        h.model().client(&client).unwrap().navigator_cursor.as_ref(),
+        Some(&RowTarget::Workspace(w1.clone())),
         "closing the switcher leaves the cursor where it was"
     );
 

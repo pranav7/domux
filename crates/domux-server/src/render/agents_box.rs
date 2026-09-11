@@ -10,7 +10,7 @@ use crate::render::list_box::ListRow;
 use crate::render::projects_box::{self, INDENT};
 use crate::render::theme;
 use chrono::{DateTime, Local};
-use domux_core::ids::AgentId;
+use domux_core::ids::{AgentId, WorkspaceId};
 use domux_core::model::agent::{AgentKind, AgentState};
 use domux_core::text::{display_width, truncate_with_ellipsis};
 use ratatui::style::{Color, Modifier, Style};
@@ -18,7 +18,8 @@ use ratatui::text::{Line, Span};
 
 /// The box's title, in the sidebar and in the agents overlay both (principle 14).
 pub const TITLE: &str = "Agents";
-/// Every row starts with one (interface spec 6.1: never empty of dots).
+/// The waiting mark. It is the only dot there is, and a row draws it only while its agent is
+/// waiting on you (decision record 0030).
 pub const DOT: &str = "●";
 /// The recap's glyph.
 pub const RECAP_GLYPH: &str = "※";
@@ -26,39 +27,28 @@ pub const RECAP_GLYPH: &str = "※";
 pub const RECAP_LINES: usize = 2;
 /// Between the name and the activity on line 1 (interface spec 6.2).
 const GAP: &str = "  ";
-/// Between `exited 12 min ago` and the resume key (interface spec 6.2).
-const RESUME_GAP: &str = "   ";
-/// The list action an exited row's resume label names. `Enter` on an agent row switches to
-/// the agent, and resumes it when the row has exited (interface spec 6.8), so it is that one
-/// binding the label reads. Named here once, so the row and the sidebar's hint row cannot
-/// name different keys for one action (principle 3).
-pub const RESUME_ACTION: &str = "list.activate";
-/// The word after the key on an exited row. The sidebar's hint row carries the same pair,
-/// so both surfaces read it from here (interface spec 12.6).
-pub const RESUME_WORD: &str = "resume";
+
+/// The arrow an agent row wears under its workspace in the Navigator. Two cells, like the
+/// hollow glyph on an untouched slot, so every name in the box starts in one column.
+pub const NEST: &str = "↳ ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
-    /// Two lines: no tab, no recap, and live records only.
+    /// The sidebar's Agents box: two lines, no tab, no recap. Retires with `[navigator]`.
     Sidebar,
-    /// Three lines, recap included, exited records among them.
+    /// The agents overlay: three lines, recap included. Retires with `[navigator]`.
     Overlay,
+    /// One line under its workspace in the Navigator's sidebar: the arrow, the name, the
+    /// activity. The rows above it say the project and the workspace (decision record 0030).
+    Nested,
+    /// The same in the switcher, which has the width for the kind, the tab and the recap.
+    NestedWide,
 }
 
 impl RowForm {
-    /// Whether a record in this state gets a row on this surface.
-    ///
-    /// **The sidebar's box is what is running** (MUX-22). It is on the screen all day beside
-    /// the panes, and every session that ends leaves a row on it, so an afternoon's work
-    /// buried the running agents under an hour of dead ones. The exited records are not lost:
-    /// the agents overlay lists them, and resume and dismiss are both there. Asked here rather
-    /// than at each surface, because `api::list` walks the same rows the sidebar draws and a
-    /// cursor that could rest on a row nobody can see is worse than no cursor at all.
-    fn shows(self, state: AgentState) -> bool {
-        match self {
-            RowForm::Sidebar => state.is_live(),
-            RowForm::Overlay => true,
-        }
+    /// Whether this form nests the row under a workspace rather than listing it flat.
+    fn nested(self) -> bool {
+        matches!(self, RowForm::Nested | RowForm::NestedWide)
     }
 }
 
@@ -73,6 +63,8 @@ pub struct AgentEntry {
     pub unseen: bool,
     /// Absent when no recap arrived. An absent recap draws no line at all.
     pub recap: Option<String>,
+    /// The workspace the agent runs in, which is the row the Navigator nests it under.
+    pub workspace: WorkspaceId,
     /// The project the record's workspace belongs to: the header the agents overlay groups
     /// under (MUX-21). Empty when the model no longer holds the workspace, and a group with an
     /// empty name is drawn with no header rather than a blank one.
@@ -96,10 +88,6 @@ pub struct AgentsView {
     /// This frame's glyph (`labels::frame_at`).
     pub glyph: &'static str,
     pub now: DateTime<Local>,
-    /// The configured key for `RESUME_ACTION`, as hint text, or `None` when the reader has
-    /// bound the action to nothing. The core looks it up once a frame so that this row and
-    /// the sidebar's hint row name one key (principle 3).
-    pub resume_key: Option<String>,
 }
 
 impl AgentsView {
@@ -110,7 +98,6 @@ impl AgentsView {
             agents: Vec::new(),
             glyph: crate::agents::labels::frame_at(0),
             now,
-            resume_key: None,
         }
     }
 }
@@ -127,9 +114,11 @@ pub fn empty_text(filter: &str, form: RowForm) -> String {
         return format!("No agent matches {filter:?}. esc clears the filter");
     }
     match form {
-        // The sidebar drops the exited records, so "no agents yet" would be a lie told to a
-        // reader who has a list of them one key away (principle 4).
-        RowForm::Sidebar => "Nothing running. Start claude or codex in a pane.".to_string(),
+        // The Navigator's empty text is the Projects box's: an empty Navigator has no
+        // projects in it, which is a bigger thing to say than having no agents.
+        RowForm::Nested | RowForm::NestedWide | RowForm::Sidebar => {
+            "Nothing running. Start claude or codex in a pane.".to_string()
+        }
         RowForm::Overlay => "No agents yet. Start claude or codex in a pane.".to_string(),
     }
 }
@@ -158,7 +147,7 @@ pub fn row_key(id: &AgentId) -> String {
 /// the headers by name instead would put a waiting agent below two idle projects.
 pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
     let mut out: Vec<ListRow> = Vec::with_capacity(view.agents.len().saturating_mul(2));
-    let shown = || view.agents.iter().filter(|a| form.shows(a.state));
+    let shown = || view.agents.iter();
     if form == RowForm::Sidebar {
         for a in shown() {
             if !out.is_empty() {
@@ -223,10 +212,20 @@ fn indented(row: ListRow) -> ListRow {
     }
 }
 
+/// One agent's row, for a caller that places it itself. `render::projects_box` uses it to put
+/// an agent under the workspace it runs in, so the Navigator draws the same grammar this box
+/// draws and there is still one place it is written (principle 14).
+pub fn one_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
+    row(a, view, form, width)
+}
+
 fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
     let width = width as usize;
+    if form.nested() {
+        return nested_row(a, view, form, width);
+    }
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + RECAP_LINES);
-    lines.push(Line::from(line_one(a, view, form, width)));
+    lines.push(Line::from(line_one(a, view, width)));
     lines.push(Line::from(line_two(a, form, width)));
     if form == RowForm::Overlay {
         if let Some(recap) = &a.recap {
@@ -234,6 +233,71 @@ fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow 
         }
     }
     ListRow::selectable(row_key(&a.id), filter_text(a), lines)
+}
+
+/// One agent under the workspace it runs in: the arrow, then the name and the activity
+/// (decision record 0030; artboard 9, frame 9.2 is the specification).
+///
+/// The place is not on it. The project is the header above and the workspace is the row above
+/// that, so repeating either here is the reading MUX-21 complained of, one level deeper. What
+/// the switcher adds is what the sidebar has no room for and the rows above never said: which
+/// kind this is, which tab it is in, and what it did last.
+fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> ListRow {
+    let lead = display_width(NEST);
+    let room = width.saturating_sub(lead);
+    let mut first = vec![Span::styled(NEST, Style::default().fg(theme::OVERLAY0))];
+    let tail = if form == RowForm::NestedWide {
+        kind_and_tab(a)
+    } else {
+        Vec::new()
+    };
+    let tail_width: usize = tail.iter().map(|s| display_width(&s.content)).sum();
+    first.extend(line_one(a, view, room.saturating_sub(tail_width)));
+    first.extend(tail);
+    let mut lines = vec![Line::from(first)];
+    if form == RowForm::NestedWide {
+        if let Some(recap) = &a.recap {
+            // The same two-cell lead the arrow takes, so the recap sits under the name.
+            lines.extend(recap_lines(recap, a, room).into_iter().map(|spans| {
+                let mut line = vec![Span::raw(" ".repeat(lead))];
+                line.extend(spans);
+                Line::from(line)
+            }));
+        }
+    }
+    ListRow::selectable(row_key(&a.id), filter_text(a), lines)
+}
+
+/// `  claude › pr1` after the activity, in the switcher only.
+///
+/// The kind is dropped when the row's label is already the kind, which is the rule `line_two`
+/// follows for the same reason: an unnamed agent would otherwise read `codex  codex › pr2`.
+/// The tab is dropped when the record names no pane the model still holds, which is what
+/// `place_in_project` already says by leaving it off.
+fn kind_and_tab(a: &AgentEntry) -> Vec<Span<'static>> {
+    let tab = a.place_in_project.rsplit_once(" › ").map(|(_, t)| t);
+    let mut spans = vec![Span::raw(GAP)];
+    if a.name.is_some() {
+        spans.push(Span::styled(
+            a.kind.as_str(),
+            Style::default().fg(theme::agent_color(a.kind)),
+        ));
+    }
+    if let Some(tab) = tab {
+        if a.name.is_some() {
+            spans.push(Span::styled(" › ", Style::default().fg(theme::SURFACE1)));
+        }
+        spans.push(Span::styled(
+            tab.to_string(),
+            Style::default().fg(theme::OVERLAY1),
+        ));
+    }
+    // Nothing to add, so not even the gap: a trailing pair of spaces would take two cells of
+    // the name's budget for a field that is not there.
+    if spans.len() == 1 {
+        return Vec::new();
+    }
+    spans
 }
 
 /// What `/` matches: the session name when there is one, the kind, and the place. Each field
@@ -252,27 +316,30 @@ fn filter_text(a: &AgentEntry) -> String {
     out
 }
 
-/// `[dot] [name] [activity]`, two spaces before the activity. The name is what gives way when
-/// the row is too narrow: the activity says what the agent is doing and is short.
-fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> Vec<Span<'static>> {
+/// `[name]  [activity]`, two spaces between them. The name is what gives way when the row is
+/// too narrow: the activity says what the agent is doing and is short.
+///
+/// No leading dot. A dot is drawn only while the agent is waiting, and `activity` puts it in
+/// the slot the working word would have taken, because a waiting agent draws no word and a
+/// mark in front of the name would push that name out of the column every other row keeps it
+/// in (decision record 0030).
+fn line_one(a: &AgentEntry, view: &AgentsView, width: usize) -> Vec<Span<'static>> {
     let label = a
         .name
         .clone()
         .unwrap_or_else(|| a.kind.as_str().to_string());
-    let activity = activity(a, view, form);
+    let activity = activity(a, view);
     let activity_width: usize = activity.iter().map(|s| display_width(&s.content)).sum();
-    let lead = display_width(DOT) + 1;
     let gap = if activity.is_empty() {
         0
     } else {
         display_width(GAP)
     };
-    let room = width.saturating_sub(lead + gap + activity_width);
-    let mut spans = vec![
-        Span::styled(DOT, Style::default().fg(dot_color(a))),
-        Span::raw(" "),
-        Span::styled(truncate_with_ellipsis(&label, room), label_style(a)),
-    ];
+    let room = width.saturating_sub(gap + activity_width);
+    let mut spans = vec![Span::styled(
+        truncate_with_ellipsis(&label, room),
+        label_style(a),
+    )];
     if !activity.is_empty() {
         spans.push(Span::raw(GAP));
         spans.extend(activity);
@@ -281,10 +348,10 @@ fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> V
 }
 
 /// The name in `text` bold, a kind standing in for one in the agent's colour, and both dimmed
-/// on an exited or unknown row (interface spec 6.2).
+/// on an unknown row (interface spec 6.2).
 fn label_style(a: &AgentEntry) -> Style {
     match a.state {
-        AgentState::Exited | AgentState::Unknown => Style::default().fg(theme::OVERLAY0),
+        AgentState::Unknown => Style::default().fg(theme::OVERLAY0),
         _ if a.name.is_some() => Style::default()
             .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
@@ -294,40 +361,23 @@ fn label_style(a: &AgentEntry) -> Style {
     }
 }
 
-/// The activity, present only when it adds something (interface spec 6.2). A waiting or idle
-/// row stops after the name, because "waiting" and "idle" are what the dot already says.
-fn activity(a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'static>> {
+/// What the row says after the name, and the only place a state is written down.
+///
+/// One slot, five answers. Working and compacting turn a glyph beside their word. Waiting is
+/// the red dot, and it is the only dot in the box: the agent has asked you something and is
+/// stopped until you answer. Idle says nothing, because nothing is happening and "idle" would
+/// be a word for the absence of one (principle 5). Unknown says so, because an agent domux can
+/// see and cannot hear is a fact worth reporting rather than a quiet row.
+fn activity(a: &AgentEntry, view: &AgentsView) -> Vec<Span<'static>> {
     match a.state {
         AgentState::Working => working(view.glyph, a.word, theme::agent_color(a.kind)),
         AgentState::Compacting => working(view.glyph, "Compacting", theme::COMPACTING),
-        AgentState::Exited => {
-            let ago = relative_time(&a.last_activity_at, view.now);
-            // A timestamp that would not parse leaves the row saying `exited` and no more,
-            // rather than an age nobody measured (principle 4).
-            let since = if ago.is_empty() {
-                "exited".to_string()
-            } else {
-                format!("exited {ago}")
-            };
-            let mut spans = vec![Span::styled(since, Style::default().fg(theme::OVERLAY1))];
-            // The sidebar has no room for the key; its hint row carries it while the cursor
-            // is on the row (interface spec 12.6). A key the reader has bound to nothing
-            // drops the label rather than naming a key that does nothing, which is what
-            // `overlay::footer` does with the same question (principle 3).
-            if let (RowForm::Overlay, Some(key)) = (form, &view.resume_key) {
-                spans.push(Span::raw(RESUME_GAP));
-                spans.push(Span::styled(
-                    format!("{key} {RESUME_WORD}"),
-                    Style::default().fg(theme::BLUE),
-                ));
-            }
-            spans
-        }
+        AgentState::Waiting => vec![Span::styled(DOT, Style::default().fg(theme::RED))],
         AgentState::Unknown => vec![Span::styled(
             "unknown",
             Style::default().fg(theme::OVERLAY0),
         )],
-        AgentState::Waiting | AgentState::Idle => Vec::new(),
+        AgentState::Idle => Vec::new(),
     }
 }
 
@@ -342,15 +392,17 @@ fn working(glyph: &'static str, word: &str, color: Color) -> Vec<Span<'static>> 
 }
 
 /// `[kind] · [place]`, or the place alone when line 1 already showed the kind.
+///
+/// The two flat forms only. A nested row's place is the rows above it (decision record 0030).
 fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
     let place = match form {
-        RowForm::Sidebar => &a.place_without_tab,
         // The header above the row has already said the project (MUX-21).
         RowForm::Overlay => &a.place_in_project,
+        _ => &a.place_without_tab,
     };
     let place_style = Style::default().fg(match form {
         RowForm::Overlay => theme::OVERLAY1,
-        RowForm::Sidebar => theme::OVERLAY0,
+        _ => theme::OVERLAY0,
     });
     if a.name.is_none() {
         return vec![Span::styled(
@@ -393,13 +445,13 @@ fn recap_lines(recap: &str, a: &AgentEntry, width: usize) -> Vec<Vec<Span<'stati
 }
 
 /// Bright while the agent is working, waiting, compacting or unseen; `subtext0` once you have
-/// seen it or it has exited (interface spec 6.2).
+/// seen it (interface spec 6.2).
 fn recap_color(a: &AgentEntry) -> Color {
-    let live = matches!(
+    let busy = matches!(
         a.state,
         AgentState::Working | AgentState::Waiting | AgentState::Compacting
     );
-    if a.unseen || live {
+    if a.unseen || busy {
         theme::RECAP
     } else {
         theme::RECAP_SEEN
@@ -443,22 +495,6 @@ fn wrap(text: &str, room: usize) -> Vec<String> {
     lines
 }
 
-/// The dot's colour is the state, and nothing else (interface spec 6.4).
-///
-/// Red means one thing: the agent asked you something and is stopped until you answer.
-/// `unseen` used to win over the state here, which made the dot red on a record that had
-/// merely finished while you were looking elsewhere, and on every exited record. In a list of
-/// a dozen sessions almost every row was red and the mark said nothing. `unseen` still lifts a
-/// row in the sort order and still brightens its recap; it no longer colours the dot.
-fn dot_color(a: &AgentEntry) -> Color {
-    match a.state {
-        AgentState::Waiting => theme::RED,
-        AgentState::Working => theme::agent_color(a.kind),
-        AgentState::Compacting => theme::COMPACTING,
-        AgentState::Idle | AgentState::Exited | AgentState::Unknown => theme::OVERLAY0,
-    }
-}
-
 /// `12 min ago`, the way the artboard writes it. Both sides are instants, so a record stamped
 /// in one offset and a clock reading in another still measure the same distance apart.
 ///
@@ -482,7 +518,6 @@ mod tests {
     use super::*;
     use crate::render::list_box::filter_rows;
     use domux_core::ids::AgentId;
-    use domux_core::keymap::Keymap;
     use domux_core::model::agent::{AgentKind, AgentState};
     use ratatui::style::Modifier;
 
@@ -505,6 +540,7 @@ mod tests {
             recap: Some(
                 "Replaced three session checks with one guard in auth/middleware.go.".into(),
             ),
+            workspace: WorkspaceId("w_c3a1".into()),
             project: "audrey-app".into(),
             place_with_tab: "audrey-app › auth cleanup › pr1".into(),
             place_without_tab: "audrey-app › auth cleanup".into(),
@@ -519,7 +555,6 @@ mod tests {
             agents: entries,
             glyph: "✶",
             now: now(),
-            resume_key: Keymap::defaults().list_key_for(RESUME_ACTION),
         }
     }
 
@@ -576,12 +611,12 @@ mod tests {
         assert_eq!(
             text(&rows[0]),
             vec![
-                "● auth-cleanup  ✶ Percolating…",
+                "auth-cleanup  ✶ Percolating…",
                 "claude · auth cleanup › pr1",
                 "※ Replaced three session checks with one guard in auth/middleware.go.",
             ]
         );
-        let name = &rows[0].lines[0].spans[2];
+        let name = &rows[0].lines[0].spans[0];
         assert_eq!(name.content, "auth-cleanup");
         assert_eq!(name.style.fg, Some(theme::TEXT), "a name reads in text");
         assert!(name.style.add_modifier.contains(Modifier::BOLD), "and bold");
@@ -603,13 +638,13 @@ mod tests {
     fn an_unnamed_agent_puts_the_kind_on_line_1_and_the_place_alone_on_line_2() {
         let v = view(vec![entry(AgentState::Working, None, AgentKind::Codex)]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "● codex  ✶ Percolating…");
+        assert_eq!(text(&rows[0])[0], "codex  ✶ Percolating…");
         assert_eq!(
             text(&rows[0])[1],
             "auth cleanup › pr1",
             "the project is on the header, not on the row (MUX-21)"
         );
-        let label = &rows[0].lines[0].spans[2];
+        let label = &rows[0].lines[0].spans[0];
         assert_eq!(label.content, "codex");
         assert_eq!(label.style.fg, Some(theme::CODEX), "a kind standing in");
         assert!(
@@ -629,7 +664,7 @@ mod tests {
         assert_eq!(
             text(&rows[0]),
             vec![
-                "● auth-cleanup  ✶ Percolating…",
+                "auth-cleanup  ✶ Percolating…",
                 "claude · audrey-app › auth cleanup"
             ]
         );
@@ -642,13 +677,12 @@ mod tests {
 
     #[test]
     fn waiting_and_idle_rows_carry_no_state_word() {
-        for state in [AgentState::Waiting, AgentState::Idle] {
+        for (state, line) in [
+            (AgentState::Waiting, "auth-cleanup  ●"),
+            (AgentState::Idle, "auth-cleanup"),
+        ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
-            assert_eq!(
-                text(&overlay_rows(&v, 72)[0])[0],
-                "● auth-cleanup",
-                "{state}"
-            );
+            assert_eq!(text(&overlay_rows(&v, 72)[0])[0], line, "{state}");
         }
     }
 
@@ -660,37 +694,17 @@ mod tests {
             AgentKind::Claude,
         )]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "● auth-cleanup  ✶ Compacting…");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup  ✶ Compacting…");
         let spans = &rows[0].lines[0].spans;
-        assert_eq!(spans[0].style.fg, Some(theme::COMPACTING), "the dot");
+        assert!(
+            spans.iter().all(|s| s.content != DOT),
+            "compacting draws no dot; the glyph and the word say it"
+        );
         assert_eq!(
             spans.last().unwrap().style.fg,
             Some(theme::COMPACTING),
             "the word"
         );
-    }
-
-    #[test]
-    fn an_exited_row_reads_how_long_ago_and_offers_resume() {
-        let v = view(vec![entry(
-            AgentState::Exited,
-            Some("auth-cleanup"),
-            AgentKind::Claude,
-        )]);
-        let overlay = overlay_rows(&v, 72);
-        assert_eq!(
-            text(&overlay[0])[0],
-            "● auth-cleanup  exited 12 min ago   ⏎ resume"
-        );
-        let spans = &overlay[0].lines[0].spans;
-        assert_eq!(
-            spans.last().unwrap().style.fg,
-            Some(theme::BLUE),
-            "the key is blue"
-        );
-        // The sidebar has no row for an exited record at all (MUX-22), so the key it used to
-        // drop has nowhere to be dropped from.
-        assert!(rows(&v, RowForm::Sidebar, 36).is_empty());
     }
 
     #[test]
@@ -701,14 +715,9 @@ mod tests {
         let rows = overlay_rows(&v, 72);
         assert_eq!(
             text(&rows[0]),
-            vec!["● claude  unknown", "auth cleanup › pr1"]
+            vec!["claude  unknown", "auth cleanup › pr1"]
         );
-        assert_eq!(
-            rows[0].lines[0].spans[0].style.fg,
-            Some(theme::OVERLAY0),
-            "a dim dot"
-        );
-        let label = &rows[0].lines[0].spans[2];
+        let label = &rows[0].lines[0].spans[0];
         assert_eq!(label.content, "claude");
         assert_eq!(
             label.style.fg,
@@ -717,36 +726,37 @@ mod tests {
         );
     }
 
-    /// The dot is the state and nothing else, and red is waiting alone.
+    /// A dot is drawn only while an agent is waiting on you, and it is red (decision record
+    /// 0030). Every other state draws none: working and compacting say themselves with the
+    /// glyph and the word, idle has nothing to report, and unknown says so in a word.
     ///
-    /// `unseen` used to win over the state here, so an idle record you had not looked at and
-    /// every exited record carried the same red dot as one holding a permission prompt. Both
-    /// pairs below are in the table for that reason: the same state with `unseen` on and off
-    /// draws the same dot.
+    /// `unseen` is in the table twice because it used to win over the state here, which made
+    /// the dot red on a record that had merely finished while you were looking elsewhere.
     #[test]
-    fn the_dot_colour_is_the_state_and_red_is_waiting_alone() {
+    fn a_dot_is_drawn_for_waiting_and_for_no_other_state() {
         let cases = [
-            (AgentState::Working, false, theme::CLAUDE),
-            (AgentState::Waiting, false, theme::RED),
-            (AgentState::Waiting, true, theme::RED),
-            (AgentState::Idle, true, theme::OVERLAY0),
-            (AgentState::Idle, false, theme::OVERLAY0),
-            (AgentState::Compacting, false, theme::COMPACTING),
-            (AgentState::Exited, false, theme::OVERLAY0),
-            (AgentState::Exited, true, theme::OVERLAY0),
-            (AgentState::Unknown, false, theme::OVERLAY0),
+            (AgentState::Waiting, false, true),
+            (AgentState::Waiting, true, true),
+            (AgentState::Working, false, false),
+            (AgentState::Idle, true, false),
+            (AgentState::Idle, false, false),
+            (AgentState::Compacting, false, false),
+            (AgentState::Unknown, false, false),
         ];
-        for (state, unseen, colour) in cases {
+        for (state, unseen, dotted) in cases {
             let mut e = entry(state, Some("x"), AgentKind::Claude);
             e.unseen = unseen;
-            let v = view(vec![e]);
-            let rows = overlay_rows(&v, 72);
-            assert_eq!(rows[0].lines[0].spans[0].content, "●");
-            assert_eq!(
-                rows[0].lines[0].spans[0].style.fg,
-                Some(colour),
-                "{state} unseen={unseen}"
-            );
+            let rows = overlay_rows(&view(vec![e]), 72);
+            let spans = &rows[0].lines[0].spans;
+            let dot = spans.iter().find(|s| s.content == DOT);
+            assert_eq!(dot.is_some(), dotted, "{state} unseen={unseen}");
+            if let Some(dot) = dot {
+                assert_eq!(dot.style.fg, Some(theme::RED), "{state}");
+                assert_ne!(
+                    spans[0].content, DOT,
+                    "the dot follows the name rather than leading the row"
+                );
+            }
         }
     }
 
@@ -843,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn every_row_starts_with_a_dot_and_carries_the_agents_id_as_its_key() {
+    fn every_row_leads_with_its_name_and_carries_the_agents_id_as_its_key() {
         let v = view(vec![entry(AgentState::Idle, None, AgentKind::Opencode)]);
         let rows = overlay_rows(&v, 72);
         assert_eq!(rows[0].key.as_deref(), Some("a_5e21"));
@@ -852,7 +862,10 @@ mod tests {
             "the kind is what / matches when there is no name: {}",
             rows[0].filter_text
         );
-        assert_eq!(rows[0].lines[0].spans[0].content, DOT);
+        assert_eq!(
+            rows[0].lines[0].spans[0].content, "opencode",
+            "the row leads with the label, and an idle row draws nothing after it"
+        );
     }
 
     #[test]
@@ -870,10 +883,10 @@ mod tests {
         );
         assert!(text(&rows[0])[0].starts_with("AUDREY-APP "));
         assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
-        assert_eq!(text(&rows[1])[0], "  ● auth-cleanup", "indented under it");
+        assert_eq!(text(&rows[1])[0], "  auth-cleanup  ●", "indented under it");
         assert!(rows[2].is_blank(), "{:?}", text(&rows[2]));
         assert_eq!(rows[3].key.as_deref(), Some("a_9c04"));
-        assert_eq!(text(&rows[3])[0], "  ● billing-export");
+        assert_eq!(text(&rows[3])[0], "  billing-export");
         // `/` changes what the list holds and never its shape: the filter drops these blanks
         // and rebuilds the same ones between the rows it keeps, header included.
         let both = filter_rows(&rows, "audrey-app");
@@ -919,30 +932,8 @@ mod tests {
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
         let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
         assert_eq!(rows.len(), 3, "two agents and the blank between them");
-        assert_eq!(text(&rows[0])[0], "● auth-cleanup");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup  ●");
         assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
-    }
-
-    /// MUX-22: the sidebar's box is what is running, and the agents overlay is where an exited
-    /// record still has a row to resume from.
-    #[test]
-    fn the_sidebar_drops_the_exited_records_and_the_overlay_keeps_them() {
-        let live = entry(AgentState::Working, Some("auth-cleanup"), AgentKind::Claude);
-        let mut gone = entry(
-            AgentState::Exited,
-            Some("billing-export"),
-            AgentKind::Claude,
-        );
-        gone.id = AgentId("a_9c04".into());
-        let v = view(vec![live, gone]);
-        let sidebar = rows(&v, RowForm::Sidebar, 34);
-        assert_eq!(sidebar.len(), 1);
-        assert_eq!(sidebar[0].key.as_deref(), Some("a_5e21"));
-        let keys: Vec<_> = rows(&v, RowForm::Overlay, 72)
-            .iter()
-            .filter_map(|r| r.key.clone())
-            .collect();
-        assert_eq!(keys, vec!["a_5e21", "a_9c04"]);
     }
 
     /// A record whose workspace the model no longer holds has no project to head it, so its
@@ -953,26 +944,7 @@ mod tests {
         e.project = String::new();
         let rows = rows(&view(vec![e]), RowForm::Overlay, 72);
         assert_eq!(rows.len(), 1);
-        assert_eq!(text(&rows[0])[0], "● orphan");
-    }
-
-    #[test]
-    fn the_resume_hint_names_the_configured_key_and_goes_when_it_is_unbound() {
-        let e = entry(AgentState::Exited, Some("auth-cleanup"), AgentKind::Claude);
-        let mut rebound = view(vec![e.clone()]);
-        rebound.resume_key = Some("o".into());
-        assert_eq!(
-            text(&overlay_rows(&rebound, 72)[0])[0],
-            "● auth-cleanup  exited 12 min ago   o resume",
-            "the label names the binding, not the default"
-        );
-        let mut unbound = view(vec![e]);
-        unbound.resume_key = None;
-        assert_eq!(
-            text(&overlay_rows(&unbound, 72)[0])[0],
-            "● auth-cleanup  exited 12 min ago",
-            "an action bound to nothing names no key"
-        );
+        assert_eq!(text(&rows[0])[0], "orphan");
     }
 
     #[test]

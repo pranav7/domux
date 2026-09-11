@@ -1,7 +1,7 @@
 # 0026: The two Agents boxes answer different questions
 
 **Date:** 2026-09-10
-**Status:** Accepted. Amends interface spec 6.2, 6.3, 6.4 and 6.8.
+**Status:** Accepted. Amends interface spec 6.2, 6.3, 6.4 and 6.8. **Amended by decision record 0030**, which combines the two boxes into the Navigator and removes the exited record: the split between the two surfaces, the pruning rule and the three near misses below all go with it. What survives is the red dot meaning waiting, which 0030 narrows further, and the top bar drawing no count.
 **Decision:** The sidebar's Agents box lists the running sessions, flat. The agents overlay
 lists every record, grouped under a header per project. A red dot means the agent is waiting on
 you and nothing else. The top bar draws no agent count. An exited record with no session id is

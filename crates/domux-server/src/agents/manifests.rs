@@ -15,9 +15,6 @@ pub struct AgentManifest {
     pub process_names: Vec<String>,
     /// The kind's colour (interface spec 9.1), as a hex string so a declaration can carry it.
     pub color_hex: String,
-    /// The line resume types into a shell, with `{session_id}` replaced. `None` means this
-    /// kind does not resume in V2.0.
-    pub resume_command: Option<String>,
     pub hooks: HookTarget,
     pub recap: RecapSource,
     pub session: SessionSource,
@@ -98,7 +95,6 @@ impl Registry {
                 process_names: vec!["claude".into()],
                 color_hex: "#DE7356".into(),
                 // V1's `resumeAgentLaunchLine`, claude arm.
-                resume_command: Some("claude --resume {session_id}".into()),
                 hooks: HookTarget::ClaudeSettings,
                 recap: RecapSource::ClaudeTranscript,
                 session: SessionSource::HookPayload,
@@ -108,7 +104,6 @@ impl Registry {
                 process_names: vec!["codex".into()],
                 color_hex: "#89b4fa".into(),
                 // V2.x: "codex resume {session_id}" (V1's codex arm).
-                resume_command: None,
                 hooks: HookTarget::CodexHooks,
                 recap: RecapSource::None,
                 session: SessionSource::CodexRollout,
@@ -118,7 +113,6 @@ impl Registry {
                 process_names: vec!["opencode".into()],
                 color_hex: "#C678B8".into(),
                 // V2.x: "opencode --session {session_id}" (V1's opencode arm).
-                resume_command: None,
                 hooks: HookTarget::OpencodePlugin,
                 recap: RecapSource::None,
                 session: SessionSource::OpencodeCli,
@@ -190,23 +184,6 @@ mod tests {
             r.for_process("Claude").map(|m| m.kind),
             Some(AgentKind::Claude),
             "the process name match ignores case"
-        );
-    }
-
-    #[test]
-    fn only_claude_resumes_in_v2_0_and_its_template_is_v1s_line() {
-        let r = Registry::builtin();
-        assert_eq!(
-            r.for_kind(AgentKind::Claude)
-                .unwrap()
-                .resume_command
-                .as_deref(),
-            Some("claude --resume {session_id}")
-        );
-        assert_eq!(r.for_kind(AgentKind::Codex).unwrap().resume_command, None);
-        assert_eq!(
-            r.for_kind(AgentKind::Opencode).unwrap().resume_command,
-            None
         );
     }
 

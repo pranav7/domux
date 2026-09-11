@@ -138,7 +138,7 @@ async fn a_worktree_removed_outside_domux_is_pruned_at_start_and_noted_in_the_sw
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -218,7 +218,7 @@ async fn a_git_project_whose_root_is_gone_is_reported_once_and_not_slot_by_slot(
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -291,7 +291,7 @@ async fn a_note_clears_on_the_first_key_in_a_box() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -365,7 +365,10 @@ async fn a_note_clears_on_the_first_key_in_the_sidebar_agents_box() {
 /// keys the way the sidebar's hint row does, so it hides them the same way.
 #[tokio::test]
 async fn a_note_clears_on_the_first_key_in_the_agents_overlay() {
-    let mut h = Harness::start(Config::default(), 80, 24).await;
+    // The agents overlay is the surface the two-box layout keeps (decision record 0030).
+    let mut config = Config::default();
+    config.navigator.enabled = false;
+    let mut h = Harness::start(config, 80, 24).await;
     let (root, _w1, _w2) = h.git_project_with_two_slots().await;
     h.stop().await;
     std::fs::remove_dir_all(root.join(".domux/worktrees/workspace-2")).unwrap();
@@ -420,7 +423,7 @@ async fn a_key_another_client_sent_from_a_pane_does_not_clear_the_note() {
     let f = h
         .wait_for(
             reader.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -430,7 +433,7 @@ async fn a_key_another_client_sent_from_a_pane_does_not_clear_the_note() {
     let f = h
         .wait_for(
             reader.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -506,7 +509,7 @@ async fn a_note_survives_a_key_that_went_to_a_pane() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;

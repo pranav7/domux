@@ -195,6 +195,12 @@ async fn a_session_start_alone_reads_the_recap_and_the_name_a_resumed_session_al
 async fn a_codex_payload_reaches_the_same_record_path_and_reads_no_transcript() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let pane = h.focused_pane(h.client.clone());
+    h.report(
+        pane.clone(),
+        AgentKind::Codex,
+        r#"{"hook_event_name":"SessionStart","session_id":"t-1"}"#,
+    )
+    .await;
     let out = h
         .report(
             pane.clone(),
@@ -227,6 +233,12 @@ async fn a_codex_stop_reads_no_recap_though_its_payload_names_a_transcript() {
         r#"{{"hook_event_name":"Stop","session_id":"t-1","rollout_path":"{}"}}"#,
         transcript.to_str().unwrap()
     );
+    h.report(
+        pane.clone(),
+        AgentKind::Codex,
+        r#"{"hook_event_name":"SessionStart","session_id":"t-1"}"#,
+    )
+    .await;
     h.report(pane.clone(), AgentKind::Codex, &text).await;
     let a = only_agent(&h);
     assert_eq!(
@@ -252,7 +264,7 @@ async fn an_event_domux_does_not_track_changes_nothing_and_is_not_an_error() {
     .await;
     let before = only_agent(&h);
     let out = h
-        .report(
+        .report_raw(
             pane.clone(),
             AgentKind::Claude,
             r#"{"hook_event_name":"SubagentStop","session_id":"x"}"#,
@@ -265,11 +277,11 @@ async fn an_event_domux_does_not_track_changes_nothing_and_is_not_an_error() {
     assert_eq!(after.state, AgentState::Idle);
 }
 
-/// Plan assumption 7: every hook but `SessionStart` leaves a record whose session is over
-/// alone. The hook still finds a live pane, so it is not refused; it must simply change
-/// nothing, the recap and the session name included.
+/// A hook that arrives after the session ended finds no record to write to. The pane is still
+/// there, so the report is not refused; it answers with no state, and nothing is created to
+/// carry the recap and the session name the transcript has grown since.
 #[tokio::test]
-async fn a_hook_that_arrives_after_the_session_ended_leaves_the_exited_record_alone() {
+async fn a_hook_that_arrives_after_the_session_ended_writes_to_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let transcript = dir.path().join("s.jsonl");
     std::fs::write(
@@ -289,17 +301,24 @@ async fn a_hook_that_arrives_after_the_session_ended_leaves_the_exited_record_al
         .await;
     h.report(pane.clone(), AgentKind::Claude, &with_path("SessionEnd"))
         .await;
-    let exited = only_agent(&h);
-    assert_eq!(exited.state, AgentState::Exited);
-    assert_eq!(exited.recap.as_deref(), Some("Session check cleanup"));
-    // The session is over, and the transcript then grows a recap and a name it never had.
+    assert!(
+        h.model().agents.is_empty(),
+        "the session is over, so its record is gone (decision record 0030)"
+    );
+    // The transcript then grows a recap and a name it never had.
     std::fs::write(&transcript, "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:21:00.000Z\",\"content\":\"Replaced three session checks with one guard.\"}\n").unwrap();
     let out = h
-        .report(pane.clone(), AgentKind::Claude, &with_path("Stop"))
+        .report_raw(pane.clone(), AgentKind::Claude, &with_path("Stop"))
         .await;
-    assert_eq!(out.state, Some(AgentState::Exited));
-    let after = only_agent(&h);
-    assert_eq!(after, exited, "no field of the exited record moved");
+    assert_eq!(
+        out.agent, None,
+        "there was no record for the hook to land on"
+    );
+    assert_eq!(out.state, None);
+    assert!(
+        h.model().agents.is_empty(),
+        "and no record was invented for a session domux is not tracking"
+    );
 }
 
 /// Never fabricate cuts both ways: a session name is durable, and a read that did not find

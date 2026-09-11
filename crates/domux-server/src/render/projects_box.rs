@@ -1,8 +1,13 @@
 //! The rows of the Projects box (interface spec section 5), built once and placed twice: in
 //! the sidebar and in the switcher. The switcher asks for two extra lines because it has the
 //! width; nothing else differs, so the two surfaces cannot drift apart.
+//!
+//! With `[navigator] enabled` it is the Navigator, and each workspace row is followed by the
+//! agents running in that workspace (decision record 0030). The agent rows are
+//! `render::agents_box`'s, so the row grammar is still written once.
 
 use crate::facts::FactRegistry;
+use crate::render::agents_box::{self, AgentsView, RowForm};
 use crate::render::list_box::{filter_rows, needs_gap_between, ListRow};
 use crate::render::theme;
 use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
@@ -12,6 +17,17 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 pub const PROJECTS_TITLE: &str = "Projects";
+/// The same box holding the agents too (decision record 0030).
+pub const NAVIGATOR_TITLE: &str = "Navigator";
+
+/// What the box calls itself. One list of two kinds of row is not a list of projects, and the
+/// title is the first thing a reader reads.
+pub fn title(navigator: bool) -> &'static str {
+    match navigator {
+        true => NAVIGATOR_TITLE,
+        false => PROJECTS_TITLE,
+    }
+}
 
 /// Between the branch, the pull request number and the title on line 2.
 const SEP: &str = " · ";
@@ -89,6 +105,7 @@ pub fn rows(
     filter: &str,
     filled: Option<&str>,
     extras: Extras,
+    agents: Option<&AgentsView>,
 ) -> Rows {
     let mut projects: Vec<&Project> = model.projects.iter().collect();
     projects.sort_by_key(|p| p.name.to_lowercase());
@@ -112,6 +129,11 @@ pub fn rows(
             }
             first = false;
             out.push(row);
+            // The agents running in this workspace, in the order they started. Nothing
+            // reorders them, so a row does not move under the reader while a state changes
+            // (decision record 0030). No blank between them: they are one block under the
+            // workspace they belong to, and a gap would read as a second workspace.
+            out.extend(agent_rows(w, agents, extras));
         }
     }
     // The box's own filter, not a second one here: `/` keeps the same rows in the sidebar,
@@ -181,6 +203,33 @@ fn workspace_row(
         lines.push(indented(line));
     }
     ListRow::selectable(key, filter_text, lines)
+}
+
+/// Every agent of `w`, as rows indented under its workspace. Empty when the Navigator is off,
+/// which is what `agents` being `None` says.
+fn agent_rows(w: &Workspace, agents: Option<&AgentsView>, extras: Extras) -> Vec<ListRow> {
+    let Some(view) = agents else {
+        return Vec::new();
+    };
+    let form = match extras.wide {
+        true => RowForm::NestedWide,
+        false => RowForm::Nested,
+    };
+    let width = extras.width.saturating_sub(INDENT) as u16;
+    view.agents
+        .iter()
+        .filter(|a| a.workspace == w.id)
+        .map(|a| indented_row(agents_box::one_row(a, view, form, width)))
+        .collect()
+}
+
+/// Every line of a row moved in by `INDENT`, the way a workspace moves in under its project.
+fn indented_row(row: ListRow) -> ListRow {
+    let lines = row.lines.into_iter().map(indented).collect();
+    ListRow {
+        lines,
+        ..ListRow::selectable(row.key.unwrap_or_default(), row.filter_text, Vec::new())
+    }
 }
 
 /// One line moved in by `INDENT`. A raw span rather than a styled one: it carries no colour

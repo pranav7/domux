@@ -6,7 +6,7 @@ use crate::render::sidebar;
 use domux_core::api::{ApiError, ClientParams, FocusRegionParams, FocusResult};
 use domux_core::ids::ClientId;
 use domux_core::model::layout::{neighbour_by_geometry, solve};
-use domux_core::model::{Direction, Focus, Overlay, RegionKind};
+use domux_core::model::{Direction, Focus, Overlay, RegionKind, RowTarget};
 use ratatui::layout::Rect;
 use serde_json::Value;
 
@@ -50,16 +50,20 @@ pub fn step(ctx: &mut Ctx, _p: ClientParams, dir: Direction) -> Result<Value, Ap
     {
         // `C-h` from a pane against the workpanel's left edge enters the sidebar. Geometry
         // first, so a pane that has a left neighbour still moves to it: the sidebar is what
-        // lies past the edge, not what lies past the pane. Which of the two boxes it enters
-        // is the one whose rows overlap this pane's most (interface spec 12.29).
+        // lies past the edge, not what lies past the pane.
+        //
+        // **With the Navigator on there is one box, so there is nothing to choose between.**
+        // The question below is which of the two boxes a pane starts beside (interface spec
+        // 12.29), and it goes when the second box does.
+        let navigator = ctx.config.config.navigator.enabled;
         let size = ctx.model.client(&client).map(|v| v.size);
         let pane_rect = rects
             .iter()
             .find(|(id, _)| id == &tab.focused)
             .map(|(_, rect)| *rect);
-        let region = match (size, pane_rect) {
-            (Some(size), Some(pane)) => {
-                let (_, agents, _) = sidebar::split_for(ctx.model, ctx.facts, size);
+        let region = match (navigator, size, pane_rect) {
+            (false, Some(size), Some(pane)) => {
+                let (_, agents, _) = sidebar::split_for(ctx.model, ctx.facts, size, false);
                 sidebar::region_for_rows(as_ratatui(pane), agents)
             }
             // No rectangle to measure, which is a tab with no panes. The upper box is where
@@ -147,19 +151,12 @@ pub fn next_region(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
 /// arrive, and a focus assignment made for one of them would put the keys in a region this
 /// function does not draw a cursor for.
 fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
+    let navigator = ctx.config.config.navigator.enabled;
     let workspace = ctx.model.client(client).map(|v| v.workspace.clone());
-    // Live, both times. The sidebar's box draws the running records and the agents overlay
-    // draws the exited ones too (MUX-22), and this is the sidebar's box: a cursor kept on a
-    // record that has since exited would mark a row that is not on this screen, which is the
-    // same defect as a cursor on a record that has been dismissed.
-    let live =
-        |id: &domux_core::ids::AgentId| ctx.model.agent(id).is_some_and(|a| a.state.is_live());
-    let first_agent = ctx
-        .model
-        .sorted_agents()
-        .iter()
-        .find(|a| a.state.is_live())
-        .map(|a| a.id.clone());
+    // A cursor kept on a record that has since gone would mark a row that is not on this
+    // screen. Every record is live now, so the question is only whether it is still there.
+    let live = |id: &domux_core::ids::AgentId| ctx.model.agent(id).is_some();
+    let first_agent = ctx.model.sorted_agents().first().map(|a| a.id.clone());
     let cursor = match ctx
         .model
         .client(client)
@@ -179,7 +176,12 @@ fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
             view.agents_cursor = cursor;
         }
         // The Projects box, whose cursor starts on the row the fill was already on: the
-        // workspace this client is in (domain model, section 3.3).
+        // workspace this client is in (domain model, section 3.3). The Navigator is the same
+        // box and the same rule, on its own cursor.
+        RegionKind::SidebarProjects if navigator => {
+            view.focus = Focus::Region(RegionKind::SidebarProjects);
+            view.navigator_cursor = workspace.map(RowTarget::Workspace);
+        }
         RegionKind::SidebarProjects => {
             view.focus = Focus::Region(RegionKind::SidebarProjects);
             view.projects_cursor = workspace;

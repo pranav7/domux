@@ -59,12 +59,12 @@ jobs:
           --test agent_observer
           --test agent_report
           --test agent_api
-          --test agent_resume
           --test agent_install
           --test agents_overlay
           --test agents_sidebar
           --test agents_top_bar
           --test agents_animation
+          --test navigator
         timeout-minutes: 10
       - run: cargo test --workspace --locked
         # Also bounded at the step, so a hang is reported as "the tests did not finish"

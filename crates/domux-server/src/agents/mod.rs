@@ -8,7 +8,6 @@ pub mod labels;
 pub mod manifests;
 pub mod observer;
 pub mod recap;
-pub mod resume;
 
 /// `agents::report` is the roadmap's name for the handler that turns one hook payload into
 /// one record change. It is a re-export rather than a second function: a keybinding, a CLI
@@ -65,7 +64,7 @@ impl AgentsState {
                 Event::AgentStateChanged { agent, to, .. } if *to != AgentState::Working => {
                     self.words.release(agent)
                 }
-                Event::AgentDismissed { agent } => self.words.release(agent),
+                Event::AgentExited { agent, .. } => self.words.release(agent),
                 _ => {}
             }
         }

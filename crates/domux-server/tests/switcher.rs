@@ -1,7 +1,8 @@
-//! The switcher overlay: `leader s` opens the Projects box over the screen with its footer
+//! The switcher overlay: `leader s` opens the Navigator over the screen with its footer
 //! under it, Esc closes it and gives the keys back to the pane.
 
 use domux_core::config::Config;
+use domux_core::model::RowTarget;
 use domux_server::testing::{row, Harness};
 use std::time::Duration;
 
@@ -33,7 +34,7 @@ async fn open_switcher(h: &mut Harness) -> String {
     h.api("switcher.open", serde_json::json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await
@@ -47,17 +48,17 @@ async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("Projects"),
+            |f| f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
     // `cols(line, 10, 69)` takes 60 display cells, so every literal here is exactly 60.
     // Each is one border cell, its content, and one border cell; no `.take` is needed and
     // none is used, because a `.take` that trims nothing hides a literal that is too short.
-    // 60 = "┌ Projects " (11) + 48 dashes + "┐" (1)
+    // 60 = "┌ Navigator " (12) + 47 dashes + "┐" (1)
     assert_eq!(
         cols(row(&f, 3), 10, 69),
-        "┌ Projects ────────────────────────────────────────────────┐",
+        "┌ Navigator ───────────────────────────────────────────────┐",
         "{f}"
     );
     // The blank row the overlay's padding puts under the rule (MUX-12).
@@ -136,7 +137,11 @@ async fn the_cursor_starts_on_the_current_workspace_and_the_fill_marks_it() {
          and a looser check would pass for a header that was filled:\n{f}"
     );
     let view = h.model().client(&h.client).unwrap().clone();
-    assert_eq!(view.projects_cursor.as_ref(), Some(&view.workspace));
+    assert_eq!(
+        view.navigator_cursor,
+        Some(RowTarget::Workspace(view.workspace.clone())),
+        "the cursor starts on the workspace this client is in"
+    );
 }
 
 /// `leader s` opens the switcher with the keys in its box (interface spec 12.32).
@@ -167,7 +172,7 @@ async fn the_screen_under_the_switcher_dims_and_comes_back_when_it_closes() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !f.contains("Projects"),
+            |f| !f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -283,10 +288,10 @@ async fn the_switcher_is_never_narrower_than_the_sidebar_and_never_taller_than_t
     .await
     .unwrap();
     let f = h
-        .wait_for(small, |f| f.contains("Projects"), Duration::from_secs(2))
+        .wait_for(small, |f| f.contains("Navigator"), Duration::from_secs(2))
         .await;
     assert!(
-        row(&f, 3).contains("┌ Projects"),
+        row(&f, 3).contains("┌ Navigator"),
         "a 60 column screen still gets the box:\n{f}"
     );
     assert_eq!(
@@ -321,7 +326,7 @@ async fn closing_the_switcher_returns_to_the_overlay_it_was_opened_over() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !f.contains("Projects"),
+            |f| !f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -360,13 +365,13 @@ async fn the_switcher_reads_its_keys_from_the_config_rather_than_naming_esc_itse
     h.key(h.client.clone(), "Esc").await;
     let f = h.frame(h.client.clone()).await;
     assert!(
-        f.contains("Projects"),
+        f.contains("Navigator"),
         "Esc is bound to nothing here, so it does not close the switcher:\n{f}"
     );
     h.key(h.client.clone(), "q").await;
     h.wait_for(
         h.client.clone(),
-        |f| !f.contains("Projects"),
+        |f| !f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -380,7 +385,7 @@ async fn a_key_the_switcher_does_not_answer_leaves_it_open() {
     open_switcher(&mut h).await;
     h.key(h.client.clone(), "j").await;
     let f = h.frame(h.client.clone()).await;
-    assert!(f.contains("Projects"), "{f}");
+    assert!(f.contains("Navigator"), "{f}");
     assert_eq!(
         h.model().client(&h.client).unwrap().overlay,
         Some(domux_core::model::Overlay::Switcher)
@@ -445,7 +450,7 @@ async fn opening_the_switcher_twice_still_closes_on_one_esc() {
     h.key(h.client.clone(), "Esc").await;
     h.wait_for(
         h.client.clone(),
-        |f| !f.contains("Projects"),
+        |f| !f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -468,7 +473,7 @@ async fn closing_the_switcher_over_the_api_redraws_without_a_key() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !f.contains("Projects"),
+            |f| !f.contains("Navigator"),
             Duration::from_secs(2),
         )
         .await;
