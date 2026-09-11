@@ -37,7 +37,6 @@ const CODEX_WAITS: &str = r#"{"hook_event_name":"PermissionRequest","session_id"
 const CODEX_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"x1"}"#;
 const CODEX_STOPS: &str = r#"{"hook_event_name":"Stop","session_id":"x1"}"#;
 const CLAUDE_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#;
-const CODEX_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"x1"}"#;
 
 /// True while any record has a dot. Read through `agent.list`, which is what both the command
 /// line and the Agents box read.
@@ -214,33 +213,6 @@ async fn agent_focus_selects_the_agents_tab_when_the_client_is_on_another() {
     assert_eq!(h.focused_pane(h.client.clone()), a);
 }
 
-/// An exited record has nowhere to put the keys, so the refusal names the state and what to
-/// do about it instead.
-#[tokio::test]
-async fn agent_focus_refuses_an_exited_record_and_names_resume() {
-    let mut h = Harness::start(Config::default(), 80, 24).await;
-    let (a, _) = two_agents(&mut h).await;
-    h.report(
-        a.clone(),
-        AgentKind::Claude,
-        r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#,
-    )
-    .await;
-    let exited = h
-        .agents()
-        .await
-        .into_iter()
-        .find(|x| x.state == AgentState::Exited)
-        .expect("the claude exited");
-    let err = h
-        .api("agent.focus", json!({"agent": exited.id.to_string()}))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::Refused);
-    assert!(err.message.contains("has exited"), "{}", err.message);
-    assert!(err.message.contains("agent resume"), "{}", err.message);
-}
-
 #[tokio::test]
 async fn focusing_a_pane_or_typing_into_it_clears_unseen() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
@@ -373,43 +345,6 @@ async fn closing_an_exited_pane_leaves_the_dot_of_the_agent_in_the_next_one() {
     assert!(!codex_of(&mut h).await.unseen, "and focusing it clears it");
 }
 
-#[tokio::test]
-async fn agent_dismiss_removes_an_exited_record_and_refuses_a_live_one() {
-    let mut h = Harness::start(Config::default(), 80, 24).await;
-    let (a, _) = two_agents(&mut h).await;
-    let live = h.agents().await[0].id.clone();
-    let err = h
-        .api("agent.dismiss", json!({"agent": live.to_string()}))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::Refused);
-    assert!(
-        err.message.contains("only exited agents can be dismissed"),
-        "{}",
-        err.message
-    );
-    assert_eq!(h.agents().await.len(), 2, "a refusal removes nothing");
-
-    h.report(
-        a.clone(),
-        AgentKind::Claude,
-        r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#,
-    )
-    .await;
-    let exited = h
-        .agents()
-        .await
-        .into_iter()
-        .find(|x| x.state == AgentState::Exited)
-        .expect("the claude exited");
-    h.api("agent.dismiss", json!({"agent": exited.id.to_string()}))
-        .await
-        .unwrap();
-    let left = h.agents().await;
-    assert_eq!(left.len(), 1, "and only that one went");
-    assert!(left.iter().all(|x| x.id != exited.id));
-}
-
 /// Principle 9: the verb exists, so a caller learns it and learns when it arrives. The words
 /// are Task 5's, which the unbuilt register in `core::tests` also keys off.
 #[tokio::test]
@@ -427,18 +362,17 @@ async fn the_messaging_verbs_answer_unavailable_and_name_the_milestone() {
     }
 }
 
-/// M3 plan assumption 32. Each half removes the records of the workspace it names and leaves
-/// the other workspace's alone, so neither passes by removing every record there is. The
-/// record the clear takes is an exited one, which is all a clear takes; the record the delete
-/// takes is live, which is the difference between the two.
+/// M3 plan assumption 32, as decision record 0028 leaves it. A delete takes the workspace, so
+/// it takes the records in it; a clear keeps the workspace and its panes, so the agents running
+/// there keep running. The other workspace's record is untouched by either, so neither passes
+/// by removing every record there is.
 #[tokio::test]
-async fn clearing_or_deleting_a_workspace_removes_its_records() {
+async fn deleting_a_workspace_removes_its_records_and_clearing_one_does_not() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let (_root, w1, w2) = h.git_project_with_two_slots().await;
     let p1 = h.first_pane_of(&w1.to_string()).await;
     let p2 = h.first_pane_of(&w2.to_string()).await;
     h.report(p1.clone(), AgentKind::Claude, START_CLAUDE).await;
-    h.report(p1.clone(), AgentKind::Claude, CLAUDE_ENDS).await;
     h.report(p2.clone(), AgentKind::Codex, START_CODEX).await;
     assert_eq!(h.agents().await.len(), 2);
 
@@ -449,9 +383,11 @@ async fn clearing_or_deleting_a_workspace_removes_its_records() {
     )
     .await
     .expect("workspace.clear");
-    let after_clear = h.agents().await;
-    assert_eq!(after_clear.len(), 1, "the cleared slot's record went");
-    assert_eq!(after_clear[0].workspace, w2, "and only that slot's");
+    assert_eq!(
+        h.agents().await.len(),
+        2,
+        "a clear keeps the panes, so it keeps the sessions running in them"
+    );
 
     support::api_at(
         h.socket_path(),
@@ -460,49 +396,28 @@ async fn clearing_or_deleting_a_workspace_removes_its_records() {
     )
     .await
     .expect("workspace.delete");
-    assert!(
-        h.agents().await.is_empty(),
-        "and the deleted slot's live record went with the slot"
+    let left = h.agents().await;
+    assert_eq!(
+        left.len(),
+        1,
+        "the deleted slot's record went with the slot"
     );
+    assert_eq!(left[0].workspace, w1, "and only that slot's");
 }
 
-/// A clear resets the slot and keeps it, so the agent still running there is still running:
-/// its record stays, whole. Taking it would throw away the session id, the recap and the name
-/// a resume needs, and the observer would put a bare record in its place - a live session made
-/// unresumable because the reader reset a worktree. The exited record beside it goes, so this
-/// cannot pass by a clear that removes nothing at all.
+/// A clear keeps the workspace and its panes, so the agents running in the slot are still
+/// running and still own their records (decision record 0028). It used to take the records
+/// whose session was over, and there are none of those to take.
 #[tokio::test]
-async fn a_clear_takes_the_exited_records_and_leaves_a_live_one_whole() {
+async fn a_clear_leaves_the_agents_running_in_the_slot_alone() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let (_root, w1, _w2) = h.git_project_with_two_slots().await;
     let live_pane = h.first_pane_of(&w1.to_string()).await;
-    let split = h
-        .api(
-            "pane.split",
-            json!({"pane": live_pane.to_string(), "dir": "right"}),
-        )
-        .await
-        .expect("pane.split");
-    let dead_pane = PaneId(
-        split["id"]
-            .as_str()
-            .expect("a split answers with an id")
-            .into(),
-    );
-
     h.report(live_pane.clone(), AgentKind::Claude, START_CLAUDE)
         .await;
-    h.report(dead_pane.clone(), AgentKind::Codex, START_CODEX)
-        .await;
-    h.report(dead_pane.clone(), AgentKind::Codex, CODEX_ENDS)
-        .await;
     let before = h.agents().await;
-    assert_eq!(before.len(), 2, "one live and one exited, in the one slot");
-    let live = before
-        .iter()
-        .find(|a| a.state == AgentState::Idle)
-        .expect("the claude is live")
-        .clone();
+    assert_eq!(before.len(), 1);
+    let live = before[0].clone();
 
     support::api_at(
         h.socket_path(),
@@ -513,15 +428,10 @@ async fn a_clear_takes_the_exited_records_and_leaves_a_live_one_whole() {
     .expect("workspace.clear");
 
     let left = h.agents().await;
-    assert_eq!(left.len(), 1, "the exited codex went");
+    assert_eq!(left.len(), 1, "the session is still running");
     // The same record, not a fresh one the observer put back: an id is never reissued, so an
-    // id that survived is the record that survived, and the session id is what a resume needs.
-    assert_eq!(
-        left[0].id, live.id,
-        "and the live claude is the one that stayed"
-    );
-    assert_eq!(left[0].session_id.as_deref(), Some("c1"));
-    assert_eq!(left[0].state, AgentState::Idle);
+    // id that survived is the record that survived.
+    assert_eq!(left[0].id, live.id);
 }
 
 #[tokio::test]
@@ -535,53 +445,31 @@ async fn an_ambiguous_target_lists_the_candidates() {
     assert_eq!(err.data.unwrap().as_array().unwrap().len(), 2);
 }
 
-/// The addressing rule answers the records the calling verb can act on. A workspace holding one
-/// live record and one exited one names the live one for `agent.focus` and the exited one for
-/// `agent.dismiss`, and the tab-qualified form reaches the exited record through the pane it
-/// last ran in, which is the only pane it has left.
+/// The addressing rule takes no liveness from the calling verb any more, because every record
+/// is a running session (decision record 0028). A workspace holding one record names it; a
+/// workspace holding two asks for the tab.
 #[tokio::test]
-async fn a_workspace_target_names_the_record_the_calling_verb_can_act_on() {
+async fn a_workspace_target_names_the_one_record_in_it() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (claude_pane, codex_pane) = two_agents(&mut h).await;
-    let claude = h
-        .agents()
-        .await
-        .into_iter()
-        .find(|a| a.kind == AgentKind::Claude)
-        .expect("the claude record")
-        .id;
     h.report(claude_pane, AgentKind::Claude, CLAUDE_ENDS).await;
-    let (ws, tab) = {
+    let ws = {
         let model = h.model();
-        let view = model.client(&h.client).expect("the client");
-        (view.workspace.to_string(), view.tab.to_string())
+        model
+            .client(&h.client)
+            .expect("the client")
+            .workspace
+            .to_string()
     };
+    assert_eq!(h.agents().await.len(), 1, "the claude session is over");
 
-    h.api("agent.focus", json!({"agent": ws})).await.unwrap();
+    h.api("agent.focus", json!({"agent": ws.clone()}))
+        .await
+        .unwrap();
     assert_eq!(
         h.focused_pane(h.client.clone()),
         codex_pane,
-        "focus took the live record, which is the only one it can open"
-    );
-
-    // Both records are in the one tab, and the exited claude holds no pane of its own, so the
-    // qualified form finds it only through `last_pane`.
-    h.api("agent.dismiss", json!({"agent": format!("{ws}/{tab}")}))
-        .await
-        .unwrap();
-    let left = h.agents().await;
-    assert_eq!(left.len(), 1, "dismiss took the exited record");
-    assert!(left.iter().all(|a| a.id != claude));
-
-    let err = h
-        .api("agent.dismiss", json!({"agent": ws}))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::NotFound);
-    assert_eq!(
-        err.message,
-        format!("no exited agent in {ws}; run domux2 peek"),
-        "the refusal says which records it looked at, because the live one is still listed"
+        "the one record left is the one the workspace names"
     );
 }
 

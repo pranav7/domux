@@ -191,6 +191,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         for y in 0..rows {

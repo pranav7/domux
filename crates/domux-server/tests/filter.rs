@@ -93,7 +93,7 @@ async fn switcher_with_a_named_slot(h: &mut Harness) -> String {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("┌ Projects"),
+        |f| f.contains("┌ Navigator"),
         Duration::from_secs(3),
     )
     .await
@@ -232,7 +232,7 @@ async fn question_mark_opens_the_keys_over_the_switcher_and_esc_comes_back_to_it
         )
         .await;
     assert!(
-        f.contains("┌ Projects") && box_text(&f).contains("auth cleanup"),
+        f.contains("┌ Navigator") && box_text(&f).contains("auth cleanup"),
         "one Esc comes back to the switcher, with its rows:\n{f}"
     );
     assert_eq!(
@@ -287,7 +287,10 @@ async fn opening_the_keys_twice_over_the_switcher_still_closes_on_one_esc() {
             Duration::from_secs(2),
         )
         .await;
-    assert!(f.contains("┌ Projects"), "and one Esc is the way out:\n{f}");
+    assert!(
+        f.contains("┌ Navigator"),
+        "and one Esc is the way out:\n{f}"
+    );
 }
 
 /// The help lists `[keys.list]` under `in a list`, from the loaded table rather than from the
@@ -388,7 +391,7 @@ async fn neither_surface_draws_the_tab_list_under_a_workspace() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("┌ Projects"),
+            |f| f.contains("┌ Navigator"),
             Duration::from_secs(3),
         )
         .await;
@@ -407,7 +410,7 @@ async fn neither_surface_draws_the_tab_list_under_a_workspace() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("┌ Projects"),
+            |f| f.contains("┌ Navigator"),
             Duration::from_secs(3),
         )
         .await;
@@ -753,7 +756,7 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("┌ Projects"),
+        |f| f.contains("┌ Navigator"),
         Duration::from_secs(3),
     )
     .await;
@@ -802,7 +805,7 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
         .unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("┌ Projects"),
+        |f| f.contains("┌ Navigator"),
         Duration::from_secs(3),
     )
     .await;
@@ -875,7 +878,7 @@ async fn question_mark_from_the_sidebars_box_comes_back_to_the_box() {
         .unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("┌ Projects"),
+        |f| f.contains("┌ Navigator"),
         Duration::from_secs(3),
     )
     .await;
@@ -886,7 +889,12 @@ async fn question_mark_from_the_sidebars_box_comes_back_to_the_box() {
         Focus::Region(RegionKind::SidebarProjects),
         "the keys start in the box"
     );
-    let before = h.model().client(&h.client).unwrap().projects_cursor.clone();
+    let before = h
+        .model()
+        .client(&h.client)
+        .unwrap()
+        .navigator_cursor
+        .clone();
 
     h.key(h.client.clone(), "?").await;
     h.wait_for(
@@ -914,7 +922,7 @@ async fn question_mark_from_the_sidebars_box_comes_back_to_the_box() {
     h.key(h.client.clone(), "k").await;
     h.frame(h.client.clone()).await;
     assert_ne!(
-        h.model().client(&h.client).unwrap().projects_cursor,
+        h.model().client(&h.client).unwrap().navigator_cursor,
         before,
         "which `k` proves: the box has the keys, not just the label"
     );
@@ -934,7 +942,7 @@ async fn a_help_opened_in_the_sidebars_box_gives_the_keys_to_the_pane_when_the_b
         .unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("┌ Projects"),
+        |f| f.contains("┌ Navigator"),
         Duration::from_secs(3),
     )
     .await;

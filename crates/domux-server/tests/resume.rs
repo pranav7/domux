@@ -24,7 +24,7 @@ async fn state_json_is_written_after_structure_changes_with_the_current_schema_a
     // against the constant would make it track a bump instead of catching one; a
     // `SCHEMA_VERSION` change with no new migration rung would go unnoticed here even though
     // domux-core's own tests would fail.
-    assert_eq!(v["schema_version"], 4);
+    assert_eq!(v["schema_version"], 5);
     assert_eq!(
         v["projects"][0]["workspaces"][0]["tabs"]
             .as_array()

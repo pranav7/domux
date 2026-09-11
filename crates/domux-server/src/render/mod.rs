@@ -71,6 +71,10 @@ pub struct RenderInput<'a> {
     /// The line in the corner, while one is standing. One for the server, so every attached
     /// client draws the same one.
     pub toast: Option<&'a crate::toast::Toast>,
+    /// `[navigator] enabled`: one box holding projects, workspaces and the agents running in
+    /// them, in the sidebar and in the switcher (decision record 0028). Off draws the two
+    /// boxes and the agents overlay, and goes when that key does.
+    pub navigator: bool,
 }
 
 /// The one line a list of notes prints as, or `None` when there is nothing to say.
@@ -100,6 +104,26 @@ impl<'a> RenderInput<'a> {
         match self.view.focus {
             Focus::Pane(_) => Some(&self.model.tab(&self.view.tab)?.focused),
             Focus::Region(_) => None,
+        }
+    }
+
+    /// The row the Projects box or the Navigator marks with its fill, or `None` when the
+    /// cursor is somewhere else and the box should mark the workspace this client is in.
+    ///
+    /// One question asked in one place, because the sidebar and the switcher draw the same
+    /// list and a fill on different rows would be two answers to it.
+    pub fn list_cursor(&self) -> Option<&str> {
+        match self.navigator {
+            true => self.view.navigator_cursor.as_ref().map(|c| c.as_str()),
+            false => self.view.projects_cursor.as_ref().map(|w| w.as_str()),
+        }
+    }
+
+    /// The first visible line of that box, beside `list_cursor`.
+    pub fn list_scroll(&self) -> u16 {
+        match self.navigator {
+            true => self.view.navigator_scroll,
+            false => self.view.projects_scroll,
         }
     }
 }

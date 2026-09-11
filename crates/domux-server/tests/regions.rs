@@ -8,7 +8,7 @@
 
 use domux_core::config::Config;
 use domux_core::ids::WorkspaceId;
-use domux_core::model::{Focus, Model, RegionKind};
+use domux_core::model::{Focus, Model, RegionKind, RowTarget};
 use domux_server::testing::{row, Harness};
 use serde_json::json;
 use std::time::Duration;
@@ -36,12 +36,21 @@ fn focus(h: &Harness) -> Focus {
         .clone()
 }
 
+/// The workspace the box's cursor is on. The Navigator's cursor holds either a workspace or an
+/// agent (decision record 0028); every test here moves it over workspaces, so an agent row
+/// under the cursor is a failure worth reading rather than a `None`.
 fn cursor(h: &Harness) -> Option<WorkspaceId> {
-    h.model()
+    match h
+        .model()
         .client(&h.client)
         .expect("the first client is attached")
-        .projects_cursor
+        .navigator_cursor
         .clone()
+    {
+        Some(RowTarget::Workspace(w)) => Some(w),
+        Some(RowTarget::Agent(a)) => panic!("the cursor is on agent {a}, not a workspace"),
+        None => None,
+    }
 }
 
 fn filter(h: &Harness) -> (String, bool) {
@@ -71,7 +80,7 @@ async fn in_the_box(h: &mut Harness) -> String {
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -140,7 +149,7 @@ async fn c_h_takes_the_pane_to_the_left_before_it_takes_the_sidebar() {
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -354,7 +363,7 @@ async fn the_list_methods_refuse_and_change_nothing_when_the_keys_are_not_in_a_b
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -369,7 +378,7 @@ async fn the_list_methods_refuse_and_change_nothing_when_the_keys_are_not_in_a_b
         assert!(err.message.contains("not in a box"), "{method}: {err}");
     }
     let after = h.model().client(&h.client).unwrap().clone();
-    assert_eq!(after.projects_cursor, before.projects_cursor);
+    assert_eq!(after.navigator_cursor, before.navigator_cursor);
     assert_eq!(after.workspace, before.workspace);
     assert_eq!(after.focus, before.focus);
     assert!(!after.filtering, "and no filter field was opened");
@@ -393,7 +402,7 @@ async fn the_same_keys_work_in_the_switcher_because_it_is_the_same_box() {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -411,7 +420,7 @@ async fn the_same_keys_work_in_the_switcher_because_it_is_the_same_box() {
     h.key(h.client.clone(), "Esc").await;
     h.wait_for(
         h.client.clone(),
-        |f| !f.contains("Projects"),
+        |f| !f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -437,7 +446,7 @@ async fn enter_activates_the_row_under_the_cursor_in_both_surfaces() {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -445,7 +454,7 @@ async fn enter_activates_the_row_under_the_cursor_in_both_surfaces() {
     h.key(h.client.clone(), "Enter").await;
     h.wait_for(
         h.client.clone(),
-        |f| !f.contains("┌ Projects"),
+        |f| !f.contains("┌ Navigator"),
         Duration::from_secs(3),
     )
     .await;
@@ -476,7 +485,7 @@ async fn enter_activates_the_row_under_the_cursor_in_both_surfaces() {
             Duration::from_secs(3),
         )
         .await;
-    assert!(f.contains("┌ Projects"), "the sidebar stays open:\n{f}");
+    assert!(f.contains("┌ Navigator"), "the sidebar stays open:\n{f}");
     assert_eq!(h.model().client(&h.client).unwrap().workspace, w1);
     assert!(
         matches!(focus(&h), Focus::Pane(_)),
@@ -643,7 +652,7 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -662,7 +671,7 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
     h.key(h.client.clone(), "Esc").await;
     h.wait_for(
         h.client.clone(),
-        |f| !f.contains("Projects"),
+        |f| !f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -686,7 +695,10 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
 /// arithmetic below.
 #[tokio::test]
 async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_row() {
-    let mut h = Harness::start(Config::default(), 120, 19).await;
+    // Ten rows, which is the shortest screen domux draws. The Navigator takes the column, so
+    // its text area is the screen less the hint row and its two borders: seven rows for the
+    // eight lines below, which is what makes the box scroll at all.
+    let mut h = Harness::start(Config::default(), 120, 10).await;
     let (_root, _w1, w2) = h.git_project_with_two_slots().await;
     let project = h
         .model()
@@ -707,14 +719,14 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
     h.key(h.client.clone(), "C-h").await;
     h.frame(h.client.clone()).await;
     assert_eq!(
-        h.model().client(&h.client).unwrap().projects_scroll,
+        h.model().client(&h.client).unwrap().navigator_scroll,
         0,
         "the box starts at the top"
     );
@@ -730,7 +742,7 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
     // compact rows from the switcher's wider ones, which give every workspace a tab list line
     // and would put the same cursor five lines further down.
     assert_eq!(
-        h.model().client(&h.client).unwrap().projects_scroll,
+        h.model().client(&h.client).unwrap().navigator_scroll,
         1,
         "the cursor left the view, so the box scrolled by exactly what it had to:\n{f}"
     );
@@ -750,7 +762,7 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
     h.key(h.client.clone(), "k").await;
     let f = h.frame(h.client.clone()).await;
     assert_eq!(
-        h.model().client(&h.client).unwrap().projects_scroll,
+        h.model().client(&h.client).unwrap().navigator_scroll,
         1,
         "a step inside the window leaves the view where it is:\n{f}"
     );
@@ -792,7 +804,7 @@ async fn focus_region_takes_every_kind_and_refuses_the_ones_that_are_not_showing
     h.api("sidebar.show", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -821,11 +833,11 @@ async fn the_box_takes_the_accent_and_gives_it_back() {
     let f = in_the_box(&mut h).await;
     assert_eq!(
         cols(row(&f, 0), 0, 37),
-        "┌ Projects ──────────────────────────┐",
+        "┌ Navigator ─────────────────────────┐",
         "{f}"
     );
     assert!(
-        f.contains("r0 c1-10 bold fg=#cba6f7"),
+        f.contains("r0 c1-11 bold fg=#cba6f7"),
         "the title goes bold in the accent with the border:\n{f}"
     );
     h.key(h.client.clone(), "Esc").await;
@@ -842,7 +854,7 @@ async fn the_box_takes_the_accent_and_gives_it_back() {
     );
     assert_eq!(
         cols(row(&f, 0), 0, 37),
-        "┌ Projects ──────────────────────────┐",
+        "┌ Navigator ─────────────────────────┐",
         "the box is still drawn, in its unfocused colours:\n{f}"
     );
 }
@@ -962,7 +974,7 @@ async fn the_filter_row_belongs_to_the_box_and_not_to_the_sidebar() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("┌ Projects"),
+            |f| f.contains("┌ Navigator"),
             Duration::from_secs(2),
         )
         .await;
@@ -1076,7 +1088,7 @@ async fn focus_right_inside_an_overlay_leaves_the_overlay_where_it_is() {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("Projects"),
+        |f| f.contains("Navigator"),
         Duration::from_secs(2),
     )
     .await;
@@ -1094,5 +1106,5 @@ async fn focus_right_inside_an_overlay_leaves_the_overlay_where_it_is() {
         Focus::Region(RegionKind::Switcher),
         "and the keys are still in it:\n{f}"
     );
-    assert!(f.contains("┌ Projects"), "{f}");
+    assert!(f.contains("┌ Navigator"), "{f}");
 }

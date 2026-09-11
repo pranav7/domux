@@ -23,11 +23,7 @@ pub fn session_start_context(model: &Model, agent: &Agent) -> String {
         .as_ref()
         .map(|p| p.to_string())
         .unwrap_or_else(|| "no pane".into());
-    let peers = model
-        .agents
-        .iter()
-        .filter(|a| a.id != agent.id && a.state.is_live())
-        .count();
+    let peers = model.agents.iter().filter(|a| a.id != agent.id).count();
     let peer_line = match peers {
         0 => "No other agent is running right now; others may start while you work.".to_string(),
         1 => "One other agent is running right now.".to_string(),

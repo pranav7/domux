@@ -1,6 +1,6 @@
 //! The one focus target each client has, and the overlay it may have open.
 
-use crate::ids::{PaneId, ProjectId, TabId, WorkspaceId};
+use crate::ids::{AgentId, PaneId, ProjectId, TabId, WorkspaceId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +53,31 @@ impl RegionKind {
             self,
             RegionKind::SidebarProjects | RegionKind::SidebarAgents
         )
+    }
+}
+
+/// A row the Navigator's cursor can rest on: a workspace, or an agent running in one
+/// (decision record 0028).
+///
+/// The Navigator is one list of two kinds of row, so its cursor holds one key of two kinds.
+/// It is a type rather than the raw row key because the two ids are told apart by asking the
+/// model what they name, and a bare string would invite telling them apart by their prefix.
+///
+/// Adjacently tagged, for the reason `Focus` is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum RowTarget {
+    Workspace(WorkspaceId),
+    Agent(AgentId),
+}
+
+impl RowTarget {
+    /// The key the row carries, which is what `ListRow` matches the fill against.
+    pub fn as_str(&self) -> &str {
+        match self {
+            RowTarget::Workspace(w) => w.as_str(),
+            RowTarget::Agent(a) => a.as_str(),
+        }
     }
 }
 

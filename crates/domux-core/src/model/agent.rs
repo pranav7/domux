@@ -57,17 +57,15 @@ pub enum AgentState {
     Waiting,
     Compacting,
     Idle,
-    Exited,
     Unknown,
 }
 
 impl AgentState {
-    pub const ALL: [AgentState; 6] = [
+    pub const ALL: [AgentState; 5] = [
         AgentState::Working,
         AgentState::Waiting,
         AgentState::Compacting,
         AgentState::Idle,
-        AgentState::Exited,
         AgentState::Unknown,
     ];
 
@@ -77,58 +75,14 @@ impl AgentState {
             AgentState::Waiting => "waiting",
             AgentState::Compacting => "compacting",
             AgentState::Idle => "idle",
-            AgentState::Exited => "exited",
             AgentState::Unknown => "unknown",
         }
-    }
-
-    /// Every state but `exited`. One pane hosts at most one live agent.
-    pub fn is_live(&self) -> bool {
-        *self != AgentState::Exited
     }
 }
 
 impl fmt::Display for AgentState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
-    }
-}
-
-/// Which records a target may name, said by the verb that is about to act on one.
-///
-/// The addressing rule is one rule (`Model::resolve_agent_target`) and the verbs that use it
-/// do not agree about which records they can act on. `agent.focus` needs a pane to put the
-/// keys on, so it wants a live record. `agent.resume` and `agent.dismiss` each refuse a live
-/// one, so they want an exited record. `agent.get` reads a record and answers for either.
-/// M3 filtered the two workspace forms to live records, which left them unable to name anything
-/// the two exited-only verbs would accept. An agent id was answered whatever state it named,
-/// then and now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Liveness {
-    Live,
-    Exited,
-    Any,
-}
-
-impl Liveness {
-    /// Whether a record in this state is one the verb can act on.
-    pub fn accepts(self, state: AgentState) -> bool {
-        match self {
-            Liveness::Live => state.is_live(),
-            Liveness::Exited => !state.is_live(),
-            Liveness::Any => true,
-        }
-    }
-
-    /// The adjective a refusal carries, so "no live agent in main" and "2 exited agents are in
-    /// main" both say which records were looked at. The reader can see the rest of them in the
-    /// list, and a refusal that did not say would read as a contradiction of what is there.
-    pub fn adjective(self) -> &'static str {
-        match self {
-            Liveness::Live => "live ",
-            Liveness::Exited => "exited ",
-            Liveness::Any => "",
-        }
     }
 }
 
@@ -181,37 +135,37 @@ pub enum AgentSource {
     Restore,
 }
 
-/// The state machine of architecture spec section 3.3. Hook events on an `exited` record are
-/// ignored, except `SessionStart`, which is how a resumed session comes back (M3 plan
-/// assumption). `Observed` never downgrades a state a hook set; on `exited` it says a new
-/// process is there, and the Model turns that into a new record.
-pub fn transition(state: AgentState, event: AgentEvent) -> AgentState {
+/// The state machine of architecture spec section 3.3, as decision record 0028 leaves it.
+///
+/// `None` is the record ending, which is what `SessionEnd` and `ProcessGone` mean from every
+/// state: a session that is over has no row anywhere and nothing left to act on, so the Model
+/// removes the record rather than parking it in a state. Every state this answers is a live
+/// one.
+///
+/// `Observed` never downgrades a state a hook set. It is the observer saying a process is
+/// there, and `(s, Observed) => s` is the whole of what the observer may do to a state.
+pub fn transition(state: AgentState, event: AgentEvent) -> Option<AgentState> {
     use AgentEvent::*;
     use AgentState::*;
-    match (state, event) {
-        (Exited, Observed) => Unknown,
+    Some(match (state, event) {
         (s, Observed) => s,
         (_, SessionStart) => Idle,
-        (
-            Exited,
-            UserPromptSubmit | PreToolUse | PostToolUse | Notification | PreCompact | PostCompact
-            | Stop,
-        ) => Exited,
         (_, UserPromptSubmit | PreToolUse | PostToolUse | PostCompact) => Working,
         (_, Notification) => Waiting,
         (_, PreCompact) => Compacting,
         (_, Stop) => Idle,
-        (_, SessionEnd | ProcessGone) => Exited,
-    }
+        (_, SessionEnd | ProcessGone) => return None,
+    })
 }
 
-/// True when moving from `from` to `to` turns `unseen` on: an agent starts waiting, goes from
-/// working to idle, or exits (interface spec 6.5).
+/// True when moving from `from` to `to` turns `unseen` on: an agent starts waiting, or goes
+/// from working to idle (interface spec 6.5).
+///
+/// It had a third trigger, an exit, until decision record 0028 took the exited record away. A
+/// record that ends is not there to be noticed.
 pub fn attention(from: AgentState, to: AgentState) -> bool {
     use AgentState::*;
-    (to == Waiting && from != Waiting)
-        || (from == Working && to == Idle)
-        || (to == Exited && from != Exited)
+    (to == Waiting && from != Waiting) || (from == Working && to == Idle)
 }
 
 /// One AI coding session domux knows about (architecture spec 3.2 plus `name`, plus the
@@ -326,47 +280,88 @@ mod tests {
     /// Every (state, event) pair, in `AgentEvent::ALL` order per row:
     /// Observed, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification,
     /// PreCompact, PostCompact, Stop, SessionEnd, ProcessGone.
-    const TABLE: [(AgentState, [AgentState; 11]); 6] = [
+    ///
+    /// `None` is the record ending. A state is a row and an event is a column in every row, so
+    /// a new state adds a row here and a new event adds a column to all of them.
+    const TABLE: [(AgentState, [Option<AgentState>; 11]); 5] = [
         (
             Working,
             [
-                Working, Idle, Working, Working, Working, Waiting, Compacting, Working, Idle,
-                Exited, Exited,
+                Some(Working),
+                Some(Idle),
+                Some(Working),
+                Some(Working),
+                Some(Working),
+                Some(Waiting),
+                Some(Compacting),
+                Some(Working),
+                Some(Idle),
+                None,
+                None,
             ],
         ),
         (
             Waiting,
             [
-                Waiting, Idle, Working, Working, Working, Waiting, Compacting, Working, Idle,
-                Exited, Exited,
+                Some(Waiting),
+                Some(Idle),
+                Some(Working),
+                Some(Working),
+                Some(Working),
+                Some(Waiting),
+                Some(Compacting),
+                Some(Working),
+                Some(Idle),
+                None,
+                None,
             ],
         ),
         (
             Compacting,
             [
-                Compacting, Idle, Working, Working, Working, Waiting, Compacting, Working, Idle,
-                Exited, Exited,
+                Some(Compacting),
+                Some(Idle),
+                Some(Working),
+                Some(Working),
+                Some(Working),
+                Some(Waiting),
+                Some(Compacting),
+                Some(Working),
+                Some(Idle),
+                None,
+                None,
             ],
         ),
         (
             Idle,
             [
-                Idle, Idle, Working, Working, Working, Waiting, Compacting, Working, Idle, Exited,
-                Exited,
-            ],
-        ),
-        (
-            Exited,
-            [
-                Unknown, Idle, Exited, Exited, Exited, Exited, Exited, Exited, Exited, Exited,
-                Exited,
+                Some(Idle),
+                Some(Idle),
+                Some(Working),
+                Some(Working),
+                Some(Working),
+                Some(Waiting),
+                Some(Compacting),
+                Some(Working),
+                Some(Idle),
+                None,
+                None,
             ],
         ),
         (
             Unknown,
             [
-                Unknown, Idle, Working, Working, Working, Waiting, Compacting, Working, Idle,
-                Exited, Exited,
+                Some(Unknown),
+                Some(Idle),
+                Some(Working),
+                Some(Working),
+                Some(Working),
+                Some(Waiting),
+                Some(Compacting),
+                Some(Working),
+                Some(Idle),
+                None,
+                None,
             ],
         ),
     ];
@@ -374,7 +369,7 @@ mod tests {
     #[test]
     fn transition_matches_the_table_for_every_state_and_event_pair() {
         assert_eq!(AgentEvent::ALL.len(), 11);
-        assert_eq!(AgentState::ALL.len(), 6);
+        assert_eq!(AgentState::ALL.len(), 5);
         let mut checked = 0;
         for (state, expected) in TABLE {
             for (i, event) in AgentEvent::ALL.iter().enumerate() {
@@ -386,11 +381,22 @@ mod tests {
                 checked += 1;
             }
         }
-        assert_eq!(checked, 66, "every pair was checked");
+        assert_eq!(checked, 55, "every pair was checked");
+    }
+
+    /// The two events that end a record end it from every state there is, so no state can
+    /// survive its own session ending.
+    #[test]
+    fn a_session_ending_ends_the_record_from_every_state() {
+        for state in AgentState::ALL {
+            for event in [AgentEvent::SessionEnd, AgentEvent::ProcessGone] {
+                assert_eq!(transition(state, event), None, "({state:?}, {event:?})");
+            }
+        }
     }
 
     #[test]
-    fn attention_turns_on_at_start_waiting_working_to_idle_and_exit_only() {
+    fn attention_turns_on_at_start_waiting_and_working_to_idle_only() {
         let mut on = Vec::new();
         for from in AgentState::ALL {
             for to in AgentState::ALL {
@@ -403,9 +409,6 @@ mod tests {
         for from in AgentState::ALL {
             if from != Waiting {
                 expected.push((from, Waiting));
-            }
-            if from != Exited {
-                expected.push((from, Exited));
             }
         }
         on.sort_by_key(|(a, b)| (a.as_str(), b.as_str()));
@@ -433,7 +436,6 @@ mod tests {
                 format!("\"{}\"", s.as_str())
             );
         }
-        assert!(Working.is_live() && Unknown.is_live() && !Exited.is_live());
         assert!(SessionStart.is_hook() && !Observed.is_hook() && !ProcessGone.is_hook());
     }
 

@@ -19,6 +19,17 @@ use domux_server::testing::{row, Harness};
 use serde_json::json;
 use std::time::Duration;
 
+/// The sidebar's Agents box is the other surface `[navigator] enabled = false` keeps: with the
+/// Navigator on there is one box and the agents are nested under their workspaces in it
+/// (decision record 0028). Every test in this file is about the two-box sidebar.
+///
+/// It goes when the two boxes go, and this file goes with it.
+fn two_boxes() -> Config {
+    let mut config = Config::default();
+    config.navigator.enabled = false;
+    config
+}
+
 const CLAUDE_STARTS: &str = r#"{"hook_event_name":"SessionStart","session_id":"c1"}"#;
 const CLAUDE_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"c1"}"#;
 const CLAUDE_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#;
@@ -82,7 +93,7 @@ fn focus_of(h: &Harness) -> Focus {
 
 #[tokio::test]
 async fn the_sidebar_holds_the_agents_box_under_the_projects_box_with_one_row_between() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     let f = sidebar_frame(&mut h).await;
     let rows = screen_rows(&f);
@@ -132,7 +143,7 @@ async fn the_sidebar_holds_the_agents_box_under_the_projects_box_with_one_row_be
 /// that half the test would pass on a fixture that never had a tab or a recap to drop.
 #[tokio::test]
 async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     h.api("tab.rename", json!({"name": "pr1"})).await.unwrap();
     let pane = h.focused_pane(h.client.clone());
     let dir = tempfile::tempdir().unwrap();
@@ -151,11 +162,11 @@ async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("● claude"),
+            |f| f.contains("claude "),
             Duration::from_secs(2),
         )
         .await;
-    let line = row_with(&f, "● claude");
+    let line = row_with(&f, "claude ");
     assert!(
         row(&f, line + 1).contains("proj › main"),
         "line two is the place:\n{f}"
@@ -183,7 +194,7 @@ async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
             Duration::from_secs(2),
         )
         .await;
-    let line = row_with(&f, "● claude");
+    let line = row_with(&f, "claude ");
     assert!(
         row(&f, line - 1).contains("PROJ "),
         "the overlay heads the group with the project (MUX-21):\n{f}"
@@ -200,7 +211,7 @@ async fn the_sidebar_rows_are_two_lines_with_no_tab_and_no_recap() {
 
 #[tokio::test]
 async fn tab_and_c_j_and_c_k_cross_between_the_two_boxes() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     h.api("focus.region", json!({"region": "sidebar_projects"}))
         .await
@@ -231,7 +242,7 @@ async fn tab_and_c_j_and_c_k_cross_between_the_two_boxes() {
 /// swapped the boxes on every press would pass that one.
 #[tokio::test]
 async fn c_k_in_the_upper_box_and_c_j_in_the_lower_box_change_nothing() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     h.api("focus.region", json!({"region": "sidebar_projects"}))
         .await
@@ -262,7 +273,7 @@ async fn c_k_in_the_upper_box_and_c_j_in_the_lower_box_change_nothing() {
 /// accent" alone would pass on a frame that drew no Projects box at all.
 #[tokio::test]
 async fn only_the_focused_box_takes_the_accent() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     h.api("focus.region", json!({"region": "sidebar_agents"}))
         .await
@@ -297,7 +308,7 @@ async fn only_the_focused_box_takes_the_accent() {
 /// 12.29).
 #[tokio::test]
 async fn c_h_from_a_pane_enters_the_box_whose_rows_overlap_it_most() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     h.api("pane.split", json!({"dir": "down"})).await.unwrap();
     let low = h.focused_pane(h.client.clone());
@@ -357,11 +368,11 @@ async fn c_h_from_the_one_pane_of_an_unsplit_tab_enters_projects_on_the_tie() {
     // walks the whole range at the unit level, and these four carry the same claim through
     // the server, the keymap and the renderer.
     for rows in [24, 25, 30, 31] {
-        let mut h = Harness::start(Config::default(), 120, rows).await;
+        let mut h = Harness::start(two_boxes(), 120, rows).await;
         sidebar_with_an_agent(&mut h).await;
         let f = sidebar_frame(&mut h).await;
         assert!(
-            row_with(&f, "● claude") > row_with(&f, "┌ Agents"),
+            row_with(&f, "claude ") > row_with(&f, "┌ Agents"),
             "at {rows} rows the Agents box has a row, so the tie is between two boxes that \
              are both drawn:\n{f}"
         );
@@ -404,7 +415,7 @@ async fn c_h_from_the_one_pane_of_an_unsplit_tab_enters_projects_on_the_tie() {
 #[tokio::test]
 async fn hiding_the_sidebar_from_either_box_gives_the_keys_back_to_the_pane() {
     for region in ["sidebar_projects", "sidebar_agents"] {
-        let mut h = Harness::start(Config::default(), 120, 30).await;
+        let mut h = Harness::start(two_boxes(), 120, 30).await;
         sidebar_with_an_agent(&mut h).await;
         let pane = h.focused_pane(h.client.clone());
         h.api("focus.region", json!({ "region": region }))
@@ -441,7 +452,7 @@ async fn hiding_the_sidebar_from_either_box_gives_the_keys_back_to_the_pane() {
 /// the box says nothing is running and the hint row goes back to the sidebar's own keys.
 #[tokio::test]
 async fn the_hint_row_shows_the_cursor_rows_key_while_focus_is_in_the_agents_box() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     let pane = h.focused_pane(h.client.clone());
     sidebar_with_an_agent(&mut h).await;
     h.api("focus.region", json!({"region": "sidebar_agents"}))
@@ -467,34 +478,17 @@ async fn the_hint_row_shows_the_cursor_rows_key_while_focus_is_in_the_agents_box
             Duration::from_secs(2),
         )
         .await;
+    // `Nothing running` is the box's empty text, so waiting for it is the assertion that the
+    // row went. A bare `claude` check would match the pane box's own title in the same frame.
     assert!(
-        !f.contains("● claude"),
-        "the session ended, so the row went with it:\n{f}"
-    );
-    // The record is still there, in the surface that keeps it, with the key that resumes it.
-    assert_eq!(h.agents().await.len(), 1);
-    h.api("agents.open", json!({})).await.unwrap();
-    let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("● claude"),
-            Duration::from_secs(2),
-        )
-        .await;
-    let line = row_with(&f, "● claude");
-    assert!(
-        row(&f, line).contains("exited"),
-        "the row says it exited:\n{f}"
-    );
-    assert!(
-        row(&f, line).contains("resume"),
-        "and the overlay has the room to carry the key (interface spec 12.6):\n{f}"
+        h.agents().await.is_empty(),
+        "the session ended, so the record went with it (decision record 0028):\n{f}"
     );
 }
 
 #[tokio::test]
 async fn an_empty_agents_box_still_draws_its_border_and_says_why_it_is_empty() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     h.api("sidebar.show", json!({})).await.unwrap();
     let f = sidebar_frame(&mut h).await;
     let agents_top = row_with(&f, "┌ Agents");
@@ -525,7 +519,7 @@ async fn an_empty_agents_box_still_draws_its_border_and_says_why_it_is_empty() {
 /// for it would pass just as well with the cursor on a different agent.
 #[tokio::test]
 async fn entering_the_agents_box_puts_the_cursor_on_the_first_row() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     let first = h.agents().await[0].id.clone();
     assert_eq!(
@@ -573,7 +567,7 @@ async fn entering_the_agents_box_puts_the_cursor_on_the_first_row() {
 /// the same.
 #[tokio::test]
 async fn the_cursor_keys_measure_the_sidebars_agents_box_by_the_rows_it_draws() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     let dir = tempfile::tempdir().unwrap();
     for n in 0..4 {
         if n > 0 {
@@ -614,7 +608,7 @@ async fn the_cursor_keys_measure_the_sidebars_agents_box_by_the_rows_it_draws() 
         "the whole list fits the box, so the cursor never pushed it:\n{f}"
     );
     assert!(
-        row(&f, agents_top + 1).contains("● claude"),
+        row(&f, agents_top + 1).contains("claude "),
         "and the first agent is still the box's top row:\n{f}"
     );
 }
@@ -626,7 +620,7 @@ async fn the_cursor_keys_measure_the_sidebars_agents_box_by_the_rows_it_draws() 
 /// would refuse in a box whose own hint row offers `⏎ open`.
 #[tokio::test]
 async fn enter_in_the_sidebars_agents_box_switches_to_the_agents_pane() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     let first = h.focused_pane(h.client.clone());
     h.api("pane.split", json!({"dir": "right"})).await.unwrap();
     let second = h.focused_pane(h.client.clone());
@@ -649,49 +643,6 @@ async fn enter_in_the_sidebars_agents_box_switches_to_the_agents_pane() {
     );
 }
 
-/// An exited record has no row in the sidebar's box at all (MUX-22): the box on the screen all
-/// day is what is running, and the agents overlay is where a session that ended is resumed from.
-///
-/// Both halves in one fixture, because "the sidebar does not show this" passes on a frame with
-/// no records at all. The record is there, the overlay draws it, and the sidebar says nothing is
-/// running.
-#[tokio::test]
-async fn an_exited_record_has_a_row_in_the_overlay_and_none_in_the_sidebar() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
-    let first = h.focused_pane(h.client.clone());
-    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
-    let second = h.focused_pane(h.client.clone());
-    h.report(second.clone(), AgentKind::Claude, CLAUDE_STARTS)
-        .await;
-    h.report(second.clone(), AgentKind::Claude, CLAUDE_ENDS)
-        .await;
-    h.api("pane.focus", json!({"pane": first.to_string()}))
-        .await
-        .unwrap();
-    h.api("sidebar.show", json!({})).await.unwrap();
-    let f = sidebar_frame(&mut h).await;
-    assert_eq!(h.agents().await.len(), 1, "the record is there:\n{f}");
-    assert!(
-        f.contains("Nothing running. Start claude or"),
-        "and the sidebar's box says nothing is running:\n{f}"
-    );
-    assert!(!f.contains("● claude"), "with no row for it:\n{f}");
-
-    h.api("agents.open", json!({})).await.unwrap();
-    let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("● claude"),
-            Duration::from_secs(2),
-        )
-        .await;
-    assert!(
-        f.contains("exited"),
-        "the overlay draws the exited row, with the key that resumes it:\n{f}"
-    );
-    assert!(f.contains("resume"), "{f}");
-}
-
 /// A cursor left on a row the box is no longer showing starts again at the first row rather
 /// than naming a row that is not on the screen (principle 2).
 ///
@@ -704,7 +655,7 @@ async fn an_exited_record_has_a_row_in_the_overlay_and_none_in_the_sidebar() {
 /// harder half of the rule: the cursor names something that exists and is not drawn here.
 #[tokio::test]
 async fn a_cursor_left_on_a_row_the_box_dropped_starts_again_at_the_first_row() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     let first_pane = h.focused_pane(h.client.clone());
     h.api("pane.split", json!({"dir": "right"})).await.unwrap();
     let second_pane = h.focused_pane(h.client.clone());
@@ -765,7 +716,7 @@ async fn a_cursor_left_on_a_row_the_box_dropped_starts_again_at_the_first_row() 
 /// (`ClientView::focus_returning_from_overlay`).
 #[tokio::test]
 async fn help_over_the_agents_box_gives_the_keys_back_to_it() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     h.api("focus.region", json!({"region": "sidebar_agents"}))
         .await
@@ -795,7 +746,7 @@ async fn help_over_the_agents_box_gives_the_keys_back_to_it() {
 /// second box in it to cross to.
 #[tokio::test]
 async fn tab_in_a_one_box_overlay_changes_nothing() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     sidebar_with_an_agent(&mut h).await;
     h.api("agents.open", json!({})).await.unwrap();
     h.frame(h.client.clone()).await;
@@ -813,7 +764,7 @@ async fn tab_in_a_one_box_overlay_changes_nothing() {
 /// A region nothing on the screen marks is refused rather than entered (principle 2).
 #[tokio::test]
 async fn focus_region_refuses_the_agents_box_while_the_sidebar_is_hidden() {
-    let mut h = Harness::start(Config::default(), 120, 30).await;
+    let mut h = Harness::start(two_boxes(), 120, 30).await;
     let err = h
         .api("focus.region", json!({"region": "sidebar_agents"}))
         .await

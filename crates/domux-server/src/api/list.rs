@@ -10,19 +10,15 @@
 //! keys are on.
 
 use super::{ok, Ctx};
-use crate::agents::context::place_of;
 use crate::render::agents_box::{self, RowForm};
 use crate::render::list_box::{
     box_lines, content_width, filter_rows, scroll_to_show, text_area, ListRow, OVERLAY_PAD,
     SIDEBAR_PAD,
 };
 use crate::render::projects_box::{self, Extras};
-use domux_core::api::{
-    Ack, AgentResumeParams, AgentTargetParams, ApiError, ClientParams, Method, WorkspaceFocusParams,
-};
+use domux_core::api::{Ack, AgentTargetParams, ApiError, ClientParams, WorkspaceFocusParams};
 use domux_core::ids::{AgentId, ClientId, WorkspaceId};
-use domux_core::model::agent::AgentState;
-use domux_core::model::{Focus, Model, Overlay, RegionKind};
+use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
 use ratatui::layout::Rect;
 use serde_json::Value;
 
@@ -135,9 +131,10 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     if surface == Surface::SidebarAgents {
         // The sidebar's own Agents box: its rectangle, its narrower form. `render::sidebar`
         // splits the column the same way, so the cursor walks the rows on the screen.
-        let (_, area, _) = crate::render::sidebar::split_for(ctx.model, ctx.facts, view.size);
+        let (_, area, _) =
+            crate::render::sidebar::split_for(ctx.model, ctx.facts, view.size, false);
         let now = ctx.deps.clock.now();
-        let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
+        let agents = crate::core::agents_view(ctx.model, ctx.agents, now);
         let all = agents_box::rows(
             &agents,
             RowForm::Sidebar,
@@ -156,7 +153,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     if surface == Surface::AgentsOverlay {
         let width = crate::render::overlay::list_overlay_width(screen);
         let now = ctx.deps.clock.now();
-        let agents = crate::core::agents_view(ctx.model, ctx.agents, &ctx.config.keymap, now);
+        let agents = crate::core::agents_view(ctx.model, ctx.agents, now);
         let all = agents_box::rows(&agents, RowForm::Overlay, content_width(width, OVERLAY_PAD));
         // The renderer filters the built rows where `projects_box::rows` takes the filter
         // itself, so this arm filters here for the same reason: one list, filtered once, the
@@ -178,19 +175,32 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     // The fill is the cursor, and with no cursor it is the workspace this client is in
     // (domain model, section 3.3). `list.*` runs while a box has the keys, which is exactly
     // when both renderers use this same key, so there is one answer and not three.
-    let key = view
-        .projects_cursor
-        .as_ref()
-        .map(|w| w.as_str())
-        .unwrap_or(view.workspace.as_str());
+    let navigator = ctx.config.config.navigator.enabled;
+    let key = match navigator {
+        true => view.navigator_cursor.as_ref().map(|c| c.as_str()),
+        false => view.projects_cursor.as_ref().map(|w| w.as_str()),
+    }
+    .unwrap_or(view.workspace.as_str())
+    .to_string();
+    let key = Some(key.as_str());
+    // The agents the box nests under their workspaces, or none when the two boxes are on.
+    // `core::agents_view` is the same call the frame this cursor moves over makes, so a key
+    // cannot give an agent a different word from the one the reader is looking at.
+    let now = ctx.deps.clock.now();
+    let nested = navigator.then(|| crate::core::agents_view(ctx.model, ctx.agents, now));
+    let view = ctx
+        .model
+        .client(client)
+        .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
     let (rows, height) = if surface == Surface::Switcher {
         let width = crate::render::overlay::list_overlay_width(screen);
         let rows = projects_box::rows(
             ctx.model,
             ctx.facts,
             &view.filter,
-            Some(key),
+            key,
             Extras::switcher(content_width(width, OVERLAY_PAD)),
+            nested.as_ref(),
         );
         // The switcher's height follows its rows, the same two passes `switcher::draw` makes:
         // the width does not depend on the rows, and the row count then decides the height.
@@ -201,13 +211,15 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let area = crate::render::overlay::list_overlay_area(screen, box_lines(lines, OVERLAY_PAD));
         (rows, text_area(area, OVERLAY_PAD).height)
     } else {
-        let area = crate::render::sidebar::projects_area(ctx.model, ctx.facts, view.size);
+        let area =
+            crate::render::sidebar::projects_area(ctx.model, ctx.facts, view.size, navigator);
         let rows = projects_box::rows(
             ctx.model,
             ctx.facts,
             &view.filter,
-            Some(key),
+            key,
             Extras::compact(content_width(area.width, SIDEBAR_PAD)),
+            nested.as_ref(),
         );
         (rows, text_area(area, SIDEBAR_PAD).height)
     };
@@ -216,7 +228,10 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         at: rows.filled,
         rows: rows.rows,
         height,
-        scroll: view.projects_scroll,
+        scroll: match navigator {
+            true => view.navigator_scroll,
+            false => view.projects_scroll,
+        },
     })
 }
 
@@ -250,8 +265,15 @@ fn step(ctx: &mut Ctx, delta: isize) -> Result<Value, ApiError> {
     // agent, whichever list the box is showing.
     let key = projects_box::key_at(&v.rows, next);
     let scroll = scroll_to_show(&v.rows, Some(next), v.height, v.scroll);
+    // Which of the two the key names is a question for the model, not for the shape of the
+    // string: the Navigator's rows carry both kinds and an id's prefix is not a contract.
+    let target = key.as_deref().and_then(|k| row_target(ctx, k));
+    let navigator = ctx.config.config.navigator.enabled;
     if let Some(view) = ctx.model.client_mut(&client) {
-        if v.surface.is_projects() {
+        if navigator && v.surface.is_projects() {
+            view.navigator_cursor = target;
+            view.navigator_scroll = scroll;
+        } else if v.surface.is_projects() {
             view.projects_cursor = key.map(WorkspaceId);
             view.projects_scroll = scroll;
         } else {
@@ -261,6 +283,19 @@ fn step(ctx: &mut Ctx, delta: isize) -> Result<Value, ApiError> {
     }
     ctx.view_dirty = true;
     ok(Ack { ok: true })
+}
+
+/// What a row key names, asked of the model rather than read off the string.
+///
+/// The Navigator's rows carry a workspace id or an agent id, and telling them apart by their
+/// prefix would make `w_` and `a_` a contract that `Model::next_id` never promised.
+fn row_target(ctx: &Ctx, key: &str) -> Option<RowTarget> {
+    let workspace = WorkspaceId(key.to_string());
+    if ctx.model.workspace(&workspace).is_some() {
+        return Some(RowTarget::Workspace(workspace));
+    }
+    let agent = AgentId(key.to_string());
+    ctx.model.agent(&agent).map(|_| RowTarget::Agent(agent))
 }
 
 pub fn down(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
@@ -293,6 +328,19 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
             "no agent is under the cursor; move it with the list keys"
         }));
     };
+    // The Navigator's rows are of two kinds, so what Enter does is decided by what the key
+    // names rather than by which box it came from.
+    match row_target(ctx, &key) {
+        Some(RowTarget::Agent(agent)) => return activate_agent(ctx, &client, agent),
+        Some(RowTarget::Workspace(_)) => {}
+        // A row whose key names neither, which is a record or a workspace that went between
+        // the frame and the key. Refused rather than acted on (principle 4).
+        None => {
+            return Err(ApiError::not_found(
+                "that row is gone; move the cursor with the list keys",
+            ))
+        }
+    }
     if !v.surface.is_projects() {
         return activate_agent(ctx, &client, AgentId(key));
     }
@@ -309,61 +357,17 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     )
 }
 
-/// Enter on an agent row: switch to the agent, or resume it when its record has exited
-/// (interface spec 6.8).
+/// Enter on an agent row: switch to the agent.
 ///
-/// Two methods, and no third implementation of either.
+/// One method and no second implementation of it. Nothing here closes the overlay afterwards:
+/// the switch goes through `Model::select_tab`, which puts the client on the tab with no
+/// overlay open, so the reader lands in the pane and not behind a box. A switch that refuses
+/// leaves the overlay where it was, which is what a reader who pressed Enter on a record that
+/// has just gone should see.
 ///
-/// A live record is `agent.focus`, and nothing here closes the overlay afterwards: the switch
-/// goes through `Model::select_tab`, which puts the client on the tab with no overlay open, so
-/// the reader lands in the pane and not behind a box (plan assumption 28). A second close
-/// would be a line that never runs. A switch that refuses leaves the overlay where it was,
-/// which is what a reader who pressed Enter on a record that has just gone should see.
-///
-/// An exited record is `agent.resume`, reached through `dispatch` rather than by calling the
-/// handler, so the row reaches whatever `agent.resume` is with nothing to edit here in between.
-/// The overlay stays open on that path (plan assumption 28), because resume is not a navigation:
-/// the reader is still looking at the list, and the row they pressed on is still exited until the
-/// resumed session reports its first hook.
-///
-/// So the overlay's footer is where the result goes, and it is the one thing this adds to either
-/// method. Nothing else on the screen changes: a resume types a line into a pane the reader
-/// cannot see from here, and a refusal changes nothing at all, so without a line in the footer
-/// Enter on an exited row would look like a key that did nothing (principle 8). The pill is set
-/// here rather than in `agent::resume`, because a caller with a command line has its answer in
-/// the reply and does not need one written on somebody's screen; the same reason `input`'s name
-/// box sets the pill for `workspace.rename` rather than the handler doing it.
+/// It had a second arm, resume on an exited row, until decision record 0028 removed both the
+/// verb and the row.
 fn activate_agent(ctx: &mut Ctx, client: &ClientId, agent: AgentId) -> Result<Value, ApiError> {
-    let exited = ctx
-        .model
-        .agent(&agent)
-        .is_some_and(|a| a.state == AgentState::Exited);
-    if exited {
-        let done = super::dispatch(
-            Method::AgentResume(AgentResumeParams {
-                agent: Some(agent.to_string()),
-                client: Some(client.clone()),
-            }),
-            ctx,
-        );
-        match &done {
-            // The kind and the place are read back out of the record rather than out of the
-            // result, which carries the pane and the command: the footer says which agent came
-            // back and where it is, and a shell line is not that.
-            Ok(_) => {
-                let model: &Model = ctx.model;
-                // The record is there: `agent.resume` just read it, and nothing removes one.
-                if let Some(said) = model
-                    .agent(&agent)
-                    .map(|a| format!("Resumed {} in {}", a.kind, place_of(model, a)))
-                {
-                    ctx.set_pill(said, true);
-                }
-            }
-            Err(e) => ctx.set_pill(e.message.clone(), false),
-        }
-        return done;
-    }
     super::agent::focus(
         ctx,
         AgentTargetParams {

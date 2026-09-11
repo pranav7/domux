@@ -513,7 +513,53 @@ impl Harness {
     }
 
     /// One hook payload from `pane`, the way the agent report subcommand posts it.
+    /// One hook payload from `pane`, through the handler the report subcommand reaches.
+    ///
+    /// It opens the session first when the payload names one domux is not tracking, because a
+    /// hook from a session domux never saw the start of makes no record at all (decision
+    /// record 0028). A test that wants that rule reports a `SessionStart` of its own, or names
+    /// no session; every other test is about what happens once an agent is running.
     pub async fn report(
+        &mut self,
+        pane: PaneId,
+        kind: AgentKind,
+        payload: &str,
+    ) -> AgentReportResult {
+        let payload = serde_json::from_str::<Value>(payload)
+            .unwrap_or_else(|_| Value::String(payload.into()));
+        let event = payload.get("hook_event_name").and_then(Value::as_str);
+        let session = payload.get("session_id").and_then(Value::as_str);
+        if let (Some(event), Some(session)) = (event, session) {
+            let known = self
+                .model()
+                .agents
+                .iter()
+                .any(|a| a.session_id.as_deref() == Some(session));
+            if event != "SessionStart" && !known {
+                let open = serde_json::json!({
+                    "hook_event_name": "SessionStart", "session_id": session,
+                });
+                self.api(
+                    "agent.report",
+                    serde_json::json!({"pane": pane, "kind": kind, "payload": open}),
+                )
+                .await
+                .expect("agent.report");
+            }
+        }
+        let value = self
+            .api(
+                "agent.report",
+                serde_json::json!({"pane": pane, "kind": kind, "payload": payload}),
+            )
+            .await
+            .expect("agent.report");
+        serde_json::from_value(value).expect("AgentReportResult")
+    }
+
+    /// One hook payload with nothing added, for the two tests that are about a hook landing on
+    /// no record at all.
+    pub async fn report_raw(
         &mut self,
         pane: PaneId,
         kind: AgentKind,
@@ -1072,6 +1118,8 @@ pub fn client_view() -> ClientView {
         projects_cursor: None,
         projects_scroll: 0,
         agents_cursor: None,
+        navigator_cursor: None,
+        navigator_scroll: 0,
         agents_scroll: 0,
         filtering: false,
         input: TextInput::new(""),

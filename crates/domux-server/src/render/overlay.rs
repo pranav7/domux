@@ -553,6 +553,7 @@ mod tests {
             notes: &[],
             stay_awake: false,
             toast: None,
+            navigator: false,
         };
         footer(&input, hints, area, buf);
     }

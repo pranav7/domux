@@ -198,13 +198,13 @@ pub enum Event {
         agent: AgentId,
         recap: Option<String>,
     },
+    /// A session ended and its record went with it (decision record 0028). The pane it was
+    /// on travels here because the record no longer holds one to look up.
     #[serde(rename = "agent.exited")]
     AgentExited {
         agent: AgentId,
         pane: Option<PaneId>,
     },
-    #[serde(rename = "agent.dismissed")]
-    AgentDismissed { agent: AgentId },
     #[serde(rename = "stay_awake.changed")]
     StayAwakeChanged { on: bool },
     #[serde(rename = "agent.unseen_changed")]
@@ -260,7 +260,6 @@ event_names! {
     Event::AgentStateChanged { .. } => "agent.state_changed",
     Event::AgentRecapChanged { .. } => "agent.recap_changed",
     Event::AgentExited { .. } => "agent.exited",
-    Event::AgentDismissed { .. } => "agent.dismissed",
     Event::AgentUnseenChanged { .. } => "agent.unseen_changed",
     Event::StayAwakeChanged { .. } => "stay_awake.changed",
 }
@@ -794,7 +793,6 @@ methods! {
     WorkspaceRename = "workspace.rename": WorkspaceRenameParams => Ack,
     WorkspaceClearName = "workspace.clear_name": WorkspaceTargetParams => Ack,
     WorkspaceFocus = "workspace.focus": WorkspaceFocusParams => WorkspaceInfo,
-    WorkspaceResume = "workspace.resume": WorkspaceTargetParams => WorkspaceResumeResult,
     SwitcherOpen = "switcher.open": ClientParams => Ack,
     SwitcherClose = "switcher.close": ClientParams => Ack,
     SidebarToggle = "sidebar.toggle": ClientParams => SidebarResult,
@@ -810,8 +808,6 @@ methods! {
     AgentSelf = "agent.self": AgentSelfParams => AgentInfo,
     AgentReport = "agent.report": AgentReportParams => AgentReportResult,
     AgentFocus = "agent.focus": AgentTargetParams => FocusResult,
-    AgentDismiss = "agent.dismiss": AgentTargetParams => Ack,
-    AgentResume = "agent.resume": AgentResumeParams => AgentResumeResult,
     AgentSend = "agent.send": AgentSendParams => Ack,
     AgentRead = "agent.read": AgentReadParams => Ack,
     AgentWait = "agent.wait": AgentWaitParams => Ack,
@@ -1072,10 +1068,8 @@ impl Params for AgentListParams {}
 /// `workspace/tab` (`Model::resolve_agent_target`). Omitted means the agent in the calling
 /// pane, when the caller is in one.
 ///
-/// The two workspace forms answer the records the calling method can act on and no others,
-/// which is not the same set for all of them: `agent.focus` wants a live record, `agent.resume`
-/// and `agent.dismiss` want an exited one, and `agent.get` takes either. Each handler passes
-/// its own `Liveness`.
+/// Every record is a running session, so the workspace forms answer any of them and every
+/// method takes the same set (decision record 0028).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTargetParams {
@@ -1087,10 +1081,10 @@ pub struct AgentTargetParams {
     pub client: Option<ClientId>,
 }
 // One optional positional target, as M2's `WorkspaceTargetParams` takes one: a key bound to
-// `agent.dismiss a_5e21` names the record it means. A key bound with no argument names none:
+// `agent.focus a_5e21` names the record it means. A key bound with no argument names none:
 // `pane` is set to `None` here, and only a caller that fills it over the wire takes the pane
 // route, so `api::agent::resolve` falls through to the cursor row of the calling client's
-// Agents box, which is the row the reader is looking at.
+// box, which is the row the reader is looking at.
 impl Params for AgentTargetParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
         Ok(AgentTargetParams {
@@ -1135,24 +1129,6 @@ where
 {
     let name = String::deserialize(deserializer)?;
     name.parse().map_err(serde::de::Error::custom)
-}
-
-/// `agent.resume`. `workspace.resume` takes M2's `WorkspaceTargetParams`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AgentResumeParams {
-    #[serde(default)]
-    pub agent: Option<String>,
-    #[serde(default)]
-    pub client: Option<ClientId>,
-}
-impl Params for AgentResumeParams {
-    fn from_args(args: &[String]) -> Result<Self, ApiError> {
-        Ok(AgentResumeParams {
-            agent: args.first().cloned(),
-            client: None,
-        })
-    }
 }
 
 /// `agent.send`, `agent.read` and `agent.wait` are M4. The params are declared now so the
@@ -1224,14 +1200,6 @@ pub struct AgentReportResult {
     pub context: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct AgentResumeResult {
-    pub agent: AgentId,
-    pub pane: PaneId,
-    /// The line typed into the shell, so the caller sees the command (architecture spec 5).
-    pub command: String,
-}
-
 /// What stay awake did: whether the machine is now being held awake, and anything the reader
 /// should know that did not stop it. An unsupported platform answers `on: false` with a note
 /// rather than an error, so a startup script that turns it on runs everywhere.
@@ -1240,13 +1208,6 @@ pub struct StayAwakeResult {
     pub on: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct WorkspaceResumeResult {
-    pub resumed: Vec<AgentResumeResult>,
-    /// Records that could not be resumed, with the reason, one per line (principle 9).
-    pub skipped: Vec<String>,
 }
 
 #[cfg(test)]
@@ -1294,7 +1255,6 @@ mod tests {
         "workspace.rename",
         "workspace.clear_name",
         "workspace.focus",
-        "workspace.resume",
         "switcher.open",
         "switcher.close",
         "sidebar.toggle",
@@ -1309,8 +1269,6 @@ mod tests {
         "agent.self",
         "agent.report",
         "agent.focus",
-        "agent.dismiss",
-        "agent.resume",
         "agent.send",
         "agent.read",
         "agent.wait",
@@ -1490,7 +1448,6 @@ mod tests {
                 serde_json::json!({"workspace": "w"}),
             ),
             ("workspace.focus", serde_json::json!({"workspace": "w"})),
-            ("workspace.resume", serde_json::json!({"workspace": "w"})),
             ("switcher.open", serde_json::json!({})),
             ("switcher.close", serde_json::json!({})),
             ("sidebar.toggle", serde_json::json!({})),
@@ -1508,8 +1465,6 @@ mod tests {
                 serde_json::json!({"kind": "claude", "payload": {}}),
             ),
             ("agent.focus", serde_json::json!({})),
-            ("agent.dismiss", serde_json::json!({})),
-            ("agent.resume", serde_json::json!({})),
             ("agent.send", serde_json::json!({"text": "hello"})),
             ("agent.read", serde_json::json!({})),
             ("agent.wait", serde_json::json!({})),
@@ -1574,7 +1529,6 @@ mod tests {
                 serde_json::json!({"workspace": "w"}),
             ),
             ("workspace.focus", serde_json::json!({"workspace": "w"})),
-            ("workspace.resume", serde_json::json!({"workspace": "w"})),
             ("switcher.open", serde_json::json!({})),
             ("switcher.close", serde_json::json!({})),
             ("sidebar.toggle", serde_json::json!({})),
@@ -1600,7 +1554,7 @@ mod tests {
         // `from_action` goes through `Params::from_args`, which every params type in the table
         // has to implement for the macro to compile at all. This pins the arguments each one
         // takes from a key.
-        let cases: [(&str, &[&str]); 21] = [
+        let cases: [(&str, &[&str]); 20] = [
             ("project.list", &[]),
             ("project.add", &["/x"]),
             ("project.remove", &["audrey-app"]),
@@ -1614,7 +1568,6 @@ mod tests {
             ("workspace.rename", &[]),
             ("workspace.clear_name", &[]),
             ("workspace.focus", &["workspace-1"]),
-            ("workspace.resume", &[]),
             ("switcher.open", &[]),
             ("switcher.close", &[]),
             ("sidebar.toggle", &[]),
@@ -1867,9 +1820,6 @@ mod tests {
             Event::AgentExited {
                 agent: AgentId("a_5e21".into()),
                 pane: Some(PaneId("p_1234".into())),
-            },
-            Event::AgentDismissed {
-                agent: AgentId("a_5e21".into()),
             },
             Event::AgentUnseenChanged {
                 agent: AgentId("a_5e21".into()),
@@ -2129,14 +2079,11 @@ mod tests {
             "agent.self",
             "agent.report",
             "agent.focus",
-            "agent.dismiss",
-            "agent.resume",
             "agent.send",
             "agent.read",
             "agent.wait",
             "agents.open",
             "agents.close",
-            "workspace.resume",
             "focus.next_region",
         ] {
             assert!(
@@ -2157,17 +2104,16 @@ mod tests {
         assert_eq!(m.name(), "focus.next_region");
     }
 
-    /// The four M3 verbs that act on one record take their target the way M2's
-    /// `workspace.clear` takes its own: one optional positional, so a key can name the record
-    /// it means and a key with no argument means the record in this pane.
+    /// The two verbs that act on one record take their target the way M2's `workspace.clear`
+    /// takes its own: one optional positional, so a key can name the record it means and a key
+    /// with no argument means the record in this pane.
     #[test]
     fn the_agent_verbs_take_their_target_as_one_optional_positional_argument() {
-        for name in ["agent.get", "agent.focus", "agent.dismiss", "agent.resume"] {
+        for name in ["agent.get", "agent.focus"] {
             let named = crate::keymap::Action::parse(&format!("{name} a_5e21")).unwrap();
             let bare = crate::keymap::Action::parse(name).unwrap();
             let agent = |a: &crate::keymap::Action| match Method::from_action(a).unwrap() {
-                Method::AgentGet(p) | Method::AgentFocus(p) | Method::AgentDismiss(p) => p.agent,
-                Method::AgentResume(p) => p.agent,
+                Method::AgentGet(p) | Method::AgentFocus(p) => p.agent,
                 other => panic!("{other:?}"),
             };
             assert_eq!(agent(&named).as_deref(), Some("a_5e21"), "{name}");
@@ -2212,7 +2158,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_lists_the_six_agent_events_with_their_fields() {
+    fn the_schema_lists_the_five_agent_events_with_their_fields() {
         let s = schema();
         let variants = s["events"]["oneOf"].as_array().unwrap();
         for (name, fields) in [
@@ -2220,7 +2166,6 @@ mod tests {
             ("agent.state_changed", &["agent", "from", "to"]),
             ("agent.recap_changed", &["agent", "recap"]),
             ("agent.exited", &["agent", "pane"]),
-            ("agent.dismissed", &["agent"]),
             ("agent.unseen_changed", &["agent", "unseen"]),
         ] {
             let variant = variants
@@ -2281,25 +2226,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&report).unwrap(),
             r#"{"agent":"a_5e21","state":"idle","context":null}"#
-        );
-
-        let resumed = AgentResumeResult {
-            agent: AgentId("a_5e21".into()),
-            pane: PaneId("p_1234".into()),
-            command: "claude --resume s1".into(),
-        };
-        assert_eq!(
-            serde_json::to_string(&resumed).unwrap(),
-            r#"{"agent":"a_5e21","pane":"p_1234","command":"claude --resume s1"}"#
-        );
-
-        let workspace = WorkspaceResumeResult {
-            resumed: vec![resumed],
-            skipped: vec!["codex in tab 2 has no session to resume".into()],
-        };
-        assert_eq!(
-            serde_json::to_string(&workspace).unwrap(),
-            r#"{"resumed":[{"agent":"a_5e21","pane":"p_1234","command":"claude --resume s1"}],"skipped":["codex in tab 2 has no session to resume"]}"#
         );
     }
 

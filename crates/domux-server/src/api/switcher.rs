@@ -2,7 +2,7 @@
 
 use super::{ok, Ctx};
 use domux_core::api::{Ack, ApiError, ClientParams};
-use domux_core::model::{Focus, Overlay, RegionKind};
+use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
 use serde_json::Value;
 
 /// Opens the switcher with the keys in its box and the cursor on the workspace this client
@@ -22,6 +22,7 @@ use serde_json::Value;
 /// clears `filtering` on the way out.
 pub fn open(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     let client = ctx.view()?;
+    let navigator = ctx.config.config.navigator.enabled;
     let workspace = ctx.model.client(&client).map(|c| c.workspace.clone());
     let view = ctx
         .model
@@ -31,7 +32,15 @@ pub fn open(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
         return ok(Ack { ok: true });
     }
     view.push_overlay(Overlay::Switcher);
-    view.projects_cursor = workspace;
+    // The same row either way: the workspace this client is in. The Navigator keeps its own
+    // cursor because its rows are of two kinds (decision record 0028).
+    match navigator {
+        true => {
+            view.navigator_cursor = workspace.map(RowTarget::Workspace);
+            view.navigator_scroll = 0;
+        }
+        false => view.projects_cursor = workspace,
+    }
     view.filter.clear();
     view.filtering = false;
     view.focus = Focus::Region(RegionKind::Switcher);
