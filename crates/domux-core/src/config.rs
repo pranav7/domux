@@ -59,9 +59,12 @@ pub struct WorktreesConfig {
 pub struct NavigatorConfig {
     /// One list of projects, workspaces and agents, in the sidebar and in the switcher.
     ///
-    /// `false` restores the separate Projects and Agents boxes and the agents overlay. It is
-    /// here so the author can live with the one list before the two boxes are deleted, and
-    /// decision record 0030 records that deletion as already decided.
+    /// `false` restores the separate Projects and Agents boxes. It is here so the author can
+    /// live with the one list before the two boxes are deleted, and decision record 0030
+    /// records that deletion as already decided.
+    ///
+    /// The agents overlay is not part of what it turns off: `leader a` opens it either way
+    /// (decision record 0033).
     pub enabled: bool,
 }
 

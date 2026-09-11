@@ -10,7 +10,7 @@ mod support;
 use domux_core::config::Config;
 use domux_core::ids::PaneId;
 use domux_core::model::agent::AgentKind;
-use domux_core::model::{Focus, RowTarget};
+use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
 use domux_server::testing::{row, Harness};
 use serde_json::json;
 use std::time::Duration;
@@ -173,34 +173,24 @@ async fn the_cursor_walks_workspaces_and_agents_and_enter_acts_on_either() {
     );
 }
 
-/// `leader a` does nothing at all: the agents overlay is gone and every record is in the one
-/// list `leader s` opens.
+/// `leader a` opens the agents overlay with the Navigator on: the agents alone, grouped under
+/// a header per project, over the one list rather than in place of it (decision record 0033).
 #[tokio::test]
-async fn leader_a_does_nothing_and_says_nothing() {
+async fn leader_a_opens_the_agents_overlay_over_the_navigator() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     one_agent(&mut h).await;
-    let rows_of = |f: &str| {
-        screen_rows(f)
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-    };
-    // The rows rather than the whole frame: the working glyph turns on its own timer, so two
-    // frames a moment apart differ in that one cell whatever the key did.
-    let before = rows_of(&h.frame(h.client.clone()).await);
-    h.api("agents.open", json!({}))
-        .await
-        .expect("it answers ok");
-    let after = rows_of(&h.frame(h.client.clone()).await);
-    assert_eq!(before.len(), after.len());
-    assert!(
-        !after.iter().any(|l| l.contains("┌ Agents")),
-        "no overlay was drawn: {after:?}"
-    );
-    assert!(
-        h.model().client(&h.client).unwrap().overlay.is_none(),
-        "and none was opened"
-    );
+    h.api("agents.open", json!({})).await.expect("it opens");
+    let f = h
+        .wait_for(h.client.clone(), |f| f.contains("┌ Agents"), WAIT)
+        .await;
+    // The overlay's grouping: the project is a header over the group, where the Navigator
+    // makes it one of the rows above the agent.
+    let header = row_with(&f, "PROJ");
+    let agent = row_with(&f, "claude");
+    assert!(header < agent, "the project heads the group:\n{f}");
+    let view = h.model().client(&h.client).unwrap().clone();
+    assert_eq!(view.overlay, Some(Overlay::Agents));
+    assert_eq!(view.focus, Focus::Region(RegionKind::AgentsOverlay));
 }
 
 /// The switcher has the width for what the sidebar drops: the tab, and the recap.

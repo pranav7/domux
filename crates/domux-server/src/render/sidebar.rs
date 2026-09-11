@@ -338,11 +338,8 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
 pub fn hint_for(input: &RenderInput) -> Vec<Piece> {
     match focused_box(input.view) {
         // Either box: Enter opens the row under the cursor, and `list.activate` is the action
-        // both name. The Agents box said `resume` on an exited row until MUX-22 took the
-        // exited records off this surface; there is no row here now that Enter resumes, and a
-        // hint row is a description of the box in front of the reader (principle 2). The
-        // agents overlay's own exited row still carries the word, drawn from
-        // `agents_box::RESUME_WORD`.
+        // both name. The Agents box said `resume` on an exited row until decision record 0030
+        // took the verb and the row away; every row here is a live session and Enter opens it.
         Some(_) => pieces(&[
             (input.keymap.list_key_for("list.activate"), "open"),
             (input.keymap.list_key_for("help"), "more"),

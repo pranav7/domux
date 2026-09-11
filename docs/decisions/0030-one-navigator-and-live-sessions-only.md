@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-10
 **Status:** Accepted. Replaces decision 0018, replaces the exited half of decision 0026, and
-amends interface spec 5, 6 and 10.
+amends interface spec 5, 6 and 10. **Amended by decision record 0033**, which gives `leader a`
+back: the agents overlay opens in either layout, so the key the last section calls temporary
+now retires the sidebar's two boxes alone.
 **Decision:** The Projects box and the Agents box become one box, `Navigator`, in the sidebar
 and in the switcher. An agent is a row under the workspace it runs in. A record ends when its
 session ends, so resume, dismiss and every exited row are removed. A dot is drawn only while an
@@ -108,14 +110,15 @@ looking is still the answer, and the row disappearing is a second way to notice.
 ```toml
 [navigator]
 # One list of projects, workspaces and agents, in the sidebar and in the switcher.
-# false restores the separate Projects and Agents boxes and the agents overlay.
+# false restores the separate Projects and Agents boxes.
 enabled = true
 ```
 
-Off, the sidebar draws the two boxes and `leader a` opens the agents overlay. On, the sidebar
-draws one box and `leader a` does nothing at all: silently, because a key that only ever refuses
-is a key with nothing to say, and the reader who presses it is about to find the same list in
-front of them.
+Off, the sidebar draws the two boxes. On, it draws one. **Decision record 0033 has since taken
+`leader a` out of what this key answers for**: the agents overlay opens in either layout,
+because the agents on their own in attention order is a question the Navigator does not answer.
+What the key still turns off is the sidebar's two boxes, and what its deletion still takes is
+the Projects box, the sidebar's Agents box and `RowForm::Sidebar`.
 
 Two layouts is what principle 0 argues against, and the key exists anyway so that the author can
 live with the new one before the old one is deleted. It is written down here as temporary so

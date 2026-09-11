@@ -36,7 +36,8 @@ pub const NEST: &str = "⌞ ";
 pub enum RowForm {
     /// The sidebar's Agents box: two lines, no tab, no recap. Retires with `[navigator]`.
     Sidebar,
-    /// The agents overlay: three lines, recap included. Retires with `[navigator]`.
+    /// The agents overlay: three lines, recap included. It outlives `[navigator]`, because
+    /// `leader a` opens it in both layouts (decision record 0033).
     Overlay,
     /// One line under its workspace in the Navigator's sidebar: the arrow, the name, the
     /// activity. The rows above it say the project and the workspace (decision record 0030).
