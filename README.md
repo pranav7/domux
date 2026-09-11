@@ -1,3 +1,7 @@
+<p align="left">
+  <img width="100" height="100" alt="image" src="https://github.com/user-attachments/assets/5cafbde2-865b-4f5e-889f-d10d9963a472" />
+</p>
+
 # domux
 
 **terminal runtime for scaling coding agents.**
