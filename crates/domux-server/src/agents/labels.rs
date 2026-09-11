@@ -203,18 +203,27 @@ pub const GLYPH_FRAMES: [&str; 13] = [
     "·", "✦", "✶", "✳", "✢", "✻", "✽", "✻", "✢", "✳", "✶", "✦", "·",
 ];
 
-/// One frame every 80 ms (V1's `pickerSpinnerInterval`).
+/// One animation tick every 80 ms (V1's `pickerSpinnerInterval`). The band along a working
+/// word moves on every one of them and the glyph turns on every second one.
 ///
 /// It has a floor that is not V1's. While anything works the core pushes a frame every
 /// interval, and `testing::Harness::pump` returns only after 50 ms with no message, so an
 /// interval at or below that window would leave every `frame()` call during work reading
 /// frames until the test timed out. Lowering this number means raising that one.
-pub const GLYPH_INTERVAL: Duration = Duration::from_millis(80);
+pub const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
+
+/// Ticks per frame of the glyph, so it turns every 160 ms while the band along the working
+/// word moves every 80 ms (V1's `renderAIBadges`, "icon advances every 2 ticks").
+///
+/// Two animations on one counter rather than two tickers. The band has to move on every tick
+/// to glide, and a glyph that turned that fast flickered under it (MUX-26).
+pub const GLYPH_TICKS_PER_FRAME: u64 = 2;
 
 /// The frame for an animation tick counter. The counter is the core's, so every client on
 /// the same server draws the same frame.
 pub fn frame_at(tick: u64) -> &'static str {
-    GLYPH_FRAMES[(tick % GLYPH_FRAMES.len() as u64) as usize]
+    let frame = tick / GLYPH_TICKS_PER_FRAME;
+    GLYPH_FRAMES[(frame % GLYPH_FRAMES.len() as u64) as usize]
 }
 
 /// Which word each working agent has. The core owns one of these.
@@ -288,7 +297,7 @@ mod tests {
                 "·", "✦", "✶", "✳", "✢", "✻", "✽", "✻", "✢", "✳", "✶", "✦", "·"
             ]
         );
-        assert_eq!(GLYPH_INTERVAL, std::time::Duration::from_millis(80));
+        assert_eq!(ANIMATION_INTERVAL, std::time::Duration::from_millis(80));
     }
 
     #[test]
@@ -328,8 +337,25 @@ mod tests {
     #[test]
     fn the_glyph_cycles_through_thirteen_frames_in_order() {
         assert_eq!(frame_at(0), "·");
-        assert_eq!(frame_at(2), "✶");
-        assert_eq!(frame_at(13), "·");
-        assert_eq!(frame_at(15), "✶");
+        assert_eq!(frame_at(4), "✶");
+        assert_eq!(frame_at(26), "·");
+        assert_eq!(frame_at(30), "✶");
+    }
+
+    /// Each frame is held for two ticks, so the glyph turns at half the rate the band does.
+    #[test]
+    fn the_glyph_holds_each_frame_for_two_ticks() {
+        for tick in 0..GLYPH_FRAMES.len() as u64 * GLYPH_TICKS_PER_FRAME * 2 {
+            assert_eq!(
+                frame_at(tick),
+                frame_at(tick - tick % GLYPH_TICKS_PER_FRAME),
+                "tick {tick} shows the frame its pair started on"
+            );
+        }
+        assert_ne!(
+            frame_at(0),
+            frame_at(GLYPH_TICKS_PER_FRAME),
+            "and the next pair shows the next frame"
+        );
     }
 }

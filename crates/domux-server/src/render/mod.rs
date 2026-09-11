@@ -10,6 +10,7 @@ pub mod name_box;
 pub mod overlay;
 pub mod pane_box;
 pub mod projects_box;
+pub mod shimmer;
 pub mod sidebar;
 pub mod switcher;
 pub mod tab_row;

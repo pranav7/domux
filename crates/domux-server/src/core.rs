@@ -65,9 +65,10 @@ pub enum CoreMsg {
     },
     /// Once a second: the process inspector, the clock, exited-pane cleanup.
     Tick,
-    /// One frame of the working glyph, every `agents::labels::GLYPH_INTERVAL`. The ticker
-    /// owns nothing and never stops; the core counts, and ignores the message while nothing
-    /// is working (M3 plan assumption 35).
+    /// One tick of a working row's animation, every `agents::labels::ANIMATION_INTERVAL`: the
+    /// band moves along the word on each of them and the glyph turns on every second one. The
+    /// ticker owns nothing and never stops; the core counts, and ignores the message while
+    /// nothing is working (M3 plan assumption 35).
     AnimationTick,
     /// A job that shelled out has finished. The model changes here, on the core task, and
     /// the caller waiting on `reply` is answered (decision record 0006).
@@ -2180,7 +2181,7 @@ impl Core {
     /// the records, twelve and a half times a second, and it cannot fail.
     fn animation_tick(&mut self) {
         if crate::agents::observer::any_working(&self.model) {
-            self.agents.glyph_tick = self.agents.glyph_tick.wrapping_add(1);
+            self.agents.tick = self.agents.tick.wrapping_add(1);
             self.view_dirty = true;
         }
     }
@@ -3044,7 +3045,6 @@ pub(crate) fn agents_view(
     now: DateTime<Local>,
 ) -> crate::render::agents_box::AgentsView {
     use crate::render::agents_box::{AgentEntry, AgentsView};
-    let glyph = crate::agents::labels::frame_at(state.glyph_tick);
     let sorted = model.sorted_agents();
     let mut entries = Vec::with_capacity(sorted.len());
     for a in sorted {
@@ -3073,7 +3073,7 @@ pub(crate) fn agents_view(
     }
     AgentsView {
         agents: entries,
-        glyph,
+        tick: state.tick,
         now,
     }
 }
@@ -5354,24 +5354,32 @@ mod tests {
         (core, pane)
     }
 
-    /// A frame of animation turns the glyph and asks for the frame that draws it. The
-    /// assertion is on the glyph the view carries rather than on the counter, so a count
-    /// that no view reads would fail here.
+    /// A tick of animation asks for the frame that draws it, and the glyph turns on every
+    /// second one (MUX-26). The assertions read through the view rather than the counter, so
+    /// a count no view reads would fail here.
     #[test]
-    fn an_animation_tick_turns_the_glyph_while_an_agent_works() {
+    fn an_animation_tick_moves_the_view_and_every_second_one_turns_the_glyph() {
+        use crate::agents::labels::{frame_at, GLYPH_TICKS_PER_FRAME};
         let dir = tempfile::tempdir().unwrap();
         let (mut core, pane) = core_with_a_pane(dir.path());
         hook(&mut core, &pane, "UserPromptSubmit");
-        let before = drawn(&mut core).glyph;
+        let before = frame_at(drawn(&mut core).tick);
         core.view_dirty = false;
 
         core.handle(CoreMsg::AnimationTick);
 
         assert!(
             core.view_dirty,
-            "the frame the new glyph is drawn in is asked for"
+            "the frame the band's new place is drawn in is asked for"
         );
-        assert_ne!(drawn(&mut core).glyph, before, "and the glyph moved on");
+        for _ in 1..GLYPH_TICKS_PER_FRAME {
+            core.handle(CoreMsg::AnimationTick);
+        }
+        assert_ne!(
+            frame_at(drawn(&mut core).tick),
+            before,
+            "and the glyph moved on after {GLYPH_TICKS_PER_FRAME} of them"
+        );
     }
 
     /// And it costs a server with nothing working nothing at all. The ticker never starts and
@@ -5392,16 +5400,13 @@ mod tests {
             core.handle(CoreMsg::AnimationTick);
         }
 
-        assert_eq!(core.agents.glyph_tick, 0, "an idle record turns nothing");
+        assert_eq!(core.agents.tick, 0, "an idle record turns nothing");
         assert!(!core.view_dirty, "and asks for no frame");
 
         hook(&mut core, &pane, "UserPromptSubmit");
         core.view_dirty = false;
         core.handle(CoreMsg::AnimationTick);
-        assert_eq!(
-            core.agents.glyph_tick, 1,
-            "the same core turns once it works"
-        );
+        assert_eq!(core.agents.tick, 1, "the same core turns once it works");
         assert!(core.view_dirty);
     }
 
@@ -5420,10 +5425,7 @@ mod tests {
         core.view_dirty = false;
         core.handle(CoreMsg::AnimationTick);
 
-        assert_eq!(
-            core.agents.glyph_tick, 1,
-            "compacting keeps the glyph turning"
-        );
+        assert_eq!(core.agents.tick, 1, "compacting keeps the glyph turning");
         assert!(core.view_dirty);
         assert_eq!(
             drawn(&mut core).agents[0].word,

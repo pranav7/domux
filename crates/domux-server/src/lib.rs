@@ -279,7 +279,7 @@ impl Server {
         // behind resumes the animation instead of replaying the frames it missed.
         let animation_tx = core_tx.clone();
         let animation = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(crate::agents::labels::GLYPH_INTERVAL);
+            let mut interval = tokio::time::interval(crate::agents::labels::ANIMATION_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;

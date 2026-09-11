@@ -28,9 +28,9 @@ pub const RECAP_LINES: usize = 2;
 /// Between the name and the activity on line 1 (interface spec 6.2).
 const GAP: &str = "  ";
 
-/// The arrow an agent row wears under its workspace in the Navigator. Two cells, like the
+/// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
 /// hollow glyph on an untouched slot, so every name in the box starts in one column.
-pub const NEST: &str = "↳ ";
+pub const NEST: &str = "⌞ ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
@@ -85,8 +85,10 @@ pub struct AgentEntry {
 pub struct AgentsView {
     /// In `Model::sorted_agents` order.
     pub agents: Vec<AgentEntry>,
-    /// This frame's glyph (`labels::frame_at`).
-    pub glyph: &'static str,
+    /// The animation tick this frame draws: the glyph's frame (`labels::frame_at`) and where
+    /// the band sits along a working word (`render::shimmer`) are both read off it. The
+    /// counter is the core's, so every client on the same server draws the same frame.
+    pub tick: u64,
     pub now: DateTime<Local>,
 }
 
@@ -96,7 +98,7 @@ impl AgentsView {
     pub fn empty(now: DateTime<Local>) -> AgentsView {
         AgentsView {
             agents: Vec::new(),
-            glyph: crate::agents::labels::frame_at(0),
+            tick: 0,
             now,
         }
     }
@@ -370,8 +372,18 @@ fn label_style(a: &AgentEntry) -> Style {
 /// see and cannot hear is a fact worth reporting rather than a quiet row.
 fn activity(a: &AgentEntry, view: &AgentsView) -> Vec<Span<'static>> {
     match a.state {
-        AgentState::Working => working(view.glyph, a.word, theme::agent_color(a.kind)),
-        AgentState::Compacting => working(view.glyph, "Compacting", theme::COMPACTING),
+        AgentState::Working => working(
+            view.tick,
+            a.word,
+            theme::agent_color(a.kind),
+            theme::agent_shimmer(a.kind),
+        ),
+        AgentState::Compacting => working(
+            view.tick,
+            "Compacting",
+            theme::COMPACTING,
+            theme::SHIMMER_COMPACTING,
+        ),
         AgentState::Waiting => vec![Span::styled(DOT, Style::default().fg(theme::RED))],
         AgentState::Unknown => vec![Span::styled(
             "unknown",
@@ -381,14 +393,27 @@ fn activity(a: &AgentEntry, view: &AgentsView) -> Vec<Span<'static>> {
     }
 }
 
-/// `✶ Percolating…`: the frame's glyph, then the word and the ellipsis it is drawn with.
-fn working(glyph: &'static str, word: &str, color: Color) -> Vec<Span<'static>> {
-    let style = Style::default().fg(color);
-    vec![
-        Span::styled(glyph, style),
-        Span::raw(" "),
-        Span::styled(format!("{word}…"), style),
-    ]
+/// `✶ Percolating…`: the frame's glyph in the kind's colour, then the word and the ellipsis it
+/// is drawn with, under a bright band that runs along them (MUX-26, V1's `shimmerText`).
+///
+/// One span per grapheme, because each one is lit differently. Every caller measures a row by
+/// summing `display_width` over its spans, so a word split this way measures what the same
+/// word in one span measured.
+fn working(tick: u64, word: &str, glyph: Color, band: theme::Shimmer) -> Vec<Span<'static>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let text = format!("{word}…");
+    let lit: Vec<&str> = text.graphemes(true).collect();
+    let mut spans = Vec::with_capacity(lit.len() + 2);
+    spans.push(Span::styled(
+        crate::agents::labels::frame_at(tick),
+        Style::default().fg(glyph),
+    ));
+    spans.push(Span::raw(" "));
+    for (i, g) in lit.iter().enumerate() {
+        let colour = band.at(crate::render::shimmer::lit(lit.len(), i, tick));
+        spans.push(Span::styled(g.to_string(), Style::default().fg(colour)));
+    }
+    spans
 }
 
 /// `[kind] · [place]`, or the place alone when line 1 already showed the kind.
@@ -553,7 +578,8 @@ mod tests {
     fn view(entries: Vec<AgentEntry>) -> AgentsView {
         AgentsView {
             agents: entries,
-            glyph: "✶",
+            // `frame_at(4)` is `✶`, the glyph every row below is written against.
+            tick: 4,
             now: now(),
         }
     }
@@ -700,10 +726,66 @@ mod tests {
             spans.iter().all(|s| s.content != DOT),
             "compacting draws no dot; the glyph and the word say it"
         );
+        // The name, the gap, the glyph and its space, then one span per character of
+        // "Compacting…".
         assert_eq!(
-            spans.last().unwrap().style.fg,
+            spans[2].style.fg,
             Some(theme::COMPACTING),
-            "the word"
+            "the glyph, in the compacting colour"
+        );
+        let word: Vec<Option<Color>> = spans[4..].iter().map(|s| s.style.fg).collect();
+        assert_eq!(word, lit_by(theme::SHIMMER_COMPACTING, word.len(), 4));
+    }
+
+    /// The colours a band gives a word of `len` characters at `tick`, which is what a working
+    /// row draws it in.
+    fn lit_by(band: theme::Shimmer, len: usize, tick: u64) -> Vec<Option<Color>> {
+        (0..len)
+            .map(|i| Some(band.at(crate::render::shimmer::lit(len, i, tick))))
+            .collect()
+    }
+
+    /// The band runs along the word, so no two characters in a row are lit the same and the
+    /// whole word is somewhere between the two ends of the kind's own band (MUX-26).
+    ///
+    /// The glyph is not in it: it is the kind's colour, and the band would take it out of the
+    /// column of colour every other glyph on the screen stands in.
+    #[test]
+    fn a_working_word_is_lit_by_a_band_that_moves_with_the_tick() {
+        let word_of = |tick: u64| {
+            let mut v = view(vec![entry(
+                AgentState::Working,
+                Some("auth-cleanup"),
+                AgentKind::Claude,
+            )]);
+            v.tick = tick;
+            let rows = overlay_rows(&v, 72);
+            let spans = rows[0].lines[0].spans.clone();
+            // The name, the gap, the glyph and its space, then one span per character of
+            // "Percolating…".
+            (
+                spans[2].style.fg,
+                spans[4..].iter().map(|s| s.style.fg).collect::<Vec<_>>(),
+            )
+        };
+        // Tick 10 has the band in the middle of a twelve character word, which is where it
+        // has characters on both sides of it to be brighter than.
+        let (glyph, word) = word_of(10);
+        assert_eq!(glyph, Some(theme::CLAUDE), "the glyph is the kind's colour");
+        assert_eq!(word.len(), 12, "one span per character of Percolating…");
+        assert_eq!(
+            word,
+            lit_by(theme::SHIMMER_CLAUDE, 12, 10),
+            "the word is lit by the kind's band"
+        );
+        assert!(
+            word.iter().collect::<std::collections::HashSet<_>>().len() > 3,
+            "and not all of it the same: {word:?}"
+        );
+        assert_ne!(
+            word,
+            word_of(11).1,
+            "a tick later the band has moved along it"
         );
     }
 
