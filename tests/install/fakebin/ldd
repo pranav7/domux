@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake ldd for tests/install/run.sh: prints FAKE_LDD, or a glibc banner when it is empty.
+if [ -n "${FAKE_LDD:-}" ]; then
+  printf '%s\n' "$FAKE_LDD"
+else
+  printf 'ldd (Ubuntu GLIBC 2.39-0ubuntu8) 2.39\n'
+fi

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake uname for tests/install/run.sh: FAKE_UNAME_S and FAKE_UNAME_M stand in for -s and -m.
+case ${1:-} in
+  -s) printf '%s\n' "$FAKE_UNAME_S" ;;
+  -m) printf '%s\n' "$FAKE_UNAME_M" ;;
+  *) echo "fake uname: unsupported flag ${1:-}" >&2; exit 2 ;;
+esac

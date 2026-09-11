@@ -1,0 +1,29 @@
+#!/bin/sh
+# Fake curl for tests/install/run.sh. Serves files from $FAKE_HTTP_DIR keyed by URL and logs
+# every URL to $FAKE_HTTP_DIR/requests.log. Understands the flags install.sh uses: -fsSL and
+# -o <file>. FAKE_CURL_FAIL is a substring: a URL containing it fails with curl's exit code 22.
+#   https://api.github.com/repos/<repo>/releases...          -> $FAKE_HTTP_DIR/releases.json
+#   https://github.com/<repo>/releases/download/<tag>/<file> -> $FAKE_HTTP_DIR/<tag>/<file>
+set -u
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) out=$2; shift ;;
+    -*) ;;
+    *) url=$1 ;;
+  esac
+  shift
+done
+[ -n "$url" ] || { echo "fake curl: no url" >&2; exit 2; }
+printf '%s\n' "$url" >> "$FAKE_HTTP_DIR/requests.log"
+if [ -n "${FAKE_CURL_FAIL:-}" ]; then
+  case $url in *"$FAKE_CURL_FAIL"*) exit 22 ;; esac
+fi
+case $url in
+  https://api.github.com/repos/*/releases*) src="$FAKE_HTTP_DIR/releases.json" ;;
+  https://github.com/*/releases/download/*) src="$FAKE_HTTP_DIR/${url#*/releases/download/}" ;;
+  *) exit 22 ;;
+esac
+[ -f "$src" ] || exit 22
+if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
