@@ -311,7 +311,7 @@ async fn a_click_on_a_tab_selects_it() {
     );
 }
 
-/// A click on the `+` makes a tab, which is what `tab.create` and `leader c` do.
+/// A click on the `+` makes a tab, which is what `tab.create` and `leader t` do.
 #[tokio::test]
 async fn a_click_on_the_plus_makes_a_tab() {
     let mut h = Harness::start(Config::default(), 80, 10).await;

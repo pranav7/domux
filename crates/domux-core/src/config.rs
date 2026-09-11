@@ -123,7 +123,7 @@ impl Default for KeysConfig {
                 // the shell in front of them will not run `clear` because its line editor is
                 // holding something they did not type.
                 ("k", "pane.clear"),
-                ("c", "tab.create"),
+                ("t", "tab.create"),
                 ("1", "tab.select 1"),
                 ("2", "tab.select 2"),
                 ("3", "tab.select 3"),
@@ -469,7 +469,7 @@ mod tests {
             Some("pane.copy_mode")
         );
         assert_eq!(
-            c.keys.bindings.get("c").map(String::as_str),
+            c.keys.bindings.get("t").map(String::as_str),
             Some("tab.create")
         );
         assert_eq!(

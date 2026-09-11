@@ -21,7 +21,7 @@ async fn a_good_reload_changes_the_leader_and_the_hint_follows() {
         )
         .await;
     assert!(!f.contains("C-a"), "{f}");
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
@@ -62,7 +62,7 @@ async fn a_bad_reload_keeps_the_old_config_and_shows_the_line_until_fixed() {
         .starts_with("domux.toml line 4"));
     // The old leader still works: the previous good config stayed.
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
@@ -102,7 +102,7 @@ async fn a_bad_file_at_startup_uses_defaults_and_shows_the_notice() {
     let f = h.frame(h.client.clone()).await;
     assert!(f.contains("domux.toml line 1"), "{f}");
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
@@ -199,7 +199,7 @@ async fn a_config_that_parses_but_is_not_a_keymap_keeps_the_old_config_and_inven
     assert!(f.contains("domux2 config reload"), "{f}");
     // The previous good config stayed: the old leader still opens the chord.
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
@@ -237,7 +237,7 @@ async fn a_config_file_that_vanished_reloads_the_defaults_and_clears_the_notice(
     let info = h.api("server.info", json!({})).await.unwrap();
     assert!(info["config_error"].is_null(), "{info}");
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     // The defaults are back, so the old leader made a tab - and the keys took the notice
     // with them, which is what puts the clock back.
     h.wait_for(
@@ -275,7 +275,7 @@ async fn a_config_that_cannot_be_read_says_so_without_a_line() {
     );
     // The old config stayed, so the server is still usable while the path is wrong.
     h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
@@ -300,7 +300,7 @@ async fn a_reload_in_the_middle_of_a_chord_finishes_it_and_then_uses_the_new_lea
     std::fs::write(h.config_path(), "[keys]\nleader = \"C-b\"\n").unwrap();
     let r = h.api("config.reload", json!({})).await.unwrap();
     assert!(r["error"].is_null(), "{r}");
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),
