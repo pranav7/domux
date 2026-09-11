@@ -372,7 +372,7 @@ async fn with_no_agents_the_box_says_so_and_names_how_to_get_one() {
 }
 
 #[tokio::test]
-async fn the_overlay_is_centred_between_60_and_120_columns_and_three_rows_down() {
+async fn the_overlay_has_its_minimum_height_and_width_and_sits_three_rows_down() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     two_agents(&mut h).await;
     let f = open_overlay(&mut h).await;
@@ -383,6 +383,10 @@ async fn the_overlay_is_centred_between_60_and_120_columns_and_three_rows_down()
     let right = last_col_of(line, '┐');
     assert_eq!(right - left + 1, 76, "100 columns minus 24:\n{f}");
     assert_eq!(left, BOX_LEFT, "and centred, so 12 columns each side:\n{f}");
+    assert!(
+        row(&f, top + 15).contains('└'),
+        "the box keeps its 16 row minimum:\n{f}"
+    );
     // What the overlay does not cover reads as being behind it (interface spec 7.1), and what
     // it does cover is not dimmed with the screen.
     assert!(

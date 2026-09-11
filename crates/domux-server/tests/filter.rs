@@ -790,18 +790,31 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
         more_row(&f),
         "and the overlay says the rest of it did not fit:\n{f}"
     );
+    let keys_top = row(&f, row_holding(&f, "┌ Keys"));
+    let keys_left = keys_top
+        .chars()
+        .position(|c| c == '┌')
+        .expect("the Keys box has a left border");
+    let keys_right = keys_top.chars().count()
+        - 1
+        - keys_top
+            .chars()
+            .rev()
+            .position(|c| c == '┐')
+            .expect("the Keys box has a right border");
+    let keys_row = |y| cells(&row(&f, y), keys_left + 1, keys_right - 1);
     // A blank row, then the group's own header, ahead of the leader table, so it reads as its
     // own block and then a labelled table rather than running one into the other. The pane
     // ordering pins the blank on the far side of the header from the block, and the three are
     // separate lines of code: the mutant for the blank-row half of this survived a sweep with
     // only that assertion in the suite.
     assert_eq!(
-        row(&f, first_leader - 1).trim_matches(|c| c == ' ' || c == '\u{2502}'),
+        keys_row(first_leader - 1).trim(),
         "projects",
         "the leader table's own group header sits right above it:\n{f}"
     );
     assert_eq!(
-        row(&f, first_leader - 2).trim_matches(|c| c == ' ' || c == '\u{2502}'),
+        keys_row(first_leader - 2).trim(),
         "",
         "and a blank row separates that header from the box's own block:\n{f}"
     );

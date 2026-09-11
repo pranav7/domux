@@ -16,9 +16,10 @@ use ratatui::style::{Modifier, Style};
 pub const OVERLAY_MARGIN: u16 = 24;
 pub const OVERLAY_TOP: u16 = 3;
 
-/// The narrowest and widest a list overlay is allowed to be (interface spec 12.13). The
-/// floor is above the sidebar's 38 columns, so whatever fits in the sidebar fits here
-/// (interface spec 5.1) without a second clamp saying so.
+/// The smallest height and the narrowest and widest widths a list overlay is allowed to use
+/// (interface spec 12.13). The width floor is above the sidebar's 38 columns, so whatever
+/// fits in the sidebar fits here (interface spec 5.1) without a second clamp saying so.
+const LIST_MIN_HEIGHT: u16 = 16;
 const LIST_MIN_WIDTH: u16 = 60;
 const LIST_MAX_WIDTH: u16 = 120;
 
@@ -69,16 +70,18 @@ pub fn list_overlay_width(screen: Rect) -> u16 {
 }
 
 /// The rectangle a list overlay takes: `list_overlay_width` wide, centred, three rows from
-/// the top, and its height fitting `lines` up to the screen less six (interface spec 12.13).
+/// the top, and at least 16 rows tall before it fits `lines` up to the screen less six
+/// (interface spec 12.13).
 ///
 /// `lines` is what `box_lines` asked for, so the footer's row is already in it: the footer is
 /// drawn inside the border (MUX-16), and this rectangle is the whole overlay.
 pub fn list_overlay_area(screen: Rect, lines: u16) -> Rect {
     let width = list_overlay_width(screen);
     let max_height = screen.height.saturating_sub(6).max(3);
+    let min_height = LIST_MIN_HEIGHT.min(max_height);
     let height = lines
         .saturating_add(2)
-        .clamp(3, max_height)
+        .clamp(min_height, max_height)
         // A screen too short for the box it asked for gets a shorter box rather than one
         // drawn past the bottom row: `Boxed::render` indexes the buffer without checking.
         .min(screen.height.saturating_sub(OVERLAY_TOP));
@@ -738,11 +741,12 @@ mod tests {
         assert_eq!(moved.y, at_origin.y + 2);
     }
 
-    /// The height follows the rows until the screen runs out, and then stops.
+    /// The height keeps its floor, follows the rows above it, and stops when the screen runs
+    /// out.
     #[test]
-    fn a_list_overlay_grows_with_its_rows_up_to_the_screen_less_six() {
-        assert_eq!(list_overlay_area(screen(80, 24), 0).height, 3);
-        assert_eq!(list_overlay_area(screen(80, 24), 3).height, 5);
+    fn a_list_overlay_keeps_its_minimum_then_grows_up_to_the_screen_less_six() {
+        assert_eq!(list_overlay_area(screen(80, 24), 0).height, 16);
+        assert_eq!(list_overlay_area(screen(80, 24), 3).height, 16);
         assert_eq!(list_overlay_area(screen(80, 24), 16).height, 18);
         assert_eq!(
             list_overlay_area(screen(80, 24), 40).height,
