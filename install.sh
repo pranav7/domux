@@ -25,7 +25,7 @@ REPO="pranav7/domux"
 INSTALL_DIR="${DOMUX_INSTALL_DIR:-$HOME/.local/bin}"
 RELEASES="https://github.com/$REPO/releases"
 API="https://api.github.com/repos/$REPO/releases?per_page=30"
-SOURCE="https://github.com/$REPO#build-from-source"
+SOURCE="https://github.com/$REPO"
 ISSUES="https://github.com/$REPO/issues"
 
 # --- the look ---------------------------------------------------------------------------------
