@@ -10,6 +10,10 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [1.0.0] - 2026-09-11
 
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+```
+
 The first release of the Rust domux. domux V1, the Go version built on tmux, is the v0.x tags;
 `domux import v1` reads what it saved.
 
