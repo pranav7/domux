@@ -119,7 +119,7 @@ async fn a_configured_leader_replaces_the_default() {
         "C-a is an ordinary key now"
     );
     h.key(h.client.clone(), "C-b").await;
-    h.key(h.client.clone(), "c").await;
+    h.key(h.client.clone(), "t").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains(" 2 "),

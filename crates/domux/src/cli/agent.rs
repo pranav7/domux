@@ -92,14 +92,31 @@ pub async fn report(kind: AgentKind) -> anyhow::Result<()> {
         return Ok(());
     };
     if let Some(block) = result.context {
-        // Written whole rather than line by line: the block is the text Claude Code adds to the
-        // session's context and it ends in its own newline. A reader that went away ends the
-        // output rather than failing, which is the rule every line of data here follows.
+        let output = session_start_output(kind, block);
+        // Written whole rather than line by line. A reader that went away ends the output
+        // rather than failing, which is the rule every line of data here follows.
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(block.as_bytes());
+        let _ = out.write_all(output.as_bytes());
         let _ = out.flush();
     }
     Ok(())
+}
+
+/// The hook client's SessionStart wire format. Claude reads plain text. Codex reads a JSON
+/// object; the context itself starts with `[domux]`, which Codex otherwise mistakes for JSON.
+fn session_start_output(kind: AgentKind, block: String) -> String {
+    if kind == AgentKind::Codex {
+        return format!(
+            "{}\n",
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": block,
+                }
+            })
+        );
+    }
+    block
 }
 
 /// `peek`: every agent as rows, or the API result under `--json` (M3 plan assumption 38).
@@ -238,7 +255,7 @@ mod tests {
     fn a_record_with_nothing_to_add_prints_two_lines() {
         assert_eq!(
             lines_for(&info()),
-            "● claude  waiting\n  claude · audrey-app › main › 1  (a_5e21)"
+            "• claude  waiting\n  claude · audrey-app › main › 1  (a_5e21)"
         );
     }
 
@@ -252,7 +269,7 @@ mod tests {
         a.recap = Some("Replaced three session checks with one guard.".into());
         assert_eq!(
             lines_for(&a),
-            "● auth refactor  waiting  unseen\n\
+            "• auth refactor  waiting  unseen\n\
              \x20 claude · audrey-app › main › 1  (a_5e21)\n\
              \x20 ※ Replaced three session checks with one guard."
         );
@@ -273,7 +290,7 @@ mod tests {
             a.state = state;
             assert_eq!(
                 lines_for(&a).lines().next().unwrap(),
-                format!("● claude  {word}")
+                format!("• claude  {word}")
             );
         }
     }

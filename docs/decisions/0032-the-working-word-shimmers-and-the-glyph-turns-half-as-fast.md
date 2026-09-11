@@ -5,7 +5,7 @@
 glyph alone.
 **Decision:** A bright band runs along a working agent's word, V1's `shimmerText` carried over
 arithmetic and colours both. It moves on every 80 ms tick, and the glyph holds each of its
-frames for two of them. The corner an agent row wears under its workspace is `⌞` rather than
+frames for two of them. The corner an agent row wears under its workspace is `└` rather than
 `↳`.
 
 ## Context

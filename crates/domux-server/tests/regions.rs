@@ -23,7 +23,8 @@ fn cols(line: &str, from: usize, to: usize) -> String {
 /// The whole frame is the wrong thing to search for a workspace's handle here: every test
 /// that builds slots leaves `Created workspace-2` in the hint row, so `f.contains(...)` would
 /// be answered by the pill as readily as by the row (a second cause for the same observation).
-/// The box's rows are r1 upwards, r0 and r22 are its border, and r23 is the hint row.
+/// The box's rows are r1 upwards, r0 is its top border, r22 is its hint row, its own footer
+/// now, and r23 is its bottom border.
 fn box_row(f: &str, n: usize) -> String {
     cols(row(f, n), 0, 37)
 }
@@ -104,9 +105,9 @@ async fn c_h_from_the_leftmost_pane_enters_the_projects_box_and_c_l_and_esc_retu
         "no pane carries the accent while the box has it:\n{f}"
     );
     assert!(
-        row(&f, 23).contains("⏎ open"),
+        row(&f, 22).contains("⏎ open"),
         "the hint row shows the cursor row's keys:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
 
     h.key(h.client.clone(), "C-l").await;
@@ -524,9 +525,9 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     );
     assert!(box_row(&f, 1).contains("AUDREY-APP"), "{f}");
     assert!(
-        row(&f, 23).contains("Filter › workspace-1"),
+        row(&f, 22).contains("Filter › workspace-1"),
         "the hint row says the box is filtering:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
 
     h.key(h.client.clone(), "Esc").await;
@@ -539,9 +540,9 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
         .await;
     assert_eq!(filter(&h), (String::new(), false));
     assert!(
-        row(&f, 23).contains("⏎ open"),
+        row(&f, 22).contains("⏎ open"),
         "and the keys come back:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
     assert_eq!(
         focus(&h),
@@ -625,9 +626,9 @@ async fn leaving_the_box_gives_the_sidebar_its_whole_list_back() {
         "the field still holds the text; what changed is that the box no longer applies it"
     );
     assert!(
-        row(&f, 23).contains("hide"),
+        row(&f, 22).contains("hide"),
         "and the hint row is the sidebar's again:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
 
     h.key(h.client.clone(), "C-h").await;
@@ -873,9 +874,9 @@ async fn a_key_in_the_box_clears_the_last_result() {
     let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
     let f = in_the_box(&mut h).await;
     assert!(
-        row(&f, 23).contains("Created workspace-2"),
+        row(&f, 22).contains("Created workspace-2"),
         "the create's result is still in the hint row:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
     assert!(h.model().client(&h.client).unwrap().pill.is_some());
 
@@ -883,7 +884,7 @@ async fn a_key_in_the_box_clears_the_last_result() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| row(f, 23).contains("⏎ open"),
+            |f| row(f, 22).contains("⏎ open"),
             Duration::from_secs(2),
         )
         .await;
@@ -959,7 +960,7 @@ async fn the_filter_row_belongs_to_the_box_and_not_to_the_sidebar() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| row(f, 23).contains("Filter"),
+            |f| row(f, 22).contains("Filter"),
             Duration::from_secs(2),
         )
         .await;
@@ -987,9 +988,9 @@ async fn the_filter_row_belongs_to_the_box_and_not_to_the_sidebar() {
         "and left the field open, which is what makes this the discriminating state"
     );
     assert!(
-        row(&f, 23).contains("hide") && !row(&f, 23).contains("Filter"),
+        row(&f, 22).contains("hide") && !row(&f, 22).contains("Filter"),
         "so the row shows the sidebar's keys:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
 }
 
@@ -1007,7 +1008,7 @@ async fn coming_back_into_the_box_never_lands_in_a_filter_field_nobody_opened() 
     h.type_text(h.client.clone(), "pro").await;
     h.wait_for(
         h.client.clone(),
-        |f| row(f, 23).contains("Filter › pro"),
+        |f| row(f, 22).contains("Filter › pro"),
         Duration::from_secs(2),
     )
     .await;
@@ -1038,9 +1039,9 @@ async fn coming_back_into_the_box_never_lands_in_a_filter_field_nobody_opened() 
         "and entering the box starts fresh:\n{f}"
     );
     assert!(
-        row(&f, 23).contains("⏎ open"),
+        row(&f, 22).contains("⏎ open"),
         "so the row shows the box's keys and not a filter:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
     // The key that follows acts, rather than being typed into a field nobody opened.
     h.key(h.client.clone(), "j").await;

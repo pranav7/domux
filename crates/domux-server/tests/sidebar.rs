@@ -70,11 +70,13 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     );
     assert_eq!(
         cols(row(&f, 22), 0, 37),
-        "└────────────────────────────────────┘"
+        "│ leader b hide · leader s search    │",
+        "the hint row is the box's own footer now, inside its border:\n{f}"
     );
     assert_eq!(
         cols(row(&f, 23), 0, 37),
-        " leader b hide · leader s search      "
+        "└────────────────────────────────────┘",
+        "so the box's bottom border reaches the same row the workpanel's does:\n{f}"
     );
     // The fill marks the row the keys act on, which with focus in a pane is the workspace
     // this client is in (domain model, section 3.3). `rows` is given the key and hands back

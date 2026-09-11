@@ -1,5 +1,5 @@
-//! The `SessionStart` context block. The agent report subcommand prints it on stdout and
-//! Claude Code adds it to the session's context (architecture spec 3.4).
+//! The `SessionStart` context block. The agent report subcommand writes it in Claude's or
+//! Codex's wire format, and that client adds it to the session's context (architecture spec 3.4).
 //!
 //! It says where this agent is, that peers exist, and names the verbs. `peek` and `whoami`
 //! work in M3; `send`, `wait` and `read` answer with an `unavailable` error naming M4 until

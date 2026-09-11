@@ -1365,11 +1365,11 @@ async fn agent_report_without_a_server_exits_zero_and_says_nothing() {
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
 }
 
-/// The whole hook path end to end: the payload reaches `agent.report`, the record it makes
-/// carries the session the payload named, and the `SessionStart` block comes back on stdout,
-/// which is where Claude Code reads a hook's context from.
+/// Claude's whole hook path end to end: the payload reaches `agent.report`, the record it makes
+/// carries the session the payload named, and the plain `SessionStart` block comes back on
+/// stdout, which is where Claude Code reads a hook's context from.
 #[tokio::test]
-async fn agent_report_posts_the_payload_and_prints_the_context_block_on_session_start() {
+async fn claude_agent_report_prints_the_plain_context_block_on_session_start() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
     let out = report_through_the_cli(
@@ -1485,13 +1485,13 @@ async fn peek_prints_one_agent_per_block_in_the_boxs_order() {
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = text.lines().collect();
-    assert!(lines[0].starts_with("● claude  waiting"), "{text}");
+    assert!(lines[0].starts_with("• claude  waiting"), "{text}");
     assert!(lines[1].starts_with("  claude · "), "{text}");
     assert!(
         lines[1].contains("(a_"),
         "the id is on the place line so a caller can target it: {text}"
     );
-    assert!(lines[2].starts_with("● claude  idle"), "{text}");
+    assert!(lines[2].starts_with("• claude  idle"), "{text}");
 
     // The same order the box sorts its rows in, read off the list both surfaces share.
     let order: Vec<String> = h
@@ -1700,6 +1700,61 @@ async fn install_apply_creates_the_file_when_there_is_none() {
     );
     let written = std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap();
     assert!(written.contains("agent report --agent claude"), "{written}");
+}
+
+/// The command `install codex` writes is the whole boundary Codex runs: its SessionStart reply
+/// must be Codex's JSON object, not the raw context block that starts with JSON's `[` byte.
+#[tokio::test]
+async fn install_codex_writes_a_session_start_hook_with_valid_json_output() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let home = tempfile::tempdir().unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "codex", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+
+    let path = home.path().join(".codex/hooks.json");
+    let installed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let command = installed["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(command.ends_with("agent report --agent codex"), "{command}");
+
+    let out = report_through_the_cli(
+        Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .env("DOMUX_SOCKET", h.socket_path())
+            .env("DOMUX_PANE", pane.as_str())
+            .env_remove("TMUX"),
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/tmp"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
+    let printed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        printed["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    let context = printed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(context.starts_with("[domux] You are agent a_"), "{context}");
+    assert_eq!(
+        printed,
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            }
+        })
+    );
 }
 
 /// The hook command is the symlink in `~/bin` when there is one, because it survives a rebuild

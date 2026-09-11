@@ -6,8 +6,10 @@
 //! list can read one way here and another way there.
 
 use crate::render::agents_box::{self, RowForm};
-use crate::render::boxed::{put, put_within};
-use crate::render::list_box::{content_width, filter_rows, text_area, ListBox, SIDEBAR_PAD};
+use crate::render::boxed::{put, put_within, Boxed};
+use crate::render::list_box::{
+    content_width, filter_rows, text_area, ListBox, Pad, NAVIGATOR_PAD, SIDEBAR_PAD,
+};
 use crate::render::projects_box::{filled_index, rows, Extras};
 use crate::render::top_bar::Piece;
 use crate::render::{theme, RenderInput};
@@ -106,8 +108,11 @@ pub fn wanted_projects_height(
 /// rows - so nobody measures the split a second way (principle 14).
 /// **With the Navigator on there is one box and it takes the column**, so the height the
 /// Projects box would have asked for is not measured at all: `agents` comes back empty and
-/// nothing draws into it (decision record 0030). The two-box split below it is what the
-/// `[navigator]` key turns back on, and it goes when that key does.
+/// nothing draws into it (decision record 0030). Its hint row is the box's own footer row,
+/// the box's last inner row rather than a row under it, so the box takes the whole column and
+/// its bottom border reaches the same row the workpanel's does. The two-box split below it is
+/// what the `[navigator]` key turns back on, and it goes when that key does; its hint row
+/// still sits under both boxes and belongs to neither.
 pub fn split_for(
     model: &domux_core::model::Model,
     facts: &crate::facts::FactRegistry,
@@ -116,22 +121,33 @@ pub fn split_for(
 ) -> (Rect, Rect, Rect) {
     let column = sidebar_area(size);
     if navigator {
-        let hint = Rect::new(
-            column.x,
-            column.y + column.height.saturating_sub(HINT_ROW_HEIGHT),
-            column.width,
-            HINT_ROW_HEIGHT.min(column.height),
-        );
-        let box_area = Rect::new(
-            column.x,
-            column.y,
-            column.width,
-            column.height.saturating_sub(HINT_ROW_HEIGHT),
-        );
-        let none = Rect::new(column.x, hint.y, column.width, 0);
+        let box_area = column;
+        let none = Rect::new(column.x, column.y + column.height, column.width, 0);
+        // The footer's row, border-adjusted but not `pad.side`-adjusted: `hint_row` applies
+        // that inset itself, the same one cell it insets the plain two-box hint row by, so a
+        // rect already inset by `footer_area` would push its text in twice.
+        let inner = Boxed::inner_of(box_area);
+        let hint = if inner.height == 0 {
+            none
+        } else {
+            Rect::new(inner.x, inner.bottom() - 1, inner.width, 1)
+        };
         return (box_area, none, hint);
     }
     split_column(column, wanted_projects_height(model, facts, column.width))
+}
+
+/// The pad the Projects box's `ListBox` draws with: `NAVIGATOR_PAD` while the Navigator holds
+/// the hint row inside its own border, `SIDEBAR_PAD` otherwise. `draw_projects` and
+/// `workspace_at` both ask this, and so does `api::list::visible`, so the row a click lands on,
+/// the height `list.up` and `list.down` scroll against, and the row the drawing put there are
+/// never three different answers.
+pub fn pad_for(navigator: bool) -> Pad {
+    if navigator {
+        NAVIGATOR_PAD
+    } else {
+        SIDEBAR_PAD
+    }
 }
 
 /// The Projects box: the first of `split_for`'s rectangles.
@@ -224,7 +240,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
 pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
     let area = projects_area(input.model, input.facts, input.view.size, input.navigator);
     let (built, _) = built_rows(input, area);
-    let inner = text_area(area, SIDEBAR_PAD);
+    let inner = text_area(area, pad_for(input.navigator));
     let scroll = crate::render::list_box::scroll_to_show(
         &built.rows,
         built.filled,
@@ -239,7 +255,8 @@ pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::Wo
         .map(domux_core::ids::WorkspaceId)
 }
 
-/// The two boxes in the sidebar's column, with the hint row under them.
+/// The sidebar's column: the two boxes with the hint row under them, or the Navigator's one
+/// box with the hint row as its own footer (decision record 0030).
 pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let column = sidebar_area(input.view.size);
     let (projects, agents, hint) =
@@ -283,7 +300,7 @@ fn draw_projects(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         focused,
         scroll: input.list_scroll(),
         empty_text: &empty,
-        pad: SIDEBAR_PAD,
+        pad: pad_for(input.navigator),
     }
     .render(area, buf);
 }

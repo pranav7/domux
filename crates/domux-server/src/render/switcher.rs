@@ -237,14 +237,14 @@ mod tests {
         );
         assert_eq!(inner_line(&buf, 6), "    workspace-2");
         assert_eq!(
-            inner_line(&buf, 8),
+            inner_line(&buf, 17),
             "  ⏎ open · / filter · ? help · esc close",
             "the footer is on the box's last row, in by the same pad the rows use"
         );
         assert_eq!(
-            inner_line(&buf, 9),
+            inner_line(&buf, 18),
             "─".repeat(58),
-            "and the box is two lines tall, so main and the other three slots are gone"
+            "and the box keeps its minimum height"
         );
     }
 

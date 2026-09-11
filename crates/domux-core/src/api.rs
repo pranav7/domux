@@ -1191,8 +1191,8 @@ pub struct AgentListResult {
     pub red_dots: usize,
 }
 
-/// `agent.report`. `context` is the SessionStart block the CLI prints to stdout; it is
-/// `None` for every other event.
+/// `agent.report`. `context` is the raw SessionStart block the CLI writes in the hook client's
+/// output format; it is `None` for every other event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentReportResult {
     pub agent: Option<AgentId>,

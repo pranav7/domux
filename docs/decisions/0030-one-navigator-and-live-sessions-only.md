@@ -29,7 +29,7 @@ the agents running in it. Nothing else changed about a workspace row: the name, 
 and the pull request, and the hollow glyph on an untouched slot.
 
 An agent row is four cells in: the two of workspace indent every workspace row already has,
-plus two for the corner (`⌞`, decision record 0032). Then the name, or the kind when nobody
+plus two for the corner (`└`, decision record 0032). Then the name, or the kind when nobody
 has named the session, then the activity. Its project and its workspace are the rows above it
 and are never repeated, which is the whole point of nesting it. The sidebar stops there. The
 switcher adds the kind and the tab after the activity, and the recap on a second line, because

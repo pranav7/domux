@@ -540,12 +540,13 @@ async fn the_sidebar_hint_row_shows_the_note_under_a_pill_and_over_the_keys() {
         )
         .await;
     assert_eq!(
-        cells(&row(&f, 23), 0, 37),
-        " Pruned workspace-2: its worktree is… ",
-        "the note takes the hint row, cut to the sidebar's width:\n{f}"
+        cells(&row(&f, 22), 0, 37),
+        "│ Pruned workspace-2: its worktree … │",
+        "the note takes the hint row, the Navigator's own footer inside its border, cut to \
+         what the border and the pad leave it:\n{f}"
     );
     assert_eq!(
-        style_at(&f, 23, 1),
+        style_at(&f, 22, 2),
         "fg=#cdd6f4",
         "in text, which is neither a pill's colours nor the blue of a key:\n{f}"
     );
@@ -563,7 +564,7 @@ async fn the_sidebar_hint_row_shows_the_note_under_a_pill_and_over_the_keys() {
         )
         .await;
     assert_eq!(
-        style_at(&f, 23, 1),
+        style_at(&f, 22, 2),
         "bold fg=#1e1e2e bg=#f38ba8",
         "a pill is an answer to what the reader just did, so it goes over the note:\n{f}"
     );

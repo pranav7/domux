@@ -1747,11 +1747,12 @@ impl Core {
         //
         // The name is what gives way, because the reader asked to delete that workspace and
         // already knows which. It has to give way to something: the narrowest hint row this
-        // draws in is the sidebar's, `SIDEBAR_WIDTH` less two, and `Deleted {name} · {branch}`
-        // ran past it and lost the branch to an ellipsis - defeating this line exactly when it
-        // mattered. `Deleted {branch}` fits that row for a branch of 28 columns or less, and a
-        // longer one is cut from its tail rather than removed whole, because it leads.
-        // `the_hint_row_fits_a_branch_of_twenty_eight_columns_and_not_twenty_nine` holds the
+        // draws in is the Navigator's own footer, `SIDEBAR_WIDTH` less four for its border and
+        // its pad, and `Deleted {name} · {branch}` ran past it and lost the branch to an
+        // ellipsis - defeating this line exactly when it mattered. `Deleted {branch}` fits that
+        // row for a branch of 26 columns or less, and a longer one is cut from its tail rather
+        // than removed whole, because it leads.
+        // `the_hint_row_fits_a_branch_of_twenty_six_columns_and_not_twenty_seven` holds the
         // boundary and `a_branch_too_long_for_the_hint_row_still_leads_the_result` holds the
         // leading, so neither number here is prose nobody checks.
         let said = if branch == handle.to_string() {

@@ -67,7 +67,7 @@ impl Plan {
 
 /// The command every installed hook runs: the binary's absolute path, so a hook that runs in
 /// the agent's environment finds it whatever that environment's PATH holds (M3 plan assumption
-/// 16). V1 does the same for Codex.
+/// 16). The kind selects both the input adapter and the SessionStart output format.
 pub fn hook_command(bin: &Path, kind: AgentKind) -> String {
     format!(
         "{} agent report --agent {kind}",
