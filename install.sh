@@ -28,22 +28,80 @@ API="https://api.github.com/repos/$REPO/releases?per_page=30"
 SOURCE="https://github.com/$REPO#build-from-source"
 ISSUES="https://github.com/$REPO/issues"
 
-# Mauve, the color domux draws its own logo in. Color goes to a terminal only, so a log file or
-# a pipe gets plain text.
+# Mauve, the color domux draws its own logo in, and the two ends of the band that runs along it.
+# Color goes to a terminal only, so a log file or a pipe gets plain text.
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   MAUVE=$(printf '\033[38;2;203;166;247m')
+  MID=$(printf '\033[38;2;223;199;250m')
+  BRIGHT=$(printf '\033[38;2;245;235;255m')
   DIM=$(printf '\033[2m')
   OFF=$(printf '\033[0m')
+  EOL=$(printf '\033[K')
 else
   MAUVE=""
+  MID=""
+  BRIGHT=""
   DIM=""
   OFF=""
+  EOL=""
 fi
 
+# The five letters, each as its top and bottom half. Splitting the logo by letter is what lets
+# the band move along it the way it moves along a working agent's word.
+# An underscore stands in for a space inside a letter, so the list splits on spaces between
+# letters and nowhere else; logo_row puts the spaces back.
+LETTERS='█▀▄|█▄▀ █▀█|█▄█ █▀▄▀█|█_▀_█ █_█|█▄█ ▀▄▀|█_█'
+
+# logo_row <top|bottom> <letter the band sits on, or 0 for none>
+logo_row() {
+  row=$1
+  peak=$2
+  i=0
+  out=""
+  for pair in $LETTERS; do
+    i=$((i + 1))
+    if [ "$row" = top ]; then
+      glyph=$(printf '%s' "${pair%%|*}" | tr '_' ' ')
+    else
+      glyph=$(printf '%s' "${pair##*|}" | tr '_' ' ')
+    fi
+    d=$((i - peak))
+    if [ "$d" -lt 0 ]; then d=$((0 - d)); fi
+    if [ "$peak" = 0 ]; then
+      color=$MAUVE
+    elif [ "$d" = 0 ]; then
+      color=$BRIGHT
+    elif [ "$d" = 1 ]; then
+      color=$MID
+    else
+      color=$MAUVE
+    fi
+    out="$out$color$glyph$OFF "
+  done
+  printf '%s' "$out"
+}
+
+# logo_frame <letter the band sits on, or 0 for none>
+logo_frame() {
+  printf '  %s domux installer%s\n' "$(logo_row top "$1")" "$EOL" >&2
+  printf '  %s %sgithub.com/%s%s%s\n' "$(logo_row bottom "$1")" "$DIM" "$REPO" "$OFF" "$EOL" >&2
+}
+
 logo() {
-  printf '\n'
-  printf '  %s█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀%s  domux installer\n' "$MAUVE" "$OFF"
-  printf '  %s█▄▀ █▄█ █ ▀ █ █▄█ █ █%s  %sgithub.com/%s%s\n\n' "$MAUVE" "$OFF" "$DIM" "$REPO" "$OFF"
+  printf '\n' >&2
+  logo_frame 0
+  # One pass of the band, out and back, on the 70 ms tick the agent rows use. A terminal only:
+  # redrawing in place means nothing to a file, and the static logo above is already there.
+  if [ -t 2 ] && [ -n "$MAUVE" ]; then
+    for peak in 1 2 3 4 5 4 3 2 1; do
+      printf '\033[2A' >&2
+      logo_frame "$peak"
+      sleep 0.07 2>/dev/null || true
+    done
+    printf '\033[2A' >&2
+    logo_frame 0
+  fi
+  printf '\n' >&2
 }
 
 say() {
@@ -60,7 +118,7 @@ need() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is not installed" "install $1 with your package manager, then run this script again"
 }
 
-logo >&2
+logo
 
 need uname
 need curl
