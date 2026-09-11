@@ -37,6 +37,14 @@ configuration for a tool the reader does not use, and the lid question is asked 
 is a terminal to ask on. `DOMUX_HOOKS=no` and `DOMUX_STAY_AWAKE=yes|no` answer both without a
 prompt, which is also how the tests drive those branches.
 
+**The installer is drawn the way domux draws itself.** Not a generic list of steps with an arrow
+in front of each: the logo wears the band, a step that is running shows the turning glyph with
+the band along its word, a step that is done settles to the glyph's own resting frame, and the
+one question wears the red dot, which means the same thing there as it does on an agent row.
+Every animation is a terminal's alone. Without one, and under `NO_COLOR`, the same lines are
+printed once, in order, with no color and no redrawing, so a log file reads as well as a
+terminal does.
+
 **The archive is checked before it is trusted.** The installer downloads the archive and
 `SHA256SUMS`, compares, and refuses to install on a mismatch. Three network requests, all to
 GitHub. Nothing else is written and no shell startup file is edited: the PATH line is printed

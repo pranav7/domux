@@ -101,10 +101,10 @@ test_installs_the_newest_stable_release_on_macos_arm64() {
   assert_eq "$S/bin/domux 1.0.5" "$(out)" "stdout data line"
   assert_file "$S/bin/domux" "installed binary"
   assert_eq "domux 1.0.5" "$("$S/bin/domux" --version)" "installed binary runs"
-  assert_contains "$(err)" "installed domux 1.0.5 to $S/bin/domux" "summary"
-  assert_contains "$(err)" "ready. run 'domux' to get started." "ready line"
+  assert_contains "$(err)" "domux 1.0.5 installed to $S/bin/domux" "summary"
+  assert_contains "$(err)" "domux is ready." "ready line"
   assert_contains "$(err)" "domux install claude --apply" "next steps"
-  assert_contains "$(err)" "detected macos/arm64" "platform line"
+  assert_contains "$(err)" "macos on arm64" "platform line"
   assert_contains "$(requests)" "releases/download/v1.0.5/domux_1.0.5_darwin_arm64.tar.gz" "archive request"
   assert_contains "$(requests)" "releases/download/v1.0.5/SHA256SUMS" "checksums request"
   assert_eq 3 "$(wc -l < "$FAKE_HTTP_DIR/requests.log" | tr -d ' ')" "exactly three requests"
@@ -118,9 +118,8 @@ test_prints_the_logo_before_anything_else() {
   run_install
   assert_eq "" "$(sed -n 1p "$S/err")" "first line is blank"
   assert_contains "$(sed -n 2p "$S/err")" "█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀" "logo line 1"
-  assert_contains "$(sed -n 2p "$S/err")" "domux installer" "installer name beside the logo"
   assert_contains "$(sed -n 3p "$S/err")" "█▄▀ █▄█ █ ▀ █ █▄█ █ █" "logo line 2"
-  assert_contains "$(sed -n 3p "$S/err")" "github.com/pranav7/domux" "repository beside the logo"
+  assert_contains "$(sed -n 3p "$S/err")" "github.com/pranav7/domux" "repository under the logo"
 }
 
 test_falls_back_to_a_prerelease_when_no_stable_release_exists() {
@@ -376,9 +375,9 @@ test_installs_hooks_for_every_agent_that_is_configured() {
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(calls)" "install claude --apply" "claude hooks"
   assert_contains "$(calls)" "install opencode --apply" "opencode hooks"
+  assert_contains "$(err)" "hooks for claude opencode" "both agents on one line"
   assert_not_contains "$(calls)" "install codex --apply" "codex is not configured here"
-  assert_contains "$(err)" "hooks installed for claude" "claude line"
-  assert_contains "$(err)" "hooks installed for opencode" "opencode line"
+  assert_contains "$(err)" "hooks for claude" "the agents that got hooks"
 }
 
 test_installs_no_hooks_when_no_agent_is_configured() {
@@ -409,7 +408,7 @@ test_says_what_happened_when_a_hook_install_fails() {
   run_install
   assert_exit 0 "$code" "exit: the installer still installed the binary"
   assert_contains "$(err)" "could not install the claude hooks" "state"
-  assert_contains "$(err)" "install claude --apply' to see what happened" "next action"
+  assert_contains "$(err)" "install claude --apply to see what happened" "next action"
 }
 
 test_skips_the_hooks_when_asked() {
@@ -420,7 +419,7 @@ test_skips_the_hooks_when_asked() {
   run_install DOMUX_HOOKS=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "--apply" "nothing applied"
-  assert_contains "$(err)" "skipped the agent hooks" "state"
+  assert_contains "$(err)" "hooks skipped" "state"
 }
 
 test_sets_up_the_lid_when_the_answer_is_yes() {
@@ -430,7 +429,7 @@ test_sets_up_the_lid_when_the_answer_is_yes() {
   run_install DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(calls)" "stay-awake install --full --apply" "the command it runs"
-  assert_contains "$(err)" "full stay awake is set up" "state"
+  assert_contains "$(err)" "the lid is covered too" "state"
   assert_contains "$(err)" 'mode = "full"' "the line to add to the config file"
 }
 
@@ -441,7 +440,7 @@ test_skips_the_lid_when_the_answer_is_no() {
   run_install DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "stay-awake" "nothing run"
-  assert_contains "$(err)" "skipped the lid setup" "state"
+  assert_contains "$(err)" "the lid setup was skipped" "state"
 }
 
 test_prints_the_lid_command_when_there_is_no_terminal_to_ask_on() {
