@@ -18,21 +18,6 @@ domux will keep your terminal running in a background server so when you close y
 curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
 ```
 
-The script downloads the release build for your machine, checks it against the release
-checksums, and puts the `domux` binary in `~/.local/bin`. It then sets up what domux needs:
-
-- **Agent hooks.** An agent reports its state through a hook, so a row can say working, waiting
-  or idle rather than unknown. The script installs the hooks for every agent already configured
-  on the machine: Claude Code, Codex and OpenCode. Set `DOMUX_HOOKS=no` to skip that.
-- **Stay awake.** On macOS it asks whether to set up the mode that keeps the machine awake with
-  the lid closed. That one needs sudo, because it writes a launch daemon and a sudoers line.
-  Answer no, or set `DOMUX_STAY_AWAKE=no`, and domux still holds the machine awake while the lid
-  is open. `DOMUX_STAY_AWAKE=yes` sets it up without asking.
-
-Nothing else is written and no shell startup file is edited. To pick a version or another
-directory, set `DOMUX_VERSION=v1.0.0` or `DOMUX_INSTALL_DIR=/usr/local/bin`. Re-running the
-command upgrades in place.
-
 ## First run
 
 ```sh
