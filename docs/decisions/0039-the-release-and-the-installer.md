@@ -37,20 +37,21 @@ configuration for a tool the reader does not use, and the lid question is asked 
 is a terminal to ask on. `DOMUX_HOOKS=no` and `DOMUX_STAY_AWAKE=yes|no` answer both without a
 prompt, which is also how the tests drive those branches.
 
-**One thing moves in the installer, and it is an ordinary spinner.** The first version put the
-band along the logo and along the word of a running step, the way domux draws an agent row. Both
-were invisible in use: the logo sweep is over in under a second, and a reader watching an
-install cannot follow a wave travelling through a word they are also trying to read. So the logo
-is printed once and does not move, a running step shows the braille spinner every command line
-tool uses, a finished step is a faint dot, and the one question wears the red dot, which means
-the same thing there as it does on an agent row. The color is still domux's mauve. Nothing else
-animates, and the animation that is left is a terminal's alone: without one, and under
-`NO_COLOR`, the same lines are printed once, in order, with no color and no redrawing, so a log
-file reads as well as a terminal does.
+**Nothing in the installer moves.** The first version put the band along the logo and along the
+word of a running step, the way domux draws an agent row. Both were invisible in use: the logo
+sweep is over in under a second, and a reader watching an install cannot follow a wave
+travelling through a word they are also trying to read. The braille spinner that replaced them
+was invisible for a plainer reason. Every step the installer runs finishes in a fraction of a
+second, so the spinner turned two or three frames beside the word and read as a flicker.
+Slowing it down only made it fainter. So nothing animates. The logo is printed once, a running
+step is its word, a finished step is a faint dot, and the one question wears the red dot, which
+means the same thing there as it does on an agent row. The color is still domux's mauve.
+Without a terminal, and under `NO_COLOR`, the same lines are printed in the same order, so a
+log file reads as well as a terminal does.
 
 A curl installer cannot take a dependency for any of this. It has to be one POSIX sh file that
-runs on a machine with nothing on it, so the frames are a list in the script rather than a
-library, and the list is the standard one rather than something invented here.
+runs on a machine with nothing on it, so there is no library to draw an animation properly.
+That is the other half of the answer: draw nothing, rather than hand-roll something better.
 
 **The line a script reads is only printed when nothing is watching.** The installed path and
 version go to stdout for a caller that pipes the script, and stdout under `curl | sh` is the
