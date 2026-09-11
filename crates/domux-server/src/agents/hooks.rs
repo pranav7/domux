@@ -97,8 +97,20 @@ pub fn parse(kind: AgentKind, text: &str) -> Result<AgentReport, HookError> {
     })
 }
 
-/// Claude Code: `hook_event_name`, `session_id`, `transcript_path`, `cwd`, and `message` on a
-/// notification (architecture spec 3.4).
+/// The notification types on which Claude Code has stopped and cannot go on without you: it
+/// asked permission, its input sat idle, an MCP server asked you something, or a subagent
+/// did. The others report something that happened and stop for nobody: a login completed, an
+/// elicitation or a subagent finished, a quota resume fired. Decision record 0036.
+pub const CLAUDE_NOTIFICATIONS_THAT_WAIT: [&str; 5] = [
+    "permission_prompt",
+    "idle_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+    "agent_needs_input",
+];
+
+/// Claude Code: `hook_event_name`, `session_id`, `transcript_path`, `cwd`, and `message` and
+/// `notification_type` on a notification (architecture spec 3.4).
 pub fn parse_claude(v: &Value) -> AgentReport {
     let event = match string(v, "hook_event_name").as_deref() {
         Some("SessionStart") => Some(AgentEvent::SessionStart),
@@ -106,7 +118,7 @@ pub fn parse_claude(v: &Value) -> AgentReport {
         Some("UserPromptSubmit") => Some(AgentEvent::UserPromptSubmit),
         Some("PreToolUse") => Some(AgentEvent::PreToolUse),
         Some("PostToolUse") => Some(AgentEvent::PostToolUse),
-        Some("Notification") => Some(AgentEvent::Notification),
+        Some("Notification") => claude_notification_event(v),
         Some("PreCompact") => Some(AgentEvent::PreCompact),
         Some("PostCompact") => Some(AgentEvent::PostCompact),
         Some("Stop") => Some(AgentEvent::Stop),
@@ -122,6 +134,20 @@ pub fn parse_claude(v: &Value) -> AgentReport {
         } else {
             None
         },
+    }
+}
+
+/// A notification is the waiting event only when its type is one Claude stops for. Any other
+/// type, including one a later release adds, is no event, so the record is left alone. A
+/// payload with no type waits: the Claude Code that omitted the field sent a notification for
+/// a permission prompt or an idle prompt and nothing else.
+fn claude_notification_event(v: &Value) -> Option<AgentEvent> {
+    match string(v, "notification_type") {
+        None => Some(AgentEvent::Notification),
+        Some(t) if CLAUDE_NOTIFICATIONS_THAT_WAIT.contains(&t.as_str()) => {
+            Some(AgentEvent::Notification)
+        }
+        Some(_) => None,
     }
 }
 
@@ -261,6 +287,59 @@ mod tests {
         );
         let r = parse(AgentKind::Claude, &fixture("claude", "stop")).unwrap();
         assert_eq!(r.reason, None, "only a notification has a reason");
+    }
+
+    /// Claude Code sends a notification for more than a question, and the dot is drawn only
+    /// while an agent is waiting on you (decision record 0030). So only the types on which
+    /// Claude has stopped for you become the waiting event; every other type, including one
+    /// this list has never heard of, changes nothing (decision record 0036).
+    #[test]
+    fn only_a_notification_that_stops_for_you_is_the_waiting_event() {
+        let waits = [
+            "permission_prompt",
+            "idle_prompt",
+            "elicitation_dialog",
+            "elicitation_url_dialog",
+            "agent_needs_input",
+        ];
+        let does_not = [
+            "auth_success",
+            "elicitation_complete",
+            "elicitation_response",
+            "agent_completed",
+            "quota_auto_resume_fired",
+            "quota_auto_resume_stale",
+            "quota_auto_resume_disabled",
+            "a_type_from_a_later_release",
+        ];
+        let payload = |t: &str| {
+            format!(
+                r#"{{"hook_event_name":"Notification","session_id":"s","notification_type":"{t}","message":"m"}}"#
+            )
+        };
+        for t in waits {
+            let r = parse(AgentKind::Claude, &payload(t)).unwrap();
+            assert_eq!(r.event, Some(AgentEvent::Notification), "{t}");
+            assert_eq!(r.reason.as_deref(), Some("m"), "{t}");
+        }
+        for t in does_not {
+            let r = parse(AgentKind::Claude, &payload(t)).unwrap();
+            assert_eq!(r.event, None, "{t}");
+            assert_eq!(r.reason, None, "{t}: not waiting, so no reason");
+        }
+    }
+
+    /// A payload with no `notification_type` comes from a Claude Code that sent a notification
+    /// for a permission prompt or an idle prompt and nothing else, so it waits.
+    #[test]
+    fn a_notification_without_a_type_is_the_waiting_event() {
+        let r = parse(
+            AgentKind::Claude,
+            r#"{"hook_event_name":"Notification","session_id":"s","message":"m"}"#,
+        )
+        .unwrap();
+        assert_eq!(r.event, Some(AgentEvent::Notification));
+        assert_eq!(r.reason.as_deref(), Some("m"));
     }
 
     #[test]
