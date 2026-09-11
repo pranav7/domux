@@ -667,8 +667,9 @@ async fn the_sidebars_hint_row_orders_the_note_and_the_filter_as_the_footer_does
         )
         .await;
     assert!(
-        cells(&row(&f, 23), 0, 37).contains("Pruned workspace-1"),
-        "the note starts in the sidebar's hint row:\n{f}"
+        cells(&row(&f, 22), 0, 37).contains("Pruned workspace-1"),
+        "the note starts in the sidebar's hint row, the Navigator's own footer inside its \
+         border:\n{f}"
     );
 
     h.api(
@@ -683,14 +684,14 @@ async fn the_sidebars_hint_row_orders_the_note_and_the_filter_as_the_footer_does
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| cells(&row(f, 23), 0, 37).contains("Filter ›"),
+            |f| cells(&row(f, 22), 0, 37).contains("Filter ›"),
             Duration::from_secs(2),
         )
         .await;
     assert!(
-        !row(&f, 23).contains("Pruned"),
+        !row(&f, 22).contains("Pruned"),
         "and the open field takes it from the note:\n{}",
-        row(&f, 23)
+        row(&f, 22)
     );
 }
 

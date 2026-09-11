@@ -756,23 +756,25 @@ async fn the_result_names_the_branch_that_went_when_it_is_not_the_handle() {
     );
 }
 
-/// The boundary the pill's wording was chosen against: 28 columns of branch fit the narrowest
-/// hint row and 29 do not.
+/// The boundary the pill's wording was chosen against: 26 columns of branch fit the narrowest
+/// hint row and 27 do not.
 ///
 /// `core.rs` states that number where it picks the wording, and by the rule this task arrived
 /// at the hard way, a number in a comment either has an assertion behind it or it is deleted.
 /// This is the assertion. It also pins the budget it comes from without naming it: `Deleted `
-/// is 8, so a boundary at 28 is a row of 36, which is `SIDEBAR_WIDTH` less two.
+/// is 8, so a boundary at 26 is a row of 34, which is `SIDEBAR_WIDTH` less four for the
+/// Navigator's border and its pad, the row the hint text draws inside since it became the
+/// box's own footer (decision record 0030).
 ///
-/// Both sides, because a test that only showed 28 fitting would pass on any budget at least
+/// Both sides, because a test that only showed 26 fitting would pass on any budget at least
 /// that big, including one wide enough to make the whole wording question moot.
 #[tokio::test]
-async fn the_hint_row_fits_a_branch_of_twenty_eight_columns_and_not_twenty_nine() {
-    let fits = format!("feat/{}", "a".repeat(23));
-    let does_not = format!("feat/{}", "a".repeat(24));
+async fn the_hint_row_fits_a_branch_of_twenty_six_columns_and_not_twenty_seven() {
+    let fits = format!("feat/{}", "a".repeat(21));
+    let does_not = format!("feat/{}", "a".repeat(22));
     assert_eq!(
         (fits.len(), does_not.len()),
-        (28, 29),
+        (26, 27),
         "the fixture's own widths"
     );
 
@@ -798,7 +800,7 @@ async fn the_hint_row_fits_a_branch_of_twenty_eight_columns_and_not_twenty_nine(
         .await;
     assert!(
         !f.contains('\u{2026}'),
-        "28 columns of branch arrive whole:\n{f}"
+        "26 columns of branch arrive whole:\n{f}"
     );
 
     api(
@@ -817,13 +819,13 @@ async fn the_hint_row_fits_a_branch_of_twenty_eight_columns_and_not_twenty_nine(
         .await;
     assert!(
         !f.contains(&format!("Deleted {does_not}")),
-        "and 29 do not, which is what makes the wording a choice rather than a preference:\n{f}"
+        "and 27 do not, which is what makes the wording a choice rather than a preference:\n{f}"
     );
 }
 
 /// A branch too long for any wording is cut from its tail, not removed.
 ///
-/// 36 columns cannot hold `Deleted ` and a 53 column branch, so nothing makes every branch fit
+/// 34 columns cannot hold `Deleted ` and a 53 column branch, so nothing makes every branch fit
 /// and the honest guarantee is a different one: the news leads, so what a cut takes is the end
 /// of the branch rather than the branch itself. That is the whole reason the name gave way.
 #[tokio::test]

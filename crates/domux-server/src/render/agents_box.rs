@@ -19,8 +19,9 @@ use ratatui::text::{Line, Span};
 /// The box's title, in the sidebar and in the agents overlay both (principle 14).
 pub const TITLE: &str = "Agents";
 /// The waiting mark. It is the only dot there is, and a row draws it only while its agent is
-/// waiting on you (decision record 0030).
-pub const DOT: &str = "●";
+/// waiting on you (decision record 0030). Smaller than a full circle, MUX-29, so it reads as
+/// a mark beside the name rather than a shape competing with it.
+pub const DOT: &str = "•";
 /// The recap's glyph.
 pub const RECAP_GLYPH: &str = "※";
 /// Two lines of recap, then an ellipsis (interface spec 12.20).
@@ -30,7 +31,7 @@ const GAP: &str = "  ";
 
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
 /// hollow glyph on an untouched slot, so every name in the box starts in one column.
-pub const NEST: &str = "⌞ ";
+pub const NEST: &str = "└ ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowForm {
@@ -705,7 +706,7 @@ mod tests {
     #[test]
     fn waiting_and_idle_rows_carry_no_state_word() {
         for (state, line) in [
-            (AgentState::Waiting, "auth-cleanup  ●"),
+            (AgentState::Waiting, "auth-cleanup  •"),
             (AgentState::Idle, "auth-cleanup"),
         ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
@@ -966,7 +967,7 @@ mod tests {
         );
         assert!(text(&rows[0])[0].starts_with("AUDREY-APP "));
         assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
-        assert_eq!(text(&rows[1])[0], "  auth-cleanup  ●", "indented under it");
+        assert_eq!(text(&rows[1])[0], "  auth-cleanup  •", "indented under it");
         assert!(rows[2].is_blank(), "{:?}", text(&rows[2]));
         assert_eq!(rows[3].key.as_deref(), Some("a_9c04"));
         assert_eq!(text(&rows[3])[0], "  billing-export");
@@ -1015,7 +1016,7 @@ mod tests {
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
         let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
         assert_eq!(rows.len(), 3, "two agents and the blank between them");
-        assert_eq!(text(&rows[0])[0], "auth-cleanup  ●");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup  •");
         assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
     }
 

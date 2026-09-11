@@ -1485,13 +1485,13 @@ async fn peek_prints_one_agent_per_block_in_the_boxs_order() {
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = text.lines().collect();
-    assert!(lines[0].starts_with("● claude  waiting"), "{text}");
+    assert!(lines[0].starts_with("• claude  waiting"), "{text}");
     assert!(lines[1].starts_with("  claude · "), "{text}");
     assert!(
         lines[1].contains("(a_"),
         "the id is on the place line so a caller can target it: {text}"
     );
-    assert!(lines[2].starts_with("● claude  idle"), "{text}");
+    assert!(lines[2].starts_with("• claude  idle"), "{text}");
 
     // The same order the box sorts its rows in, read off the list both surfaces share.
     let order: Vec<String> = h
