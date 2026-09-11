@@ -6,3 +6,4 @@
 /domux
 .domux/
 .claude/settings.local.json
+/dist
