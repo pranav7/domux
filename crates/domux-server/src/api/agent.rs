@@ -1,7 +1,7 @@
 //! `agent.*`: the records namespace. `agents.*` (Task 14) opens the overlay that lists them.
 
 use super::{ok, Ctx};
-use crate::agents::{context, hooks, manifests::RecapSource};
+use crate::agents::{context, hooks};
 use domux_core::api::{
     AgentInfo, AgentListParams, AgentListResult, AgentReportParams, AgentReportResult,
     AgentSelfParams, AgentTargetParams, ApiError, FocusResult,
@@ -74,57 +74,11 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
         });
     };
 
-    // Recap and session name, re-read on the events the architecture spec names, plus
-    // `SessionStart` so a resumed session shows its recap at once (M3 plan assumption 6), plus
-    // the three MUX-20 added.
-    //
-    // `Notification` is the one that matters: an agent that has stopped to ask you something is
-    // the row you read hardest, and M3 left it showing whatever the last `Stop` had found. The
-    // two compact events come along because a compaction is a gap in the conversation and the
-    // recap on the far side of it is worth re-reading; they cost nothing, being rare.
-    //
-    // `PreToolUse` and `PostToolUse` are deliberately not here. They fire many times a turn
-    // over a transcript the agent is appending to, so the modification time has always moved
-    // and every one of them would read the file whole. The row is turning a glyph while they
-    // arrive, which already says the recap is a turn behind.
-    if matches!(
-        event,
-        AgentEvent::Stop
-            | AgentEvent::UserPromptSubmit
-            | AgentEvent::SessionStart
-            | AgentEvent::Notification
-            | AgentEvent::PreCompact
-            | AgentEvent::PostCompact
-    ) {
-        let source = ctx
-            .agents
-            .manifests
-            .for_kind(p.kind)
-            .map(|m| m.recap)
-            .unwrap_or(RecapSource::None);
-        if source == RecapSource::ClaudeTranscript {
-            if let Some(path) = ctx
-                .model
-                .agent(&agent)
-                .and_then(|a| a.transcript_path.clone())
-            {
-                let t = ctx.agents.recaps.read(&path);
-                // The recap summarises the last turn, so re-deriving it every time is the
-                // point: an absent one means the last turn produced none.
-                let recap_events = ctx.model.set_agent_recap(&agent, t.recap);
-                ctx.events.extend(recap_events);
-                // The session name is not like that. The agent set it once and it stands
-                // until the agent sets another, so an absent one is not evidence that it
-                // was cleared: the reader answers `None` for a transcript it could not
-                // read, and reads a transcript over `recap::FULL_SCAN_BYTES` as a head and
-                // a tail, which can leave an early `/rename` outside the window. Never
-                // fabricate cuts both ways, so a name is written only when one was found.
-                if t.name.is_some() {
-                    ctx.model.set_agent_name(&agent, t.name);
-                }
-            }
-        }
-    }
+    // No transcript is read here. The recap does not arrive with the hook that ends the turn:
+    // Claude Code writes the entry minutes later, so a read on `Stop` found the turn before's
+    // and the row said the wrong thing until the next hook (MUX-28). `recap::poll` reads on the
+    // core's tick instead, which answers whenever the entry lands, and it is the only thing
+    // that reads a transcript (decision record 0034).
 
     let context = if event == AgentEvent::SessionStart {
         let model: &Model = ctx.model;

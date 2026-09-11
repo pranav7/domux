@@ -1,166 +1,260 @@
-//! The transcript reader: the recap and the session name, cached by path and modification
-//! time (architecture spec 3.6). Carried over from V1's `scanRecap`, in `recap.go` at commit
-//! e2fe7eb in this repository's V1 history, minus the directory-name encoding V2 does not
-//! need because the hooks give `transcript_path`.
+//! The transcript reader: the recap and the session name, read forward from a byte cursor per
+//! file. Carried over from V1's `scanRecap`, in `recap.go` at commit e2fe7eb in this
+//! repository's V1 history, minus the directory-name encoding V2 does not need because the
+//! hooks give `transcript_path`.
+//!
+//! **A recap is an entry the agent wrote as a recap, and nothing else** (MUX-28). Claude Code
+//! writes one as an `away_summary`, and `/recap` writes one as the output of a local command.
+//! Where a session wrote neither, it has no recap and the row says nothing. M3 fell back to the
+//! last thing the agent said in words and then to the `ai-title`, and both were shown in the
+//! slot a recap belongs in: a row whose session had never written one said "Now let me verify
+//! visually with screenshots before publishing", which is a sentence out of the middle of a
+//! turn rather than an account of it.
+//!
+//! **The last recap stands until the agent writes another.** The entry arrives about once in
+//! six turns, so blanking the recap at each new prompt would empty the row almost as fast as it
+//! filled it. This is how the session name already behaves, and decision record 0034 records
+//! the choice.
 
+use crate::agents::manifests::{RecapSource, Registry};
+use domux_core::api::Event;
+use domux_core::ids::AgentId;
+use domux_core::model::Model;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-/// Files up to this size are scanned whole, as V1 does.
-pub const FULL_SCAN_BYTES: u64 = 8 * 1024 * 1024;
-/// Above the limit: this much from the start, where the `ai-title` sits.
-pub const HEAD_BYTES: u64 = 512 * 1024;
-/// Above the limit: this much from the end, where the last summary and rename sit.
+/// How much of a transcript domux has never seen before is read: enough to reach the last
+/// recap and the last checkpoint, both of which sit at the end. Everything after the first
+/// read is the bytes the agent appended, however large the file has grown.
 pub const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 
 /// What one transcript says. Both fields are absent until the agent produces them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Transcript {
-    /// The agent's one-line summary of its last turn.
+    /// The agent's own recap of what it is doing.
     pub recap: Option<String>,
-    /// The name the agent gave the session with `/rename`.
+    /// The name the agent gave the session.
     pub name: Option<String>,
 }
 
-/// One per core. Holds the last result per path with the modification time it was read at.
+/// One per core. Holds a cursor per transcript: how far it has read and what it found there.
 #[derive(Default)]
 pub struct RecapReader {
-    cache: HashMap<PathBuf, (SystemTime, Transcript)>,
+    open: HashMap<PathBuf, Reading>,
 }
 
 impl RecapReader {
+    /// Reads whatever the agent has appended since last time.
+    ///
+    /// A transcript is appended to and never rewritten, so the bytes behind the cursor cannot
+    /// change and re-reading them would answer what it answered before. This is what lets the
+    /// core ask once a second: the question costs one `stat` while the file sits still, and a
+    /// few kilobytes while the agent writes, rather than the whole file either way. M3 read
+    /// the file whole on six hook events, and decision record 0027 kept the tool events out
+    /// because at that price an 8 MB transcript would have been read dozens of times a turn.
+    ///
+    /// A file shorter than the cursor is not the file the cursor was counting, so the reading
+    /// starts again from nothing.
     pub fn read(&mut self, path: &Path) -> Transcript {
         let Ok(meta) = std::fs::metadata(path) else {
             return Transcript::default();
         };
-        let Ok(mtime) = meta.modified() else {
-            return Transcript::default();
-        };
-        if let Some((seen, t)) = self.cache.get(path) {
-            if *seen == mtime {
-                return t.clone();
-            }
+        let len = meta.len();
+        let reading = self.open.entry(path.to_path_buf()).or_default();
+        if len < reading.read_to {
+            *reading = Reading::default();
         }
-        let text = read_bounded(path, meta.len()).unwrap_or_default();
-        let t = scan(&text);
-        self.cache.insert(path.to_path_buf(), (mtime, t.clone()));
-        t
+        if len == reading.read_to {
+            return reading.transcript();
+        }
+        if !take(reading, path, len) {
+            // Longer than the cursor, and still not the file the cursor was counting.
+            *reading = Reading::default();
+            take(reading, path, len);
+        }
+        reading.transcript()
     }
 
-    /// The record went away; stop holding its text.
+    /// The record went away; stop holding its cursor.
     pub fn forget(&mut self, path: &Path) {
-        self.cache.remove(path);
+        self.open.remove(path);
     }
 
     pub fn cached(&self) -> usize {
-        self.cache.len()
+        self.open.len()
     }
 }
 
-/// The whole file under the limit; above it, the head and the tail with the partial lines at
-/// each cut dropped. Both branches read lossily: a transcript half-written by a crashed
-/// process can carry one invalid byte, and a good recap sitting in an earlier valid line
-/// must survive that rather than being thrown away with the whole file.
-fn read_bounded(path: &Path, len: u64) -> std::io::Result<String> {
-    if len <= FULL_SCAN_BYTES {
-        let bytes = std::fs::read(path)?;
-        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+/// Reads what the agent has written past the cursor, and answers whether it was reading the
+/// file it thought it was.
+///
+/// The byte before the cursor is the newline the last read stopped on, so a file that does not
+/// have one there was replaced rather than appended to. A shorter file gives itself away by its
+/// length; one replaced by something longer would otherwise be read from the middle of a line
+/// for the rest of its life.
+fn take(reading: &mut Reading, path: &Path, len: u64) -> bool {
+    // A transcript domux has never seen may already be hours long, and the recap and the
+    // checkpoint it wants are both at the end of it.
+    let first = reading.read_to == 0;
+    let from = if first && len > TAIL_BYTES {
+        len - TAIL_BYTES
+    } else {
+        reading.read_to
+    };
+    let base = if first { from } else { from - 1 };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return true;
+    };
+    if file.seek(SeekFrom::Start(base)).is_err() {
+        return true;
     }
-    let mut f = std::fs::File::open(path)?;
-    let mut head = vec![0u8; HEAD_BYTES as usize];
-    let n = f.read(&mut head)?;
-    head.truncate(n);
-    if let Some(cut) = head.iter().rposition(|b| *b == b'\n') {
-        head.truncate(cut + 1);
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return true;
     }
-    f.seek(SeekFrom::End(-(TAIL_BYTES as i64)))?;
-    let mut tail = Vec::new();
-    f.read_to_end(&mut tail)?;
-    if let Some(cut) = tail.iter().position(|b| *b == b'\n') {
-        tail.drain(..=cut);
+    // Where the entries this read has not seen begin.
+    let start = if !first {
+        if bytes.first() != Some(&b'\n') {
+            return false;
+        }
+        1
+    } else if from > 0 {
+        // Starting partway into the file lands partway into a line, and half an entry is not
+        // one. Only the first read of a long transcript starts anywhere but a line boundary.
+        match bytes.iter().position(|b| *b == b'\n') {
+            Some(i) => i + 1,
+            None => return true,
+        }
+    } else {
+        0
+    };
+    // The agent may be midway through writing the last line. Consuming to the last newline
+    // leaves that line for the next read, which is when it will be whole.
+    let Some(rel) = bytes[start..].iter().rposition(|b| *b == b'\n') else {
+        return true;
+    };
+    let consumed = start + rel + 1;
+    // Lossily, because a transcript half-written by a crashed process can carry one invalid
+    // byte, and a good recap in an earlier line must survive it. Cutting on newlines never
+    // splits a character: no byte of a multi-byte character is a newline.
+    reading.feed(&String::from_utf8_lossy(&bytes[start..consumed]));
+    reading.read_to = base + consumed as u64;
+    true
+}
+
+/// Every record that reads a transcript, asked once. The core calls this from its once-a-second
+/// tick, and it is the only thing that reads a transcript.
+///
+/// The tick rather than the hooks, because the recap does not arrive with the hook that ends
+/// the turn: Claude Code writes the entry minutes later, so M3 read the file before it was
+/// there and then showed what it had found on the turn before. That is the "recaps don't match"
+/// half of MUX-28. A poll answers whenever the entry lands, and one rule in one place replaces
+/// the six events M3 re-read on.
+pub fn poll(model: &mut Model, reader: &mut RecapReader, manifests: &Registry) -> Vec<Event> {
+    let reading: Vec<(AgentId, PathBuf)> = model
+        .agents
+        .iter()
+        .filter(|a| {
+            manifests.for_kind(a.kind).map(|m| m.recap) == Some(RecapSource::ClaudeTranscript)
+        })
+        .filter_map(|a| a.transcript_path.clone().map(|p| (a.id.clone(), p)))
+        .collect();
+    let mut events = Vec::new();
+    for (agent, path) in reading {
+        let t = reader.read(&path);
+        events.extend(model.set_agent_recap(&agent, t.recap));
+        // The name is not read the same way. The agent set it once and it stands until the
+        // agent sets another, so an absent one is not evidence that it was cleared: the reader
+        // answers `None` for a transcript it could not read, and starts a long one `TAIL_BYTES`
+        // from its end, which can leave an early `/rename` outside the window. Never fabricate
+        // cuts both ways, so a name is written only when one was found.
+        if t.name.is_some() {
+            model.set_agent_name(&agent, t.name);
+        }
     }
-    let mut out = String::from_utf8_lossy(&head).into_owned();
-    out.push_str(&String::from_utf8_lossy(&tail));
-    Ok(out)
+    events
 }
 
 const STDOUT_OPEN: &str = "<local-command-stdout>";
 const STDOUT_CLOSE: &str = "</local-command-stdout>";
 
-/// Reads a transcript once. Dispatch is by the entry's JSON type, not by a substring, so an
-/// assistant message that quotes these strings is not mistaken for one (V1's note).
+/// One transcript being read: the cursor, and what the entries behind it said.
 ///
-/// **The recap is the agent's summary of its last turn, and the summary has to belong to that
-/// turn** (MUX-20). Claude Code writes an `away_summary` only now and then, so the freshest one
-/// in a long session can describe work from several turns back; M3 showed it anyway, and a row
-/// that had just finished something said what it had been doing half an hour earlier. So the
-/// summary is used only when `last_turn` finds it after the last prompt, which is what "this
-/// turn" means. Otherwise the recap is the last thing the agent actually said. A stale summary
-/// is still better than nothing, so it stands in where the agent said nothing in words, and the
-/// `ai-title` is last.
-///
-/// **The name has three sources and they are read in this order** (MUX-19). Claude Code
-/// writes a `custom-title` entry every time it checkpoints a renamed session, so a rename made
-/// at any point in the session is restated near the end of the file where the tail read always
-/// reaches it. `agent-name` carries the same string beside it and stands in when there is no
-/// `custom-title`. The `/rename` slash command's own `<command-args>` is last: it is what M3
-/// read and it is what stopped working. That entry is written once, at the moment of the
-/// rename, so a rename early in a long session falls outside the tail window; and no release
-/// of Claude Code the author has a transcript from writes it at all, which is why a renamed
-/// session went on showing `claude`.
-pub fn scan(text: &str) -> Transcript {
-    let mut title: Option<String> = None;
-    let mut summary: Option<(String, String)> = None; // (timestamp, text)
-    let mut custom_title: Option<String> = None;
-    let mut agent_name: Option<String> = None;
-    let mut renamed: Option<String> = None;
-    let mut pending_recap = false;
-    for line in text.lines() {
+/// Forward, and keeping only the latest of each thing, which is all an append-only file needs.
+/// M3 read backwards as well, to ask whether the newest summary belonged to the turn the file
+/// ended on. That question existed to choose between the summary and the agent's last words,
+/// and with the words gone there is nothing left for it to arbitrate.
+#[derive(Default)]
+struct Reading {
+    /// The byte the next read starts at, always on a line boundary.
+    read_to: u64,
+    recap: Option<String>,
+    custom_title: Option<String>,
+    agent_name: Option<String>,
+    renamed: Option<String>,
+    /// A `/recap` has been seen and its output is the next local command's.
+    pending_recap: bool,
+}
+
+impl Reading {
+    fn transcript(&self) -> Transcript {
+        Transcript {
+            recap: self.recap.clone(),
+            name: self
+                .custom_title
+                .clone()
+                .or_else(|| self.agent_name.clone())
+                .or_else(|| self.renamed.clone()),
+        }
+    }
+
+    fn feed(&mut self, text: &str) {
+        for line in text.lines() {
+            self.entry(line);
+        }
+    }
+
+    /// One entry. Dispatch is by the entry's JSON type, not by a substring, so an assistant
+    /// message that quotes these strings is not mistaken for one (V1's note).
+    ///
+    /// **The name has three sources and they are read in this order** (MUX-19). Claude Code
+    /// writes a `custom-title` entry every time it checkpoints a renamed session, so a rename
+    /// made at any point is restated near the end of the file, where a reader that starts at
+    /// the end still meets it. `agent-name` carries the same string beside it and stands in
+    /// when there is no `custom-title`. The `/rename` command's own `<command-args>` is last:
+    /// it is what M3 read and it is what stopped working, because that entry is written once,
+    /// at the moment of the rename.
+    fn entry(&mut self, line: &str) {
         if !relevant(line) {
-            continue;
+            return;
         }
         let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
-            continue;
+            return;
         };
         let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
         let subtype = v.get("subtype").and_then(Value::as_str).unwrap_or("");
-        let stamp = v
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
         match (kind, subtype) {
             ("custom-title", _) => {
                 if let Some(t) = string_field(&v, "customTitle") {
-                    custom_title = Some(t);
+                    self.custom_title = Some(t);
                 }
             }
             ("agent-name", _) => {
                 if let Some(t) = string_field(&v, "agentName") {
-                    agent_name = Some(t);
-                }
-            }
-            ("ai-title", _) => {
-                if let Some(t) = v
-                    .get("aiTitle")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.trim().is_empty())
-                {
-                    title = Some(t.to_string());
+                    self.agent_name = Some(t);
                 }
             }
             ("system", "away_summary") => {
                 if let Some(c) = v.get("content").and_then(Value::as_str) {
                     let line = recap_line(c);
                     if !line.is_empty() {
-                        summary = Some((stamp, line));
+                        self.recap = Some(line);
                     }
                 }
             }
-            ("system", "local_command") if pending_recap => {
+            ("system", "local_command") if self.pending_recap => {
                 if let Some(inner) = v
                     .get("content")
                     .and_then(Value::as_str)
@@ -168,10 +262,10 @@ pub fn scan(text: &str) -> Transcript {
                 {
                     let line = recap_line(&inner);
                     if !line.is_empty() {
-                        summary = Some((stamp, line));
+                        self.recap = Some(line);
                     }
                 }
-                pending_recap = false;
+                self.pending_recap = false;
             }
             ("user", _) => {
                 let content = v
@@ -180,46 +274,28 @@ pub fn scan(text: &str) -> Transcript {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if content.contains("<command-name>/recap</command-name>") {
-                    pending_recap = true;
+                    self.pending_recap = true;
                 } else if content.contains("<command-name>/rename</command-name>") {
-                    pending_recap = false;
+                    self.pending_recap = false;
                     if let Some(arg) = command_args(content) {
-                        renamed = Some(arg);
+                        self.renamed = Some(arg);
                     }
                 } else if content.contains("<command-name>") {
-                    pending_recap = false;
+                    self.pending_recap = false;
                 }
             }
             _ => {}
         }
     }
-    let turn = last_turn(text);
-    let summary = summary.map(|(_, s)| s);
-    let recap = if turn.summary_is_this_turn {
-        summary
-    } else {
-        turn.said.or(summary)
-    }
-    .or(title);
-    Transcript {
-        recap,
-        name: custom_title.or(agent_name).or(renamed),
-    }
 }
 
-/// The turn the transcript ends on: the last thing the agent said in words, and whether the
-/// freshest summary was written inside that turn.
-#[derive(Debug, Default)]
-struct LastTurn {
-    said: Option<String>,
-    summary_is_this_turn: bool,
+/// Reads a whole transcript at once, which is what a test has and what the first read of a
+/// short file does.
+pub fn scan(text: &str) -> Transcript {
+    let mut reading = Reading::default();
+    reading.feed(text);
+    reading.transcript()
 }
-
-/// How far back `last_turn` reads before it gives up. A turn is a prompt and the entries the
-/// agent wrote answering it; a long one runs to a few hundred, and past that the answer is
-/// worth less than the reading. Giving up says the summary is not this turn's, which is the
-/// cautious half of the rule.
-const TURN_LINES: usize = 500;
 
 /// One JSON string field, absent when it is missing, not a string, or only spaces. Every name
 /// source reads its field this way, so a checkpoint written with an empty title cannot blank a
@@ -238,111 +314,11 @@ fn string_field(v: &Value, field: &str) -> Option<String> {
 /// ordinary messages in a session run by a named teammate, and the hyphen is what keeps those
 /// lines out of the parser.
 fn relevant(line: &str) -> bool {
-    line.contains("\"ai-title\"")
-        || line.contains("\"custom-title\"")
+    line.contains("\"custom-title\"")
         || line.contains("\"agent-name\"")
         || line.contains("\"away_summary\"")
         || line.contains("\"local_command\"")
         || line.contains("<command-name>")
-}
-
-/// Walks back from the end of the transcript to the prompt that started the last turn.
-///
-/// Backwards, and stopping at the prompt, because everything it asks about is at the end: the
-/// answer is a handful of entries however long the session is. The forward pass above cannot
-/// answer either question - "is this the newest summary" is a forward question and "was it
-/// written after the last prompt" is not - and answering the second one forwards would mean
-/// parsing every user entry in the file, which is what `relevant` exists to avoid.
-///
-/// A prompt is a `user` entry whose message is text the reader typed. A tool result is a
-/// `user` entry too, and its content is a list of blocks rather than a string, which is what
-/// tells the two apart. A slash command is text but it is not a turn, so it does not stop the
-/// walk.
-fn last_turn(text: &str) -> LastTurn {
-    let mut out = LastTurn::default();
-    // A `/recap` writes its line as the stdout of a local command, and walking back we meet
-    // that output before the command that produced it. Any slash command's stdout looks the
-    // same, so the output only counts once `/recap` itself turns up under it.
-    let mut said_by_a_command = false;
-    for line in text.lines().rev().take(TURN_LINES) {
-        let line = line.trim();
-        if !line.starts_with('{') {
-            continue;
-        }
-        // The same cheap filter the forward pass uses, for the same reason: a transcript is
-        // mostly attachments and tool results, and none of them is any of these.
-        if !(line.contains("\"assistant\"")
-            || line.contains("\"user\"")
-            || line.contains("\"away_summary\"")
-            || line.contains("\"local_command\""))
-        {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        // A subagent writes into its parent's transcript, and what it said is not what this
-        // session said.
-        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        let kind = v.get("type").and_then(Value::as_str).unwrap_or("");
-        let subtype = v.get("subtype").and_then(Value::as_str).unwrap_or("");
-        match (kind, subtype) {
-            ("system", "away_summary") => {
-                out.summary_is_this_turn = true;
-                return out;
-            }
-            ("system", "local_command") => said_by_a_command = true,
-            ("assistant", _) => {
-                if out.said.is_none() {
-                    let line = recap_line(&assistant_text(&v));
-                    if !line.is_empty() {
-                        out.said = Some(line);
-                    }
-                }
-            }
-            ("user", _) => {
-                let Some(text) = v
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(Value::as_str)
-                else {
-                    continue;
-                };
-                if said_by_a_command && text.contains("<command-name>/recap</command-name>") {
-                    out.summary_is_this_turn = true;
-                    return out;
-                }
-                if !text.trim_start().starts_with("<command-name>") {
-                    return out;
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-/// The words in one assistant entry: its text blocks joined, with tool calls and thinking
-/// left out. A message written as a bare string reads the same way, because both shapes are in
-/// the transcripts this reads.
-fn assistant_text(v: &Value) -> String {
-    let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
-        return String::new();
-    };
-    if let Some(text) = content.as_str() {
-        return text.to_string();
-    }
-    let Some(blocks) = content.as_array() else {
-        return String::new();
-    };
-    blocks
-        .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|b| b.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn command_args(content: &str) -> Option<String> {
@@ -385,6 +361,7 @@ pub fn recap_line(s: &str) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
     fn fixture(name: &str) -> PathBuf {
@@ -397,8 +374,10 @@ mod tests {
         std::fs::read_to_string(fixture(name)).unwrap()
     }
 
+    /// A recap entry is what a recap is. `full` holds an `away_summary` and, after it, the
+    /// output of a `/recap`, and the later one is the recap.
     #[test]
-    fn the_freshest_summary_wins_over_the_ai_title() {
+    fn the_last_recap_entry_is_the_recap() {
         let t = scan(&text("full"));
         assert_eq!(
             t.recap.as_deref(),
@@ -407,36 +386,24 @@ mod tests {
         assert_eq!(t.name, None);
     }
 
-    /// A session that has produced no summary at all recaps with the last thing the agent said
-    /// (MUX-20). The `ai-title` in the same fixture is what M3 showed, and it names the whole
-    /// conversation rather than the turn that just finished.
+    /// MUX-28, the noise half: a session that wrote no recap has none. `fresh` carries an
+    /// `ai-title` and a turn of the agent's words, and M3 showed each of them in turn as
+    /// though the agent had written a recap.
     #[test]
-    fn a_session_with_no_summary_recaps_with_the_last_thing_the_agent_said() {
+    fn a_session_that_wrote_no_recap_reads_as_absent() {
         let t = scan(&text("fresh"));
-        assert_eq!(t.recap.as_deref(), Some("I will read the file first"));
-    }
-
-    /// And with the agent's words gone the `ai-title` is still there to fall back on, which is
-    /// the last rung of the ladder.
-    #[test]
-    fn a_session_with_neither_a_summary_nor_words_recaps_with_the_ai_title() {
-        let only_title: String = text("fresh")
-            .lines()
-            .filter(|l| !l.contains("\"assistant\""))
-            .map(|l| format!("{l}\n"))
-            .collect();
-        assert_eq!(
-            scan(&only_title).recap.as_deref(),
-            Some("Session check cleanup")
+        assert_eq!(t.recap, None);
+        assert!(
+            text("fresh").contains("ai-title"),
+            "and not because the fixture is bare"
         );
     }
 
-    /// The rule MUX-20 turns on: a summary from before the last prompt is not this turn's, so
-    /// the agent's own last words win over it. `full` ends with a `/recap` inside the last turn
-    /// and its summary does win, which is the case above; here another prompt and another turn
-    /// follow it.
+    /// The last recap stands until the agent writes another, which is what the name already
+    /// does. Recaps arrive about once in six turns, so a rule that blanked the row at each new
+    /// prompt would empty it almost as fast as it filled it (decision record 0034).
     #[test]
-    fn a_summary_from_an_earlier_turn_gives_way_to_the_last_thing_the_agent_said() {
+    fn a_recap_stands_through_the_turns_after_it() {
         let later = format!(
             "{}{}{}",
             text("full"),
@@ -445,66 +412,30 @@ mod tests {
         );
         assert_eq!(
             scan(&later).recap.as_deref(),
-            Some("Refreshing the token on every request now")
-        );
-    }
-
-    /// A turn the agent has not answered in words yet keeps the earlier summary rather than
-    /// showing nothing: a stale line says more than a blank one, and it is the last rung
-    /// before the title.
-    #[test]
-    fn a_turn_with_no_words_yet_keeps_the_earlier_summary() {
-        let asked = format!(
-            "{}{}",
-            text("full"),
-            "{\"type\":\"user\",\"timestamp\":\"2026-09-04T11:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"now do the token refresh\"}}\n",
-        );
-        assert_eq!(
-            scan(&asked).recap.as_deref(),
             Some("Wrote the guard and deleted the duplicate checks")
         );
     }
 
-    /// A subagent writes into its parent's transcript, and what it said is not what this
-    /// session said.
+    /// A `/recap` writes its line as the stdout of a local command, so the output counts only
+    /// under the command that produced it. Any other slash command's output looks the same.
     #[test]
-    fn a_subagents_words_are_not_this_sessions_recap() {
-        let with_sidechain = format!(
-            "{}{}",
-            text("fresh"),
-            "{\"type\":\"assistant\",\"isSidechain\":true,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Subagent reporting back.\"}]}}\n",
-        );
+    fn only_a_recap_commands_output_is_read_as_a_recap() {
+        let renamed = scan(&text("renamed"));
         assert_eq!(
-            scan(&with_sidechain).recap.as_deref(),
-            Some("I will read the file first")
+            renamed.recap, None,
+            "the /rename output is a local command's too"
         );
-    }
-
-    /// Thinking and tool calls are not words the reader was told. An assistant entry carrying
-    /// only those is passed over for the one under it that has text.
-    #[test]
-    fn a_turn_that_is_all_tool_calls_reads_back_to_the_last_words() {
-        let tools = format!(
-            "{}{}",
-            text("fresh"),
-            "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{}}]}}\n",
-        );
-        assert_eq!(
-            scan(&tools).recap.as_deref(),
-            Some("I will read the file first")
-        );
+        assert_eq!(renamed.name.as_deref(), Some("auth-cleanup"));
     }
 
     /// The source MUX-19 added, and the one a real Claude Code session writes. The last
-    /// checkpoint wins, an assistant turn that says the words in its prose is not one, and the
-    /// `ai-title` in the same file is still only a recap.
+    /// checkpoint wins, and an assistant turn that says the words in its prose is not one.
     #[test]
     fn the_session_name_is_the_last_custom_title() {
         let t = scan(&text("titled"));
         assert_eq!(t.name.as_deref(), Some("token-refresh-fix"));
         assert_eq!(
-            t.recap.as_deref(),
-            Some("Read the file"),
+            t.recap, None,
             "the name and the recap are read from one file and neither is the other"
         );
     }
@@ -550,20 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn the_session_name_is_the_last_rename_and_is_absent_until_one_happens() {
-        assert_eq!(scan(&text("fresh")).name, None);
-        let t = scan(&text("renamed"));
-        assert_eq!(t.name.as_deref(), Some("auth-cleanup"));
-        assert_eq!(
-            t.recap.as_deref(),
-            Some("I will read the file first"),
-            "renaming does not change the recap"
-        );
-        let two = format!("{}{}", text("renamed"), "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>token-refresh-fix</command-args>\"}}\n");
-        assert_eq!(scan(&two).name.as_deref(), Some("token-refresh-fix"));
-    }
-
-    #[test]
     fn recap_line_collapses_whitespace_drops_the_goal_label_and_keeps_one_sentence() {
         assert_eq!(
             recap_line("Goal:  Replaced three   session checks with one guard.\nTests pass."),
@@ -584,91 +501,153 @@ mod tests {
         let path = dir.path().join("bad.jsonl");
         std::fs::write(
             &path,
-            "not json\n{\"type\":\"ai-title\",\"aiTitle\":\"Still read\"}\n",
+            "not json\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"Still read\"}\n",
         )
         .unwrap();
         assert_eq!(
             r.read(&path).recap.as_deref(),
             Some("Still read"),
-            "one bad line does not stop the scan"
+            "one bad line does not stop the reading"
         );
     }
 
+    /// The reading picks up where it left off, so the bytes behind the cursor are never read
+    /// twice. Proved by rewriting them into something the reader would answer differently if
+    /// it went back over them.
     #[test]
-    fn a_second_read_of_an_unchanged_file_is_served_from_the_cache() {
+    fn a_read_takes_only_what_the_agent_has_appended() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        std::fs::copy(fixture("fresh"), &path).unwrap();
+        let first =
+            "{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"The first recap.\"}\n";
+        std::fs::write(&path, first).unwrap();
         let mut r = RecapReader::default();
-        assert_eq!(
-            r.read(&path).recap.as_deref(),
-            Some("I will read the file first")
-        );
+        assert_eq!(r.read(&path).recap.as_deref(), Some("The first recap"));
         assert_eq!(r.cached(), 1);
 
-        // Change the file's content without changing its mtime. A reader that
-        // re-scans regardless of mtime would see the new content; the cache must
-        // not, because `read` only re-scans when the mtime it saw last time has
-        // moved.
-        let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::fs::write(&path, text("full")).unwrap();
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(original_mtime)
-            .unwrap();
+        // Those same bytes, overwritten in place with a name the reader has never been told,
+        // padded to the length they had so the cursor still lands on the line's end. JSON
+        // ignores the padding. A reader that went back over the bytes behind its cursor would
+        // come away with the name; one that takes only what was appended cannot see it.
+        let ghost = "{\"type\":\"custom-title\",\"customTitle\":\"ghost\"}";
+        let behind = format!("{ghost}{}\n", " ".repeat(first.len() - 1 - ghost.len()));
+        assert_eq!(behind.len(), first.len());
+        let appended = "{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"The second recap.\"}\n";
+        std::fs::write(&path, format!("{behind}{appended}")).unwrap();
+        let t = r.read(&path);
         assert_eq!(
-            r.read(&path).recap.as_deref(),
-            Some("I will read the file first"),
-            "an unchanged mtime must be served from the cache, not re-scanned"
+            t.recap.as_deref(),
+            Some("The second recap"),
+            "the appended line is read"
         );
-        assert_eq!(r.cached(), 1);
+        assert_eq!(
+            t.name, None,
+            "and the bytes behind the cursor are not read again"
+        );
     }
 
+    /// A file that sits still is one `stat`, which is what makes a poll once a second cheap.
     #[test]
-    fn a_changed_file_is_re_read_and_forget_drops_it_from_the_cache() {
+    fn a_read_of_an_unchanged_file_answers_without_opening_it() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        std::fs::copy(fixture("fresh"), &path).unwrap();
+        std::fs::write(
+            &path,
+            "{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"Held.\"}\n",
+        )
+        .unwrap();
         let mut r = RecapReader::default();
+        assert_eq!(r.read(&path).recap.as_deref(), Some("Held"));
+        // Unreadable from here on: a reader that opened the file again would answer absent.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(
             r.read(&path).recap.as_deref(),
-            Some("I will read the file first")
+            Some("Held"),
+            "the length is unchanged, so there was nothing to open it for"
         );
-        assert_eq!(r.cached(), 1);
-        std::fs::write(&path, "").unwrap();
-        // The mtime moved, so the empty file is read again and the recap goes.
-        assert_eq!(r.read(&path), Transcript::default());
+    }
+
+    /// A half-written last line is left for the next read, which is when it will be whole.
+    #[test]
+    fn a_line_the_agent_is_still_writing_is_read_once_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let entry =
+            "{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"Torn in half.\"}\n";
+        let (head, tail) = entry.split_at(40);
+        std::fs::write(&path, head).unwrap();
+        let mut r = RecapReader::default();
+        assert_eq!(r.read(&path).recap, None, "half an entry is not one");
+        std::fs::write(&path, entry).unwrap();
+        assert_eq!(r.read(&path).recap.as_deref(), Some("Torn in half"));
+        assert!(!tail.is_empty());
+    }
+
+    /// A transcript shorter than the cursor is not the transcript the cursor was counting, so
+    /// the reading starts again rather than seeking past the end of the new one.
+    #[test]
+    fn a_replaced_transcript_is_read_from_the_beginning_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"The long gone one.\"}\n",
+        )
+        .unwrap();
+        let mut r = RecapReader::default();
+        assert_eq!(r.read(&path).recap.as_deref(), Some("The long gone one"));
+        std::fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"new\"}\n",
+        )
+        .unwrap();
+        let t = r.read(&path);
+        assert_eq!(t.name.as_deref(), Some("new"));
+        assert_eq!(t.recap, None, "the recap went with the file that held it");
         r.forget(&path);
         assert_eq!(r.cached(), 0);
     }
 
+    /// A transcript replaced by a longer one is read from the beginning again. Length alone
+    /// cannot tell this from an append, so the reader checks that the byte behind its cursor is
+    /// still the newline it stopped on.
     #[test]
-    fn a_transcript_larger_than_the_full_scan_limit_reads_its_head_and_tail_but_not_the_excluded_middle(
-    ) {
+    fn a_transcript_replaced_by_a_longer_one_is_read_from_the_beginning_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"the-short-one\"}\n",
+        )
+        .unwrap();
+        let mut r = RecapReader::default();
+        assert_eq!(r.read(&path).name.as_deref(), Some("the-short-one"));
+        let longer = "{\"type\":\"custom-title\",\"customTitle\":\"the-longer-one\"}\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"And its recap.\"}\n";
+        assert!(
+            longer.len() > "{\"type\":\"custom-title\",\"customTitle\":\"the-short-one\"}\n".len()
+        );
+        std::fs::write(&path, longer).unwrap();
+        let t = r.read(&path);
+        assert_eq!(t.name.as_deref(), Some("the-longer-one"));
+        assert_eq!(t.recap.as_deref(), Some("And its recap"));
+    }
+
+    /// The first read of a transcript that is already long starts `TAIL_BYTES` from its end,
+    /// because the recap and the checkpoint it wants are both there.
+    #[test]
+    fn the_first_read_of_a_long_transcript_starts_near_its_end() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("huge.jsonl");
         let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "{{\"type\":\"ai-title\",\"aiTitle\":\"Early title\"}}").unwrap();
+        writeln!(
+            f,
+            "{{\"type\":\"system\",\"subtype\":\"away_summary\",\"content\":\"Wrong: this sits outside the window.\"}}"
+        )
+        .unwrap();
         let filler = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"padding padding padding padding padding\"}]}}";
-        for i in 0..120_000 {
+        for _ in 0..30_000 {
             writeln!(f, "{filler}").unwrap();
-            if i == 60_000 {
-                // Sits deep in the excluded middle, nowhere near either the head or
-                // the tail window. If the size guard above were removed and the
-                // whole file scanned, this away_summary would beat the head's
-                // title and the assertion below would see it instead: proof the
-                // middle is truly dropped, not merely that the fixture is big.
-                writeln!(
-                    f,
-                    "{{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:30:00.000Z\",\"content\":\"Wrong: this sits in the excluded middle.\"}}"
-                )
-                .unwrap();
-            }
         }
-        // A rename that only exists in the tail window: if the tail read broke (a
-        // bad seek offset, say), this would come back absent.
         writeln!(
             f,
             "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>tail-proof</command-args>\"}}}}"
@@ -676,45 +655,19 @@ mod tests {
         .unwrap();
         f.flush().unwrap();
         assert!(
-            std::fs::metadata(&path).unwrap().len() > FULL_SCAN_BYTES,
-            "the fixture is big enough to trip the limit"
+            std::fs::metadata(&path).unwrap().len() > TAIL_BYTES,
+            "the fixture is long enough to trip the window"
         );
         let mut r = RecapReader::default();
         let t = r.read(&path);
         assert_eq!(
-            t.recap.as_deref(),
-            Some("padding padding padding padding padding"),
-            "the tail's own last words, and never the summary buried in the excluded middle"
-        );
-        assert_ne!(
-            t.recap.as_deref(),
-            Some("Wrong: this sits in the excluded middle"),
-            "a summary buried in the excluded middle must not reach the recap"
-        );
-        assert_eq!(
             t.name.as_deref(),
             Some("tail-proof"),
-            "the tail must still be read for the rename"
+            "the end of the file is read"
         );
-    }
-
-    #[test]
-    fn a_bad_utf8_byte_after_a_good_line_does_not_discard_the_whole_transcript() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bad_utf8.jsonl");
-        // Simulates a process that crashed mid-write: a good line, then an invalid
-        // UTF-8 byte with no closing newline. Well under FULL_SCAN_BYTES, so this
-        // exercises the full-scan branch of read_bounded, not the head/tail branch
-        // (which was already lossy).
-        let mut bytes =
-            b"{\"type\":\"ai-title\",\"aiTitle\":\"Valid before the crash\"}\n".to_vec();
-        bytes.push(0xFF);
-        std::fs::write(&path, &bytes).unwrap();
-        let mut r = RecapReader::default();
         assert_eq!(
-            r.read(&path).recap.as_deref(),
-            Some("Valid before the crash"),
-            "an invalid byte must not discard the whole transcript"
+            t.recap, None,
+            "and the recap before the window is not, which is the window doing its work"
         );
     }
 }

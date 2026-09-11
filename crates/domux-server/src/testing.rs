@@ -12,6 +12,7 @@ use domux_core::config::Config;
 use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::{ClientId, PaneId, TabId, WorkspaceId};
 use domux_core::keymap::{KeyName, Keymap};
+use domux_core::model::agent::Agent;
 use domux_core::model::{AgentKind, ClientView, Focus, Model, TextInput};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, CursorState, Decoder, FrameDiff, Hello, ServerMsg, WireColor,
@@ -709,6 +710,32 @@ impl Harness {
             .lock()
             .unwrap()
             .clone()
+    }
+
+    /// The one record, once it says what the test is waiting for.
+    ///
+    /// What the tick answers takes a tick to arrive, and the recap and the session name are
+    /// both read there now: a hook reads no transcript (decision record 0034). So a test that
+    /// writes a transcript and sends a hook waits here rather than reading the model straight
+    /// back.
+    pub async fn wait_for_agent(
+        &mut self,
+        pred: impl Fn(&Agent) -> bool,
+        timeout: Duration,
+    ) -> Agent {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let m = self.model();
+            assert_eq!(m.agents.len(), 1, "one record");
+            let a = m.agents[0].clone();
+            if pred(&a) {
+                return a;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!("the record did not say it within {timeout:?}; it says: {a:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// The fact at `key` as of the last batch the core finished, published beside the model

@@ -2216,6 +2216,15 @@ impl Core {
             &now,
         );
         changed |= self.agents_changed(events);
+        // The recap and the session name, off the same tick. The agent writes a recap minutes
+        // after the hook that ended the turn, so a poll is what catches it; reading only what
+        // the agent has appended is what makes asking once a second cost nothing (MUX-28).
+        let read = crate::agents::recap::poll(
+            &mut self.model,
+            &mut self.agents.recaps,
+            &self.agents.manifests,
+        );
+        changed |= self.agents_changed(read);
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
             self.last_minute = Some(minute);
@@ -5334,6 +5343,16 @@ mod tests {
         path
     }
 
+    /// What the tick does with transcripts, which is the only thing that reads one. A hook
+    /// reads none, so this is what leaves a record's transcript in the reader (MUX-28).
+    fn read_transcripts(core: &mut Core) {
+        crate::agents::recap::poll(
+            &mut core.model,
+            &mut core.agents.recaps,
+            &core.agents.manifests,
+        );
+    }
+
     /// The view every frame builds, which is where a working agent takes its word. `render`
     /// builds one per frame and needs a client and a composed buffer; this is the half of it
     /// the pool turns on, and it is the same function.
@@ -5699,6 +5718,7 @@ mod tests {
             .expect("the slot's tab starts with one pane");
         let transcript = a_transcript(dir.path());
         hook_with(&mut core, &pane, "UserPromptSubmit", Some(&transcript));
+        read_transcripts(&mut core);
         drawn(&mut core);
         assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
         assert_eq!(
@@ -5739,6 +5759,7 @@ mod tests {
         let (mut core, pane) = core_with_a_pane(dir.path());
         let transcript = a_transcript(dir.path());
         hook_with(&mut core, &pane, "UserPromptSubmit", Some(&transcript));
+        read_transcripts(&mut core);
         drawn(&mut core);
         assert_eq!(core.agents.words.in_use(), 1, "the working row took a word");
         assert_eq!(
@@ -5780,6 +5801,7 @@ mod tests {
         let (mut core, pane) = core_with_a_pane(dir.path());
         let transcript = a_transcript(dir.path());
         hook_with(&mut core, &pane, "SessionStart", Some(&transcript));
+        read_transcripts(&mut core);
         let id = core.model.agents[0].id.clone();
         assert_eq!(core.agents.recaps.cached(), 1, "the transcript is cached");
         core.agents.words.word_for(&id);
