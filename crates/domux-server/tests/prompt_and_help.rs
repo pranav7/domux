@@ -232,9 +232,10 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
     cfg.keys.bindings.insert("|".into(), "".into());
     // Tall enough that the full list fits with no truncation: M2 added four leader
     // bindings (switcher.open, sidebar.toggle, workspace.rename, workspace.clear_name),
-    // pane.clear added one more, and M3 added agents.open and the box keys' Tab, so this
-    // grew from the 80x30 M1 needed. The 80x24 case is the next test, which is where
-    // truncation is the behaviour under test.
+    // pane.clear added one more, M3 added agents.open and the box keys' Tab, and the
+    // modifier legend plus a blank line ahead of each of the three groups added five
+    // more, so this grew from the 80x30 M1 needed. The 80x24 case is the next test,
+    // which is where truncation is the behaviour under test.
     let mut h = Harness::start(cfg, 80, 54).await;
     h.key(h.client.clone(), "C-b").await;
     h.key(h.client.clone(), "?").await;
@@ -265,8 +266,36 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
         "no direction keeps a row of its own:\n{f}"
     );
     assert!(
-        f.contains("nvim, vim, fzf keep C-h, C-j, C-k, C-l, C-\\"),
-        "{f}"
+        !f.contains("nvim"),
+        "the passthrough rule named no shortcut, so it is gone from the overlay:\n{f}"
+    );
+    assert!(
+        f.contains("bold fg=#89b4fa"),
+        "the leader line is bold blue, so it is the one line nobody misses:\n{f}"
+    );
+    assert!(
+        f.contains("C Ctrl · S Shift · M Alt · D Super"),
+        "the modifier legend spells out what every abbreviated row is about to use:\n{f}"
+    );
+    // Grouped under `projects`, `agents` and `workpanel`, in that order, rather than one
+    // alphabetised run: each header comes before the rows it groups.
+    let projects = f.find("projects").expect("projects header");
+    let agents = f.find("agents").expect("agents header");
+    let workpanel = f.find("workpanel").expect("workpanel header");
+    assert!(projects < agents && agents < workpanel, "{f}");
+    assert!(
+        projects
+            < f.find("C-b s      switcher.open")
+                .expect("switcher.open row"),
+        "switcher.open reads as a projects shortcut:\n{f}"
+    );
+    assert!(
+        agents < f.find("C-b a      agents.open").expect("agents.open row"),
+        "agents.open reads as an agents shortcut:\n{f}"
+    );
+    assert!(
+        workpanel < f.find("C-h        focus.left").expect("focus.left row"),
+        "focus.left reads as a workpanel shortcut:\n{f}"
     );
     assert!(f.contains("esc close"), "{f}");
     assert!(

@@ -653,12 +653,15 @@ async fn reopening_after_a_switch_out_of_the_filter_comes_back_with_the_keys_row
 /// not shown the keys they are holding. M2 left that arm for the milestone that made the box
 /// reachable.
 ///
-/// A 24 row screen on purpose, for the reason `tests/filter.rs` gives for the switcher's half of
+/// A short screen on purpose, for the reason `tests/filter.rs` gives for the switcher's half of
 /// this: the overlay does not fit, so the order is the whole of what the reader gets and a block
-/// placed last is gone rather than merely late.
+/// placed last is gone rather than merely late. 26 rather than the 24 M3 picked: the modifier
+/// legend and the `projects` header the grouped rows now draw under both push the leader table
+/// down by a line, and 24 cut the screen before any leader row, which answered a different
+/// question than this test asks.
 #[tokio::test]
 async fn help_inside_the_box_lists_the_box_keys_first_after_the_help_has_been_closed_once() {
-    let mut h = Harness::start(two_boxes(), 100, 24).await;
+    let mut h = Harness::start(two_boxes(), 100, 26).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.key(h.client.clone(), "?").await;

@@ -303,10 +303,15 @@ pub fn centred_area(width: u16, height: u16, buf: &Buffer) -> Rect {
     )
 }
 
-/// `┌ Keys ┐`: the leader, every `[keys.bindings]` line as `C-a |    pane.split right`,
-/// every `[keys.global]` line, the passthrough rule, every `[keys.list]` line under
-/// `in a list`, and `esc close`. Rendered from the loaded keymap, so a rebinding shows here
-/// (principle 3).
+/// `┌ Keys ┐`: the leader in bold blue over the modifier legend, then every `[keys.bindings]`
+/// and `[keys.global]` line as `C-a |    pane.split right`, grouped under `projects`, `agents`
+/// and `workpanel` by what the action's own name says it touches, then every `[keys.list]`
+/// line under `in a list`, and `esc close`. Rendered from the loaded keymap, so a rebinding
+/// shows here (principle 3).
+///
+/// The grouping reads the action string, not a table the config carries, so a custom action
+/// with no `workspace.` or `agents.` prefix falls into `workpanel`: the catch-all a reader
+/// missing from the other two groups checks first.
 ///
 /// The `[keys.list]` block goes first when the reader's keys are in a box and last when they
 /// are on a pane; see the comment on `in_a_box` below.
@@ -342,6 +347,49 @@ fn resize_step(action: &Action) -> Option<&str> {
     (action.method == "pane.resize" && action.args.len() == 2).then(|| action.args[1].as_str())
 }
 
+/// The three headings the Keys overlay groups `[keys.bindings]` and `[keys.global]` rows
+/// under, in the order they are drawn: opening or renaming a project or workspace, opening
+/// the agents overlay, then everything else on the workpanel. `sidebar.toggle` and
+/// `client.detach` read as workpanel rather than projects: they act on the screen, not on a
+/// project or a workspace. `agents.open` keeps its own heading even though `[navigator]
+/// enabled` (decision 0030) makes it do nothing for now: the overlay renders the keymap as
+/// configured (principle 3), and the heading empties itself the day the binding does.
+const HELP_GROUPS: [&str; 3] = ["projects", "agents", "workpanel"];
+
+/// Which of `HELP_GROUPS` a row belongs in, decided from the action's own name so a
+/// rebinding to a new action still lands somewhere sensible.
+fn help_group(action: &str) -> usize {
+    if action.starts_with("workspace.") || action == "switcher.open" {
+        0
+    } else if action.starts_with("agents.") {
+        1
+    } else {
+        2
+    }
+}
+
+/// One line of the Keys overlay, styled by what it is rather than by position, since the
+/// leader and legend are the only lines at a fixed index and every group's header moves
+/// with what the keymap and the reader's focus put before it.
+#[derive(Clone, Copy)]
+enum HelpLineKind {
+    Leader,
+    Legend,
+    Header,
+    Body,
+}
+
+/// `list_block`, its first line promoted to a header, matching the weight the `projects`,
+/// `agents` and `workpanel` headers draw with.
+fn help_list_block_lines(list_block: &[String]) -> Vec<(HelpLineKind, String)> {
+    let mut out = Vec::with_capacity(list_block.len());
+    if let Some((header, rest)) = list_block.split_first() {
+        out.push((HelpLineKind::Header, header.clone()));
+        out.extend(rest.iter().cloned().map(|s| (HelpLineKind::Body, s)));
+    }
+    out
+}
+
 fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     let km = input.keymap;
     // `[keys.list]`, the keys inside a box (interface spec 5.4). Built here and placed below,
@@ -371,16 +419,18 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     // and `ClientView::focus_after_pop` names the switcher when it uncovers one, so a
     // switcher the reader came back to still reads as a box.
     let in_a_box = matches!(input.view.focus, Focus::Region(k) if k.is_box());
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(format!("leader {}", km.leader));
-    lines.push(String::new());
+    // Sections other than the leader and the legend: the `[keys.list]` block where `in_a_box`
+    // puts it, and the three grouped tables in between. Collected first and joined with one
+    // blank line apiece, so an empty group (every reader ships with `agents.open` bound, but
+    // a rebound-to-nothing config should not draw a header over no rows) draws nothing rather
+    // than a heading with an empty table under it.
+    let mut sections: Vec<Vec<(HelpLineKind, String)>> = Vec::new();
     if in_a_box && !list_block.is_empty() {
-        lines.extend(list_block.iter().cloned());
-        lines.push(String::new());
+        sections.push(help_list_block_lines(&list_block));
     }
     // Collapse the run of `tab.select <n>` bindings into one row. Nine near-identical rows
-    // push the globals, the passthrough rule and the footer past the bottom of the box on
-    // an 80x24 screen, and the row still renders the configured keys (principle 3).
+    // push the globals and the footer past the bottom of the box on an 80x24 screen, and the
+    // row still renders the configured keys (principle 3).
     let mut digits: Vec<String> = km
         .bindings
         .iter()
@@ -440,26 +490,47 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
         }
     }
     globals.sort_by(|a, b| a.1.cmp(&b.1));
-    for (k, a) in bindings.iter().chain(globals.iter()) {
-        lines.push(format!("{k:<10} {a}"));
+    // Grouped by what the action's own name says it touches (`help_group`), not left as one
+    // alphabetised run: the switcher and the workspace actions read as `projects`, the agents
+    // overlay reads as `agents`, and everything that acts on a pane, a tab or the screen itself
+    // reads as `workpanel`, the catch-all a reader checks last.
+    let mut groups: [Vec<(String, String)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (k, a) in bindings.into_iter().chain(globals) {
+        groups[help_group(&a)].push((k, a));
     }
-    if !km.passthrough_commands.is_empty() {
-        lines.push(String::new());
-        lines.push(format!(
-            "{} keep {}",
-            km.passthrough_commands.join(", "),
-            km.passthrough_keys
-                .iter()
-                .map(|k| k.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+    for group in &mut groups {
+        group.sort_by(|a, b| a.1.cmp(&b.1));
+    }
+    for (name, rows) in HELP_GROUPS.iter().zip(groups.iter()) {
+        if rows.is_empty() {
+            continue;
+        }
+        let mut section = vec![(HelpLineKind::Header, (*name).to_string())];
+        section.extend(
+            rows.iter()
+                .map(|(k, a)| (HelpLineKind::Body, format!("{k:<10} {a}"))),
+        );
+        sections.push(section);
     }
     if !in_a_box && !list_block.is_empty() {
-        lines.push(String::new());
-        lines.extend(list_block);
+        sections.push(help_list_block_lines(&list_block));
     }
-    lines.push(String::new());
+    // The leader and the legend for `C`, `S`, `M` and `D` sit above everything else and never
+    // move: bold blue is the one weight nothing else in the box carries, so the leader reads
+    // as the line to notice first, and the legend under it spells out the modifier every
+    // other row is about to abbreviate.
+    let mut lines: Vec<(HelpLineKind, String)> = vec![
+        (HelpLineKind::Leader, format!("leader {}", km.leader)),
+        (
+            HelpLineKind::Legend,
+            format!("C Ctrl{HINT_SEP}S Shift{HINT_SEP}M Alt{HINT_SEP}D Super"),
+        ),
+    ];
+    for section in sections {
+        lines.push((HelpLineKind::Body, String::new()));
+        lines.extend(section);
+    }
+    lines.push((HelpLineKind::Body, String::new()));
     let inner = frame("Keys", 60, lines.len() as u16 + 3, buf);
     if inner.width < 3 || inner.height == 0 {
         return;
@@ -477,14 +548,23 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     let width = inner.width.saturating_sub(2) as usize;
     let last_x = inner.x + inner.width - 1;
     let text = Style::default().fg(theme::TEXT).bg(theme::BASE);
-    for (i, line) in lines.iter().take(shown).enumerate() {
+    let leader_style = text.fg(theme::BLUE).add_modifier(Modifier::BOLD);
+    let legend_style = text.fg(theme::SUBTEXT0);
+    let header_style = text.add_modifier(Modifier::BOLD);
+    for (i, (kind, line)) in lines.iter().take(shown).enumerate() {
+        let style = match kind {
+            HelpLineKind::Leader => leader_style,
+            HelpLineKind::Legend => legend_style,
+            HelpLineKind::Header => header_style,
+            HelpLineKind::Body => text,
+        };
         put_within(
             buf,
             inner.x + 1,
             inner.y + i as u16,
             last_x,
             &truncate_with_ellipsis(line, width),
-            text,
+            style,
         );
     }
     if truncated {

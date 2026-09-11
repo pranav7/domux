@@ -203,7 +203,7 @@ async fn a_filter_that_matches_nothing_names_what_was_searched_for_and_the_way_o
 /// `┌ Keys` box.
 #[tokio::test]
 async fn question_mark_opens_the_keys_over_the_switcher_and_esc_comes_back_to_it() {
-    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let mut h = Harness::start(Config::default(), 80, 40).await;
     switcher_with_a_named_slot(&mut h).await;
     h.key(h.client.clone(), "?").await;
     let f = h
@@ -307,7 +307,7 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
     cfg.keys.list.remove("/");
     cfg.keys.list.insert("g".into(), "list.filter".into());
     cfg.keys.list.remove("?");
-    let mut h = Harness::start(cfg, 80, 48).await;
+    let mut h = Harness::start(cfg, 80, 54).await;
     h.api("help", json!({})).await.unwrap();
     let f = h
         .wait_for(
@@ -341,15 +341,13 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
         !f.contains("more, see domux.toml"),
         "nothing is truncated at this height, so an absence above is a real absence:\n{f}"
     );
-    // The block is last, after the two tables that apply wherever the reader is standing.
+    // The block is last, after the three grouped tables that apply wherever the reader is
+    // standing.
     let list = f.find("in a list").expect("the heading is on the screen");
     let globals = f.find("focus.left").expect("the globals are on the screen");
-    let passthrough = f
-        .find("keep C-h")
-        .expect("the passthrough rule is on the screen");
     assert!(
-        list > globals && list > passthrough,
-        "the box keys come after the leader table, the globals and the passthrough rule:\n{f}"
+        list > globals,
+        "the box keys come after the leader table and the globals:\n{f}"
     );
     // By action, like the other two tables, and not by key. `Enter` against `Down` is the
     // pair that separates the two: by action `list.activate` comes before `list.down`, by
@@ -746,13 +744,16 @@ fn row_holding(frame: &str, needle: &str) -> usize {
 /// `?` from inside a box lists the box's keys first, on both boxes, because it is one
 /// question about where the reader's keys are.
 ///
-/// A 24 row screen on purpose: the overlay shows 17 of its 38 lines there, so the order is
-/// the whole of what the reader gets, and a block placed last would be entirely gone. Both
-/// halves are in one test because the claim is that the two surfaces answer alike; separated,
-/// each half would pass under an implementation that special-cased its own surface.
+/// A short screen on purpose, so the order is the whole of what the reader gets and a block
+/// placed last would be entirely gone. 26 rather than the 24 M3 picked: the modifier legend
+/// and the `projects` header the grouped rows now draw under both push the leader table down
+/// by a line, and 24 cut the screen before any leader row, which answered a different
+/// question than this test asks. Both halves are in one test because the claim is that the
+/// two surfaces answer alike; separated, each half would pass under an implementation that
+/// special-cased its own surface.
 #[tokio::test]
 async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
-    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let mut h = Harness::start(Config::default(), 120, 26).await;
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),
@@ -772,29 +773,36 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
         f.contains("j          list.down"),
         "the switcher's box keys are on the screen at 24 rows:\n{f}"
     );
+    // The anchor is whichever leader binding sorts first in whichever group sorts first, not
+    // `client.detach` by name: M3's `agents.open` took that place once already, and the
+    // grouping added a second layer the exact binding was never the claim about.
+    let first_leader = f
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
     assert!(
-        row_holding(&f, "in a list") < row_holding(&f, "client.detach"),
+        row_holding(&f, "in a list") < first_leader,
         "and they come before the leader table:\n{f}"
     );
     assert!(
         more_row(&f),
         "and the overlay says the rest of it did not fit:\n{f}"
     );
-    // A blank row under the block, so it reads as its own table rather than running into the
-    // leader table below it. The pane ordering pins the blank on the other side of the block,
-    // and the two are separate lines of code: the mutant for this one survived a sweep with
-    // only that assertion in the suite. The anchor is whichever leader binding sorts first,
-    // not `client.detach` by name: M3's `agents.open` took that place, and the claim is about
-    // the blank row above the leader table rather than about which action heads it.
-    let first_leader = f
-        .lines()
-        .filter(|l| l.starts_with('|'))
-        .position(|l| l.contains("C-a ") && !l.contains("leader"))
-        .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
+    // A blank row, then the group's own header, ahead of the leader table, so it reads as its
+    // own block and then a labelled table rather than running one into the other. The pane
+    // ordering pins the blank on the far side of the header from the block, and the three are
+    // separate lines of code: the mutant for the blank-row half of this survived a sweep with
+    // only that assertion in the suite.
     assert_eq!(
         row(&f, first_leader - 1).trim_matches(|c| c == ' ' || c == '\u{2502}'),
+        "projects",
+        "the leader table's own group header sits right above it:\n{f}"
+    );
+    assert_eq!(
+        row(&f, first_leader - 2).trim_matches(|c| c == ' ' || c == '\u{2502}'),
         "",
-        "the block ends with a blank row before the leader table:\n{f}"
+        "and a blank row separates that header from the box's own block:\n{f}"
     );
 
     // The sidebar's box, reached with no overlay in the way, gets the same answer.
@@ -824,9 +832,13 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
             Duration::from_secs(2),
         )
         .await;
+    let first_leader = f
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
     assert!(
-        f.contains("j          list.down")
-            && row_holding(&f, "in a list") < row_holding(&f, "client.detach"),
+        f.contains("j          list.down") && row_holding(&f, "in a list") < first_leader,
         "the sidebar's box gets the same order, from the same rule:\n{f}"
     );
     assert!(more_row(&f), "and the same truncation row:\n{f}");
