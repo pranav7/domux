@@ -1615,11 +1615,56 @@ async fn the_messaging_verbs_the_context_block_names_say_there_is_no_messaging()
 }
 
 /// The binary with no socket at all: installing hooks needs no server.
+///
+/// `CLAUDE_CONFIG_DIR` is removed because an install follows it (decision record 0036), and the
+/// author runs this suite from inside a Claude session that sets it. Leaving it would point
+/// every test below at the author's own configuration directory.
 fn install_cmd(home: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_domux"));
     c.env("HOME", home).env_remove("TMUX");
     c.env_remove("DOMUX_SOCKET");
+    c.env_remove("CLAUDE_CONFIG_DIR");
     c
+}
+
+/// Claude reads its settings from `CLAUDE_CONFIG_DIR` when that names a directory, and a session
+/// started that way never reads `~/.claude/settings.json`. So an install follows the variable,
+/// and `--dir` follows the reader over both.
+#[tokio::test]
+async fn install_claude_follows_the_config_dir_the_variable_names_and_the_flag_over_it() {
+    let home = tempfile::tempdir().unwrap();
+    let named = home.path().join(".claude-bedrock");
+    let asked = home.path().join("elsewhere");
+
+    let out = install_cmd(home.path())
+        .env("CLAUDE_CONFIG_DIR", &named)
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let written = std::fs::read_to_string(named.join("settings.json")).unwrap();
+    assert!(written.contains("agent report --agent claude"), "{written}");
+    assert!(
+        !home.path().join(".claude").exists(),
+        "and nothing was written under the default directory"
+    );
+
+    let out = install_cmd(home.path())
+        .env("CLAUDE_CONFIG_DIR", &named)
+        .args(["install", "claude", "--apply"])
+        .arg("--dir")
+        .arg(&asked)
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        std::fs::read_to_string(asked.join("settings.json"))
+            .unwrap()
+            .contains("agent report --agent claude"),
+        "the flag wins over the variable"
+    );
 }
 
 #[tokio::test]

@@ -114,16 +114,20 @@ pub fn is_v2_line(command: &str) -> bool {
 }
 
 /// Reads the file and works out what installing would change. Writes nothing.
+///
+/// `dir` is the kind's configuration directory, which the caller resolves: the kind's own
+/// directory under home, the one its variable names, or the one the reader asked for (decision
+/// record 0036). Nothing here reads the environment, so a test names the directory it means.
 pub fn plan(
     registry: &Registry,
     kind: AgentKind,
-    home: &Path,
+    dir: &Path,
     bin: &Path,
 ) -> Result<Plan, InstallError> {
     let manifest = registry
         .for_kind(kind)
         .ok_or(InstallError::NoManifest(kind))?;
-    let path = manifest.hooks.path_in(home);
+    let path = manifest.hooks.path_under(dir);
     let before = match std::fs::read_to_string(&path) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
