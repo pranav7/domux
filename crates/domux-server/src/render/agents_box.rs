@@ -28,6 +28,9 @@ pub const RECAP_GLYPH: &str = "※";
 pub const RECAP_LINES: usize = 2;
 /// Between the name and the activity on line 1 (interface spec 6.2).
 const GAP: &str = "  ";
+/// Between the name and the dot, which is a mark rather than a word: two cells of nothing in
+/// front of one cell of dot read as a hole in the row, so the dot sits one cell out (MUX-29).
+const DOT_GAP: &str = " ";
 
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
 /// hollow glyph on an untouched slot, so every name in the box starts in one column.
@@ -333,8 +336,8 @@ fn filter_text(a: &AgentEntry) -> String {
     out
 }
 
-/// `[name]  [activity]`, two spaces between them. The name is what gives way when the row is
-/// too narrow: the activity says what the agent is doing and is short.
+/// `[name]  [activity]`, two spaces between them, or one before a dot. The name is what gives
+/// way when the row is too narrow: the activity says what the agent is doing and is short.
 ///
 /// No leading dot. A dot is drawn only while the agent is waiting, and `activity` puts it in
 /// the slot the working word would have taken, because a waiting agent draws no word and a
@@ -347,18 +350,22 @@ fn line_one(a: &AgentEntry, view: &AgentsView, width: usize) -> Vec<Span<'static
         .unwrap_or_else(|| a.kind.as_str().to_string());
     let activity = activity(a, view);
     let activity_width: usize = activity.iter().map(|s| display_width(&s.content)).sum();
-    let gap = if activity.is_empty() {
+    let gap = match a.state {
+        AgentState::Waiting => DOT_GAP,
+        _ => GAP,
+    };
+    let lead = if activity.is_empty() {
         0
     } else {
-        display_width(GAP)
+        display_width(gap)
     };
-    let room = width.saturating_sub(gap + activity_width);
+    let room = width.saturating_sub(lead + activity_width);
     let mut spans = vec![Span::styled(
         truncate_with_ellipsis(&label, room),
         label_style(a),
     )];
     if !activity.is_empty() {
-        spans.push(Span::raw(GAP));
+        spans.push(Span::raw(gap));
         spans.extend(activity);
     }
     spans
@@ -732,7 +739,7 @@ mod tests {
     #[test]
     fn waiting_and_idle_rows_carry_no_state_word() {
         for (state, line) in [
-            (AgentState::Waiting, "auth-cleanup  •"),
+            (AgentState::Waiting, "auth-cleanup •"),
             (AgentState::Idle, "auth-cleanup"),
         ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
@@ -993,7 +1000,7 @@ mod tests {
         );
         assert!(text(&rows[0])[0].starts_with("AUDREY-APP "));
         assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
-        assert_eq!(text(&rows[1])[0], "  auth-cleanup  •", "indented under it");
+        assert_eq!(text(&rows[1])[0], "  auth-cleanup •", "indented under it");
         assert!(rows[2].is_blank(), "{:?}", text(&rows[2]));
         assert_eq!(rows[3].key.as_deref(), Some("a_9c04"));
         assert_eq!(text(&rows[3])[0], "  billing-export");
@@ -1055,7 +1062,7 @@ mod tests {
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
         let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
         assert_eq!(rows.len(), 3, "two agents and the blank between them");
-        assert_eq!(text(&rows[0])[0], "auth-cleanup  •");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup •");
         assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
     }
 

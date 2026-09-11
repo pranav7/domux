@@ -111,17 +111,17 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
 
     h.report(pane.clone(), AgentKind::Claude, WAITS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| f.contains("claude  •"), WAIT)
+        .wait_for(h.client.clone(), |f| f.contains("claude •"), WAIT)
         .await;
     let line = row(&f, row_with(&f, "└ claude"));
     assert!(
-        line.contains("└ claude  •"),
-        "the dot is two cells after the label, in the working word's slot: {line:?}"
+        line.contains("└ claude •"),
+        "the dot is one cell after the label, in the working word's slot: {line:?}"
     );
 
     h.report(pane, AgentKind::Claude, STOPS).await;
     let f = h
-        .wait_for(h.client.clone(), |f| !f.contains("claude  •"), WAIT)
+        .wait_for(h.client.clone(), |f| !f.contains("claude •"), WAIT)
         .await;
     assert!(
         f.contains("└ claude"),

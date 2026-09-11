@@ -54,9 +54,10 @@ So the dot is drawn only while an agent is waiting on you. Working and compactin
 themselves with the animated glyph and the word, in the agent's colour and in periwinkle. Idle
 and unknown say nothing, because nothing is happening.
 
-**It sits where the working word sits**, two cells after the name. A waiting agent draws no
-word, so the slot is free, and a mark in front of the name would push that name out of the
-column every other row keeps it in. Interface spec 6.1's "never empty of dots" is retired: a box
+**It sits where the working word sits**, one cell after the name (MUX-29; a word takes two, but
+two cells of nothing in front of one cell of dot read as a hole in the row). A waiting agent
+draws no word, so the slot is free, and a mark in front of the name would push that name out of
+the column every other row keeps it in. Interface spec 6.1's "never empty of dots" is retired: a box
 with no dots in it is now the ordinary case and it means nobody is blocked.
 
 ## A record ends when its session ends
