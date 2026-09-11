@@ -32,12 +32,44 @@ pub enum HookTarget {
 }
 
 impl HookTarget {
-    pub fn path_in(&self, home: &Path) -> PathBuf {
+    /// The kind's configuration directory under `home`, which is where its hook file lives. An
+    /// install can be pointed at another one, because Claude's moves: `dir_env`.
+    pub fn dir_in(&self, home: &Path) -> PathBuf {
         match self {
-            HookTarget::ClaudeSettings => home.join(".claude/settings.json"),
-            HookTarget::CodexHooks => home.join(".codex/hooks.json"),
-            HookTarget::OpencodePlugin => home.join(".config/opencode/plugins/domux.js"),
+            HookTarget::ClaudeSettings => home.join(".claude"),
+            HookTarget::CodexHooks => home.join(".codex"),
+            HookTarget::OpencodePlugin => home.join(".config/opencode"),
         }
+    }
+
+    /// The hook file inside that directory.
+    pub fn file(&self) -> &'static str {
+        match self {
+            HookTarget::ClaudeSettings => "settings.json",
+            HookTarget::CodexHooks => "hooks.json",
+            HookTarget::OpencodePlugin => "plugins/domux.js",
+        }
+    }
+
+    /// The variable the kind reads to move that directory. Claude reads `CLAUDE_CONFIG_DIR`, and
+    /// a session started with it set reads nothing under `~/.claude`, so hooks installed there
+    /// would never run (decision record 0036). The other two kinds declare none: domux follows
+    /// only a variable it has seen an agent read.
+    pub fn dir_env(&self) -> Option<&'static str> {
+        match self {
+            HookTarget::ClaudeSettings => Some("CLAUDE_CONFIG_DIR"),
+            HookTarget::CodexHooks | HookTarget::OpencodePlugin => None,
+        }
+    }
+
+    /// The hook file in `dir`, which is what an install writes.
+    pub fn path_under(&self, dir: &Path) -> PathBuf {
+        dir.join(self.file())
+    }
+
+    /// The hook file in the kind's own directory under `home`.
+    pub fn path_in(&self, home: &Path) -> PathBuf {
+        self.path_under(&self.dir_in(home))
     }
 
     /// The events the installer writes one command line for. The OpenCode plugin listens for
@@ -185,6 +217,32 @@ mod tests {
             Some(AgentKind::Claude),
             "the process name match ignores case"
         );
+    }
+
+    /// Claude's configuration directory moves with `CLAUDE_CONFIG_DIR`, so the hook file is the
+    /// kind's file inside whichever directory an install is pointed at (decision record 0036).
+    /// The other two kinds follow no variable, and `path_in` is the same answer as before.
+    #[test]
+    fn a_hook_file_is_the_kinds_file_inside_the_directory_it_is_given() {
+        let r = Registry::builtin();
+        let home = std::path::Path::new("/Users/pranav");
+        let claude = &r.for_kind(AgentKind::Claude).unwrap().hooks;
+        assert_eq!(claude.dir_in(home), home.join(".claude"));
+        assert_eq!(claude.file(), "settings.json");
+        assert_eq!(claude.dir_env(), Some("CLAUDE_CONFIG_DIR"));
+        assert_eq!(
+            claude.path_under(&home.join(".claude-bedrock")),
+            home.join(".claude-bedrock/settings.json")
+        );
+        let codex = &r.for_kind(AgentKind::Codex).unwrap().hooks;
+        assert_eq!(codex.dir_in(home), home.join(".codex"));
+        assert_eq!(codex.file(), "hooks.json");
+        let opencode = &r.for_kind(AgentKind::Opencode).unwrap().hooks;
+        assert_eq!(opencode.dir_in(home), home.join(".config/opencode"));
+        assert_eq!(opencode.file(), "plugins/domux.js");
+        for target in [codex, opencode] {
+            assert_eq!(target.dir_env(), None, "{target:?} follows no variable");
+        }
     }
 
     #[test]

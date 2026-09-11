@@ -41,7 +41,8 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 - **Two surfaces, two questions.** The Navigator says where an agent is and never reorders. The agents overlay, under `leader a` in either layout, says which agent wants you: the agents alone, under a header per project, in `Model::sorted_agents` order. `0033` records it as an experiment the author is running, so weigh it on which surface gets opened.
 - **A recap is an entry the agent wrote as a recap**, an `away_summary` or a `/recap`, and never the last thing the agent happened to say. The last one stands until the agent writes another. The session name is the transcript's last `custom-title`. `0034` records all of it and replaces the recap half of `0027`.
 - **Nothing but the tick reads a transcript.** The recap lands minutes after the hook that ends the turn, so `agent.report` reads no file and `recap::poll` asks once a second. A read takes only the bytes the agent appended, so the cost does not follow the size of the file.
-- Installers preview by default. `--apply` backs up the file it patches, writes `path.tmp` and renames, and is idempotent. Never run `--apply` against `~/.claude` or `~/.codex` without the author saying so.
+- Installers preview by default. `--apply` backs up the file it patches, writes `path.tmp` and renames, and is idempotent. Never run `--apply` against `~/.claude`, `~/.claude-bedrock` or `~/.codex` without the author saying so.
+- **An install follows the agent's configuration directory**: `CLAUDE_CONFIG_DIR` when it names one, `--dir` over that, `~/.claude` otherwise. `docs/decisions/0036` says why. A Bedrock session runs `claude` with that variable set, so it reads no file under `~/.claude`: hooks installed there leave its row on `unknown` for the whole session. `agents::install::plan` takes the directory and reads no environment.
 
 ## Stay awake
 

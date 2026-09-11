@@ -69,7 +69,13 @@ fn a_preview_writes_nothing_and_shows_what_would_change() {
     let (_d, home) = home_with(Some(("v1_claude.json", ".claude/settings.json")));
     let path = home.join(".claude/settings.json");
     let before = std::fs::read_to_string(&path).unwrap();
-    let p = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap();
     let text = preview(&p);
     assert!(
         text.starts_with(&format!("Would patch {}", path.display())),
@@ -121,7 +127,13 @@ fn apply_writes_the_nine_events_backs_the_file_up_and_keeps_every_other_key() {
         "the fixture carries V1's status line"
     );
 
-    let p = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap();
     let backup = apply(&p).unwrap();
     assert!(
         backup.to_string_lossy().contains(".domux-backup-"),
@@ -188,11 +200,12 @@ fn apply_twice_changes_nothing_the_second_time() {
     let (_d, home) = home_with(Some(("v1_claude.json", ".claude/settings.json")));
     let path = home.join(".claude/settings.json");
     let r = Registry::builtin();
-    let first = apply(&plan(&r, AgentKind::Claude, &home, &bin()).unwrap()).unwrap();
+    let first =
+        apply(&plan(&r, AgentKind::Claude, &home.join(".claude"), &bin()).unwrap()).unwrap();
     assert_ne!(first, path, "the first apply backed the file up");
     let once = std::fs::read_to_string(&path).unwrap();
 
-    let second = plan(&r, AgentKind::Claude, &home, &bin()).unwrap();
+    let second = plan(&r, AgentKind::Claude, &home.join(".claude"), &bin()).unwrap();
     assert!(
         second.added.is_empty() && second.removed.is_empty(),
         "nothing left to do: {second:?}"
@@ -213,7 +226,13 @@ fn apply_twice_changes_nothing_the_second_time() {
 #[test]
 fn a_missing_settings_file_is_created_with_only_the_hooks() {
     let (_d, home) = home_with(None);
-    let p = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap();
     assert!(
         preview(&p).starts_with(&format!("Would create {}", p.path.display())),
         "a file that is not there is created, not patched:\n{}",
@@ -231,7 +250,13 @@ fn a_missing_settings_file_is_created_with_only_the_hooks() {
 #[test]
 fn an_empty_settings_file_gets_the_hooks_and_is_backed_up() {
     let (_d, home) = home_with(Some(("clean_claude.json", ".claude/settings.json")));
-    let p = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap();
     let backup = apply(&p).unwrap();
     assert!(
         backup.to_string_lossy().contains(".domux-backup-"),
@@ -252,7 +277,13 @@ fn an_empty_settings_file_gets_the_hooks_and_is_backed_up() {
 #[test]
 fn a_statusline_the_author_wrote_is_left_alone() {
     let (_d, home) = home_with(Some(("custom_statusline.json", ".claude/settings.json")));
-    let p = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap();
     apply(&p).unwrap();
     let after = read_json(&home.join(".claude/settings.json"));
     assert_eq!(
@@ -267,7 +298,13 @@ fn a_settings_file_that_is_not_json_refuses_and_names_the_file_and_the_line() {
     let path = home.join(".claude/settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "{ not json").unwrap();
-    let err = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap_err();
+    let err = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap_err();
     assert!(
         err.to_string()
             .starts_with(&format!("cannot read {}: ", path.display())),
@@ -282,7 +319,13 @@ fn a_hooks_value_that_is_not_an_object_refuses_and_names_the_file() {
     let path = home.join(".claude/settings.json");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, r#"{"hooks": []}"#).unwrap();
-    let err = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap_err();
+    let err = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap_err();
     assert!(
         err.to_string()
             .starts_with(&format!("cannot read {}: ", path.display())),
@@ -306,7 +349,13 @@ fn codex_gets_its_seven_events_and_loses_v1s_five() {
         5,
         "the fixture carries V1's five lines"
     );
-    let p = plan(&Registry::builtin(), AgentKind::Codex, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Codex,
+        &home.join(".codex"),
+        &bin(),
+    )
+    .unwrap();
     apply(&p).unwrap();
     let after = read_json(&path);
     for event in [
@@ -341,7 +390,13 @@ fn codex_gets_its_seven_events_and_loses_v1s_five() {
 #[test]
 fn opencode_writes_a_plugin_that_posts_the_payload_domux_reads() {
     let (_d, home) = home_with(None);
-    let p = plan(&Registry::builtin(), AgentKind::Opencode, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Opencode,
+        &home.join(".config/opencode"),
+        &bin(),
+    )
+    .unwrap();
     apply(&p).unwrap();
     let js = std::fs::read_to_string(home.join(".config/opencode/plugins/domux.js")).unwrap();
     assert!(js.contains("/Users/pranav/bin/domux2"), "{js}");
@@ -382,17 +437,51 @@ fn a_plugin_that_is_already_installed_is_left_alone() {
     let path = home.join(".config/opencode/plugins/domux.js");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, opencode_plugin(&bin())).unwrap();
-    let p = plan(&Registry::builtin(), AgentKind::Opencode, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Opencode,
+        &home.join(".config/opencode"),
+        &bin(),
+    )
+    .unwrap();
     assert!(p.added.is_empty(), "nothing left to do: {p:?}");
     assert!(preview(&p).contains("Nothing to change"), "{}", preview(&p));
     assert_eq!(apply(&p).unwrap(), path, "so it makes no backup");
+}
+
+/// An install writes in the directory it is given and nowhere else. Claude's configuration
+/// directory moves with `CLAUDE_CONFIG_DIR`, and a session started that way reads no file under
+/// `~/.claude`, so hooks written there would never run (decision record 0036).
+#[test]
+fn an_install_writes_in_the_directory_it_is_given_and_leaves_the_default_one_alone() {
+    let (_d, home) = home_with(Some(("clean_claude.json", ".claude-bedrock/settings.json")));
+    let dir = home.join(".claude-bedrock");
+    let p = plan(&Registry::builtin(), AgentKind::Claude, &dir, &bin()).unwrap();
+    assert_eq!(p.path, dir.join("settings.json"));
+    apply(&p).unwrap();
+    let after = read_json(&dir.join("settings.json"));
+    assert_eq!(
+        commands(&after, "Stop"),
+        vec![hook_command(&bin(), AgentKind::Claude)],
+        "the hooks are in the directory the install was pointed at"
+    );
+    assert!(
+        !home.join(".claude").exists(),
+        "and the default directory was not touched"
+    );
 }
 
 #[test]
 fn the_backup_keeps_the_previous_file_byte_for_byte() {
     let (_d, home) = home_with(Some(("v1_claude.json", ".claude/settings.json")));
     let before = std::fs::read_to_string(home.join(".claude/settings.json")).unwrap();
-    let p = plan(&Registry::builtin(), AgentKind::Claude, &home, &bin()).unwrap();
+    let p = plan(
+        &Registry::builtin(),
+        AgentKind::Claude,
+        &home.join(".claude"),
+        &bin(),
+    )
+    .unwrap();
     let backup = apply(&p).unwrap();
     assert_eq!(std::fs::read_to_string(&backup).unwrap(), before);
 }
