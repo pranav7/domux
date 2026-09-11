@@ -94,7 +94,7 @@ async fn a_click_focuses_the_pane_under_it_and_copies_nothing() {
 }
 
 /// A double click copies the word under the pointer, by Ghostty's own idea of a word so that
-/// domux2 and the terminal it runs in agree.
+/// domux and the terminal it runs in agree.
 #[tokio::test]
 async fn a_double_click_copies_the_word_under_it() {
     let mut h = Harness::start(Config::default(), 80, 10).await;

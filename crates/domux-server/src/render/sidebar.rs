@@ -1330,7 +1330,7 @@ mod tests {
             "it says there are none: {text:?}"
         );
         assert!(
-            text.contains("domux2 open"),
+            text.contains("domux open"),
             "and names the command that adds one: {text:?}"
         );
     }

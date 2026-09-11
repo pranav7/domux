@@ -345,10 +345,10 @@ async fn closing_an_exited_pane_leaves_the_dot_of_the_agent_in_the_next_one() {
     assert!(!codex_of(&mut h).await.unseen, "and focusing it clears it");
 }
 
-/// Principle 9: the verb exists, so a caller learns it and learns when it arrives. The words
-/// are Task 5's, which the unbuilt register in `core::tests` also keys off.
+/// Principle 9: the verb exists, so a caller learns it and learns why it does nothing. The
+/// words end the way the unbuilt register in `core::tests` keys off.
 #[tokio::test]
-async fn the_messaging_verbs_answer_unavailable_and_name_the_milestone() {
+async fn the_messaging_verbs_answer_unavailable_and_say_why() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     two_agents(&mut h).await;
     for method in ["agent.send", "agent.read", "agent.wait"] {
@@ -356,7 +356,7 @@ async fn the_messaging_verbs_answer_unavailable_and_name_the_milestone() {
         assert_eq!(err.code, ErrorCode::Unavailable, "{method}");
         assert_eq!(
             err.message,
-            format!("{method} arrives with messaging in M4 and is not built yet"),
+            format!("domux has no messaging between agents, so {method} is not built yet"),
             "{method}"
         );
     }

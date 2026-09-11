@@ -4,8 +4,8 @@
 //! explicit `Env` so tests and the harness can pin every input.
 
 use crate::names::{
-    CONFIG_DIR_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME, V1_SESSIONS_DIR_NAME,
-    V1_STATE_DIR_NAME,
+    CONFIG_DIR_NAME, OLD_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME,
+    V1_SESSIONS_DIR_NAME, V1_STATE_DIR_NAME,
 };
 use std::path::PathBuf;
 
@@ -82,6 +82,22 @@ pub fn config_file_in(env: &Env) -> PathBuf {
     }
 }
 
+/// Where the state directory was before the cut-over, for the server to move the files it
+/// finds there once. `None` under `DOMUX_STATE_DIR`: a scratch server has no old directory
+/// and must not carry the real one off.
+pub fn old_state_dir_in(env: &Env) -> Option<PathBuf> {
+    env.state_dir_override
+        .is_none()
+        .then(|| env.home.join(".local").join("share").join(OLD_NAME))
+}
+
+/// Where the config file was before the cut-over, on the same terms as `old_state_dir_in`.
+pub fn old_config_file_in(env: &Env) -> Option<PathBuf> {
+    env.config_file_override
+        .is_none()
+        .then(|| env.home.join(".config").join(OLD_NAME).join("domux.toml"))
+}
+
 /// Where V1 keeps its session files, which `import v1` reads and nothing writes.
 ///
 /// `DOMUX_STATE_DIR` does not reach it: that variable moves V2's state directory, and V1's
@@ -145,7 +161,7 @@ mod tests {
         };
         assert_eq!(
             socket_path_in(&env),
-            PathBuf::from("/run/user/501/domux2.sock")
+            PathBuf::from("/run/user/501/domux.sock")
         );
     }
 
@@ -161,7 +177,7 @@ mod tests {
         };
         assert_eq!(
             socket_path_in(&env),
-            PathBuf::from("/tmp/domux2-501/domux2.sock")
+            PathBuf::from("/tmp/domux-501/domux.sock")
         );
     }
 
@@ -178,10 +194,10 @@ mod tests {
         assert_eq!(socket_path_in(&env), PathBuf::from("/tmp/x/s.sock"));
     }
 
-    /// V1's directory is not V2's, and `DOMUX_STATE_DIR` moves only V2's. A build that read
-    /// the override here would point `import v1` at V2's own state directory, where there
-    /// are no session files, and after the M3 cut-over it would point at the directory V2
-    /// writes.
+    /// `DOMUX_STATE_DIR` moves only V2's state directory, never where V1's sessions are read
+    /// from. A build that read the override here would point `import v1` at a scratch state
+    /// directory, where there are no session files. Since the cut-over the two share a parent,
+    /// so the sessions directory is one level below the state directory and never equal to it.
     #[test]
     fn the_v1_sessions_directory_is_v1s_own_and_ignores_the_state_dir_override() {
         let env = Env {
@@ -200,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn state_and_config_paths_use_the_domux2_names() {
+    fn state_and_config_paths_use_the_domux_names() {
         let env = Env {
             home: "/home/u".into(),
             xdg_runtime_dir: None,
@@ -211,23 +227,58 @@ mod tests {
         };
         assert_eq!(
             state_dir_in(&env),
-            PathBuf::from("/home/u/.local/share/domux2")
+            PathBuf::from("/home/u/.local/share/domux")
         );
         assert_eq!(
             state_file_in(&env),
-            PathBuf::from("/home/u/.local/share/domux2/state.json")
+            PathBuf::from("/home/u/.local/share/domux/state.json")
         );
         assert_eq!(
             pr_cache_file_in(&env),
-            PathBuf::from("/home/u/.local/share/domux2/pr-cache.json")
+            PathBuf::from("/home/u/.local/share/domux/pr-cache.json")
         );
         assert_eq!(
             log_file_in(&env),
-            PathBuf::from("/home/u/.local/share/domux2/server.log")
+            PathBuf::from("/home/u/.local/share/domux/server.log")
         );
         assert_eq!(
             config_file_in(&env),
-            PathBuf::from("/home/u/.config/domux2/domux.toml")
+            PathBuf::from("/home/u/.config/domux/domux.toml")
         );
+    }
+
+    /// The cut-over renamed the directories. The old ones are answered so the server can move
+    /// its files out of them once, and not under an override: a scratch server has no old
+    /// directory, and must not carry the real one off.
+    #[test]
+    fn the_old_directories_are_answered_only_without_an_override() {
+        let env = Env {
+            home: "/home/u".into(),
+            xdg_runtime_dir: None,
+            uid: 501,
+            socket_override: None,
+            state_dir_override: None,
+            config_file_override: None,
+        };
+        assert_eq!(
+            old_state_dir_in(&env),
+            Some(PathBuf::from(format!("/home/u/.local/share/{OLD_NAME}")))
+        );
+        assert_eq!(
+            old_config_file_in(&env),
+            Some(PathBuf::from(format!(
+                "/home/u/.config/{OLD_NAME}/domux.toml"
+            )))
+        );
+        assert_ne!(old_state_dir_in(&env).unwrap(), state_dir_in(&env));
+        assert_ne!(old_config_file_in(&env).unwrap(), config_file_in(&env));
+
+        let scratch = Env {
+            state_dir_override: Some("/scratch/state".into()),
+            config_file_override: Some("/scratch/domux.toml".into()),
+            ..env
+        };
+        assert_eq!(old_state_dir_in(&scratch), None);
+        assert_eq!(old_config_file_in(&scratch), None);
     }
 }

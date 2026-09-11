@@ -6,7 +6,7 @@ Rust workspace, five crates under `crates/`:
 - `domux-core`: pure model, layout, keymap, config, protocol and state types. No IO, no tokio, no ratatui, no process spawning. Every rule here has a unit test.
 - `domux-server`: the core task, panes, rendering, socket, persistence. `src/testing.rs` is the harness every interface test uses.
 - `domux-client`: the thin client: raw mode, capabilities, keys out, frames in, clipboard.
-- `domux`: the `domux2` binary. One file per API namespace under `src/cli/`.
+- `domux`: the `domux` binary. One file per API namespace under `src/cli/`.
 
 The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-server` and deleted `crates/m0-spike`; `docs/milestones/m1.md` records what M1 shipped.
 
@@ -20,7 +20,7 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 - `UPDATE_GOLDEN=1 cargo test -p domux-term --test golden` rewrites the golden files. Read the diff against the fixture's intent before committing it: a golden that changed because the emulator changed is the point, and one that changed because a test was loosened is a defect being recorded as correct.
 - `crates/domux-term/scripts/ghostty-src.sh` prints the Ghostty tree the build resolved. `build.rs` exports the same path as `DOMUX_GHOSTTY_SRC`, and `tests/header_fingerprint.rs` and `tests/zig_pin.rs` read it, so the bindings are always checked against the headers that were actually compiled.
 - `cargo run -p domux -- api schema` prints the control API schema.
-- Run `domux2` only in its own Ghostty tab, never inside tmux. `~/bin/domux` is V1 and is never touched; `~/bin/domux2` points at `target/release/domux2`.
+- Run `domux` only in its own Ghostty tab, never inside tmux. `~/bin/domux` points at `target/release/domux`. V1, the Go version, is the `v1` branch and is never built or run from here.
 
 ## Agents
 
@@ -67,7 +67,7 @@ not explain on its own. Read it before changing any of them.
 ## Rules
 
 - Work on `v2`, or on a milestone branch (`m1`, `m2`, `m3`) that merges into `v2` by pull request. Never commit to `main`, `master`, or `workspace-*`.
-- Nothing here writes under `~/.local/share/domux`, `~/.config/domux`, `~/.claude`, or `~/.codex`. V2 uses `~/.local/share/domux2`, `~/.config/domux2/domux.toml` and `domux2.sock` until the M3 cut-over; every such name comes from `domux_core::names` and `domux_core::paths`.
+- The state directory is `~/.local/share/domux`, the config file `~/.config/domux/domux.toml` and the socket `domux.sock`; every such name comes from `domux_core::names` and `domux_core::paths`. `sessions/` under the state directory is V1's and is only ever read, by `import v1`. Nothing here writes under `~/.claude` or `~/.codex` except `install <kind> --apply`, and never without the author saying so. The cut-over of 2026-09-11 renamed all of these from `domux2`; `names::OLD_NAME` and `domux_server::migrate` are what carry a machine across it, and no other source spells the old name.
 - No tmux. No Windows. The mouse is read: the wheel, a drag that selects, clicks on the
   chrome, and a click that opens the link under it. Read `docs/decisions/0014-the-mouse.md`
   and `docs/decisions/0024-a-click-opens-the-link-under-it.md` before changing what any of

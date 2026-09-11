@@ -1351,12 +1351,12 @@ mod tests {
 
     #[test]
     fn api_error_serializes_code_as_snake_case() {
-        let e = ApiError::not_found("tab t_0000 does not exist; run domux2 api tab.list");
+        let e = ApiError::not_found("tab t_0000 does not exist; run domux api tab.list");
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["code"], "not_found");
         assert_eq!(
             json["message"],
-            "tab t_0000 does not exist; run domux2 api tab.list"
+            "tab t_0000 does not exist; run domux api tab.list"
         );
         assert!(json.get("data").is_none() || json["data"].is_null());
     }
@@ -1389,7 +1389,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::NotFound);
         assert_eq!(
             err.message,
-            "method pane.explode does not exist; run domux2 api schema for the list"
+            "method pane.explode does not exist; run domux api schema for the list"
         );
         let err =
             Method::from_request("pane.split", serde_json::json!({"dir": "sideways"})).unwrap_err();

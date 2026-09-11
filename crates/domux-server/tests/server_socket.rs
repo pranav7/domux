@@ -178,7 +178,7 @@ async fn version_mismatch_is_refused_with_the_restart_instruction() {
         ServerMsg::Refused { reason } => assert_eq!(
             reason,
             format!(
-                "the server is domux {} and this client is 1.0.0; run domux2 server restart",
+                "the server is domux {} and this client is 1.0.0; run domux server restart",
                 domux_core::VERSION
             )
         ),
@@ -930,7 +930,7 @@ async fn the_socket_is_private_to_the_user_who_started_the_server() {
     let open = dir.path().join("open");
     std::fs::create_dir(&open).unwrap();
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
-    let path = open.join("domux2.sock");
+    let path = open.join("domux.sock");
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let handle = domux_server::socket::listen(&path, tx).await.unwrap();
 
@@ -950,7 +950,7 @@ async fn the_socket_is_private_to_the_user_who_started_the_server() {
 async fn a_socket_directory_the_server_creates_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("made-by-domux").join("domux2.sock");
+    let path = dir.path().join("made-by-domux").join("domux.sock");
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let handle = domux_server::socket::listen(&path, tx).await.unwrap();
     let mode = std::fs::metadata(path.parent().unwrap())

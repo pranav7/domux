@@ -361,7 +361,7 @@ mod tests {
     fn an_empty_switcher_says_how_to_add_a_project() {
         assert_eq!(
             empty_model_row("").trim_end(),
-            "          │  No projects yet. Add one with domux2 open <path>        │"
+            "          │  No projects yet. Add one with domux open <path>         │"
         );
     }
 

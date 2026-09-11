@@ -180,7 +180,7 @@ mod tests {
     fn a_detach_and_a_stopped_server_are_endings_the_reader_is_told_about() {
         assert_eq!(
             ending(AttachOutcome::Detached("detached".into())).unwrap(),
-            "Detached. Run domux2 to reattach."
+            "Detached. Run domux to reattach."
         );
         assert_eq!(
             ending(AttachOutcome::ServerStopped).unwrap(),
@@ -195,7 +195,7 @@ mod tests {
             .to_string();
         assert_eq!(
             lost,
-            "Lost the connection to the server. Run domux2 server status."
+            "Lost the connection to the server. Run domux server status."
         );
         // The server's own sentence, which already names both versions and the way out.
         let refused = ending(AttachOutcome::Refused(
@@ -281,10 +281,10 @@ mod tests {
     fn the_nested_attach_refusal_names_the_state_the_object_and_the_next_action() {
         let said = nested_attach().to_string();
         assert!(
-            said.starts_with("domux2 is already running in this terminal."),
+            said.starts_with("domux is already running in this terminal."),
             "{said}"
         );
-        assert!(said.contains("domux2 tab create"), "{said}");
+        assert!(said.contains("domux tab create"), "{said}");
         assert!(said.contains("open a new terminal"), "{said}");
     }
 }

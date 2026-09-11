@@ -5,7 +5,7 @@ use anyhow::Context;
 use clap::{Args, Subcommand};
 use domux_client::control;
 use domux_core::api::ServerInfo;
-use domux_core::names::{BIN_NAME, PRODUCT_NAME};
+use domux_core::names::{BIN_NAME, OLD_NAME, PRODUCT_NAME};
 use domux_core::paths;
 use domux_server::pane::RealSpawner;
 use domux_server::process::RealInspector;
@@ -285,9 +285,34 @@ async fn run_server() -> anyhow::Result<()> {
     domux_server::log::init(&paths::log_file())?;
     // The log exists from here on, so a failure is written there as well as returned. That
     // covers `server run` typed by hand, where stderr is a terminal and not the log.
+    carry_over_from_the_old_name().inspect_err(|e| tracing::error!("the server stopped: {e:#}"))?;
     serve(state_dir)
         .await
         .inspect_err(|e| tracing::error!("the server stopped: {e:#}"))
+}
+
+/// The cut-over renamed the state and config directories. A machine that ran the old name has
+/// its files under it, so they are moved once, before the server reads either, and the first
+/// start under the new name finds what the old one left. Each move is logged.
+fn carry_over_from_the_old_name() -> anyhow::Result<()> {
+    let env = paths::Env::from_process();
+    if let Some(old) = paths::old_state_dir_in(&env) {
+        let new = paths::state_dir_in(&env);
+        let moved = domux_server::migrate::move_state_files(&old, &new)
+            .with_context(|| format!("move the state files out of {}", old.display()))?;
+        for path in moved {
+            tracing::info!("moved {} out of the {OLD_NAME} directory", path.display());
+        }
+    }
+    if let Some(old) = paths::old_config_file_in(&env) {
+        let new = paths::config_file_in(&env);
+        if domux_server::migrate::move_config_file(&old, &new)
+            .with_context(|| format!("move {}", old.display()))?
+        {
+            tracing::info!("moved {} to {}", old.display(), new.display());
+        }
+    }
+    Ok(())
 }
 
 async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
@@ -354,18 +379,18 @@ mod tests {
 
     #[test]
     fn the_config_line_says_when_the_file_is_not_there_yet() {
-        let path = Path::new("/home/u/.config/domux2/domux.toml");
+        let path = Path::new("/home/u/.config/domux/domux.toml");
         assert_eq!(
             config_line(path, None, false),
-            "Config  /home/u/.config/domux2/domux.toml (not created yet)"
+            "Config  /home/u/.config/domux/domux.toml (not created yet)"
         );
         assert_eq!(
             config_line(path, None, true),
-            "Config  /home/u/.config/domux2/domux.toml"
+            "Config  /home/u/.config/domux/domux.toml"
         );
         assert_eq!(
             config_line(path, Some("domux.toml line 3: unknown key clock"), true),
-            "Config  /home/u/.config/domux2/domux.toml (not applied: domux.toml line 3: unknown key clock)"
+            "Config  /home/u/.config/domux/domux.toml (not applied: domux.toml line 3: unknown key clock)"
         );
     }
 
@@ -409,6 +434,6 @@ mod tests {
         let said = reason(&log, 0);
         assert!(said.contains("It wrote nothing to"), "{said}");
         assert!(said.contains("gone.log"), "{said}");
-        assert!(said.contains("domux2 server run"), "{said}");
+        assert!(said.contains("domux server run"), "{said}");
     }
 }
