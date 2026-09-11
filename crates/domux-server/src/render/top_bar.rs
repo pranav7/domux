@@ -515,17 +515,17 @@ mod tests {
             vec![
                 Piece::elastic("domux.toml line 4: invalid string", Style::default()),
                 Piece::new(" · ", Style::default()),
-                Piece::new("domux2 config reload", Style::default()),
+                Piece::new("domux config reload", Style::default()),
             ]
         };
         let out = fit(squeeze(notice(), 40), 40);
-        assert_eq!(text(&out), "domux.toml line … · domux2 config reload");
+        assert_eq!(text(&out), "domux.toml line 4… · domux config reload");
         assert_eq!(display_width(&text(&out)), 40);
         // Room for everything: nothing is cut and no mark appears.
         let out = fit(squeeze(notice(), 60), 60);
         assert_eq!(
             text(&out),
-            "domux.toml line 4: invalid string · domux2 config reload"
+            "domux.toml line 4: invalid string · domux config reload"
         );
     }
 
@@ -537,14 +537,14 @@ mod tests {
             vec![
                 Piece::elastic("domux.toml line 4: invalid string", Style::default()),
                 Piece::joiner(" · ", Style::default()),
-                Piece::new("domux2 config reload", Style::default()),
+                Piece::new("domux config reload", Style::default()),
             ]
         };
-        // Not " · domux2 config re…": a right end that opens with a bare separator reads as a
+        // Not " · domux config rel…": a right end that opens with a bare separator reads as a
         // sentence with its subject cut off, and one that shows only the action reads as an
         // offer rather than as an error.
         let out = fit(squeeze(notice(), 20), 20);
-        assert_eq!(text(&out), "… domux2 config rel…");
+        assert_eq!(text(&out), "… domux config relo…");
         assert_eq!(display_width(&text(&out)), 20);
         // The floor an actionable right end keeps. Both marks survive it.
         let out = fit(squeeze(notice(), RIGHT_FLOOR), RIGHT_FLOOR);
@@ -560,7 +560,7 @@ mod tests {
         let notice = vec![
             Piece::elastic("domux.toml line 4: invalid string", red),
             Piece::joiner(" · ", Style::default()),
-            Piece::new("domux2 config reload", Style::default()),
+            Piece::new("domux config reload", Style::default()),
         ];
         let out = squeeze(notice, 20);
         assert_eq!(out[0].text, "…");

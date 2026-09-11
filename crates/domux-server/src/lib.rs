@@ -11,6 +11,7 @@ pub mod git;
 pub mod input;
 pub mod link;
 pub mod log;
+pub mod migrate;
 pub mod mouse;
 pub mod pane;
 pub mod persist;

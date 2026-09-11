@@ -536,7 +536,7 @@ async fn removing_a_project_that_is_not_registered_says_so() {
     assert_eq!(err.code, ErrorCode::NotFound, "{err}");
     assert_eq!(
         err.message,
-        "no project called not-a-project; run domux2 project list to see them"
+        "no project called not-a-project; run domux project list to see them"
     );
 }
 
@@ -1243,7 +1243,7 @@ async fn attaching_to_a_server_with_no_project_says_how_to_add_one() {
     let refused = h.attach_refusal(80, 24).await;
     assert_eq!(
         refused,
-        "the server holds no project; run domux2 open <path> to add one"
+        "the server holds no project; run domux open <path> to add one"
     );
     h.stop().await;
 }

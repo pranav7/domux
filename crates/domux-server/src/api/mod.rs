@@ -298,13 +298,13 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         AgentReport(p) => agent::report(ctx, p),
         AgentFocus(p) => agent::focus(ctx, p),
         AgentSend(_) => Err(ApiError::unavailable(
-            "agent.send arrives with messaging in M4 and is not built yet",
+            "domux has no messaging between agents, so agent.send is not built yet",
         )),
         AgentRead(_) => Err(ApiError::unavailable(
-            "agent.read arrives with messaging in M4 and is not built yet",
+            "domux has no messaging between agents, so agent.read is not built yet",
         )),
         AgentWait(_) => Err(ApiError::unavailable(
-            "agent.wait arrives with messaging in M4 and is not built yet",
+            "domux has no messaging between agents, so agent.wait is not built yet",
         )),
         AgentsOpen(p) => agents::open(ctx, p),
         AgentsClose(p) => agents::close(ctx, p),

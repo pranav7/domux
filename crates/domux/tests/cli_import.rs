@@ -1,8 +1,8 @@
-//! End to end tests for `domux2 import v1`, run as the process a person types against a
+//! End to end tests for `domux import v1`, run as the process a person types against a
 //! harness server on a temp socket.
 //!
 //! Every test builds its own session files in a temp directory and passes `--from`, so
-//! nothing here reads V1's real state directory. `domux2` also runs with `HOME` pointed at a
+//! nothing here reads V1's real state directory. `domux` also runs with `HOME` pointed at a
 //! temp directory, so a bug that ignored `--from` would read an empty directory rather than
 //! the author's own sessions.
 
@@ -16,8 +16,8 @@ use tokio::process::Command;
 
 /// The CLI pointed at this harness's socket, at no pane, and at a home directory with
 /// nothing in it.
-fn domux2(h: &Harness, home: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+fn domux(h: &Harness, home: &Path) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_domux"));
     c.env("DOMUX_SOCKET", h.socket_path());
     c.env("HOME", home);
     c.env_remove("DOMUX_TAB");
@@ -139,7 +139,7 @@ async fn import(
     f: &Fixture,
     extra: &[&str],
 ) -> (std::process::Output, String, String) {
-    let mut command = domux2(h, &f.home());
+    let mut command = domux(h, &f.home());
     command.args(["import", "v1", "--from"]);
     command.arg(f.sessions());
     command.args(extra);
@@ -415,7 +415,7 @@ async fn a_planned_tab_whose_name_is_taken_in_another_directory_is_still_created
 async fn a_sessions_directory_that_is_not_there_fails() {
     let h = Harness::start(Config::default(), 80, 24).await;
     let f = Fixture::build();
-    let out = domux2(&h, &f.home())
+    let out = domux(&h, &f.home())
         .args(["import", "v1", "--from"])
         .arg(f.tmp.path().join("not-here"))
         .output()
@@ -568,7 +568,7 @@ async fn a_project_the_server_will_not_take_is_reported_and_the_others_still_arr
              "windows": [{ "index": 1, "name": "one", "cwd": "elsewhere", "agent": "" }] }"#,
     );
 
-    let mut command = domux2(&h, &f.home());
+    let mut command = domux(&h, &f.home());
     command.current_dir(f.tmp.path());
     command.args(["import", "v1", "--from"]);
     command.arg(f.sessions());
@@ -860,7 +860,7 @@ async fn a_server_that_is_not_running_is_said_once() {
         );
     }
 
-    let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+    let out = Command::new(env!("CARGO_BIN_EXE_domux"))
         .env("DOMUX_SOCKET", f.tmp.path().join("no-server.sock"))
         .env("HOME", f.home())
         .env_remove("DOMUX_TAB")
@@ -923,7 +923,7 @@ async fn a_workspace_the_server_did_not_register_is_reported_and_leaves_a_failur
     )
     .expect("write a session file");
 
-    let out = domux2(&h, &tmp.path().join("home"))
+    let out = domux(&h, &tmp.path().join("home"))
         .args(["import", "v1", "--from"])
         .arg(&sessions)
         .output()
@@ -992,7 +992,7 @@ async fn import_help_names_what_it_does() {
         vec!["import", "v1", "--help"],
         vec!["--help"],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_domux2"))
+        let out = Command::new(env!("CARGO_BIN_EXE_domux"))
             .env("DOMUX_SOCKET", "/nonexistent/sock")
             .args(&args)
             .output()

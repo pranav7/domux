@@ -102,7 +102,7 @@ async fn kill_and_restart_brings_back_tabs_panes_names_layout_and_cwds() {
     assert!(for_right
         .env
         .iter()
-        .any(|(k, v)| k == "DOMUX_SOCKET" && v.ends_with("domux2.sock")));
+        .any(|(k, v)| k == "DOMUX_SOCKET" && v.ends_with("domux.sock")));
     assert_eq!(
         h.model().client(&h.client).unwrap().tab,
         before

@@ -1,6 +1,6 @@
 # domux V2
 
-A terminal multiplexer for engineers who direct AI agents. This branch is a prerelease built as `domux2`; V1 lives on `main` until the M3 cut-over.
+A terminal multiplexer for engineers who direct AI agents. This is the Rust rewrite, built as `domux`; V1, the Go version, is the `v1` branch.
 
 Build: `cargo build --release`. Test: `cargo test --workspace`. Spec and plans live outside the repository.
 

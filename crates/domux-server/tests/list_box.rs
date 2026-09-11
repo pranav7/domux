@@ -384,12 +384,12 @@ fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
         filled: None,
         focused: true,
         scroll: 2,
-        empty_text: "No projects yet. domux2 open .",
+        empty_text: "No projects yet. domux open .",
         pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 34, 5), &mut buf);
     assert_eq!(scroll, 0, "there is nothing to scroll past");
-    assert_eq!(row(&buf, 1), "│ No projects yet. domux2 open . │");
+    assert_eq!(row(&buf, 1), "│ No projects yet. domux open .  │");
     assert_eq!(buf[(2, 1)].fg, theme::OVERLAY0);
     assert_eq!(buf[(2, 1)].fg, Color::Rgb(0x6c, 0x70, 0x86));
 }
@@ -409,7 +409,7 @@ fn an_empty_text_wider_than_the_box_is_cut_rather_than_written_over_the_border()
         filled: None,
         focused: true,
         scroll: 0,
-        empty_text: "No projects yet. domux2 open .",
+        empty_text: "No projects yet. domux open .",
         pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);

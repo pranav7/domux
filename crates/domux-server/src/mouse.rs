@@ -425,7 +425,7 @@ mod tests {
     }
 
     /// A path is one word, which is the gesture's whole point: a double click on it copies it
-    /// whole. Ghostty's boundaries put `:` outside a word and `/` inside one, and domux2 uses
+    /// whole. Ghostty's boundaries put `:` outside a word and `/` inside one, and domux uses
     /// the same set so the two agree.
     #[test]
     fn word_at_keeps_a_path_whole_and_stops_at_a_colon() {

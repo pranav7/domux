@@ -36,7 +36,7 @@ fn home_with(fixture: Option<(&str, &str)>) -> (tempfile::TempDir, PathBuf) {
 /// author reads in the file after an install, and the cut-over's rename should fail it once so
 /// someone reads the line it writes.
 fn bin() -> PathBuf {
-    PathBuf::from("/Users/pranav/bin/domux2")
+    PathBuf::from("/Users/pranav/bin/domux")
 }
 
 /// Every command installed for one event, in file order.
@@ -76,7 +76,7 @@ fn a_preview_writes_nothing_and_shows_what_would_change() {
         "{text}"
     );
     assert!(
-        text.contains("+ SessionStart       /Users/pranav/bin/domux2 agent report --agent claude"),
+        text.contains("+ SessionStart       /Users/pranav/bin/domux agent report --agent claude"),
         "{text}"
     );
     assert!(
@@ -344,7 +344,7 @@ fn opencode_writes_a_plugin_that_posts_the_payload_domux_reads() {
     let p = plan(&Registry::builtin(), AgentKind::Opencode, &home, &bin()).unwrap();
     apply(&p).unwrap();
     let js = std::fs::read_to_string(home.join(".config/opencode/plugins/domux.js")).unwrap();
-    assert!(js.contains("/Users/pranav/bin/domux2"), "{js}");
+    assert!(js.contains("/Users/pranav/bin/domux"), "{js}");
     assert!(
         js.contains(r#""agent", "report", "--agent", "opencode""#),
         "{js}"
@@ -409,12 +409,12 @@ fn the_backup_name_is_the_file_and_the_stamp() {
 #[test]
 fn a_binary_path_that_needs_quoting_is_quoted_for_the_shell() {
     assert_eq!(
-        hook_command(Path::new("/Users/a/my bin/domux2"), AgentKind::Claude),
-        "'/Users/a/my bin/domux2' agent report --agent claude"
+        hook_command(Path::new("/Users/a/my bin/domux"), AgentKind::Claude),
+        "'/Users/a/my bin/domux' agent report --agent claude"
     );
     assert_eq!(
-        hook_command(Path::new("/Users/a/bin/domux2"), AgentKind::Codex),
-        "/Users/a/bin/domux2 agent report --agent codex",
+        hook_command(Path::new("/Users/a/bin/domux"), AgentKind::Codex),
+        "/Users/a/bin/domux agent report --agent codex",
         "a path that needs no quoting is written bare"
     );
 }
@@ -443,9 +443,9 @@ fn v1s_lines_are_recognised_and_the_authors_own_lines_are_not() {
     // What a previous install wrote, under either binary name: the cut-over renames the
     // binary, and doctor still has to recognise the line the old name wrote.
     for command in [
-        "/Users/pranav/bin/domux2 agent report --agent claude",
+        "/Users/pranav/bin/domux agent report --agent claude",
         "/Users/pranav/bin/domux agent report --agent codex",
-        "'/Users/a/my bin/domux2' agent report --agent opencode",
+        "'/Users/a/my bin/domux' agent report --agent opencode",
     ] {
         assert!(is_v2_line(command), "{command}");
         assert!(!is_v1_line(command), "{command}");

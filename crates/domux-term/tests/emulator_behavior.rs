@@ -620,7 +620,7 @@ fn encode_mouse_writes_the_sgr_wheel_report_the_program_asked_for() {
 }
 
 /// Normal tracking with no SGR is the older report, and the format is the program's choice
-/// rather than domux2's: the encoder is configured from the terminal every time.
+/// rather than domux's: the encoder is configured from the terminal every time.
 #[test]
 fn encode_mouse_follows_the_report_format_the_program_set() {
     let mut e = make(20, 5);

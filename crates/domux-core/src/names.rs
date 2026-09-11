@@ -1,30 +1,36 @@
-//! The names that change at the M3 cut-over. Edit this file and the `[[bin]]` name in
-//! `crates/domux/Cargo.toml`; no other source spells `domux2`. Tests do, on purpose: they
-//! pin what a user reads today, so the rename fails them and someone reads each message
-//! once.
+//! The names the M3 cut-over changed. Until 2026-09-11 the binary, the state directory, the
+//! config directory and the socket were all `domux2`, so V2 could run beside V1. They are
+//! `domux` now. `OLD_NAME` is what the server moves the state and config away from, once, on a
+//! machine that ran the old name.
+//!
+//! No source outside this file spells the old name, and a test below keeps it that way: a
+//! message that named the old command would name one that no longer exists.
 
-/// The binary and the prefix of every path until the cut-over.
-pub const BIN_NAME: &str = "domux2";
-/// The product name shown to people. Unchanged by the cut-over.
+/// The binary, and the prefix of every path.
+pub const BIN_NAME: &str = "domux";
+/// The product name shown to people. The same word as `BIN_NAME` since the cut-over.
 pub const PRODUCT_NAME: &str = "domux";
-pub const STATE_DIR_NAME: &str = "domux2";
-pub const CONFIG_DIR_NAME: &str = "domux2";
-pub const SOCKET_FILE_NAME: &str = "domux2.sock";
-/// The name of the socket directory under `/tmp` when `XDG_RUNTIME_DIR` is unset: `domux2-<uid>`.
-pub const SOCKET_DIR_PREFIX: &str = "domux2-";
+pub const STATE_DIR_NAME: &str = "domux";
+pub const CONFIG_DIR_NAME: &str = "domux";
+pub const SOCKET_FILE_NAME: &str = "domux.sock";
+/// The name of the socket directory under `/tmp` when `XDG_RUNTIME_DIR` is unset: `domux-<uid>`.
+pub const SOCKET_DIR_PREFIX: &str = "domux-";
 
-/// V1's state directory name, for `import v1` to read V1's session files from. It is spelled
-/// apart from `STATE_DIR_NAME` because the two are the same word only after the M3 cut-over,
-/// and this one must not follow that rename: it names V1's directory, not V2's.
-///
-/// Nothing in V2 writes under this directory.
+/// What the binary, the state directory and the config directory were called before the
+/// cut-over. `paths::old_state_dir_in` and `paths::old_config_file_in` derive from it, and the
+/// server moves the files it finds there once. Nothing else spells it.
+pub const OLD_NAME: &str = "domux2";
+
+/// V1's state directory name, for `import v1` to read V1's session files from. It is the same
+/// word as `STATE_DIR_NAME` since the cut-over, and is spelled apart on purpose: this one names
+/// V1's directory, and `sessions/` under it is V1's and is never written.
 pub const V1_STATE_DIR_NAME: &str = "domux";
 /// Where V1 keeps one JSON file per session, under its state directory.
 pub const V1_SESSIONS_DIR_NAME: &str = "sessions";
 
 #[cfg(test)]
 mod tests {
-    use super::BIN_NAME;
+    use super::OLD_NAME;
     use std::path::{Path, PathBuf};
 
     fn workspace_root() -> PathBuf {
@@ -47,46 +53,20 @@ mod tests {
         }
     }
 
-    /// The file's lines with its inline test modules removed. Every `#[cfg(test)]` in this
-    /// workspace is a top level attribute on a module whose closing brace is the next `}` at
-    /// column 0, which is what this relies on and what `cargo fmt` keeps true.
-    fn lines_outside_test_modules(text: &str) -> Vec<(usize, &str)> {
-        let mut out = Vec::new();
-        let mut in_test = false;
-        for (i, line) in text.lines().enumerate() {
-            if line == "#[cfg(test)]" {
-                in_test = true;
-                continue;
-            }
-            if in_test {
-                if line == "}" {
-                    in_test = false;
-                }
-                continue;
-            }
-            out.push((i + 1, line));
-        }
-        out
-    }
-
-    /// This file promises that nothing else spells the binary name. That promise was false for
-    /// the whole of M1 - `BIN_NAME` had no uses at all and 34 messages spelled `domux2` - so at
-    /// the cut-over every one of them would have gone on naming a command that no longer
-    /// existed. Nothing caught it, because a promise in a doc comment is not a test.
-    ///
-    /// Test code is exempt on purpose: a test pins what a user sees today, and one written
-    /// against the constant would pass through the rename having checked nothing.
+    /// Before the cut-over this test kept every source but this file from spelling the
+    /// binary name, so the rename would fail each message once and someone would read it.
+    /// It did that job on 2026-09-11: 199 lines in 22 files were read. It now guards the
+    /// other direction, that the old name does not come back through a rebase or a habit.
+    /// Tests are included this time, because a test that spells the old name pins what a
+    /// user no longer sees.
     #[test]
-    fn nothing_outside_this_file_spells_the_binary_name() {
+    fn nothing_outside_this_file_spells_the_old_name() {
         let root = workspace_root();
         let mut sources = Vec::new();
         for crate_dir in std::fs::read_dir(root.join("crates")).expect("read crates/") {
-            let src = crate_dir
-                .expect("read a crate directory")
-                .path()
-                .join("src");
-            if src.is_dir() {
-                rust_sources(&src, &mut sources);
+            let dir = crate_dir.expect("read a crate directory").path();
+            if dir.is_dir() {
+                rust_sources(&dir, &mut sources);
             }
         }
         assert!(sources.len() > 20, "found only {} sources", sources.len());
@@ -97,16 +77,16 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("read a source file");
-            for (n, line) in lines_outside_test_modules(&text) {
-                if line.contains(BIN_NAME) {
+            for (i, line) in text.lines().enumerate() {
+                if line.contains(OLD_NAME) {
                     let rel = path.strip_prefix(&root).unwrap_or(&path);
-                    offenders.push(format!("{}:{n}: {}", rel.display(), line.trim()));
+                    offenders.push(format!("{}:{}: {}", rel.display(), i + 1, line.trim()));
                 }
             }
         }
         assert!(
             offenders.is_empty(),
-            "{} place(s) spell the binary name instead of using names::BIN_NAME:\n{}",
+            "{} place(s) spell the old name {OLD_NAME:?}, which nothing answers to since the cut-over:\n{}",
             offenders.len(),
             offenders.join("\n")
         );

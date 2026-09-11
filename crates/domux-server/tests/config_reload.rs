@@ -51,7 +51,7 @@ async fn a_bad_reload_keeps_the_old_config_and_shows_the_line_until_fixed() {
         )
         .await;
     assert!(
-        f.contains("domux2 config reload"),
+        f.contains("domux config reload"),
         "the next action is on screen:\n{f}"
     );
     assert!(!f.contains("14:32"), "{f}");
@@ -125,7 +125,7 @@ async fn unknown_tables_are_warnings_in_the_reload_result_not_errors() {
 
 /// The notice as it is drawn, cell for cell, at the width the tests run at. Its three parts
 /// are the object (`domux.toml line 4`), the state (the parser's own words, cut to the room
-/// with `…`) and the next action (`domux2 config reload`) - principle 9. The message is what
+/// with `…`) and the next action (`domux config reload`) - principle 9. The message is what
 /// gives way when the room runs short; the next action never is.
 ///
 /// The dot past the action is the stay awake light, which keeps its two cells whatever the
@@ -148,7 +148,7 @@ async fn the_notice_names_the_file_the_line_and_the_next_action_in_the_room_it_h
         .await;
     assert_eq!(
         row(&f, 0),
-        "| proj › main  1 │ + │ domux.toml line 4: invalid stri… · domux2 config reload ● |"
+        "| proj › main  1 │ + │ domux.toml line 4: invalid strin… · domux config reload ● |"
     );
     // The same notice whole when there is room for it: the message is elastic, not truncated
     // at the source.
@@ -162,7 +162,7 @@ async fn the_notice_names_the_file_the_line_and_the_next_action_in_the_room_it_h
         .await;
     assert!(
         row(&f, 0).ends_with(
-            "domux.toml line 4: invalid string; expected `\"`, `\'` · domux2 config reload ● |"
+            "domux.toml line 4: invalid string; expected `\"`, `\'` · domux config reload ● |"
         ),
         "{f}"
     );
@@ -196,7 +196,7 @@ async fn a_config_that_parses_but_is_not_a_keymap_keeps_the_old_config_and_inven
             Duration::from_secs(2),
         )
         .await;
-    assert!(f.contains("domux2 config reload"), "{f}");
+    assert!(f.contains("domux config reload"), "{f}");
     // The previous good config stayed: the old leader still opens the chord.
     h.key(h.client.clone(), "C-a").await;
     h.key(h.client.clone(), "t").await;
@@ -427,7 +427,7 @@ async fn a_config_error_outranks_the_shell_failure_notice() {
         !f.contains("exited immediately"),
         "the config error has the bar:\n{f}"
     );
-    assert!(f.contains("domux2 config reload"), "{f}");
+    assert!(f.contains("domux config reload"), "{f}");
     // Both notices are still true: a reload that failed lifts no respawn block.
     assert_eq!(h.model().all_pane_ids().len(), blocked);
 }
@@ -436,7 +436,7 @@ async fn a_config_error_outranks_the_shell_failure_notice() {
 ///
 /// The tab row fills its budget to the last cell whenever it is cut, so without a reserved gap
 /// its own elision mark abuts the right end's and the two read as one run of text. The message
-/// is elided to a mark rather than dropped, because a right end showing only `domux2 config
+/// is elided to a mark rather than dropped, because a right end showing only `domux config
 /// reload` reads as an offer rather than as an error, and the mark carries the message's own
 /// red. Its separator narrows with it, because a right end that opens with a bare ` · ` reads
 /// as a sentence with its subject cut off. And the right end stays flush to the edge on the
@@ -488,7 +488,7 @@ async fn a_config_notice_too_wide_to_fit_keeps_a_gap_a_mark_and_the_right_edge()
         let bar = row(&f, 0);
         assert!(!bar.contains("……"), "{cols} columns, {tabs} tabs: {bar}");
         // The narrowest of these widths cuts the action itself, so this is `domux` and not
-        // `domux2 config reload`: what is pinned is the shape of the right end, not its length.
+        // `domux config reload`: what is pinned is the shape of the right end, not its length.
         assert!(
             bar.contains("… domux"),
             "{cols} columns, {tabs} tabs: {bar}"

@@ -2,9 +2,9 @@
 //! Codex's wire format, and that client adds it to the session's context (architecture spec 3.4).
 //!
 //! It says where this agent is, that peers exist, and names the verbs. `peek` and `whoami`
-//! work in M3; `send`, `wait` and `read` answer with an `unavailable` error naming M4 until
-//! M4 fills them in, so the block says so rather than showing an example that fails (M3 plan
-//! assumption 39).
+//! work; `send`, `wait` and `read` answer with an `unavailable` error, because domux has no
+//! messaging between agents (the author closed M4 on 2026-09-11 with none built), so the block
+//! says so rather than showing an example that fails (M3 plan assumption 39).
 //!
 //! The block describes that refusal rather than quoting it. There is no one sentence to
 //! quote: each of the three answers its own, naming its own method, and the CLI prints the
@@ -15,7 +15,7 @@
 use domux_core::model::{Agent, Model};
 use domux_core::names::{BIN_NAME, PRODUCT_NAME};
 
-/// The exact text M3 prints. M4 replaces the last paragraph with one example per verb.
+/// The exact text the report subcommand prints on `SessionStart`.
 pub fn session_start_context(model: &Model, agent: &Agent) -> String {
     let place = place_of(model, agent);
     let pane = agent
@@ -37,8 +37,8 @@ pub fn session_start_context(model: &Model, agent: &Agent) -> String {
          \x20 {bin} peek      every agent: kind, place, state, recap\n\
          \x20 {bin} whoami    this agent's project, workspace, tab and pane\n\
          \n\
-         Messaging between agents is not built yet: {bin} send, {bin} wait and {bin} read\n\
-         fail with an error until messaging arrives in M4.\n",
+         {product} has no messaging between agents: {bin} send, {bin} wait and {bin} read\n\
+         fail with an error.\n",
         product = PRODUCT_NAME,
         id = agent.id,
         kind = agent.kind,

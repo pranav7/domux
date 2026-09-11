@@ -1,4 +1,4 @@
-//! End to end tests for `domux2 project`, `domux2 workspace` and `domux2 open`, run as the
+//! End to end tests for `domux project`, `domux workspace` and `domux open`, run as the
 //! process a person types against a harness server on a temp socket.
 //!
 //! The commands run through `tokio::process` rather than `std::process`, for the reason
@@ -19,8 +19,8 @@ use tokio::process::Command;
 
 /// The CLI pointed at this harness's socket, and at no pane: every test that wants a
 /// location sets it itself.
-fn domux2(h: &Harness) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+fn domux(h: &Harness) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_domux"));
     c.env("DOMUX_SOCKET", h.socket_path());
     c.env_remove("DOMUX_TAB");
     c.env_remove("DOMUX_PANE");
@@ -37,7 +37,7 @@ struct Run {
 }
 
 async fn run(cmd: &mut Command) -> Run {
-    let out = cmd.output().await.expect("run domux2");
+    let out = cmd.output().await.expect("run domux");
     Run {
         code: out.status.code(),
         out: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -155,7 +155,7 @@ async fn open_registers_a_path_and_switches_to_it_and_project_list_prints_json()
         .unwrap()
         .to_string();
 
-    run(domux2(&h).args(["open", dir.path().to_str().unwrap()]))
+    run(domux(&h).args(["open", dir.path().to_str().unwrap()]))
         .await
         .quiet();
 
@@ -169,7 +169,7 @@ async fn open_registers_a_path_and_switches_to_it_and_project_list_prints_json()
         (name.clone(), "main".to_string())
     );
 
-    let listed = run(domux2(&h).args(["project", "list"])).await.ok();
+    let listed = run(domux(&h).args(["project", "list"])).await.ok();
     assert_eq!(
         keys_of(&listed.json().as_array().unwrap()[0]),
         ["default_branch", "id", "kind", "name", "root", "workspaces"],
@@ -209,7 +209,7 @@ async fn open_switches_to_main_and_names_the_slots_it_adopted() {
         std::fs::create_dir_all(slot_of(&root, n)).expect("make a worktree directory");
     }
 
-    let opened = run(domux2(&h).args(["open", root.to_str().unwrap()]))
+    let opened = run(domux(&h).args(["open", root.to_str().unwrap()]))
         .await
         .ok();
     assert_eq!(opened.err, "Adopted workspace-1, workspace-2.\n");
@@ -235,7 +235,7 @@ async fn open_switches_to_main_and_names_the_slots_it_adopted() {
     // with no slots gives: nothing in it tells a registration from a path that was already
     // there. That is why `open` never says "Added audrey-app" - it would be a claim this
     // command cannot check.
-    run(domux2(&h).args(["open", root.to_str().unwrap()]))
+    run(domux(&h).args(["open", root.to_str().unwrap()]))
         .await
         .quiet();
 }
@@ -256,7 +256,7 @@ async fn project_add_prints_the_record_it_made_and_leaves_the_client_where_it_wa
     let client = h.client.clone();
     let before = where_the_client_is(&h.model(), &client);
 
-    let added = run(domux2(&h).args(["project", "add", dir.path().to_str().unwrap()]))
+    let added = run(domux(&h).args(["project", "add", dir.path().to_str().unwrap()]))
         .await
         .ok();
     assert_eq!(added.err, "", "data goes to stdout (principle 12)");
@@ -304,7 +304,7 @@ async fn open_names_what_it_adopted_and_still_switches_with_nobody_attached() {
     h.detach(client).await;
     model_when(&h, "the client goes", |m| m.most_recent_client().is_none()).await;
 
-    let opened = run(domux2(&h).args(["open", root.to_str().unwrap()])).await;
+    let opened = run(domux(&h).args(["open", root.to_str().unwrap()])).await;
     assert_eq!(opened.code, Some(0), "{}", opened.err);
     assert_eq!(
         opened.err.trim(),
@@ -350,7 +350,7 @@ async fn open_names_what_it_adopted_and_still_switches_with_nobody_attached() {
 /// is there to catch a wedged core would be carrying the assertion, and a bound that fires is
 /// a bound a loaded machine can fire on its own.
 async fn name_of(h: &Harness, workspace: &WorkspaceId) -> Option<String> {
-    let listed = run(domux2(h).args(["workspace", "list"])).await.ok();
+    let listed = run(domux(h).args(["workspace", "list"])).await.ok();
     listed
         .json()
         .as_array()
@@ -379,7 +379,7 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
     let elsewhere = h.model().client(&client).unwrap().workspace.clone();
     assert_ne!(elsewhere, w1, "the fixture puts the client somewhere else");
 
-    run(domux2(&h)
+    run(domux(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", "auth cleanup"]))
     .await
@@ -387,7 +387,7 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
     assert_eq!(name_of(&h, &w1).await.as_deref(), Some("auth cleanup"));
     assert_eq!(name_of(&h, &elsewhere).await, None, "and only that one");
 
-    run(domux2(&h)
+    run(domux(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", ""]))
     .await
@@ -397,13 +397,13 @@ async fn workspace_name_reads_its_workspace_from_the_environment_and_an_empty_na
     // `clear-name` is checked here, where the client is somewhere else, rather than in the
     // test that pairs it with `leader n`: there the client sits on this very workspace, so a
     // subcommand that sent no target at all would reach it anyway.
-    run(domux2(&h)
+    run(domux(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "name", "auth cleanup"]))
     .await
     .quiet();
     assert_eq!(name_of(&h, &w1).await.as_deref(), Some("auth cleanup"));
-    run(domux2(&h)
+    run(domux(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "clear-name"]))
     .await
@@ -450,7 +450,7 @@ async fn the_clear_name_key_and_the_clear_name_subcommand_both_clear_the_name() 
             h.key(client.clone(), "C-a").await;
             h.key(client.clone(), "n").await;
         } else {
-            run(domux2(&h)
+            run(domux(&h)
                 .env("DOMUX_WORKSPACE", w1.as_str())
                 .args(["workspace", "clear-name"]))
             .await
@@ -471,7 +471,7 @@ async fn the_clear_name_key_and_the_clear_name_subcommand_both_clear_the_name() 
 
 // ---------------------------------------------------------------- delete
 
-/// Interface spec 12.22: `domux2 workspace delete workspace-1` prints the confirmation and
+/// Interface spec 12.22: `domux workspace delete workspace-1` prints the confirmation and
 /// fails unless `--yes` is given (principle 10: non-interactive use gets the whole
 /// consequence, not a one-line refusal).
 ///
@@ -490,7 +490,7 @@ async fn delete_without_yes_prints_the_confirmation_on_stderr_and_exits_one() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (root, w1, _w2) = h.git_project_with_two_slots().await;
 
-    let asked = run(domux2(&h).args(["workspace", "delete", "workspace-1"])).await;
+    let asked = run(domux(&h).args(["workspace", "delete", "workspace-1"])).await;
     assert_eq!(asked.code, Some(1));
     assert_eq!(
         asked.out, "",
@@ -536,7 +536,7 @@ async fn delete_without_yes_prints_the_confirmation_on_stderr_and_exits_one() {
     assert!(slot_of(&root, 1).is_dir(), "the worktree is still there");
     assert!(h.model().workspace(&w1).is_some(), "and so is its record");
 
-    run(domux2(&h).args(["workspace", "delete", "workspace-1", "--yes"]))
+    run(domux(&h).args(["workspace", "delete", "workspace-1", "--yes"]))
         .await
         .quiet();
     model_when(&h, "the record goes", |m| m.workspace(&w1).is_none()).await;
@@ -552,7 +552,7 @@ async fn a_workspace_holding_work_needs_force_and_keeps_its_work_until_it_gets_o
     let scratch = slot_of(&root, 2).join("scratch.txt");
     std::fs::write(&scratch, "work").unwrap();
 
-    let refused = run(domux2(&h).args(["workspace", "delete", "workspace-2", "--yes"])).await;
+    let refused = run(domux(&h).args(["workspace", "delete", "workspace-2", "--yes"])).await;
     assert_eq!(refused.code, Some(1));
     assert!(
         refused.err.contains(
@@ -564,7 +564,7 @@ async fn a_workspace_holding_work_needs_force_and_keeps_its_work_until_it_gets_o
     );
     assert!(scratch.is_file(), "and the work is still there");
 
-    run(domux2(&h).args(["workspace", "delete", "workspace-2", "--yes", "--force"]))
+    run(domux(&h).args(["workspace", "delete", "workspace-2", "--yes", "--force"]))
         .await
         .quiet();
     model_when(&h, "the record goes", |m| m.workspace(&w2).is_none()).await;
@@ -588,7 +588,7 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
 
     // Named, with no variable set, so a target that came from the environment would be the
     // view's own workspace instead.
-    let refused = run(domux2(&h).args(["workspace", "clear", "workspace-1"])).await;
+    let refused = run(domux(&h).args(["workspace", "clear", "workspace-1"])).await;
     assert_eq!(refused.code, Some(1));
     // The same code word the laid-out question carries. A refusal that is one line and a
     // refusal that is five are told apart by a script the same way.
@@ -611,7 +611,7 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
     // And with no target named, the variable is what says which workspace. The client is in
     // the harness's own project, whose `main` a clear refuses by name, so a subcommand that
     // sent no target would be refused in different words.
-    let from_the_variable = run(domux2(&h)
+    let from_the_variable = run(domux(&h)
         .env("DOMUX_WORKSPACE", w1.as_str())
         .args(["workspace", "clear"]))
     .await;
@@ -628,7 +628,7 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
     // the two sources are told apart: with only one of them set, "the target wins" and "the
     // variable wins" reach the same workspace and nothing could see the difference. It is
     // asserted on `clear` because `clear` is where getting it backwards throws away work.
-    let named_beats_the_variable = run(domux2(&h).env("DOMUX_WORKSPACE", w2.as_str()).args([
+    let named_beats_the_variable = run(domux(&h).env("DOMUX_WORKSPACE", w2.as_str()).args([
         "workspace",
         "clear",
         "workspace-1",
@@ -643,7 +643,7 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
         named_beats_the_variable.err
     );
 
-    run(domux2(&h).args(["workspace", "clear", "workspace-1", "--yes"]))
+    run(domux(&h).args(["workspace", "clear", "workspace-1", "--yes"]))
         .await
         .quiet();
     assert!(
@@ -661,7 +661,7 @@ async fn project_remove_without_yes_prints_the_confirmation_and_keeps_the_projec
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
 
-    let asked = run(domux2(&h).args(["project", "remove", "audrey-app"])).await;
+    let asked = run(domux(&h).args(["project", "remove", "audrey-app"])).await;
     assert_eq!(asked.code, Some(1));
     assert_eq!(asked.out, "");
     let lines: Vec<&str> = asked.err.lines().collect();
@@ -704,11 +704,11 @@ async fn project_remove_with_yes_removes_the_record_and_leaves_the_folder() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (root, _w1, _w2) = h.git_project_with_two_slots().await;
 
-    run(domux2(&h).args(["project", "remove", "audrey-app", "--yes"]))
+    run(domux(&h).args(["project", "remove", "audrey-app", "--yes"]))
         .await
         .quiet();
 
-    let listed = run(domux2(&h).args(["project", "list"])).await.ok();
+    let listed = run(domux(&h).args(["project", "list"])).await.ok();
     let rows = listed.json();
     let names: Vec<&str> = rows
         .as_array()
@@ -735,7 +735,7 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
 
-    let made = run(domux2(&h).args(["workspace", "create", "--project", "audrey-app"]))
+    let made = run(domux(&h).args(["workspace", "create", "--project", "audrey-app"]))
         .await
         .ok();
     assert_eq!(
@@ -754,7 +754,7 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
     // the ref a slot was branched from is on no later row. A `main` that reached the server
     // answers `main` where the default answers `origin/main`, so the two are told apart by
     // the answer rather than by the flag having been typed.
-    let based = run(domux2(&h).args([
+    let based = run(domux(&h).args([
         "workspace",
         "create",
         "--project",
@@ -768,7 +768,7 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
     assert_eq!(based["handle"], "workspace-4");
     assert_eq!(based["base"], "main");
 
-    let scoped = run(domux2(&h).args(["workspace", "list", "--project", "audrey-app"]))
+    let scoped = run(domux(&h).args(["workspace", "list", "--project", "audrey-app"]))
         .await
         .ok();
     assert_eq!(scoped.err, "", "data goes to stdout (principle 12)");
@@ -795,7 +795,7 @@ async fn workspace_create_and_list_print_json_and_project_scopes_the_list() {
         ]
     );
 
-    let all = run(domux2(&h).args(["workspace", "list"])).await.ok();
+    let all = run(domux(&h).args(["workspace", "list"])).await.ok();
     assert_eq!(
         all.json().as_array().unwrap().len(),
         handles.len() + 1,
@@ -831,7 +831,7 @@ async fn every_m2_subcommand_and_flag_has_help_that_says_what_it_does() {
         vec!["workspace", "list", "--help"],
         vec!["open", "--help"],
     ] {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_domux2"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_domux"));
         c.env("DOMUX_SOCKET", "/nonexistent/sock");
         let helped = run(c.args(&args)).await;
         assert_eq!(helped.code, Some(0), "{args:?}: {}", helped.err);

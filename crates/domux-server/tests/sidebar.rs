@@ -535,7 +535,7 @@ async fn a_client_that_did_not_ask_keeps_no_override_across_another_clients_show
 ///
 /// Persistence keys off the event's class, not its contents, so every other test here passes
 /// with the payload inverted: they observe that an event was raised, never that it said the
-/// right thing. A subscriber to `sidebar.*` - `domux2 api events`, and every later task that
+/// right thing. A subscriber to `sidebar.*` - `domux api events`, and every later task that
 /// watches for structural changes - would be told the sidebar closed when it opened, which is
 /// a fabricated fact rather than a missing one (principle 4).
 #[tokio::test]

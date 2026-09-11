@@ -3606,7 +3606,7 @@ mod tests {
     /// Task 5 declares thirteen methods in one commit so that every caller reads one shape of
     /// the API from the start of the milestone, and Tasks 10 to 18 fill them in one at a
     /// time. **When M3 finishes this holds exactly `agent.send`, `agent.read` and
-    /// `agent.wait`** - the three verbs M4 fills - **and nothing else.** Anything else still
+    /// `agent.wait`** - the three messaging verbs - **and nothing else.** Anything else still
     /// on it is a method that would reach the cut-over answering "not built" to a reader who
     /// has no way to know that from the outside, which is the failure this register exists to
     /// prevent.
@@ -3618,7 +3618,8 @@ mod tests {
     /// direction B only scans arms in `dispatch` that carry it.
     ///
     /// Task 18 built `agent.resume`, the last of the ten M3 fills, so what is left is exactly
-    /// the three verbs M4 fills.
+    /// the three messaging verbs. The author closed M4 on 2026-09-11 without building them,
+    /// so they stay here: declared, refusing in one sentence, and never silently absent.
     const STILL_UNBUILT: &[(&str, &str)] = &[
         ("agent.send", r#"{"text": "hello"}"#),
         ("agent.read", "{}"),

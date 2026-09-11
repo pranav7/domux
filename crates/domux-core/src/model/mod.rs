@@ -2908,7 +2908,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::NotFound);
         assert_eq!(
             err.message,
-            "no workspace called nope; run domux2 workspace list to see them"
+            "no workspace called nope; run domux workspace list to see them"
         );
     }
 
@@ -3405,7 +3405,7 @@ mod tests {
         assert_eq!(missing.code, ErrorCode::NotFound);
         assert_eq!(
             missing.message,
-            "no project called audrey-app; run domux2 project list to see them"
+            "no project called audrey-app; run domux project list to see them"
         );
         // Two checkouts of one repository under different parents have the same name, which
         // is the folder's last component.
@@ -3982,7 +3982,7 @@ mod tests {
         assert_eq!(m.resolve_agent_target("main/pr1").unwrap(), a);
         assert_eq!(m.resolve_agent_target("main/tests").unwrap(), b);
         let err = m.resolve_agent_target("a_ffff").unwrap_err();
-        assert_eq!(err.message, "agent a_ffff does not exist; run domux2 peek");
+        assert_eq!(err.message, "agent a_ffff does not exist; run domux peek");
         m.report_agent(
             &p2,
             AgentKind::Codex,
