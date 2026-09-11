@@ -37,13 +37,25 @@ configuration for a tool the reader does not use, and the lid question is asked 
 is a terminal to ask on. `DOMUX_HOOKS=no` and `DOMUX_STAY_AWAKE=yes|no` answer both without a
 prompt, which is also how the tests drive those branches.
 
-**The installer is drawn the way domux draws itself.** Not a generic list of steps with an arrow
-in front of each: the logo wears the band, a step that is running shows the turning glyph with
-the band along its word, a step that is done settles to the glyph's own resting frame, and the
-one question wears the red dot, which means the same thing there as it does on an agent row.
-Every animation is a terminal's alone. Without one, and under `NO_COLOR`, the same lines are
-printed once, in order, with no color and no redrawing, so a log file reads as well as a
-terminal does.
+**One thing moves in the installer, and it is an ordinary spinner.** The first version put the
+band along the logo and along the word of a running step, the way domux draws an agent row. Both
+were invisible in use: the logo sweep is over in under a second, and a reader watching an
+install cannot follow a wave travelling through a word they are also trying to read. So the logo
+is printed once and does not move, a running step shows the braille spinner every command line
+tool uses, a finished step is a faint dot, and the one question wears the red dot, which means
+the same thing there as it does on an agent row. The color is still domux's mauve. Nothing else
+animates, and the animation that is left is a terminal's alone: without one, and under
+`NO_COLOR`, the same lines are printed once, in order, with no color and no redrawing, so a log
+file reads as well as a terminal does.
+
+A curl installer cannot take a dependency for any of this. It has to be one POSIX sh file that
+runs on a machine with nothing on it, so the frames are a list in the script rather than a
+library, and the list is the standard one rather than something invented here.
+
+**The line a script reads is only printed when nothing is watching.** The installed path and
+version go to stdout for a caller that pipes the script, and stdout under `curl | sh` is the
+reader's terminal, where an unstyled path in the middle of the steps is noise. So that line is
+written only when stdout is not a terminal; a reader gets the step that says the same thing.
 
 **The archive is checked before it is trusted.** The installer downloads the archive and
 `SHA256SUMS`, compares, and refuses to install on a mismatch. Three network requests, all to

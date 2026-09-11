@@ -14,7 +14,8 @@
 #                      terminal is there, and say what to run when it is not
 #   NO_COLOR           set to anything to print without color or animation
 #
-# Output: progress and errors on stderr; on success one line on stdout: "<installed path> <version>".
+# Output: progress and errors on stderr; on success one line on stdout when stdout is not a
+# terminal: "<installed path> <version>".
 # Exit status: 0 installed, 1 failed; every failure names the state and the next action.
 # Network: three requests, to api.github.com and github.com: the release list, the archive,
 # SHA256SUMS.
@@ -30,134 +31,51 @@ ISSUES="https://github.com/$REPO/issues"
 
 # --- the look ---------------------------------------------------------------------------------
 #
-# The installer is drawn the way domux draws itself: mauve, a glyph that turns while something
-# is happening, and a band that runs along the word beside it. A step that is done settles to
-# the glyph's own resting frame, a dim dot. Everything here is a terminal's: a pipe or a log
-# file gets the same lines with no color, no redrawing and no animation.
+# Four things and no more: the logo, a spinner while something is happening, a faint dot on a
+# step that is done, and the red dot when domux is waiting on you. The spinner is the braille
+# set every command line spinner uses, rather than a second animation invented here. Only the
+# spinner moves: a pipe or a log file gets the same lines once, in order, with no color and no
+# redrawing.
 
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   MAUVE=$(printf '\033[38;2;203;166;247m')      # the domux mauve
-  MID=$(printf '\033[38;2;223;199;250m')        # one step along the band
-  BRIGHT=$(printf '\033[38;2;245;235;255m')     # the band's peak
+  BRIGHT=$(printf '\033[38;2;245;235;255m')     # the last line, once domux is installed
   FAINT=$(printf '\033[38;2;122;103;148m')      # a step that is done
   RED=$(printf '\033[38;2;243;139;168m')        # the dot, which means domux is waiting on you
   OFF=$(printf '\033[0m')
   EOL=$(printf '\033[K')
   LIVE=yes
 else
-  MAUVE=""; MID=""; BRIGHT=""; FAINT=""; RED=""; OFF=""; EOL=""
+  MAUVE=""; BRIGHT=""; FAINT=""; RED=""; OFF=""; EOL=""
   LIVE=""
 fi
 
-# domux's own glyph: sparse to dense and back, so each frame morphs into the next. It turns
-# every second tick while the band moves on every one, which is the ratio the agent rows use.
-GLYPHS='· ✦ ✶ ✳ ✢ ✻ ✽ ✻ ✢ ✳ ✶ ✦ ·'
+SPINNER='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏'
 TICK=0
 
-# set_glyph <tick>: GLYPH becomes the frame for that tick.
-set_glyph() {
-  g_want=$((($1 / 2) % 13))
-  g_i=0
-  for g_frame in $GLYPHS; do
-    if [ "$g_i" = "$g_want" ]; then
-      GLYPH=$g_frame
+# set_spinner <tick>: SPIN becomes the frame for that tick.
+set_spinner() {
+  s_want=$(($1 % 10))
+  s_i=0
+  for s_frame in $SPINNER; do
+    if [ "$s_i" = "$s_want" ]; then
+      SPIN=$s_frame
       return 0
     fi
-    g_i=$((g_i + 1))
+    s_i=$((s_i + 1))
   done
-}
-
-# set_band <word> <tick>: BAND becomes the word with the bright band where it has reached. The
-# peak travels from before the first character to past the last and back, so the band enters and
-# leaves the word rather than appearing on it.
-set_band() {
-  b_word=$1
-  b_span=$((${#b_word} + 6))
-  b_pos=$(($2 % (b_span * 2)))
-  if [ "$b_pos" -ge "$b_span" ]; then b_pos=$((b_span * 2 - b_pos)); fi
-  b_peak=$((b_pos - 3))
-  b_rest=$b_word
-  b_out=""
-  b_i=0
-  while [ -n "$b_rest" ]; do
-    b_head=${b_rest#?}
-    b_ch=${b_rest%"$b_head"}
-    b_rest=$b_head
-    b_i=$((b_i + 1))
-    b_d=$((b_i - b_peak))
-    if [ "$b_d" -lt 0 ]; then b_d=$((0 - b_d)); fi
-    if [ "$b_d" = 0 ]; then
-      b_c=$BRIGHT
-    elif [ "$b_d" = 1 ]; then
-      b_c=$MID
-    else
-      b_c=$MAUVE
-    fi
-    b_out="$b_out$b_c$b_ch"
-  done
-  BAND="$b_out$OFF"
-}
-
-# The five letters of the logo, each as its top and bottom half, so the band can run along the
-# logo the way it runs along a word. An underscore stands in for a space inside a letter, so the
-# list splits between letters and nowhere else.
-LETTERS='█▀▄|█▄▀ █▀█|█▄█ █▀▄▀█|█_▀_█ █_█|█▄█ ▀▄▀|█_█'
-
-# set_logo_row <top|bottom> <letter the band sits on, or 0 for none>
-set_logo_row() {
-  l_row=$1
-  l_peak=$2
-  l_i=0
-  l_out=""
-  for l_pair in $LETTERS; do
-    l_i=$((l_i + 1))
-    if [ "$l_row" = top ]; then
-      l_glyph=${l_pair%%|*}
-    else
-      l_glyph=${l_pair##*|}
-    fi
-    l_glyph=$(printf '%s' "$l_glyph" | tr '_' ' ')
-    l_d=$((l_i - l_peak))
-    if [ "$l_d" -lt 0 ]; then l_d=$((0 - l_d)); fi
-    if [ "$l_peak" = 0 ]; then
-      l_c=$MAUVE
-    elif [ "$l_d" = 0 ]; then
-      l_c=$BRIGHT
-    elif [ "$l_d" = 1 ]; then
-      l_c=$MID
-    else
-      l_c=$MAUVE
-    fi
-    l_out="$l_out$l_c$l_glyph$OFF "
-  done
-  LOGO_ROW=$l_out
-}
-
-logo_frame() {
-  set_logo_row top "$1"
-  printf '   %s%s\n' "$LOGO_ROW" "$EOL" >&2
-  set_logo_row bottom "$1"
-  printf '   %s %s%s%s%s\n' "$LOGO_ROW" "$FAINT" "github.com/$REPO" "$OFF" "$EOL" >&2
 }
 
 logo() {
-  printf '\n' >&2
-  logo_frame 0
-  if [ -n "$LIVE" ]; then
-    for l_peak in 1 2 3 4 5 4 3 2 1 0; do
-      printf '\033[2A' >&2
-      logo_frame "$l_peak"
-      sleep 0.07 2>/dev/null || true
-    done
-  fi
-  printf '\n' >&2
+  printf '\n   %s█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀%s\n' "$MAUVE" "$OFF" >&2
+  printf '   %s█▄▀ █▄█ █ ▀ █ █▄█ █ █%s  %s%s%s\n\n' \
+    "$MAUVE" "$OFF" "$FAINT" "github.com/$REPO" "$OFF" >&2
 }
 
 # step <word>: the line that is redrawn while something happens. Only ever on a terminal.
 step() {
-  set_glyph "$TICK"
-  set_band "$1" "$TICK"
-  printf '\r   %s%s%s  %s%s' "$MAUVE" "$GLYPH" "$OFF" "$BAND" "$EOL" >&2
+  set_spinner "$TICK"
+  printf '\r   %s%s%s  %s%s' "$MAUVE" "$SPIN" "$OFF" "$1" "$EOL" >&2
 }
 
 # working <word> <command...>: runs the command while the step turns, and answers its status.
@@ -174,7 +92,7 @@ working() {
   while kill -0 "$w_pid" 2>/dev/null; do
     step "$w_word"
     TICK=$((TICK + 1))
-    sleep 0.07 2>/dev/null || true
+    sleep 0.08 2>/dev/null || true
   done
   w_code=0
   wait "$w_pid" || w_code=$?
@@ -182,7 +100,7 @@ working() {
   return $w_code
 }
 
-# done_line <text>: a step that is finished, marked with the glyph's resting frame.
+# done_line <text>: a step that is finished, marked with a faint dot.
 done_line() {
   printf '   %s·%s  %s\n' "$FAINT" "$OFF" "$*" >&2
 }
@@ -321,7 +239,9 @@ if ! installed=$("$INSTALL_DIR/domux" --version </dev/null 2>"$tmp/version.err")
 fi
 
 done_line "$(value "$installed") installed to $(value "$INSTALL_DIR/domux")"
-printf '%s %s\n' "$INSTALL_DIR/domux" "$body"
+# The path and version for a script reading this one's output. A reader gets the line above
+# instead, so nothing unstyled lands in the middle of what they are watching.
+[ -t 1 ] || printf '%s %s\n' "$INSTALL_DIR/domux" "$body"
 
 domux="$INSTALL_DIR/domux"
 
