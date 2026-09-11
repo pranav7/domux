@@ -1,7 +1,10 @@
-# domux V2
+# domux
 
-A terminal multiplexer for engineers who direct AI agents. This is the Rust rewrite, built as `domux`; V1, the Go version, is the `v1` branch.
+**terminal runtime for scaling coding agents.**
 
-Build: `cargo build --release`. Test: `cargo test --workspace`. Spec and plans live outside the repository.
+domux allows you to scale running multiple coding agents. Parallel work comes from Projects and Workspaces. A Project is a git repo, and Workspaces are long running git worktrees in that repo. Long running means you don't have to manage their lifecycle, and gives you the ability to deploy as many parallel agents as you want. domux currently natively works with Claude Code, Codex and OpenCode. Agent sessions are automatically organised within projects and workspaces, so you can easily peek at which agent is blocked on you.
 
-The pane emulator is [Ghostty](https://github.com/ghostty-org/ghostty)'s libghostty-vt, and it is the only one: M0 measured it against `alacritty_terminal` and the comparison is recorded in `docs/decisions/0001-terminal-emulator.md`. Its source is not vendored here: the first build clones the commit pinned in `vendor/ghostty-pin.toml` and the Zig that builds it, caching both under `~/.cache/domux`. Set `DOMUX_GHOSTTY_SOURCE_DIR` to build a local Ghostty checkout instead.
+domux will keep your terminal running in a background server so when you close your laptop you don't lose your work. The multiplexing works similarly to tmux (that's where the name comes from), but is natively built on top of Ghostty.
+
+<img width="1381" height="915" alt="image" src="https://github.com/user-attachments/assets/4bcfa417-7f63-47a0-84ea-99861a21ebe9" />
+
