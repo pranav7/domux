@@ -92,14 +92,31 @@ pub async fn report(kind: AgentKind) -> anyhow::Result<()> {
         return Ok(());
     };
     if let Some(block) = result.context {
-        // Written whole rather than line by line: the block is the text Claude Code adds to the
-        // session's context and it ends in its own newline. A reader that went away ends the
-        // output rather than failing, which is the rule every line of data here follows.
+        let output = session_start_output(kind, block);
+        // Written whole rather than line by line. A reader that went away ends the output
+        // rather than failing, which is the rule every line of data here follows.
         let mut out = std::io::stdout().lock();
-        let _ = out.write_all(block.as_bytes());
+        let _ = out.write_all(output.as_bytes());
         let _ = out.flush();
     }
     Ok(())
+}
+
+/// The hook client's SessionStart wire format. Claude reads plain text. Codex reads a JSON
+/// object; the context itself starts with `[domux]`, which Codex otherwise mistakes for JSON.
+fn session_start_output(kind: AgentKind, block: String) -> String {
+    if kind == AgentKind::Codex {
+        return format!(
+            "{}\n",
+            json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": block,
+                }
+            })
+        );
+    }
+    block
 }
 
 /// `peek`: every agent as rows, or the API result under `--json` (M3 plan assumption 38).
