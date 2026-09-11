@@ -1,4 +1,4 @@
-# 0036: A notification waits only when it stops for you
+# 0037: A notification waits only when it stops for you
 
 **Date:** 2026-09-11
 **Status:** Accepted. Amends decision 0030's dot rule at its source, the Claude adapter.

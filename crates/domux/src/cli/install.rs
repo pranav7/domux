@@ -20,10 +20,15 @@ pub struct InstallCmd {
     /// Write the file. Without this, the command prints what it would do
     #[arg(long)]
     pub apply: bool,
+    /// The agent's configuration directory, when it is not the one under your home directory
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
 }
 
 pub fn run(cmd: InstallCmd) -> anyhow::Result<()> {
-    let plan = plan(&Registry::builtin(), cmd.kind, &home()?, &binary_path()?)?;
+    let registry = Registry::builtin();
+    let dir = config_dir(&registry, cmd.kind, cmd.dir.clone())?;
+    let plan = plan(&registry, cmd.kind, &dir, &binary_path()?)?;
     if !cmd.apply {
         // Line by line, so a reader who pipes it into `head` ends the output rather than
         // meeting a panic.
@@ -57,6 +62,34 @@ pub fn run(cmd: InstallCmd) -> anyhow::Result<()> {
         print_line(note)?;
     }
     Ok(())
+}
+
+/// Which directory the hooks go in: the one the reader asked for, then the one the agent's own
+/// variable names, then the agent's directory under home (decision record 0036).
+///
+/// The variable is read here rather than in `agents::install`, the way `home` is: the installer
+/// stays a function of the paths it is given, and the environment is read once, at the edge.
+fn config_dir(
+    registry: &Registry,
+    kind: AgentKind,
+    asked: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
+    let target = &registry
+        .for_kind(kind)
+        .ok_or_else(|| anyhow::anyhow!("no manifest for {kind}"))?
+        .hooks;
+    if let Some(dir) = asked {
+        return Ok(dir);
+    }
+    let named = target
+        .dir_env()
+        .and_then(std::env::var_os)
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty());
+    match named {
+        Some(dir) => Ok(dir),
+        None => Ok(target.dir_in(&home()?)),
+    }
 }
 
 /// Where the hooks go. Read from `HOME` rather than from a home directory crate, so a test can

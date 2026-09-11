@@ -100,7 +100,7 @@ pub fn parse(kind: AgentKind, text: &str) -> Result<AgentReport, HookError> {
 /// The notification types on which Claude Code has stopped and cannot go on without you: it
 /// asked permission, its input sat idle, an MCP server asked you something, or a subagent
 /// did. The others report something that happened and stop for nobody: a login completed, an
-/// elicitation or a subagent finished, a quota resume fired. Decision record 0036.
+/// elicitation or a subagent finished, a quota resume fired. Decision record 0037.
 pub const CLAUDE_NOTIFICATIONS_THAT_WAIT: [&str; 5] = [
     "permission_prompt",
     "idle_prompt",
@@ -292,7 +292,7 @@ mod tests {
     /// Claude Code sends a notification for more than a question, and the dot is drawn only
     /// while an agent is waiting on you (decision record 0030). So only the types on which
     /// Claude has stopped for you become the waiting event; every other type, including one
-    /// this list has never heard of, changes nothing (decision record 0036).
+    /// this list has never heard of, changes nothing (decision record 0037).
     #[test]
     fn only_a_notification_that_stops_for_you_is_the_waiting_event() {
         let waits = [
