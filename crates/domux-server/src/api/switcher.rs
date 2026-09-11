@@ -33,7 +33,7 @@ pub fn open(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     }
     view.push_overlay(Overlay::Switcher);
     // The same row either way: the workspace this client is in. The Navigator keeps its own
-    // cursor because its rows are of two kinds (decision record 0028).
+    // cursor because its rows are of two kinds (decision record 0030).
     match navigator {
         true => {
             view.navigator_cursor = workspace.map(RowTarget::Workspace);

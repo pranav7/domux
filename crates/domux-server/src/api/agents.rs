@@ -21,7 +21,7 @@ use serde_json::Value;
 /// when it closes (interface spec 12.7) rather than being stranded in `overlay_under` where
 /// nothing draws it and nothing closes it.
 ///
-/// **With the Navigator on it does nothing, silently** (decision record 0028). The agents
+/// **With the Navigator on it does nothing, silently** (decision record 0030). The agents
 /// overlay is gone: every record is in the one list the switcher opens, under the workspace it
 /// runs in. It answers `ok` rather than refusing, because a key that only ever prints "this is
 /// off now" is a key with nothing to say, and the reader who pressed it finds the same records

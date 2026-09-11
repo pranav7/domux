@@ -1659,7 +1659,7 @@ impl Core {
     ///
     /// **No record goes.** A clear keeps the workspace and its panes, so every agent running
     /// in the slot is still running and still owns its record. It used to take the records
-    /// whose session was over, and decision record 0028 left none of those to take.
+    /// whose session was over, and decision record 0030 left none of those to take.
     ///
     /// The event still goes out, because a subscriber cannot see the disk: `workspace.cleared`
     /// carries the base the slot was put back at, which is the one thing about the reset that
@@ -5299,7 +5299,7 @@ mod tests {
     /// handler reads the recap on `SessionStart`, `UserPromptSubmit` and `Stop`.
     ///
     /// It opens the session first when the pane holds no record, because a hook from a session
-    /// domux never saw the start of makes no record at all (decision record 0028), and every
+    /// domux never saw the start of makes no record at all (decision record 0030), and every
     /// test below is about the working word rather than about that rule.
     fn hook_with(core: &mut Core, pane: &PaneId, event: &str, transcript: Option<&Path>) {
         if event != "SessionStart" && core.model.agent_on_pane(pane).is_none() {

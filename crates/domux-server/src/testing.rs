@@ -517,7 +517,7 @@ impl Harness {
     ///
     /// It opens the session first when the payload names one domux is not tracking, because a
     /// hook from a session domux never saw the start of makes no record at all (decision
-    /// record 0028). A test that wants that rule reports a `SessionStart` of its own, or names
+    /// record 0030). A test that wants that rule reports a `SessionStart` of its own, or names
     /// no session; every other test is about what happens once an agent is running.
     pub async fn report(
         &mut self,

@@ -1,4 +1,4 @@
-# 0028: One Navigator, and live sessions only
+# 0030: One Navigator, and live sessions only
 
 **Date:** 2026-09-10
 **Status:** Accepted. Replaces decision 0018, replaces the exited half of decision 0026, and

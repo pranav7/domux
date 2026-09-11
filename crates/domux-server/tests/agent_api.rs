@@ -362,7 +362,7 @@ async fn the_messaging_verbs_answer_unavailable_and_name_the_milestone() {
     }
 }
 
-/// M3 plan assumption 32, as decision record 0028 leaves it. A delete takes the workspace, so
+/// M3 plan assumption 32, as decision record 0030 leaves it. A delete takes the workspace, so
 /// it takes the records in it; a clear keeps the workspace and its panes, so the agents running
 /// there keep running. The other workspace's record is untouched by either, so neither passes
 /// by removing every record there is.
@@ -406,7 +406,7 @@ async fn deleting_a_workspace_removes_its_records_and_clearing_one_does_not() {
 }
 
 /// A clear keeps the workspace and its panes, so the agents running in the slot are still
-/// running and still own their records (decision record 0028). It used to take the records
+/// running and still own their records (decision record 0030). It used to take the records
 /// whose session was over, and there are none of those to take.
 #[tokio::test]
 async fn a_clear_leaves_the_agents_running_in_the_slot_alone() {
@@ -446,7 +446,7 @@ async fn an_ambiguous_target_lists_the_candidates() {
 }
 
 /// The addressing rule takes no liveness from the calling verb any more, because every record
-/// is a running session (decision record 0028). A workspace holding one record names it; a
+/// is a running session (decision record 0030). A workspace holding one record names it; a
 /// workspace holding two asks for the tab.
 #[tokio::test]
 async fn a_workspace_target_names_the_one_record_in_it() {

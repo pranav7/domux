@@ -711,7 +711,7 @@ impl Ctx<'_> {
             .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
         // The Navigator's cursor rests on either kind of row, and only a workspace row answers
         // here: `leader N` on an agent row names the workspace that agent runs in, which is the
-        // row above it and the one this client would rename anyway (decision record 0028).
+        // row above it and the one this client would rename anyway (decision record 0030).
         let cursor = match self.config.config.navigator.enabled {
             true => view.navigator_cursor.as_ref().and_then(|c| match c {
                 RowTarget::Workspace(w) => Some(w.clone()),

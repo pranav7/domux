@@ -39,7 +39,7 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     let now = ctx.deps.clock.now().to_rfc3339();
     // `None` is a hook from a session domux is not tracking: no record on the pane, no record
     // with that session id, and not a `SessionStart` to make one. Nothing changed, and nothing
-    // failed, so the hook is answered rather than refused (decision record 0028).
+    // failed, so the hook is answered rather than refused (decision record 0030).
     let Some(AgentReportOutcome {
         agent, to, events, ..
     }) = ctx.model.report_agent(&pane, p.kind, parsed, &now)?
@@ -52,7 +52,7 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     };
     // `to` is `None` when the report ended the session, in which case `Model::report_agent`
     // has already removed the record. Nothing below may run: there is no row left to write a
-    // recap or a session name onto (decision record 0028).
+    // recap or a session name onto (decision record 0030).
     let applied = to.is_some();
     // Any events it did produce belong to another record it ended on the way, so they travel
     // and the screen changed even when this record did not.
@@ -235,7 +235,7 @@ pub fn self_(ctx: &mut Ctx, p: AgentSelfParams) -> Result<Value, ApiError> {
 /// Nothing here clears the dot. `Model::focus_pane` does, for every route to a pane at once,
 /// and this is one of those routes.
 ///
-/// Every record has a pane, because a record ends when its session does (decision record 0028).
+/// Every record has a pane, because a record ends when its session does (decision record 0030).
 /// The refusal below is the narrow case where the pane went between the frame and the key.
 pub fn focus(ctx: &mut Ctx, p: AgentTargetParams) -> Result<Value, ApiError> {
     let id = resolve(ctx, &p)?;

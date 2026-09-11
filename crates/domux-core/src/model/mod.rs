@@ -303,7 +303,7 @@ pub struct ClientView {
     #[serde(default)]
     pub agents_scroll: u16,
     /// The row the keys act on in the Navigator, which lists workspaces and the agents
-    /// running in them, so its cursor holds either (decision record 0028).
+    /// running in them, so its cursor holds either (decision record 0030).
     ///
     /// Its own field rather than a widened `projects_cursor`, because the two boxes the
     /// `[navigator]` key turns back on keep their own cursors until they are deleted.
@@ -1575,7 +1575,7 @@ pub struct AgentReportOutcome {
     pub agent: AgentId,
     pub from: AgentState,
     /// `None` when the report ended the session, in which case the record has been removed
-    /// and `agent` names an id nothing holds any more (decision record 0028).
+    /// and `agent` names an id nothing holds any more (decision record 0030).
     pub to: Option<AgentState>,
     pub created: bool,
     pub events: Vec<Event>,
@@ -1669,7 +1669,7 @@ impl Model {
             // makes a record: every other hook is a message from a session domux is not
             // tracking, and inventing a record for one is how a hook arriving after
             // `SessionEnd` would leave a row behind that nothing could take away (decision
-            // record 0028). A session domux missed the start of still gets a record, from the
+            // record 0030). A session domux missed the start of still gets a record, from the
             // observer, the moment its process is in front of a pane.
             (None, None) if event != AgentEvent::SessionStart => return Ok(None),
             (None, None) => (
@@ -1691,7 +1691,7 @@ impl Model {
         }
         // `SessionEnd` from any state. The session is over, so the record goes with it and
         // nothing below runs: there is no row left to write a recap or a session name onto
-        // (decision record 0028).
+        // (decision record 0030).
         if to.is_none() {
             let id = a.id.clone();
             events.extend(self.end_record(index));
@@ -1779,7 +1779,7 @@ impl Model {
     }
 
     /// Ends the record at `index` and removes it, which is what `SessionEnd` and
-    /// `ProcessGone` mean (decision record 0028). The pane it was on travels in the event,
+    /// `ProcessGone` mean (decision record 0030). The pane it was on travels in the event,
     /// because the record is gone by the time anyone reads it.
     ///
     /// Retires the id for the reason `remove_agent` gives.
@@ -1825,7 +1825,7 @@ impl Model {
     }
 
     /// The observer saw the process leave, or the pane exited or closed. The record goes with
-    /// the session (decision record 0028).
+    /// the session (decision record 0030).
     pub fn agent_process_gone(&mut self, id: &AgentId) -> Vec<Event> {
         self.remove_agent(id)
     }
@@ -1869,7 +1869,7 @@ impl Model {
     /// and so do the server's per-agent working word and recap, so an id handed back to a new
     /// session would show a dead session's recap under a live agent.
     ///
-    /// No verb reaches this. `agent.dismiss` was the one, and decision record 0028 removed it
+    /// No verb reaches this. `agent.dismiss` was the one, and decision record 0030 removed it
     /// along with the exited record it was there to tidy away.
     fn remove_agent(&mut self, id: &AgentId) -> Vec<Event> {
         let Some(index) = self.agents.iter().position(|a| &a.id == id) else {
@@ -1920,7 +1920,7 @@ impl Model {
     ///
     /// The Navigator does not use this. It lists agents under the workspace they run in, in
     /// the order they started, so that no row moves while a state changes (decision record
-    /// 0028). This order is for `agent.list` and `peek`, which are read as lists of agents.
+    /// 0030). This order is for `agent.list` and `peek`, which are read as lists of agents.
     pub fn sorted_agents(&self) -> Vec<&Agent> {
         fn rank(a: &Agent) -> u8 {
             match (a.state, a.unseen) {
@@ -1954,7 +1954,7 @@ impl Model {
     /// An agent id; or a workspace (id, handle, name or branch) holding exactly one record;
     /// or `workspace/tab` when it holds more (architecture spec section 7).
     ///
-    /// It took the calling verb's precondition until decision record 0028, which left every
+    /// It took the calling verb's precondition until decision record 0030, which left every
     /// record live and every verb able to act on any of them.
     pub fn resolve_agent_target(&self, target: &str) -> Result<AgentId, ApiError> {
         if let Ok(id) = target.parse::<AgentId>() {
@@ -3706,7 +3706,7 @@ mod tests {
         }));
         assert!(
             m.agent(&id).is_none(),
-            "a session that is over leaves no record (decision record 0028)"
+            "a session that is over leaves no record (decision record 0030)"
         );
     }
 
@@ -3773,7 +3773,7 @@ mod tests {
     }
 
     /// A session that ends takes its record with it, and clearing a workspace takes every
-    /// record in it (decision record 0028). Two routes to one removal, and neither leaves a
+    /// record in it (decision record 0030). Two routes to one removal, and neither leaves a
     /// row behind for anybody to tidy up.
     #[test]
     fn a_session_ending_and_a_workspace_clearing_both_remove_the_record() {

@@ -135,7 +135,7 @@ pub enum AgentSource {
     Restore,
 }
 
-/// The state machine of architecture spec section 3.3, as decision record 0028 leaves it.
+/// The state machine of architecture spec section 3.3, as decision record 0030 leaves it.
 ///
 /// `None` is the record ending, which is what `SessionEnd` and `ProcessGone` mean from every
 /// state: a session that is over has no row anywhere and nothing left to act on, so the Model
@@ -161,7 +161,7 @@ pub fn transition(state: AgentState, event: AgentEvent) -> Option<AgentState> {
 /// True when moving from `from` to `to` turns `unseen` on: an agent starts waiting, or goes
 /// from working to idle (interface spec 6.5).
 ///
-/// It had a third trigger, an exit, until decision record 0028 took the exited record away. A
+/// It had a third trigger, an exit, until decision record 0030 took the exited record away. A
 /// record that ends is not there to be noticed.
 pub fn attention(from: AgentState, to: AgentState) -> bool {
     use AgentState::*;

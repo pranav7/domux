@@ -57,7 +57,7 @@ impl RegionKind {
 }
 
 /// A row the Navigator's cursor can rest on: a workspace, or an agent running in one
-/// (decision record 0028).
+/// (decision record 0030).
 ///
 /// The Navigator is one list of two kinds of row, so its cursor holds one key of two kinds.
 /// It is a type rather than the raw row key because the two ids are told apart by asking the

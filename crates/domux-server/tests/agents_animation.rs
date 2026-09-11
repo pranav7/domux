@@ -63,7 +63,7 @@ async fn glyphs_over(h: &mut Harness, samples: usize, gap: Duration) -> HashSet<
 }
 
 /// The Navigator, which is where a working row lives now: `leader s` over the whole screen,
-/// with the agents nested under the workspaces they run in (decision record 0028).
+/// with the agents nested under the workspaces they run in (decision record 0030).
 async fn open_overlay(h: &mut Harness) -> String {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(

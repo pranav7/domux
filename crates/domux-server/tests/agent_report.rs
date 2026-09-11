@@ -303,7 +303,7 @@ async fn a_hook_that_arrives_after_the_session_ended_writes_to_nothing() {
         .await;
     assert!(
         h.model().agents.is_empty(),
-        "the session is over, so its record is gone (decision record 0028)"
+        "the session is over, so its record is gone (decision record 0030)"
     );
     // The transcript then grows a recap and a name it never had.
     std::fs::write(&transcript, "{\"type\":\"ai-title\",\"aiTitle\":\"Session check cleanup\"}\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/rename</command-name>\\n<command-args>auth-cleanup</command-args>\"}}\n{\"type\":\"system\",\"subtype\":\"away_summary\",\"timestamp\":\"2026-09-04T10:21:00.000Z\",\"content\":\"Replaced three session checks with one guard.\"}\n").unwrap();

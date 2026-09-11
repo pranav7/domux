@@ -106,7 +106,7 @@ pub fn wanted_projects_height(
 /// rows - so nobody measures the split a second way (principle 14).
 /// **With the Navigator on there is one box and it takes the column**, so the height the
 /// Projects box would have asked for is not measured at all: `agents` comes back empty and
-/// nothing draws into it (decision record 0028). The two-box split below it is what the
+/// nothing draws into it (decision record 0030). The two-box split below it is what the
 /// `[navigator]` key turns back on, and it goes when that key does.
 pub fn split_for(
     model: &domux_core::model::Model,
@@ -252,7 +252,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     clear(column, buf);
     draw_projects(input, projects, buf);
     // One box with the Navigator on, so there is nothing under it to draw (decision record
-    // 0028) and `agents` is the empty rectangle `split_for` hands back.
+    // 0030) and `agents` is the empty rectangle `split_for` hands back.
     if !input.navigator {
         draw_agents(input, agents, buf);
     }
@@ -1205,7 +1205,7 @@ mod tests {
     }
 
     /// Every row offers `open`, because every record is a running session. The word was
-    /// `resume` on an exited row until decision record 0028 removed both.
+    /// `resume` on an exited row until decision record 0030 removed both.
     #[test]
     fn the_hint_row_names_open_for_every_row_in_the_agents_box() {
         for state in [AgentState::Working, AgentState::Waiting, AgentState::Idle] {

@@ -73,7 +73,7 @@ pub struct RenderInput<'a> {
     /// client draws the same one.
     pub toast: Option<&'a crate::toast::Toast>,
     /// `[navigator] enabled`: one box holding projects, workspaces and the agents running in
-    /// them, in the sidebar and in the switcher (decision record 0028). Off draws the two
+    /// them, in the sidebar and in the switcher (decision record 0030). Off draws the two
     /// boxes and the agents overlay, and goes when that key does.
     pub navigator: bool,
 }

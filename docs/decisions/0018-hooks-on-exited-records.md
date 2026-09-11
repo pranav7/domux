@@ -1,7 +1,7 @@
 # 0018: Hooks on an exited record
 
 **Date:** 2026-09-10
-**Status:** Retired by decision record 0028, which removed the exited record this is entirely about. A session that ends leaves no record for a late hook to land on, and only `SessionStart` makes one. Kept as the record of why the exited record behaved as it did.
+**Status:** Retired by decision record 0030, which removed the exited record this is entirely about. A session that ends leaves no record for a late hook to land on, and only `SessionStart` makes one. Kept as the record of why the exited record behaved as it did.
 **Decision:** A hook event on a record whose session is over changes nothing, down to its
 last activity time. `SessionStart` is the exception: when its session id matches an exited
 record, that record comes back rather than a second one starting.
