@@ -348,9 +348,12 @@ fn resize_step(action: &Action) -> Option<&str> {
 }
 
 /// The three headings the Keys overlay groups `[keys.bindings]` and `[keys.global]` rows
-/// under, in the order they are drawn: the Projects box, the Agents box, then everything
-/// else on the workpanel. `sidebar.toggle` and `client.detach` read as workpanel rather than
-/// projects: they act on the screen, not on a project or a workspace.
+/// under, in the order they are drawn: opening or renaming a project or workspace, opening
+/// the agents overlay, then everything else on the workpanel. `sidebar.toggle` and
+/// `client.detach` read as workpanel rather than projects: they act on the screen, not on a
+/// project or a workspace. `agents.open` keeps its own heading even though `[navigator]
+/// enabled` (decision 0030) makes it do nothing for now: the overlay renders the keymap as
+/// configured (principle 3), and the heading empties itself the day the binding does.
 const HELP_GROUPS: [&str; 3] = ["projects", "agents", "workpanel"];
 
 /// Which of `HELP_GROUPS` a row belongs in, decided from the action's own name so a
