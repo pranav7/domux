@@ -3,7 +3,7 @@
 //! width; nothing else differs, so the two surfaces cannot drift apart.
 //!
 //! With `[navigator] enabled` it is the Navigator, and each workspace row is followed by the
-//! agents running in that workspace (decision record 0028). The agent rows are
+//! agents running in that workspace (decision record 0030). The agent rows are
 //! `render::agents_box`'s, so the row grammar is still written once.
 
 use crate::facts::FactRegistry;
@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 pub const PROJECTS_TITLE: &str = "Projects";
-/// The same box holding the agents too (decision record 0028).
+/// The same box holding the agents too (decision record 0030).
 pub const NAVIGATOR_TITLE: &str = "Navigator";
 
 /// What the box calls itself. One list of two kinds of row is not a list of projects, and the
@@ -131,7 +131,7 @@ pub fn rows(
             out.push(row);
             // The agents running in this workspace, in the order they started. Nothing
             // reorders them, so a row does not move under the reader while a state changes
-            // (decision record 0028). No blank between them: they are one block under the
+            // (decision record 0030). No blank between them: they are one block under the
             // workspace they belong to, and a gap would read as a second workspace.
             out.extend(agent_rows(w, agents, extras));
         }

@@ -37,7 +37,7 @@ fn focus(h: &Harness) -> Focus {
 }
 
 /// The workspace the box's cursor is on. The Navigator's cursor holds either a workspace or an
-/// agent (decision record 0028); every test here moves it over workspaces, so an agent row
+/// agent (decision record 0030); every test here moves it over workspaces, so an agent row
 /// under the cursor is a failure worth reading rather than a `None`.
 fn cursor(h: &Harness) -> Option<WorkspaceId> {
     match h

@@ -53,7 +53,7 @@ pub struct WorktreesConfig {
     pub base: Option<String>,
 }
 
-/// `[navigator]` (decision record 0028).
+/// `[navigator]` (decision record 0030).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NavigatorConfig {
@@ -61,7 +61,7 @@ pub struct NavigatorConfig {
     ///
     /// `false` restores the separate Projects and Agents boxes and the agents overlay. It is
     /// here so the author can live with the one list before the two boxes are deleted, and
-    /// decision record 0028 records that deletion as already decided.
+    /// decision record 0030 records that deletion as already decided.
     pub enabled: bool,
 }
 

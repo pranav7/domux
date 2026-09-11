@@ -15,7 +15,7 @@ use serde_json::json;
 use std::time::Duration;
 
 /// The agents overlay is the surface `[navigator] enabled = false` keeps: with the Navigator on
-/// there is one list and `leader a` does nothing (decision record 0028). Every test in this file
+/// there is one list and `leader a` does nothing (decision record 0030). Every test in this file
 /// is about the overlay, so every one of them turns the Navigator off.
 ///
 /// It goes when the two boxes go, and this file goes with it.

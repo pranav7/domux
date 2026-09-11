@@ -198,7 +198,7 @@ pub enum Event {
         agent: AgentId,
         recap: Option<String>,
     },
-    /// A session ended and its record went with it (decision record 0028). The pane it was
+    /// A session ended and its record went with it (decision record 0030). The pane it was
     /// on travels here because the record no longer holds one to look up.
     #[serde(rename = "agent.exited")]
     AgentExited {
@@ -1069,7 +1069,7 @@ impl Params for AgentListParams {}
 /// pane, when the caller is in one.
 ///
 /// Every record is a running session, so the workspace forms answer any of them and every
-/// method takes the same set (decision record 0028).
+/// method takes the same set (decision record 0030).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTargetParams {

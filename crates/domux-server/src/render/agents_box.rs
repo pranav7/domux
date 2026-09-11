@@ -19,7 +19,7 @@ use ratatui::text::{Line, Span};
 /// The box's title, in the sidebar and in the agents overlay both (principle 14).
 pub const TITLE: &str = "Agents";
 /// The waiting mark. It is the only dot there is, and a row draws it only while its agent is
-/// waiting on you (decision record 0028).
+/// waiting on you (decision record 0030).
 pub const DOT: &str = "●";
 /// The recap's glyph.
 pub const RECAP_GLYPH: &str = "※";
@@ -39,7 +39,7 @@ pub enum RowForm {
     /// The agents overlay: three lines, recap included. Retires with `[navigator]`.
     Overlay,
     /// One line under its workspace in the Navigator's sidebar: the arrow, the name, the
-    /// activity. The rows above it say the project and the workspace (decision record 0028).
+    /// activity. The rows above it say the project and the workspace (decision record 0030).
     Nested,
     /// The same in the switcher, which has the width for the kind, the tab and the recap.
     NestedWide,
@@ -236,7 +236,7 @@ fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow 
 }
 
 /// One agent under the workspace it runs in: the arrow, then the name and the activity
-/// (decision record 0028; artboard 9, frame 9.2 is the specification).
+/// (decision record 0030; artboard 9, frame 9.2 is the specification).
 ///
 /// The place is not on it. The project is the header above and the workspace is the row above
 /// that, so repeating either here is the reading MUX-21 complained of, one level deeper. What
@@ -322,7 +322,7 @@ fn filter_text(a: &AgentEntry) -> String {
 /// No leading dot. A dot is drawn only while the agent is waiting, and `activity` puts it in
 /// the slot the working word would have taken, because a waiting agent draws no word and a
 /// mark in front of the name would push that name out of the column every other row keeps it
-/// in (decision record 0028).
+/// in (decision record 0030).
 fn line_one(a: &AgentEntry, view: &AgentsView, width: usize) -> Vec<Span<'static>> {
     let label = a
         .name
@@ -393,7 +393,7 @@ fn working(glyph: &'static str, word: &str, color: Color) -> Vec<Span<'static>> 
 
 /// `[kind] · [place]`, or the place alone when line 1 already showed the kind.
 ///
-/// The two flat forms only. A nested row's place is the rows above it (decision record 0028).
+/// The two flat forms only. A nested row's place is the rows above it (decision record 0030).
 fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
     let place = match form {
         // The header above the row has already said the project (MUX-21).
@@ -727,7 +727,7 @@ mod tests {
     }
 
     /// A dot is drawn only while an agent is waiting on you, and it is red (decision record
-    /// 0028). Every other state draws none: working and compacting say themselves with the
+    /// 0030). Every other state draws none: working and compacting say themselves with the
     /// glyph and the word, idle has nothing to report, and unknown says so in a word.
     ///
     /// `unseen` is in the table twice because it used to win over the state here, which made

@@ -1,5 +1,5 @@
 //! The Navigator: one box holding projects, their workspaces, and the agents running in each
-//! (decision record 0028; artboard 9 is the specification for every row grammar here).
+//! (decision record 0030; artboard 9 is the specification for every row grammar here).
 //!
 //! `[navigator] enabled` is on by default, so these tests take the default config. The two
 //! boxes it replaces are tested in `agents_sidebar.rs` and `agents_overlay.rs`, which turn it
