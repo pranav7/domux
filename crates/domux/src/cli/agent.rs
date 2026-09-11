@@ -7,7 +7,7 @@ use super::{call, call_as, location, print_line};
 use clap::{Args, Subcommand};
 use domux_core::api::{AgentInfo, AgentListResult, AgentReportResult};
 use domux_core::model::agent::AgentKind;
-use domux_server::render::agents_box::{empty_text, RowForm, DOT, RECAP_GLYPH};
+use domux_server::render::agents_box::{empty_text, RowForm, RECAP_GLYPH};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 
@@ -141,17 +141,22 @@ pub async fn peek(as_json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// One agent as the row grammar in text: the dot line, the place line carrying the id, and the
-/// recap line when there is one (M3 plan assumption 38).
+/// What leads every block of the listing. It is a bullet, not the box's waiting dot: the box
+/// draws its dot only while an agent is waiting (decision record 0030), and this marks a row
+/// whatever its state, so the two are spelled apart and a change to one does not reach the other.
+const BULLET: &str = "•";
+
+/// One agent as the row grammar in text: the bullet line, the place line carrying the id, and
+/// the recap line when there is one (M3 plan assumption 38).
 ///
-/// The glyphs are the box's own constants, so a change to either one reaches both surfaces. The
+/// The recap glyph is the box's own constant, so a change to it reaches both surfaces. The
 /// place line always names the kind, which the box drops when a session name has taken the first
 /// line: the command line has no colour to carry the kind, and a reader about to name this record
 /// needs the id from the same block.
 pub fn lines_for(a: &AgentInfo) -> String {
     let name = a.name.clone().unwrap_or_else(|| a.kind.to_string());
     let unseen = if a.unseen { "  unseen" } else { "" };
-    let mut out = format!("{DOT} {name}  {}{unseen}", a.state);
+    let mut out = format!("{BULLET} {name}  {}{unseen}", a.state);
     out.push_str(&format!("\n  {} · {}  ({})", a.kind, a.place, a.id));
     if let Some(recap) = &a.recap {
         out.push_str(&format!("\n  {RECAP_GLYPH} {recap}"));
