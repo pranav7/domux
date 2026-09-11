@@ -3,3 +3,6 @@
 .worktrees/
 .implement/
 .superpowers/
+/domux
+.domux/
+.claude/settings.local.json
