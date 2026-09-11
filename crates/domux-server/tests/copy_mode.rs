@@ -72,7 +72,7 @@ async fn leader_bracket_enters_copy_mode_and_marks_the_border() {
 async fn moving_above_the_top_scrolls_into_the_scrollback_and_the_flag_counts() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     pane_with_lines(&mut h, 20).await;
-    // 8 visible rows: line 13 to line 19 and the prompt; 13 lines are in the scrollback.
+    // 7 visible rows: line 14 to line 19 and the prompt; 14 lines are in the scrollback.
     h.key(h.client.clone(), "C-a").await;
     h.key(h.client.clone(), "[").await;
     h.wait_for(
@@ -81,22 +81,19 @@ async fn moving_above_the_top_scrolls_into_the_scrollback_and_the_flag_counts() 
         Duration::from_secs(2),
     )
     .await;
-    // Seven presses walk the cursor from the bottom row to the top one; the two after that
-    // have no row left to walk, so they scroll. Two rather than one, so this cannot pass for
-    // an implementation that scrolls once and then stops.
-    for _ in 0..9 {
+    for _ in 0..8 {
         h.key(h.client.clone(), "k").await;
     }
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 2/13"),
+            |f| f.contains("copy 2/14"),
             Duration::from_secs(2),
         )
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│line 11                                                                       │|",
+        "|│line 12                                                                       │|",
         "{f}"
     );
     assert!(
@@ -107,7 +104,7 @@ async fn moving_above_the_top_scrolls_into_the_scrollback_and_the_flag_counts() 
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 13/13"),
+            |f| f.contains("copy 14/14"),
             Duration::from_secs(2),
         )
         .await;
@@ -146,7 +143,7 @@ async fn wheel_scroll_moves_the_pane_under_the_pointer_immediately() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 3/13"),
+            |f| f.contains("copy 3/14"),
             Duration::from_secs(2),
         )
         .await;
@@ -162,7 +159,7 @@ async fn wheel_scroll_moves_the_pane_under_the_pointer_immediately() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 1/13"),
+            |f| f.contains("copy 1/14"),
             Duration::from_secs(2),
         )
         .await;
@@ -337,22 +334,21 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
         Duration::from_secs(2),
     )
     .await;
-    // The cursor starts on row 7 of 8. Half a screen is 4: the first press walks it to row 3,
-    // the second walks the last three rows and scrolls the one left over, and the third has
-    // no row left to walk and scrolls 4.
+    // The cursor starts on row 6 of 7. Half a screen is 3: the first two presses walk it to
+    // row 0 without scrolling, the third has nothing left to walk and scrolls 3.
     for _ in 0..3 {
         h.key(h.client.clone(), "C-u").await;
     }
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 5/13"),
+            |f| f.contains("copy 3/14"),
             Duration::from_secs(2),
         )
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│line 08                                                                       │|",
+        "|│line 11                                                                       │|",
         "{f}"
     );
     // The cursor is already on the top row, so the arrow scrolls one more line.
@@ -360,13 +356,13 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 6/13"),
+            |f| f.contains("copy 4/14"),
             Duration::from_secs(2),
         )
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│line 07                                                                       │|",
+        "|│line 10                                                                       │|",
         "{f}"
     );
     // A page down from the top row walks the cursor to the bottom row and scrolls the one
@@ -375,12 +371,12 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 5/13"),
+            |f| f.contains("copy 3/14"),
             Duration::from_secs(2),
         )
         .await;
     assert!(
-        f.contains("cursor row=9 col=3"),
+        f.contains("cursor row=8 col=3"),
         "the cursor walked to the bottom row:\n{f}"
     );
     h.key(h.client.clone(), "PageDown").await;
@@ -396,7 +392,7 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
     h.key(h.client.clone(), "PageUp").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("copy 1/13"),
+        |f| f.contains("copy 1/14"),
         Duration::from_secs(2),
     )
     .await;
@@ -404,13 +400,13 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("copy 9/13"),
+            |f| f.contains("copy 8/14"),
             Duration::from_secs(2),
         )
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│line 04                                                                       │|",
+        "|│line 06                                                                       │|",
         "{f}"
     );
     // Half a screen down from the top row stays on the screen: the cursor moves, the view
@@ -419,11 +415,11 @@ async fn the_half_screen_and_page_keys_walk_the_scrollback() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("cursor row=6 col=3"),
+            |f| f.contains("cursor row=5 col=3"),
             Duration::from_secs(2),
         )
         .await;
-    assert!(f.contains("copy 9/13"), "{f}");
+    assert!(f.contains("copy 8/14"), "{f}");
     // `q` leaves without copying, like Esc.
     h.key(h.client.clone(), "q").await;
     h.wait_for(

@@ -81,7 +81,6 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         title: "",
         flag: None,
         focused: false,
-        bottom_rule: true,
     }
     .render(area, buf);
     let last_x = inner.x + inner.width.saturating_sub(1);

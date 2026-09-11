@@ -23,13 +23,7 @@ async fn split_right_draws_two_boxes_edge_to_edge_and_focuses_the_new_pane() {
         "|┌ sh ──────────────┐┌ sh ──────────────┐|",
         "{f}"
     );
-    // Both boxes stand on the screen's last row, so neither draws a bottom rule and both
-    // give that row to their program (MUX-14).
-    assert_eq!(
-        row(&f, 9),
-        "|│                  ││                  │|",
-        "{f}"
-    );
+    assert_eq!(row(&f, 9), "|└──────────────────┘└──────────────────┘|");
     assert!(
         f.contains("r1 c25-39 fg=#cba6f7"),
         "the right box is focused:\n{f}"
@@ -65,19 +59,13 @@ async fn split_down_stacks_with_the_boxes_touching() {
         .await;
     // 9 rows do not divide evenly, so the first box takes the odd one.
     assert_eq!(row(&f, 1), "|┌ sh ──────────────────────────────────┐|");
-    // The upper box keeps its bottom rule: that rule is what parts it from the box under it.
     assert_eq!(row(&f, 5), "|└──────────────────────────────────────┘|");
     assert_eq!(
         row(&f, 6),
         "|┌ sh ──────────────────────────────────┐|",
         "the next box starts on the row below, with nothing between them"
     );
-    // The lower one stands on the screen's last row and does not (MUX-14).
-    assert_eq!(
-        row(&f, 9),
-        "|│                                      │|",
-        "{f}"
-    );
+    assert_eq!(row(&f, 9), "|└──────────────────────────────────────┘|");
 }
 
 #[tokio::test]
@@ -302,7 +290,7 @@ async fn pane_list_reports_the_size_the_smallest_client_gives_each_pane() {
     assert_eq!(panes[0]["id"], pane.as_str());
     assert_eq!(panes[0]["focused"], true);
     assert_eq!(panes[0]["cols"].as_u64(), Some(38), "{list}");
-    assert_eq!(panes[0]["rows"].as_u64(), Some(8), "{list}");
+    assert_eq!(panes[0]["rows"].as_u64(), Some(7), "{list}");
     let published = h.pane_size(&pane);
     assert_eq!(
         (panes[0]["cols"].as_u64(), panes[0]["rows"].as_u64()),

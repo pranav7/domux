@@ -33,11 +33,8 @@ async fn top_bar_shows_location_tabs_plus_and_clock() {
     );
 }
 
-/// MUX-14: the box on the screen's last row is open at the foot, so that row is the
-/// program's and not a rule. The side rules still run to it, which is what says the box is
-/// still a box.
 #[tokio::test]
-async fn one_pane_box_fills_the_workpanel_and_is_open_on_the_screens_last_row() {
+async fn one_pane_box_fills_the_workpanel_with_the_foreground_command_as_title() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let f = h.frame(h.client.clone()).await;
     assert_eq!(
@@ -46,11 +43,7 @@ async fn one_pane_box_fills_the_workpanel_and_is_open_on_the_screens_last_row() 
         "{f}"
     );
     assert_eq!(row(&f, 2), "|│                                      │|");
-    assert_eq!(
-        row(&f, 9),
-        "|│                                      │|",
-        "{f}"
-    );
+    assert_eq!(row(&f, 9), "|└──────────────────────────────────────┘|");
     assert!(
         f.contains("r1 c0-0 fg=#cba6f7"),
         "focused border is accent:\n{f}"
@@ -120,25 +113,24 @@ async fn a_second_client_sees_the_same_tab_and_the_smaller_client_sizes_the_pane
         "the box is the small client's size:\n{f1}"
     );
     // The pane's own screen is the box's inside: 40 - 2 columns, and 10 rows less the top
-    // bar and the top rule. The bottom rule is not taken off, because a box standing on the
-    // screen's last row does not draw one (MUX-14).
-    assert_eq!(h.pane_size(&pane), Size { cols: 38, rows: 8 });
+    // bar and the two rules.
+    assert_eq!(h.pane_size(&pane), Size { cols: 38, rows: 7 });
 }
 
 #[tokio::test]
 async fn a_screen_below_the_minimum_says_what_it_needs() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let pane = h.focused_pane(h.client.clone());
-    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 22 });
+    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 21 });
     let small = h.attach(30, 8).await;
-    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 22 });
+    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 21 });
     let f = h.frame(small.clone()).await;
     // The sentence is 43 cells and the screen is 30, so it wraps. Clipping it would drop
     // `40x10.` - the size the reader has to reach, which is the point of the notice.
     assert_eq!(row(&f, 0), "|Screen is 30x8. domux needs at|", "{f}");
     assert_eq!(row(&f, 1), "|least 40x10.                  |", "{f}");
     h.detach(small.clone()).await;
-    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 22 });
+    assert_eq!(h.pane_size(&pane), Size { cols: 78, rows: 21 });
     let resized = h.attach(40, 10).await;
     h.resize(resized.clone(), 40, 10).await;
     let f = h
