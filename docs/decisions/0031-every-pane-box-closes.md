@@ -1,4 +1,4 @@
-# 0030: Every pane box closes
+# 0031: Every pane box closes
 
 **Date:** 2026-09-11
 **Status:** Accepted. **Reverses decision record 0022**, which is retired with it.

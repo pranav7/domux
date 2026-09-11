@@ -1,4 +1,4 @@
-# 0031: The working word shimmers and the glyph turns half as fast
+# 0032: The working word shimmers and the glyph turns half as fast
 
 **Date:** 2026-09-11
 **Status:** Accepted. Amends decision record 0019, which named the animation timer after the

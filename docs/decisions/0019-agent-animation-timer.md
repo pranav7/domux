@@ -1,7 +1,7 @@
 # 0019: The agent animation timer always runs
 
 **Date:** 2026-09-10
-**Status:** Accepted. **Amended by decision record 0031**, which puts a second animation on
+**Status:** Accepted. **Amended by decision record 0032**, which puts a second animation on
 the same ticker: `GLYPH_INTERVAL` is `ANIMATION_INTERVAL`, `agents.glyph_tick` is
 `agents.tick`, and the glyph turns on every second tick rather than every one.
 **Decision:** The 80 ms ticker starts with the server and runs until the server stops. It
