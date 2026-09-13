@@ -6,6 +6,7 @@
 # set, each request also writes its own process id and its parent's to $FAKE_HTTP_DIR/curl.pids.
 #   https://api.github.com/repos/<repo>/releases...          -> $FAKE_HTTP_DIR/releases.json
 #   https://github.com/<repo>/releases/download/<tag>/<file> -> $FAKE_HTTP_DIR/<tag>/<file>
+#   https://raw.githubusercontent.com/<repo>/<branch>/install.sh -> $FAKE_HTTP_DIR/install.sh
 set -u
 out=""
 url=""
@@ -35,6 +36,7 @@ fi
 case $url in
   https://api.github.com/repos/*/releases*) src="$FAKE_HTTP_DIR/releases.json" ;;
   https://github.com/*/releases/download/*) src="$FAKE_HTTP_DIR/${url#*/releases/download/}" ;;
+  https://raw.githubusercontent.com/*/install.sh) src="$FAKE_HTTP_DIR/install.sh" ;;
   *) not_found ;;
 esac
 [ -f "$src" ] || not_found

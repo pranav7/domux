@@ -982,6 +982,41 @@ test_writes_only_the_data_line_to_stdout() {
   assert_eq 1 "$(wc -l < "$S/out" | tr -d ' ')" "one stdout line"
 }
 
+# release_check: the command in .claude/commands/release.md that installs the published release
+# the way a reader would, which is the one sh block there that fetches install.sh.
+release_check() {
+  awk '
+    /^```sh$/ { block = ""; inside = 1; next }
+    /^```$/ { if (inside && block ~ /install\.sh/) printf "%s", block; inside = 0; next }
+    inside { block = block $0 "\n" }
+  ' "$ROOT/.claude/commands/release.md"
+}
+
+test_writes_nothing_under_home_when_the_release_command_checks_the_installer() {
+  sandbox
+  FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
+  mkdir -p "$S/home/.claude"
+  releases v1.0.0
+  release v1.0.0 linux amd64
+  cp "$ROOT/install.sh" "$FAKE_HTTP_DIR/install.sh"
+  check=$(release_check)
+  if [ -z "$check" ]; then
+    fail "no command that fetches install.sh in .claude/commands/release.md"
+    return 0
+  fi
+  env -i HOME="$S/home" TMPDIR="$S/tmp" PATH="$FAKEBIN:$PATH" \
+    FAKE_HTTP_DIR="$FAKE_HTTP_DIR" FAKE_UNAME_S="$FAKE_UNAME_S" FAKE_UNAME_M="$FAKE_UNAME_M" \
+    "$TEST_SHELL" -c "$check" </dev/null >"$S/out" 2>"$S/err"
+  code=$?
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "./.claude" "$(cd "$S/home" && find . -mindepth 1 | LC_ALL=C sort)" "nothing under HOME but the agent directory the test made"
+  case $(out) in
+    "$S/tmp/"*"/domux 1.0.0") ;;
+    *) fail "stdout is not the installed path and version in a throwaway directory: $(out)" ;;
+  esac
+  assert_contains "$(requests)" "https://raw.githubusercontent.com/pranav7/domux/main/install.sh" "the published installer"
+}
+
 test_prints_no_color_when_stderr_is_not_a_terminal() {
   sandbox
   releases v1.0.0
@@ -1305,6 +1340,7 @@ run_tests \
   test_prints_the_lid_command_when_there_is_no_terminal_to_ask_on \
   test_says_how_to_set_up_stay_awake_later_on_linux_without_a_terminal \
   test_writes_only_the_data_line_to_stdout \
+  test_writes_nothing_under_home_when_the_release_command_checks_the_installer \
   test_prints_no_color_when_stderr_is_not_a_terminal \
   test_prints_no_spinner_frames_when_stderr_is_not_a_terminal \
   test_turns_a_spinner_while_the_network_steps_run_on_a_terminal \
