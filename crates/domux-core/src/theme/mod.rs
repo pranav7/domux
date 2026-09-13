@@ -116,6 +116,16 @@ impl Theme {
 
     /// `paint`, with what the guards did.
     fn paint_traced(chain: &Chain, colors: &TerminalColors) -> (Theme, guard::Trace) {
+        Theme::paint_with(chain, colors, true)
+    }
+
+    /// `paint` with the guards left out, so a test can see what they moved from.
+    #[cfg(test)]
+    fn paint_unguarded(chain: &Chain, colors: &TerminalColors) -> Theme {
+        Theme::paint_with(chain, colors, false).0
+    }
+
+    fn paint_with(chain: &Chain, colors: &TerminalColors, guards: bool) -> (Theme, guard::Trace) {
         let answers = match (colors.bg, colors.fg) {
             (Some(bg), Some(fg)) if contrast(bg, fg) >= MIN_ANSWER_CONTRAST => Some((bg, fg)),
             _ => None,
@@ -186,7 +196,7 @@ impl Theme {
         let mut resolved: [guard::Resolved; Role::COUNT] =
             std::array::from_fn(|i| resolve(Role::ALL[i], 0));
         let trace = match answers {
-            Some((bg, _)) if resolved.iter().any(guard::Resolved::read_answers) => {
+            Some((bg, _)) if guards && resolved.iter().any(guard::Resolved::read_answers) => {
                 guard::run(&mut resolved, bg, root, resolve)
             }
             _ => guard::Trace::default(),

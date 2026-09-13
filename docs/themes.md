@@ -280,6 +280,12 @@ terminal. That is how the kind colours and the band are held under `terminal`.
 its floor moves in small steps toward white on a dark ground and toward black on a light one, which keeps
 its hue, until it reaches the floor.
 
+A role can sit on grounds on both sides of it: a dark `sidebar_background` a theme wrote in hex, say, and
+a light background the terminal answered. When no step that way meets the floor on all of them, the role
+takes the fewest steps the other way that do. When neither way meets it, the role takes the step that reads
+best on its worst ground, which is often no step at all. A move never makes a role harder to read than it
+was.
+
 | roles | floor |
 |---|---|
 | text: `text`, `soft_text`, `dim_text`, `faint_text`, `recap`, `recap_seen` | 3.0 |

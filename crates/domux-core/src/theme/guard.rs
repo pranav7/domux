@@ -4,6 +4,12 @@
 //! value was read from them. A role moves toward the far end, white on a dark overlay and black on
 //! a light one, in steps of 1/18, until it meets its floor on every ground it is drawn on. Moving
 //! toward the far end keeps its hue.
+//!
+//! A role can sit on grounds on both sides of it, a dark one a theme file wrote and a light one
+//! the terminal answered. When no step toward the far end meets the floor on all of them, the
+//! least step toward the other end that does is taken; when neither end has one, the step that
+//! reads best on the worst of its grounds, no step included. A move never lowers the lowest
+//! contrast a role has.
 
 use super::color::{contrast, luminance, mix, oklch};
 use super::role::{Guard, Role};
@@ -141,8 +147,8 @@ pub(super) fn run(
             .iter()
             .map(|g| colour(resolved, *g))
             .collect();
-        let k = least_steps(&[(from, on)], text, GROUND_FLOOR);
-        resolved[role as usize].paint = Paint::Rgb(mix(from, text, k, STEPS));
+        let (to, k) = best_move(&[(from, on)], &[text], GROUND_FLOOR);
+        resolved[role as usize].paint = Paint::Rgb(mix(from, to, k, STEPS));
         trace.steps[role as usize] = k;
     }
 
@@ -168,9 +174,10 @@ pub(super) fn run(
         .iter()
         .map(|r| (colour(resolved, *r), on(resolved, *r)))
         .collect();
-    let k = least_steps(&together, far, FLOOR);
+    let ends = [far, if far == WHITE { BLACK } else { WHITE }];
+    let (to, k) = best_move(&together, &ends, FLOOR);
     for (role, (from, _)) in blends.iter().zip(&together) {
-        resolved[*role as usize].paint = Paint::Rgb(mix(*from, far, k, STEPS));
+        resolved[*role as usize].paint = Paint::Rgb(mix(*from, to, k, STEPS));
         trace.steps[*role as usize] = k;
     }
     for role in tiers {
@@ -178,8 +185,8 @@ pub(super) fn run(
             continue;
         }
         let from = colour(resolved, role);
-        let k = least_steps(&[(from, on(resolved, role))], far, FLOOR);
-        resolved[role as usize].paint = Paint::Rgb(mix(from, far, k, STEPS));
+        let (to, k) = best_move(&[(from, on(resolved, role))], &ends, FLOOR);
+        resolved[role as usize].paint = Paint::Rgb(mix(from, to, k, STEPS));
         trace.steps[role as usize] = k;
     }
 
@@ -194,8 +201,8 @@ pub(super) fn run(
         };
         while movable(resolved, role) {
             let from = colour(resolved, role);
-            let k = least_steps(&[(from, on(resolved, role))], far, floor);
-            let moved = mix(from, far, k, STEPS);
+            let (to, k) = best_move(&[(from, on(resolved, role))], &ends, floor);
+            let moved = mix(from, to, k, STEPS);
             let found = resolved[role as usize];
             if matches!(found.value, ColorValue::Palette(_)) && !passes_hue(guard, moved) {
                 trace.hue_again.push(role);
@@ -217,17 +224,44 @@ const WHITE: Rgb = Rgb {
     b: 255,
 };
 
-/// The least k from 0 to `STEPS` such that every colour, moved k steps toward `to`, meets `floor`
-/// against every one of its grounds. `STEPS` when none does.
-fn least_steps(colours: &[(Rgb, Vec<Rgb>)], to: Rgb, floor: f64) -> u8 {
-    (0..=STEPS)
-        .find(|k| {
-            colours.iter().all(|(from, on)| {
-                let moved = mix(*from, to, *k, STEPS);
-                on.iter().all(|ground| contrast(moved, *ground) >= floor)
+/// Where a set of colours moves together: toward which of `ends`, and by how many steps from 0
+/// to `STEPS`.
+///
+/// A move is allowed only when no colour reads worse on its grounds than it did unmoved, so a
+/// move never lowers any colour's lowest contrast, and not moving is always allowed. An allowed
+/// move is scored by the lowest contrast any colour has on any of its grounds, counted as no
+/// more than `floor`, and the first best move wins, trying the ends in order and the steps from
+/// 0. So it is the least k toward the first end that meets the floor everywhere, then the least
+/// toward the next end; when no move meets it, the move that reads best on the worst ground.
+fn best_move(colours: &[(Rgb, Vec<Rgb>)], ends: &[Rgb], floor: f64) -> (Rgb, u8) {
+    // Each colour's lowest contrast on its grounds after k steps toward `to`.
+    let lowest = |to: Rgb, k: u8| -> Vec<f64> {
+        colours
+            .iter()
+            .map(|(from, on)| {
+                let moved = mix(*from, to, k, STEPS);
+                on.iter()
+                    .map(|ground| contrast(moved, *ground))
+                    .fold(f64::INFINITY, f64::min)
             })
-        })
-        .unwrap_or(STEPS)
+            .collect()
+    };
+    let unmoved = lowest(ends[0], 0);
+    let score = |each: &[f64]| each.iter().copied().fold(floor, f64::min);
+    let mut best = (ends[0], 0, score(&unmoved));
+    for to in ends.iter().copied() {
+        for k in 1..=STEPS {
+            if best.2 >= floor {
+                return (best.0, best.1);
+            }
+            let each = lowest(to, k);
+            let allowed = each.iter().zip(&unmoved).all(|(now, was)| now >= was);
+            if allowed && score(&each) > best.2 {
+                best = (to, k, score(&each));
+            }
+        }
+    }
+    (best.0, best.1)
 }
 
 #[cfg(test)]
@@ -546,12 +580,129 @@ mod tests {
         assert!(lowest(&theme, Role::HintKey, &colors) < FLOOR);
     }
 
+    /// The roles the floor holds: the text tiers, the colours, the kinds, the band ends and the
+    /// lines.
+    fn floored() -> impl Iterator<Item = Role> {
+        Role::ALL.iter().copied().filter(|r| {
+            matches!(
+                r.guard(),
+                Guard::TextTier
+                    | Guard::Colour
+                    | Guard::Red
+                    | Guard::Green
+                    | Guard::Kind
+                    | Guard::Line
+            )
+        })
+    }
+
+    /// Checks that no guarded role reads worse on its grounds than it did before it moved, and
+    /// returns the painted theme. A role that took the next layer's value is left out: it did
+    /// not move from the value it had.
+    fn no_move_lowers_contrast(chain: &Chain, colors: &TerminalColors) -> Theme {
+        let (theme, trace) = Theme::paint_traced(chain, colors);
+        let unmoved = Theme::paint_unguarded(chain, colors);
+        for role in floored().filter(|r| !trace.hue_again.contains(r)) {
+            let before = theme.with(role, unmoved.get(role));
+            assert!(
+                lowest(&theme, role, colors) >= lowest(&before, role, colors),
+                "{} moved {} steps from {:.3} to {:.3} on its grounds",
+                role.name(),
+                trace.steps[role as usize],
+                lowest(&before, role, colors),
+                lowest(&theme, role, colors),
+            );
+        }
+        theme
+    }
+
+    /// The blended tiers, which move together.
+    const BLENDED_TIERS: [Role; 4] = [
+        Role::SoftText,
+        Role::DimText,
+        Role::FaintText,
+        Role::RecapSeen,
+    ];
+
     #[test]
     fn a_terminal_colour_on_a_hex_ground_is_held_to_the_floor() {
         let chain = chain_of("extends = \"terminal\"\n[roles]\noverlay_background = \"#1e1e2e\"\n");
-        let theme = Theme::paint(&chain, &answers("catppuccin-latte"));
+        let colors = answers("catppuccin-latte");
+        let (theme, trace) = Theme::paint_traced(&chain, &colors);
+        no_move_lowers_contrast(&chain, &colors);
         assert_eq!(theme.get(Role::OverlayBackground), hex(0x1e1e2e));
         assert_eq!(theme.get(Role::Text), hex(0x6a6c82));
+        assert!(lowest(&theme, Role::Text, &colors) >= FLOOR);
+        // The blended tiers sit on the dark overlay and on the light top bar, sidebar and tab
+        // row. No move meets the floor on both, and every move lowers soft text, so they stay
+        // where they are rather than going to white, where they would vanish on the light grounds.
+        let unmoved = Theme::paint_unguarded(&chain, &colors);
+        for role in BLENDED_TIERS {
+            assert_eq!(theme.get(role), unmoved.get(role), "{}", role.name());
+            assert_eq!(trace.steps[role as usize], 0, "{}", role.name());
+        }
+        assert_eq!(theme.get(Role::SoftText), hex(0x707388));
+        assert!(lowest(&theme, Role::SoftText, &colors) >= FLOOR);
+        // The kinds straddle the same grounds and stay too.
+        assert_eq!(theme.get(Role::Codex), hex(0x89b4fa));
+    }
+
+    #[test]
+    fn a_role_on_a_dark_hex_sidebar_and_a_light_terminal_moves_only_where_it_reads_better() {
+        let chain = chain_of("extends = \"terminal\"\n[roles]\nsidebar_background = \"#1e1e2e\"\n");
+        let colors = answers("catppuccin-latte");
+        let (theme, trace) = Theme::paint_traced(&chain, &colors);
+        no_move_lowers_contrast(&chain, &colors);
+        // Toward black no step reads on the dark sidebar, so text takes the least step toward
+        // white that meets the floor on every ground.
+        assert_eq!(theme.get(Role::Text), hex(0x6a6c82));
+        assert_eq!(trace.steps[Role::Text as usize], 3);
+        assert!(lowest(&theme, Role::Text, &colors) >= FLOOR);
+        let unmoved = Theme::paint_unguarded(&chain, &colors);
+        for role in BLENDED_TIERS {
+            assert_eq!(theme.get(role), unmoved.get(role), "{}", role.name());
+        }
+        // A kind can meet the floor on both: it moves toward black, as it does on a plain Latte.
+        assert_eq!(theme.get(Role::Codex), hex(0x6b8cc2));
+        assert!(lowest(&theme, Role::Codex, &colors) >= FLOOR);
+        for role in floored() {
+            assert_ne!(theme.get(role), hex(0x000000), "{}", role.name());
+            assert_ne!(theme.get(role), hex(0xffffff), "{}", role.name());
+        }
+    }
+
+    #[test]
+    fn a_move_that_can_meet_no_floor_takes_the_step_that_reads_best_on_the_worst_ground() {
+        let dark = rgb(0x1e1e2e);
+        let light = rgb(0xeff1f5);
+        let grey = rgb(0x808080);
+        // A mid grey on black and white grounds: every step either way lowers one side, so
+        // nothing moves.
+        assert_eq!(
+            best_move(&[(grey, vec![dark, light])], &[BLACK, WHITE], FLOOR),
+            (BLACK, 0)
+        );
+        // Toward the first end first.
+        assert_eq!(
+            best_move(&[(rgb(0x404040), vec![light])], &[BLACK, WHITE], FLOOR),
+            (BLACK, 0)
+        );
+        let (to, k) = best_move(&[(rgb(0xa0a0a0), vec![light])], &[BLACK, WHITE], FLOOR);
+        assert_eq!(to, BLACK);
+        assert!(k > 0);
+        // When the first end cannot meet the floor and the second can, the least step toward
+        // the second.
+        let (to, k) = best_move(&[(rgb(0x606060), vec![dark])], &[BLACK, WHITE], FLOOR);
+        assert_eq!(to, WHITE);
+        assert!(contrast(mix(rgb(0x606060), WHITE, k, STEPS), dark) >= FLOOR);
+        assert!(contrast(mix(rgb(0x606060), WHITE, k - 1, STEPS), dark) < FLOOR);
+    }
+
+    #[test]
+    fn no_move_lowers_a_roles_lowest_contrast_on_any_omarchy_theme() {
+        for omarchy in &OMARCHY {
+            no_move_lowers_contrast(terminal(), &omarchy.colors());
+        }
     }
 
     #[test]

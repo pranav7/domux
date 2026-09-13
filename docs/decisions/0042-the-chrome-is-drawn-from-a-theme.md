@@ -88,7 +88,12 @@ The first is a readability floor, against every ground the role is drawn on. Che
 not enough: a top bar a step lighter than the overlay put the faintest text under 3.0 on 16 of 22 Omarchy
 themes. A role under its floor moves in steps of 1/18 toward white on a dark ground and toward black on a
 light one. Moving toward the foreground was tried first; a tinted foreground took the colour out of a
-moved role, and rose-pine's green stay awake dot came out grey.
+moved role, and rose-pine's green stay awake dot came out grey. A theme that extends `terminal` can paint
+one ground in hex, a dark sidebar on a light terminal, and then a role sits on grounds on both sides of it.
+The first version moved such a role all the way to black or white, where it read worse than unmoved. Now a
+move is taken only when it lowers no role's lowest contrast: the fewest steps toward the far end that meet
+the floor, else the fewest toward the other end, else the step that reads best on the worst ground, which
+may be none.
 
 - Text, the colours, the kind colours and the band ends: contrast 3.0, the WCAG figure for large text and
   marks. The text tiers move together, by the fewest steps that bring every one of them to the floor, so
