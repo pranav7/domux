@@ -537,15 +537,15 @@ async fn every_role_is_drawn_where_the_role_table_says() {
     )
     .await;
 
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     screen(
         &mut h,
         &theme,
         "the chord in the top bar",
-        |f| f.contains("C-a  ? keys"),
+        |f| f.contains("C-s  ? keys"),
         &[
-            fg("the chord's leader", text("C-a  ?"), HintKey),
-            fg("the chord's word", text("C-a  ?").skip(7), FaintText),
+            fg("the chord's leader", text("C-s  ?"), HintKey),
+            fg("the chord's word", text("C-s  ?").skip(7), FaintText),
         ],
         &mut failures,
         &mut covered,
@@ -930,14 +930,14 @@ async fn every_role_is_drawn_where_the_role_table_says() {
         "Keys",
         |f| f.contains("┌ Keys"),
         &[
-            fg("the leader", text("leader C-a"), HintKey),
+            fg("the leader", text("leader C-s"), HintKey),
             fg("the legend", text("C Ctrl"), SoftText),
             fg("a header", text("workpanel"), Text),
             fg("a body line", text("switcher.open"), Text),
             fg("the footer", text("esc close"), HintKey),
             bg(
                 "the overlay's ground",
-                text("leader C-a"),
+                text("leader C-s"),
                 OverlayBackground,
             ),
         ],
@@ -964,7 +964,7 @@ async fn every_role_is_drawn_where_the_role_table_says() {
     )
     .await
     .unwrap();
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
     screen(
         &mut h,
@@ -1014,7 +1014,7 @@ async fn every_role_is_drawn_where_the_role_table_says() {
         .await;
 
     // ---- The three confirmations.
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "D").await;
     screen(
         &mut h,
@@ -1036,7 +1036,7 @@ async fn every_role_is_drawn_where_the_role_table_says() {
     h.key(client.clone(), "Esc").await;
     h.wait_for(client.clone(), |f| !f.contains("Delete workspace-1?"), WAIT)
         .await;
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "C").await;
     screen(
         &mut h,

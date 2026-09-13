@@ -314,7 +314,7 @@ async fn the_accent_fill_is_one_run_under_the_terminal_theme() {
     let c = h
         .attach_with(80, 24, caps(testing::RISTRETTO), Desktop::Unknown)
         .await;
-    h.key(c.clone(), "C-a").await;
+    h.key(c.clone(), "C-s").await;
     h.key(c.clone(), ",").await;
     let f = h
         .wait_for(c.clone(), |f| f.contains("Name tab 1 ›"), WAIT)
