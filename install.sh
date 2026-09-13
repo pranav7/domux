@@ -164,16 +164,36 @@ asking() {
   [ -t 2 ] && tty_is_open
 }
 
-# read_key: one keypress from the terminal into KEY, with echo off while it waits. Where the
+# read_key: one keypress from the terminal into KEY, with echo off while it waits. KEY is empty
+# for enter, the digit or the letter for 1 to 5, y and n, the key name for C-s, C-a, C-b and
+# C-Space, and "other" for any other key. Keys typed before the question are thrown away, so a
+# key pressed while a download turned is not taken as the answer, and so is the rest of a key
+# that sends more than one byte, such as an arrow. Flow control is off while it waits, because
+# C-s is XOFF: with it on, the terminal would keep the key and stop all output. Where the
 # terminal will not give single keys, a typed line instead, and KEY_LINE is yes.
 read_key() {
   KEY=""
   KEY_LINE=""
   TTY_SAVED=$(stty -g < /dev/tty 2>/dev/null || echo "")
-  if [ -n "$TTY_SAVED" ] && stty -icanon -echo min 1 time 0 < /dev/tty 2>/dev/null; then
-    KEY=$(dd bs=1 count=1 2>/dev/null < /dev/tty || echo "")
+  if [ -n "$TTY_SAVED" ] && command -v od >/dev/null 2>&1 \
+    && stty -icanon -echo -ixon min 0 time 0 < /dev/tty 2>/dev/null; then
+    dd bs=1024 count=1 < /dev/tty >/dev/null 2>&1 || true
+    stty min 1 time 0 < /dev/tty 2>/dev/null || true
+    # od writes the byte as hex, so C-Space, which sends a zero byte, survives the shell.
+    k_byte=$(dd bs=1 count=1 < /dev/tty 2>/dev/null | od -An -tx1 | tr -d ' \n')
     stty "$TTY_SAVED" < /dev/tty 2>/dev/null || true
     TTY_SAVED=""
+    case $k_byte in
+      ""|0a|0d) KEY="" ;;
+      00) KEY=C-Space ;;
+      01) KEY=C-a ;;
+      02) KEY=C-b ;;
+      13) KEY=C-s ;;
+      3[1-5]) KEY=${k_byte#3} ;;
+      59|79) KEY=y ;;
+      4e|6e) KEY=n ;;
+      *) KEY=other ;;
+    esac
   else
     TTY_SAVED=""
     KEY_LINE=yes
@@ -182,21 +202,27 @@ read_key() {
 }
 
 # ask <question> [note]: the red dot means domux is waiting on you, the same as an agent row.
-# The note, when there is one, goes under the question. Answers 0 for yes.
+# The note, when there is one, goes under the question. Enter answers no, and a key that is
+# neither y nor n is not an answer. Answers 0 for yes.
 ask() {
   printf '\n   %s◉%s  %s\n' "$RED" "$OFF" "$1" >&2
   [ -z "${2:-}" ] || note "$2"
   printf '      %sy%s or %sn%s  ' "$MAUVE" "$OFF" "$MAUVE" "$OFF" >&2
-  read_key
+  while :; do
+    read_key
+    case $KEY in
+      y|Y) a_yes=y ;;
+      ""|n|N) a_yes="" ;;
+      *) [ -n "$KEY_LINE" ] || continue; a_yes="" ;;
+    esac
+    break
+  done
   if [ -n "$KEY_LINE" ]; then
     printf '\n' >&2
   else
-    printf '%s\n\n' "$KEY" >&2
+    printf '%s\n\n' "${a_yes:-n}" >&2
   fi
-  case $KEY in
-    y|Y) return 0 ;;
-    *) return 1 ;;
-  esac
+  [ -n "$a_yes" ]
 }
 
 # cleanup: runs on every exit. It stops the request spin started, and nothing else, gives the
@@ -221,8 +247,12 @@ cleanup() {
 # --- key names --------------------------------------------------------------------------------
 
 # is_key <name>: true for a key name domux reads under [keys]: any of the modifiers C-, S-, M-
-# and D-, then one character, a named key, or F1 to F12.
+# and D-, then one character, a named key, or F1 to F12. A control character is not one: TOML
+# refuses it inside a string, so domux would refuse the whole file.
 is_key() {
+  case $1 in
+    *[[:cntrl:]]*) return 1 ;;
+  esac
   k_rest=$1
   while :; do
     case $k_rest in
@@ -590,11 +620,12 @@ choose_leader() {
   leader_prompt
   while :; do
     read_key
+    # A number picks from the list, and so does pressing the key itself.
     case $KEY in
-      ""|1) CHOSEN=$LEADER_DEFAULT ;;
-      2) CHOSEN=C-a ;;
-      3) CHOSEN=C-b ;;
-      4) CHOSEN=C-Space ;;
+      ""|1|"$LEADER_DEFAULT") CHOSEN=$LEADER_DEFAULT ;;
+      2|C-a) CHOSEN=C-a ;;
+      3|C-b) CHOSEN=C-b ;;
+      4|C-Space) CHOSEN=C-Space ;;
       5)
         [ -n "$KEY_LINE" ] || printf 'another key\n' >&2
         type_leader
@@ -618,12 +649,16 @@ choose_leader() {
 }
 
 # type_leader: reads a typed key name into CHOSEN, and asks again until it is one. An empty line
-# takes the default.
+# takes the default. Flow control is off while the line is typed, for the reason read_key gives.
 type_leader() {
   while :; do
     printf '      key name  ' >&2
     t_name=""
+    TTY_SAVED=$(stty -g < /dev/tty 2>/dev/null || echo "")
+    [ -z "$TTY_SAVED" ] || stty -ixon < /dev/tty 2>/dev/null || true
     read -r t_name < /dev/tty || printf '\n' >&2
+    [ -z "$TTY_SAVED" ] || stty "$TTY_SAVED" < /dev/tty 2>/dev/null || true
+    TTY_SAVED=""
     if [ -z "$t_name" ]; then
       CHOSEN=$LEADER_DEFAULT
       return 0
@@ -632,7 +667,10 @@ type_leader() {
       CHOSEN=$t_name
       return 0
     fi
-    note "$t_name is not a key name; write one like C-s, M-a or C-Space"
+    case $t_name in
+      *[[:cntrl:]]*) note "write the key's name rather than pressing it, like C-s, M-a or C-Space" ;;
+      *) note "$t_name is not a key name; write one like C-s, M-a or C-Space" ;;
+    esac
   done
 }
 

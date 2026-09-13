@@ -152,10 +152,13 @@ wait_for() {
 }
 
 # type_after <text> <keys>: once the terminal shows the text, types the keys on descriptor 3.
+# The keys go through printf's %b, so '\023' is C-s and '\0' is C-Space. The write happens in a
+# subshell that ignores SIGPIPE, so keys typed after the installer has exited fail the write
+# rather than killing this runner.
 type_after() {
   if wait_for "$S/tty" "$1"; then
     sleep 0.3
-    printf '%s' "$2" >&3
+    (trap '' PIPE; printf '%b' "$2" >&3) 2>/dev/null
   else
     fail "the terminal never showed '$1': $(tty_text)"
     return 1
@@ -1026,6 +1029,62 @@ test_writes_a_leader_typed_after_picking_another_key_on_a_terminal() {
 leader = "M-a"' "$(config)" "the typed leader"
 }
 
+test_takes_c_s_pressed_at_the_leader_list_without_pausing_the_terminal() {
+  sandbox
+  on_a_terminal || return 0
+  answer_on_a_terminal "or enter for C-s  " '\023' "put this machine to sleep?" n
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  assert_eq '[keys]
+leader = "C-s"' "$(config)" "the key pressed"
+  assert_contains "$(tty_text)" "domux is ready" "the install carries on"
+}
+
+test_takes_c_space_pressed_at_the_leader_list() {
+  sandbox
+  on_a_terminal || return 0
+  answer_on_a_terminal "or enter for C-s  " '\0' "put this machine to sleep?" n
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  assert_eq '[keys]
+leader = "C-Space"' "$(config)" "the key pressed"
+  assert_not_contains "$(tty_text)" "null byte" "no warning from the shell"
+}
+
+test_refuses_a_control_key_typed_as_a_key_name_without_pausing_the_terminal() {
+  sandbox
+  on_a_terminal || return 0
+  answer_on_a_terminal "or enter for C-s  " 5 "key name  " '\023\r' \
+    "like C-s, M-a or C-Space" 'M-a\r' "put this machine to sleep?" n
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  assert_eq '[keys]
+leader = "M-a"' "$(config)" "the typed leader"
+}
+
+test_ignores_keys_typed_before_a_question_is_asked() {
+  sandbox
+  on_a_terminal || return 0
+  FAKE_CURL_DELAY=1
+  answer_on_a_terminal "downloading domux 1.0.0" '\r\r' "or enter for C-s  " 2 "put this machine to sleep?" y
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  assert_eq '[keys]
+leader = "C-a"
+
+[stay_awake]
+mode = "full"' "$(config)" "the answers typed after each question"
+}
+
+test_ignores_an_arrow_key_at_the_stay_awake_question() {
+  sandbox
+  on_a_terminal || return 0
+  answer_on_a_terminal "or enter for C-s  " '\r' "put this machine to sleep?" '\033[A' \
+    "put this machine to sleep?" y
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  assert_eq '[keys]
+leader = "C-s"
+
+[stay_awake]
+mode = "full"' "$(config)" "the y after the arrow"
+}
+
 run_tests \
   test_installs_the_newest_stable_release_on_macos_arm64 \
   test_prints_the_logo_before_anything_else \
@@ -1089,4 +1148,9 @@ run_tests \
   test_stops_the_request_and_restores_the_cursor_on_int \
   test_writes_the_leader_picked_from_the_list_on_a_terminal \
   test_writes_the_default_leader_when_enter_is_pressed_on_a_terminal \
-  test_writes_a_leader_typed_after_picking_another_key_on_a_terminal
+  test_writes_a_leader_typed_after_picking_another_key_on_a_terminal \
+  test_takes_c_s_pressed_at_the_leader_list_without_pausing_the_terminal \
+  test_takes_c_space_pressed_at_the_leader_list \
+  test_refuses_a_control_key_typed_as_a_key_name_without_pausing_the_terminal \
+  test_ignores_keys_typed_before_a_question_is_asked \
+  test_ignores_an_arrow_key_at_the_stay_awake_question
