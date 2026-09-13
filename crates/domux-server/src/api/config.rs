@@ -6,7 +6,6 @@ use super::{ok, Ctx};
 use crate::client::Hint;
 use crate::load_config;
 use domux_core::api::{ApiError, ConfigReloadResult, Event};
-use domux_core::proto::ServerMsg;
 use serde_json::Value;
 
 pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
@@ -37,8 +36,8 @@ pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
             };
             let now = ctx.config.themes.reads_terminal(view.desktop);
             if now != before {
-                if let Some(conn) = ctx.clients.get(&client) {
-                    let _ = conn.tx.try_send(ServerMsg::FollowColors(now));
+                if let Some(conn) = ctx.clients.get_mut(&client) {
+                    conn.send_follow(now);
                 }
             }
         }

@@ -2661,13 +2661,11 @@ impl Core {
             };
             // Each client's own theme, painted from the chosen one against that client's
             // terminal colours and desktop.
-            let painted;
             let theme = match &self.theme {
                 Some(theme) => theme,
-                None => {
-                    painted = self.config.themes.paint(&view.caps.colors, view.desktop);
-                    &painted
-                }
+                None => conn
+                    .theme
+                    .get(&self.config.themes, &view.caps.colors, view.desktop),
             };
             let input = RenderInput {
                 model: &self.model,
