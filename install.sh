@@ -383,6 +383,9 @@ tar -xzf "$tmp/$archive" -C "$tmp/x"
 mkdir -p "$INSTALL_DIR" 2>/dev/null || fail "could not create $INSTALL_DIR" "set DOMUX_INSTALL_DIR to a directory you can write to"
 [ -w "$INSTALL_DIR" ] || fail "cannot write to $INSTALL_DIR" "set DOMUX_INSTALL_DIR to a directory you can write to"
 chmod 0755 "$tmp/x/domux"
+# A domux already here makes this a reinstall, and that domux may be running.
+reinstall=""
+[ ! -e "$INSTALL_DIR/domux" ] || reinstall=yes
 # The rename is atomic, so a running domux keeps its own inode and a failed copy never leaves a
 # half-written binary on PATH.
 mv -f "$tmp/x/domux" "$INSTALL_DIR/domux.tmp"
@@ -724,6 +727,7 @@ type_leader() {
 }
 
 LEADER=""
+CONFIG_WRITTEN=""
 leader_set=$(config_get keys leader) || leader_set=unreadable
 case $leader_set in
   unreadable)
@@ -746,6 +750,7 @@ case $leader_set in
     fi
     if config_add keys leader "$(toml_string "$CHOSEN")"; then
       LEADER=$CHOSEN
+      CONFIG_WRITTEN=yes
       done_line "leader $(value "$CHOSEN") written to $CONFIG_FILE"
       [ -z "$leader_how" ] || note "$leader_how"
     else
@@ -802,6 +807,7 @@ stay_awake_full() {
     done_line "the lid setup is installed"
   fi
   if config_add stay_awake mode '"full"'; then
+    CONFIG_WRITTEN=yes
     done_line "stay awake set to $(value full) in $CONFIG_FILE"
     toggle_note
   else
@@ -844,6 +850,12 @@ case $mode_set in
     toggle_note
     ;;
 esac
+
+# A domux that is already running read the config file when it started, so it keeps the old
+# leader until it reads the file again.
+if [ -n "$CONFIG_WRITTEN" ] && [ -n "$reinstall" ]; then
+  note "if domux is already running, run $domux config reload so it reads the new config"
+fi
 
 # --- what to do next ------------------------------------------------------------------------
 

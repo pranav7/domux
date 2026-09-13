@@ -840,6 +840,30 @@ leader = "C-a"' "$(config)" "the config file"
   assert_no_file "$CONFIG.tmp" "no temp file left"
 }
 
+test_says_to_reload_a_running_domux_when_a_reinstall_writes_the_config() {
+  sandbox
+  printf '#!/bin/sh\nprintf "domux 0.9.9\\n"\n' > "$S/bin/domux"
+  chmod 0755 "$S/bin/domux"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_contains "$(err)" "if domux is already running, run $S/bin/domux config reload so it reads the new config" "the reload"
+}
+
+test_says_nothing_about_reloading_on_a_first_install_or_when_nothing_is_written() {
+  sandbox
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_not_contains "$(err)" "config reload" "a first install"
+  run_install DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_contains "$(err)" "leader C-a already set" "the second install writes nothing"
+  assert_not_contains "$(err)" "config reload" "a reinstall that writes nothing"
+}
+
 test_turns_on_full_stay_awake_on_linux_without_sudo() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
@@ -1270,6 +1294,8 @@ run_tests \
   test_reads_a_leader_that_is_a_question_mark_or_an_exclamation_mark_as_set \
   test_leaves_a_read_only_config_file_alone_without_a_shell_error \
   test_replaces_a_leftover_temp_file_link_rather_than_writing_through_it \
+  test_says_to_reload_a_running_domux_when_a_reinstall_writes_the_config \
+  test_says_nothing_about_reloading_on_a_first_install_or_when_nothing_is_written \
   test_turns_on_full_stay_awake_on_linux_without_sudo \
   test_names_the_leader_already_set_for_turning_stay_awake_on \
   test_sets_up_the_lid_and_writes_full_mode_on_macos_when_the_answer_is_yes \
