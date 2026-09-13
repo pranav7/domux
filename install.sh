@@ -252,13 +252,14 @@ ask() {
 }
 
 # cleanup: runs on every exit. It stops the request spin started, and nothing else, gives the
-# terminal back its cursor and its settings, and removes the temp dir.
+# terminal back its cursor and its settings, and removes the temp dir. A write to a terminal that
+# has closed fails, so no step here stops the ones after it.
 cleanup() {
   if [ -n "$SPIN_PID" ]; then
     kill "$SPIN_PID" 2>/dev/null || true
     wait "$SPIN_PID" 2>/dev/null || true
     SPIN_PID=""
-    printf '%s%s%s' "$CR" "$EOL" "$SHOW" >&2
+    printf '%s%s%s' "$CR" "$EOL" "$SHOW" >&2 2>/dev/null || true
   fi
   if [ -n "$TTY_SAVED" ]; then
     stty "$TTY_SAVED" < /dev/tty 2>/dev/null || true
@@ -267,7 +268,7 @@ cleanup() {
   fi
   if [ -n "$KEY_WAITING" ]; then
     KEY_WAITING=""
-    printf '\n' >&2
+    printf '\n' >&2 2>/dev/null || true
   fi
   if [ -n "${tmp:-}" ]; then
     rm -rf "$tmp"
@@ -359,6 +360,8 @@ done_line "$(value "$os_say") on $(value "$arch") detected"
 
 tmp=$(mktemp -d)
 trap cleanup EXIT
+# A terminal that closes sends HUP, and the temp dir and the request go with it the same way.
+trap 'cleanup; exit 129' HUP
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 

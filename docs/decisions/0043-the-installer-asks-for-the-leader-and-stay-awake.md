@@ -139,17 +139,18 @@ the leader, stay awake, and then "domux is ready" and "> run domux".
 
 The release lookup and the download turn the braille spinner while they wait, and nothing else
 does; decision 0039 says why it came back. A request runs in the background while the frames
-turn. The script looks at the request every 40 ms rather than sleeping a quarter second before
-it looks, because a sleep there cost every request a quarter second, three quarters of a second
-on every install, even when GitHub answered at once. The first frame waits for the sixth look, a
+turn. The script looks at the request every 40 ms rather than sleeping a quarter second before it
+looks, because a sleep there cost every request a quarter second, three quarters of a second on
+every install, even when GitHub answered at once. The first frame waits for the sixth look, a
 quarter second, so a request that answers sooner draws nothing, then a frame turns every second
 look, every 80 ms, and the last one stays until the step's check mark replaces it, so the two
 downloads read as one step. A request that answers just after the quarter second draws one frame
 and loses it to the check mark within a look or two. Any delay has that edge, and holding the
 frame longer would put back the wait the looks took out. The cursor is hidden while a frame
-turns. A trap on exit,
-INT and TERM kills the request the spinner started and nothing else, clears the line, shows the
-cursor, and gives the terminal back the settings a question changed.
+turns. A trap on exit, HUP, INT and TERM kills the request the spinner started and nothing else,
+clears the line, shows the cursor, gives the terminal back the settings a question changed, and
+removes the temp dir. HUP is there because a terminal that closes sends it; without the trap the
+temp dir stayed behind.
 
 `NO_COLOR` takes away the color and the spinner, not the questions: a reader who wants no color
 is still at the terminal. What decides whether to ask is whether stderr is a terminal and the

@@ -1261,6 +1261,11 @@ test_stops_the_request_and_restores_the_cursor_on_term() {
   stops_on_signal TERM 143
 }
 
+# A terminal that closes sends SIGHUP.
+test_stops_the_request_and_restores_the_cursor_on_hup() {
+  stops_on_signal HUP 129
+}
+
 test_stops_the_request_and_restores_the_cursor_on_int() {
   if [ -z "$DEFAULT_INT" ]; then
     printf 'skip %s: needs GNU env to give the installer SIGINT\n' "$CURRENT" >&2
@@ -1509,6 +1514,7 @@ run_tests \
   test_clears_the_spinner_when_a_download_fails_on_a_terminal \
   test_stops_the_request_and_restores_the_cursor_on_term \
   test_stops_the_request_and_restores_the_cursor_on_int \
+  test_stops_the_request_and_restores_the_cursor_on_hup \
   test_writes_the_leader_picked_from_the_list_on_a_terminal \
   test_writes_the_default_leader_when_enter_is_pressed_on_a_terminal \
   test_writes_a_leader_typed_after_picking_another_key_on_a_terminal \
