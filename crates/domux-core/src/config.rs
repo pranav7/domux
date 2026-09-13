@@ -111,9 +111,12 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 impl Default for KeysConfig {
     fn default() -> Self {
         KeysConfig {
-            // `C-s` since MUX-35, and `C-a` before it. Pressed twice, the leader reaches the
-            // pane, so a program that wants `C-s` still gets it. The client's raw mode turns
-            // off flow control, so the terminal never swallows the key to pause output.
+            // `C-s` since MUX-35, and `C-a` before it. The client's raw mode turns off flow
+            // control, so the reader's own terminal never keeps the key to pause output.
+            // Pressed twice, the leader reaches the pane, where a program that reads keys
+            // itself, such as an editor, gets `C-s`. A shell at its prompt usually leaves flow
+            // control on in the pane's terminal, and there `C-s` pauses the pane's output
+            // until `C-q`.
             leader: "C-s".into(),
             bindings: map(&[
                 // The unshifted half of the key `|` lives on: a split is common enough that

@@ -21,6 +21,8 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 - The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
   `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`.
+- Pressed twice, the leader sends `C-s` to the pane. A shell at its prompt usually leaves flow
+  control on, and there `C-s` pauses the pane's output until `C-q`.
 - The installer marks each finished step with a tick and says what it detected and did, with one
   line per coding agent whose hooks it installed. The release lookup and the download turn a
   spinner while they wait.
