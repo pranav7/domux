@@ -435,6 +435,24 @@ test_fails_before_any_request_when_domux_leader_is_not_a_key_name() {
   assert_no_file "$S/bin/domux" "nothing installed"
 }
 
+# A byte that is not UTF-8 would make the whole config file unreadable. The runner gives the
+# installer no locale, so a shell that matches ? against one byte would take each of these.
+test_fails_before_any_request_when_domux_leader_is_not_utf8() {
+  sandbox
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  # Not UTF-8: a byte no character starts with, a character cut short, a character spelled with
+  # more bytes than it takes, half of a UTF-16 pair, one past the last character, and DEL.
+  for bad in '\377' '\303' '\300\200' '\355\240\200' '\364\220\200\200' '\177'; do
+    : > "$FAKE_HTTP_DIR/requests.log"
+    run_install "DOMUX_LEADER=C-$(printf '%b' "$bad")"
+    assert_exit 1 "$code" "exit for C-$bad: $(err)"
+    assert_contains "$(err)" "DOMUX_LEADER must be a key name such as C-s, M-a or C-Space" "state for C-$bad"
+    assert_eq "" "$(requests)" "no network request for C-$bad"
+  done
+  assert_no_file "$CONFIG" "nothing written"
+}
+
 test_fails_when_the_archive_is_missing_from_the_release() {
   sandbox
   releases v1.0.0
@@ -676,6 +694,29 @@ test_escapes_a_leader_that_toml_would_misread() {
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
 leader = "C-\\"' "$(config)" "a backslash is escaped"
+}
+
+# The runner gives the installer no locale, so these also check a shell in the C locale, where ?
+# matches one byte.
+test_writes_a_leader_that_is_a_character_of_two_bytes() {
+  sandbox
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-é DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq '[keys]
+leader = "C-é"' "$(config)" "config"
+}
+
+test_writes_a_leader_that_is_a_character_of_four_bytes() {
+  sandbox
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  face=$(printf '\360\237\230\200')
+  run_install "DOMUX_LEADER=M-$face" DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "[keys]
+leader = \"M-$face\"" "$(config)" "config"
 }
 
 test_writes_through_a_linked_config_file_and_keeps_the_link() {
@@ -1382,6 +1423,7 @@ run_tests \
   test_fails_when_domux_version_is_a_v1_go_tag \
   test_fails_when_domux_version_is_not_a_tag \
   test_fails_before_any_request_when_domux_leader_is_not_a_key_name \
+  test_fails_before_any_request_when_domux_leader_is_not_utf8 \
   test_fails_when_the_archive_is_missing_from_the_release \
   test_fails_when_checksums_are_missing \
   test_fails_when_checksums_have_no_entry_for_the_archive \
@@ -1401,6 +1443,8 @@ run_tests \
   test_writes_to_domux_config_file \
   test_writes_the_default_leader_when_there_is_no_terminal_to_ask_on \
   test_escapes_a_leader_that_toml_would_misread \
+  test_writes_a_leader_that_is_a_character_of_two_bytes \
+  test_writes_a_leader_that_is_a_character_of_four_bytes \
   test_writes_through_a_linked_config_file_and_keeps_the_link \
   test_leaves_a_config_file_that_sets_keys_without_a_table_alone \
   test_reads_a_header_inside_a_multi_line_array_or_string_as_part_of_it \

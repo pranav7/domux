@@ -33,19 +33,23 @@ A key is read as one byte with the terminal's line editing, echo and flow contro
 control has to be off because `C-s` is XOFF: with it on, the terminal keeps the key and stops all
 output, so pressing the default leader at its own question froze the install until `C-q`. It
 stays off from the first question until the script exits, when the trap gives the terminal back
-the settings it had. Turning it back on after each key was not enough: a reader who presses
-`C-s` twice, or holds it, sends a second one while the installer writes the leader, and that one
-stopped the output before the next question could turn flow control off again. The
-byte goes through `od`, because `C-Space` sends a zero byte and a shell drops one. Keys typed
-before a question are thrown away, so an enter pressed while the download turned does not answer
-it, and so is the rest of a key that sends several bytes, such as an arrow, which the y or n
-question ignores rather than taking as no. A key that is not on the list is not an answer.
+the settings it had. Turning it back on after each key was not enough: a reader who presses `C-s`
+twice, or holds it, sends a second one while the installer writes the leader, and that one
+stopped the output before the next question could turn flow control off again. The byte goes
+through `od`, because `C-Space` sends a zero byte and a shell drops one. Keys typed before a
+question are thrown away, so an enter pressed while the download turned does not answer it, and
+so is the rest of a key that sends several bytes, such as an arrow, which the y or n question
+ignores rather than taking as no. A key that is not on the list is not an answer.
 
-A typed name is checked the way `[keys]` reads one, modifiers and then one character, a named
-key or F1 to F12, and asked again until it is one. A name with a control character in it is
-refused too, because TOML refuses one inside a string. The binary treats a bad leader as an
-error, because nothing works without one, so the installer never writes a leader domux would
-refuse.
+A typed name is checked the way `[keys]` reads one, modifiers and then one character, a named key
+or F1 to F12, and asked again until it is one. A name with a control character in it is refused
+too, because TOML refuses one inside a string, and so is a character that is not UTF-8, because a
+TOML file is UTF-8 and one such byte makes domux refuse the whole file. The check reads the
+character's bytes through `od` rather than matching it with `?`, because dash, and any shell in
+the C locale, match `?` against one byte: there the check refused `C-é` and took a stray byte
+that is not a character at all. The binary treats a bad leader as an error, because nothing works
+without one, so the installer never writes a leader domux would refuse.
+
 `DOMUX_LEADER` answers the question without asking and is checked before any request, so a bad
 value fails before anything is downloaded.
 

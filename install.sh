@@ -276,13 +276,30 @@ cleanup() {
 
 # --- key names --------------------------------------------------------------------------------
 
-# is_key <name>: true for a key name domux reads under [keys]: any of the modifiers C-, S-, M-
-# and D-, then one character, a named key, or F1 to F12. A control character is not one: TOML
-# refuses it inside a string, so domux would refuse the whole file.
-is_key() {
-  case $1 in
-    *[[:cntrl:]]*) return 1 ;;
+# one_character <text>: true when the text is one character that can go in a TOML string, in
+# UTF-8, which is the only encoding a TOML file can have. A control character is not one: TOML
+# refuses it inside a string, and a byte that is not UTF-8 makes the whole file unreadable, so
+# domux would refuse the file either way. The bytes are read in hex because what ? matches
+# depends on the shell: dash, and any shell in the C locale, match one byte, so ? would refuse é
+# and take a stray byte that is not a character at all.
+one_character() {
+  if ! command -v od >/dev/null 2>&1; then
+    case $1 in ?) return 0 ;; esac
+    return 1
+  fi
+  o_hex=$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')
+  case $o_hex in
+    2?|[3456]?|7[0123456789abcde]) return 0 ;;
+    c[23456789abcdef][89ab]?|d?[89ab]?) return 0 ;;
+    e0[ab]?[89ab]?|e[123456789abcef][89ab]?[89ab]?|ed[89]?[89ab]?) return 0 ;;
+    f0[9ab]?[89ab]?[89ab]?|f[123][89ab]?[89ab]?[89ab]?|f48?[89ab]?[89ab]?) return 0 ;;
   esac
+  return 1
+}
+
+# is_key <name>: true for a key name domux reads under [keys]: any of the modifiers C-, S-, M-
+# and D-, then one character, a named key, or F1 to F12.
+is_key() {
   k_rest=$1
   while :; do
     case $k_rest in
@@ -293,9 +310,8 @@ is_key() {
   case $k_rest in
     Enter|Tab|Backspace|Esc|Space|Up|Down|Left|Right|Home|End|PageUp|PageDown|Insert|Delete) return 0 ;;
     F[1-9]|F1[0-2]) return 0 ;;
-    ?) return 0 ;;
   esac
-  return 1
+  one_character "$k_rest"
 }
 
 logo
