@@ -44,7 +44,7 @@ impl ThemeLayer {
                     other => warn(
                         offset,
                         line_at(offset),
-                        format!("extends {other} is not a theme name: it is a string; extends is ignored"),
+                        format!("extends {other} is not a theme name: a theme name is a string; extends is ignored"),
                     ),
                 },
                 "roles" => {
@@ -253,7 +253,7 @@ mod tests {
         assert_eq!(
             warnings,
             [
-                "themes/ristretto.toml line 1: extends 3 is not a theme name: it is a string; extends is ignored",
+                "themes/ristretto.toml line 1: extends 3 is not a theme name: a theme name is a string; extends is ignored",
                 "themes/ristretto.toml line 2: roles is not a table; it is ignored",
             ]
         );
