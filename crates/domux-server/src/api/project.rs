@@ -58,11 +58,8 @@ pub fn list(ctx: &mut Ctx, _p: domux_core::api::NoParams) -> Result<Value, ApiEr
 /// caller never named, with no error to say so (decision record 0041). The CLI makes what a
 /// person types full before it sends it; this is the guard for every other caller.
 pub fn add(ctx: &mut Ctx, p: ProjectAddParams) -> Result<Value, ApiError> {
-    if !Path::new(&p.path).is_absolute() {
-        return Err(ApiError::invalid_params(format!(
-            "{} is a relative path, and the server cannot tell which directory it was typed in; give the full path",
-            p.path
-        )));
+    if let Some(refusal) = not_a_full_path(&p.path) {
+        return Err(ApiError::invalid_params(refusal));
     }
     ctx.jobs.push(CoreJob::ReadProject {
         path: p.path.clone(),
@@ -72,6 +69,32 @@ pub fn add(ctx: &mut Ctx, p: ProjectAddParams) -> Result<Value, ApiError> {
     // has no caller waiting, and reads this as "the key did what it says", which is true -
     // the reading has started, and a failure reaches the hint row from `Core::answer`.
     ok(Ack { ok: true })
+}
+
+/// Why `path` is not a full path, as the sentence the caller is told, or `None` when it is one.
+///
+/// Three sentences, because a path can fail to be full in three ways that each need their own
+/// advice. A blank path is no path at all, and calling it relative printed a sentence that
+/// started with a space. A path that starts with `~` was written for a shell, which expands it
+/// before any command sees it; a key binding and `domux api` send it as written, and the server
+/// expands nothing, so the problem is the `~` and not which directory it was typed in.
+fn not_a_full_path(path: &str) -> Option<String> {
+    if path.trim().is_empty() {
+        return Some(
+            "project.add needs a path; give the full path of the folder to register".to_string(),
+        );
+    }
+    if path.starts_with('~') {
+        return Some(format!(
+            "{path} starts with ~, which only a shell expands; give the full path, with the home directory written out"
+        ));
+    }
+    if !Path::new(path).is_absolute() {
+        return Some(format!(
+            "{path} is a relative path, and the server cannot tell which directory it was typed in; give the full path"
+        ));
+    }
+    None
 }
 
 /// `1 workspace` or `2 workspaces`, so the question a reader is asked reads as a sentence.

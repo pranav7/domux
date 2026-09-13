@@ -8,7 +8,10 @@ repository, and about the directory itself otherwise. That directory is already 
 nothing is asked, when the directory attach was typed in is a registered project root or
 workspace path or lies under one, with one exception: a folder project does not hold a
 repository whose top level lies below the folder. A git project still holds everything under
-it. Separately, `project.add` takes a full path. The CLI makes `open` and `project add`
+it, and it also holds a linked worktree of its repository wherever the worktree was made: a
+repository whose common git directory is a registered git project's is held. The offer is best
+effort, so anything that stops it short is said in one line and the attach goes on.
+Separately, `project.add` takes a full path. The CLI makes `open` and `project add`
 paths full against the directory the command was typed in, and the server refuses a relative
 path.
 
@@ -51,6 +54,31 @@ So a folder project holds the plain folders under it, which keeps a notes direct
 home project quiet, and a folder record at a repository's top level or inside a repository
 still holds, which keeps a record written before 0010 quiet.
 
+## A linked worktree is its project's
+
+A review of the first change found the other half of the same nuisance. `git worktree add
+../app-feature` puts a worktree beside the checkout rather than under it, so no registered path
+holds it, and the offer asked there on every attach. 0009 keeps no record of a no, so there was
+no way to make it stop short of registering a second git project out of one repository.
+
+Every work tree of a repository shares one common git directory: `.git` in the checkout, which a
+linked worktree's `.git` file points back to. So the CLI asks git for the common directory of
+the repository it was typed in and of each registered git project's root, and a match is held.
+It asks with `git rev-parse --path-format=absolute --git-common-dir` at a top level, and a git
+older than 2.31, which does not know `--path-format`, is asked again without it and its relative
+answer read from that top level. Only a git project's root is asked: a slot shares its project's
+common directory, and a folder project is not a repository's project (0010). `at_home` stays a
+pure function of paths the caller has already resolved.
+
+The same check could go the other way and offer a submodule or a clone vendored under a git
+project, since each has a common directory of its own. It does not, and a git project still
+holds everything under its root. A submodule is checked out by its superproject and worked on
+as part of it, and a clone under a project's root is most often something the project uses, a
+dependency or a fixture. Neither is often a project of its own, and the offer has no record of
+a no, so asking there would ask on every attach in a directory the author is working in. The
+common directory only ever adds to what is held, so nothing this rule kept quiet before is
+offered now.
+
 ## What was not chosen
 
 - Counting a repository as held only when its exact top level is registered. That is exact, and
@@ -69,11 +97,29 @@ still holds, which keeps a record written before 0010 quiet.
 
 - The question names the directory it would register, and the line after a no names it too:
   `Left unregistered. Run domux open <dir> to register it later.` `open .` is only the same
-  thing when attach was typed at the top level.
-- One `git rev-parse --show-toplevel` in the CLI before the question. It runs in the command a
-  person typed, not on the core task. A git that will not answer treats the directory as a plain
-  folder.
+  thing when attach was typed at the top level. The line is for pasting, so a directory a shell
+  would split or expand is single quoted in it, by the one helper the hook installer also uses.
+- A folder project registered over a tree of repositories, such as `domux open ~/code`, now
+  asks in each repository under it, on every attach there, until each is registered. Before,
+  the folder held them all and nothing was asked. Removing the folder project with
+  `domux project remove` does not stop it; registering the repositories does.
+- Every work tree of a registered git project's repository is held wherever it was made: a
+  linked worktree beside the checkout, and the checkout itself when what was registered is a
+  linked worktree. A second clone of the same remote has a common directory of its own and is
+  offered.
+- Before the question, the CLI runs `git rev-parse --show-toplevel` and asks for the common
+  directory of the repository it is in. When it is in one, it asks the same of each registered
+  git project's root, a few milliseconds each. These run in the command a person typed, not on
+  the core task. A git that will not answer treats the directory as a plain folder, and a root
+  git will not answer for matches nothing.
 - A repository under a git project at an ancestor is still held. A home directory that is itself
   a git work tree, seeded as a git project, keeps every repository under it quiet. Nothing
   observed produces one yet.
-- `project.add` with a relative path answers `invalid_params` and registers nothing.
+- The offer never ends the attach. A server that will not answer `project.list`, a
+  `project.add` it refuses and a switch that fails are each said in one line that names the
+  directory and the `domux open` that does it, and then the client attaches. A directory whose
+  path is not UTF-8 is not asked about, because a path reaches the server as a JSON string, and
+  the line says so. A reader who is not on a terminal is still not asked and told nothing.
+- `project.add` with a relative path answers `invalid_params` and registers nothing. An empty
+  path and a path that starts with `~` are refused the same way, each with its own sentence:
+  one is no path at all, and the other was written for a shell that never saw it.

@@ -389,6 +389,51 @@ async fn adding_a_relative_path_is_refused_and_registers_nothing() {
     );
 }
 
+/// An empty path is not a relative path the reader typed: it is no path at all, and the
+/// relative refusal read as a sentence starting with a space. A path of spaces reads the same.
+#[tokio::test]
+async fn adding_an_empty_path_says_a_path_is_needed_and_registers_nothing() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    for path in ["", "  "] {
+        let err = h
+            .api("project.add", json!({ "path": path }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams, "{path:?}: {err}");
+        assert_eq!(
+            err.message, "project.add needs a path; give the full path of the folder to register",
+            "{path:?}"
+        );
+    }
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before
+    );
+}
+
+/// A path that starts with `~` was written for a shell, which expands it before a command
+/// sees it. A key binding or `domux api` sends it as written, and the server expands nothing,
+/// so calling it a relative path the server cannot place names the wrong problem.
+#[tokio::test]
+async fn adding_a_path_that_starts_with_a_tilde_says_only_a_shell_expands_it() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    let err = h
+        .api("project.add", json!({"path": "~/code/app"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidParams, "{err}");
+    assert_eq!(
+        err.message,
+        "~/code/app starts with ~, which only a shell expands; give the full path, with the home directory written out"
+    );
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before
+    );
+}
+
 /// The removal asks first, says what goes and what stays, and leaves the worktrees where
 /// they are (interface spec 12.8).
 #[tokio::test]

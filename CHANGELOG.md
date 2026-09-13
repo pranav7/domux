@@ -12,7 +12,11 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 - `domux attach` in a repository under a folder project, such as a home directory the first
   server was started in, now offers to register the repository instead of saying nothing, and
-  `domux open .` registers the directory it was typed in rather than the server's.
+  `domux open .` registers the directory it was typed in rather than the server's. A home
+  project registered by accident is dropped with `domux project remove`.
+- `domux attach` in a worktree of a registered repository no longer asks to register it,
+  wherever the worktree was made, and an offer that fails says why in one line and attaches
+  anyway instead of ending the command.
 
 ## [1.0.0] - 2026-09-11
 
