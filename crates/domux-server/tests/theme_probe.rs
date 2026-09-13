@@ -1118,6 +1118,16 @@ async fn every_role_is_drawn_where_the_role_table_says() {
                 text("+").in_row("┌ Navigator"),
                 TabRowBackground,
             ),
+            bg(
+                "a blank cell between the tabs and the right end",
+                text("+").in_row("┌ Navigator").skip(4),
+                TabRowBackground,
+            ),
+            bg(
+                "the tab row's last column",
+                cell(COLS - 1, 0),
+                TabRowBackground,
+            ),
             fg("an unfocused box's border", text("┌ Navigator"), Border),
             fg(
                 "an unfocused box's title",

@@ -394,13 +394,23 @@ pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
     let Some(row) = crate::render::top_bar::tab_row_of(input) else {
         return;
     };
+    let bg = color(input.theme, Role::TabRowBackground);
+    // The ground covers the whole row, the cells between the pieces too, the way the top bar
+    // fills its own: the pieces below only paint the cells they write into.
+    let right_edge = (area.x + area.width).min(buf.area.x + buf.area.width);
+    if buf.area.height > 0 {
+        for x in area.x..right_edge {
+            buf[(x, 0)].reset();
+            buf[(x, 0)].set_style(Style::default().bg(bg));
+        }
+    }
     crate::render::top_bar::draw_tabs_and_right(
         input,
         &row,
         area.x,
         0,
         area.x + area.width,
-        color(input.theme, Role::TabRowBackground),
+        bg,
         buf,
     );
 }
