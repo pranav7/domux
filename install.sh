@@ -439,24 +439,28 @@ fi
 # is on every machine this script runs on and reads the whole file the same way everywhere.
 # Decision record 0043 says why it is not sed and not the binary.
 #
-# classify(line) reads one line of TOML. It sets header to the table the line opens, "keys" for
-# "[keys]" with or without a comment after it, or "[keys" for an array of tables, "[[keys]]", so
-# that one never matches a table; header is "" for any other line. It sets plain when the line
-# starts outside a multi-line array or string, where a key or a header can be, and then follows
-# the brackets and multi-line strings the line opens and closes, so a line inside one is never
-# read as either.
+# classify(line) reads one line of TOML. It sets text to the line without the byte order mark a
+# file can start with. It sets header to the table the line opens, "keys" for "[keys]", "["keys"]"
+# or "['keys']" with or without a comment after it, or "[keys" for an array of tables,
+# "[[keys]]", so that one never matches a table; header is "" for any other line. It sets plain
+# when the line starts outside a multi-line array or string, where a key or a header can be, and
+# then follows the brackets and multi-line strings the line opens and closes, so a line inside
+# one is never read as either.
 # shellcheck disable=SC2016  # an awk program: $0 is awk's, not the shell's
 CONFIG_AWK_CLASSIFY='
-function classify(line,   h, i, n, c, three) {
+function classify(line,   h, i, n, c, three, bom) {
+  bom = "\357\273\277"
+  if (NR == 1 && index(line, bom) == 1) line = substr(line, length(bom) + 1)
+  text = line
   plain = (depth == 0 && long == "")
   header = ""
-  if (plain && line ~ /^[ \t]*\[\[?[ \t]*[A-Za-z0-9_." \t-]+[ \t]*\]\]?[ \t]*(#.*)?\r?$/) {
+  if (plain && line ~ /^[ \t]*\[\[?[ \t]*[A-Za-z0-9_."\047 \t-]+[ \t]*\]\]?[ \t]*(#.*)?\r?$/) {
     h = line
     sub(/^[ \t]*/, "", h)
     header = (substr(h, 1, 2) == "[[") ? "[" : ""
     sub(/^\[\[?[ \t]*/, "", h)
     sub(/[ \t]*\]\]?[ \t]*(#.*)?\r?$/, "", h)
-    gsub(/[ \t"]/, "", h)
+    gsub(/[ \t"\047]/, "", h)
     header = header h
     return
   }
@@ -490,14 +494,22 @@ function classify(line,   h, i, n, c, three) {
 }
 '
 
-# Prints the value of key in table without its quotes, and "!" when the file sets the table in a
-# way a header added under it would break: as an inline table, with dotted keys, or as an array
-# of tables.
+# Prints "=" and the value of key in table without its quotes, and "!" when the file sets the
+# table in a way a header added under it would break: as an inline table, with dotted keys, or as
+# an array of tables. The "=" keeps a value such as "!" apart from the answer "!". A key can be
+# bare or quoted, and a value can be a string on one line or a multi-line string over several.
 # shellcheck disable=SC2016  # an awk program: $0 is awk's, not the shell's
 CONFIG_AWK_GET='
 function show(line,   q, i, c, out) {
   found = 1
   sub(/^[^=]*=[ \t]*/, "", line)
+  q = substr(line, 1, 3)
+  if (q == "\"\"\"" || q == "\047\047\047") {
+    multi = q
+    out_multi = ""
+    take(substr(line, 4), 1)
+    return
+  }
   q = substr(line, 1, 1)
   if (q == "\"" || q == "\047") {
     out = ""
@@ -507,18 +519,46 @@ function show(line,   q, i, c, out) {
       if (q == "\"" && c == "\\") { i++; c = substr(line, i, 1) }
       out = out c
     }
-    print out
+    print "=" out
   } else {
     sub(/[ \t]*(#.*)?\r?$/, "", line)
-    print line
+    print "=" line
   }
+  exit
+}
+# take(part, first): adds one line of a multi-line string to the value, and prints the value once
+# the closing quotes are there. TOML drops the line break right after the opening quotes, and in
+# a basic string a backslash at the end of a line drops the break and the blanks after it.
+function take(part, first,   i, n, c) {
+  sub(/\r$/, "", part)
+  if (joined) sub(/^[ \t]*/, "", part)
+  n = length(part)
+  if (joined && n == 0) return
+  joined = 0
+  for (i = 1; i <= n; i++) {
+    if (substr(part, i, 3) == multi) {
+      multi = ""
+      print "=" out_multi
+      exit
+    }
+    c = substr(part, i, 1)
+    if (multi == "\"\"\"" && c == "\\") {
+      if (i == n) { joined = 1; return }
+      i++
+      c = substr(part, i, 1)
+    }
+    out_multi = out_multi c
+  }
+  if (!(first && n == 0)) out_multi = out_multi "\n"
 }
 BEGIN {
-  in_table = "^[ \t]*" key "[ \t]*="
-  dotted = "^[ \t]*" table "[ \t]*\\.[ \t]*" key "[ \t]*="
-  outside = "^[ \t]*" table "[ \t]*[.=]"
+  q = "[\"\047]?"
+  in_table = "^[ \t]*" q key q "[ \t]*="
+  dotted = "^[ \t]*" q table q "[ \t]*\\.[ \t]*" q key q "[ \t]*="
+  outside = "^[ \t]*" q table q "[ \t]*[.=]"
 }
 {
+  if (multi != "") { take($0, 0); next }
   classify($0)
   if (header != "") {
     current = header
@@ -526,11 +566,14 @@ BEGIN {
     next
   }
   if (!plain) next
-  if (current == table && $0 ~ in_table) { show($0); exit }
-  if (current == "" && $0 ~ dotted) { show($0); exit }
-  if (current == "" && $0 ~ outside) blocked = 1
+  if (current == table && text ~ in_table) show(text)
+  else if (current == "" && text ~ dotted) show(text)
+  else if (current == "" && text ~ outside) blocked = 1
 }
-END { if (!found && blocked) print "!" }
+END {
+  if (multi != "") print "=" out_multi
+  else if (!found && blocked) print "!"
+}
 '
 
 # Prints the file with "key = CONFIG_VALUE" right under the table header, or under a new header
@@ -555,9 +598,9 @@ END {
 }
 '
 
-# config_get <table> <key>: prints what the config file sets the key to, nothing when it sets
-# nothing, and "!" when the file sets the table without a header, where adding a header would
-# define the table twice and break the file. Fails when the file cannot be read.
+# config_get <table> <key>: prints "=" and what the config file sets the key to, nothing when it
+# sets nothing, and "!" when the file sets the table without a header, where adding a header
+# would define the table twice and break the file. Fails when the file cannot be read.
 config_get() {
   [ -e "$CONFIG_FILE" ] || return 0
   awk -v table="$1" -v key="$2" "$CONFIG_AWK_CLASSIFY$CONFIG_AWK_GET" "$CONFIG_FILE" 2>/dev/null
@@ -580,13 +623,16 @@ config_add() {
     c_hops=$((c_hops + 1))
   done
   mkdir -p "$(dirname "$c_file")" 2>/dev/null || return 1
+  # A path.tmp left behind, even a link, is removed rather than written through.
+  rm -f "$c_file.tmp" 2>/dev/null || return 1
   c_from=/dev/null
   if [ -e "$c_file" ]; then
     c_from=$c_file
     # Copied first, so the new file keeps the permissions of the one it replaces.
     cp -p "$c_file" "$c_file.tmp" 2>/dev/null || return 1
   fi
-  if CONFIG_VALUE=$3 awk -v table="$1" -v key="$2" "$CONFIG_AWK_CLASSIFY$CONFIG_AWK_ADD" "$c_from" >"$c_file.tmp" 2>/dev/null \
+  # The braces take the shell's own error when path.tmp cannot be opened, as well as awk's.
+  if { CONFIG_VALUE=$3 awk -v table="$1" -v key="$2" "$CONFIG_AWK_CLASSIFY$CONFIG_AWK_ADD" "$c_from" >"$c_file.tmp"; } 2>/dev/null \
     && mv -f "$c_file.tmp" "$c_file" 2>/dev/null; then
     return 0
   fi
@@ -675,9 +721,9 @@ type_leader() {
 }
 
 LEADER=""
-leader_set=$(config_get keys leader) || leader_set="?"
+leader_set=$(config_get keys leader) || leader_set=unreadable
 case $leader_set in
-  "?")
+  unreadable)
     failed_line "could not read $CONFIG_FILE, so no leader was written"
     note "check its permissions, then run this script again"
     ;;
@@ -705,6 +751,7 @@ case $leader_set in
     fi
     ;;
   *)
+    leader_set=${leader_set#=}
     LEADER=$leader_set
     done_line "leader $(value "$leader_set") already set in $CONFIG_FILE"
     if [ -n "${DOMUX_LEADER:-}" ] && [ "$DOMUX_LEADER" != "$leader_set" ]; then
@@ -764,9 +811,9 @@ question="Set up stay awake, so a closed lid does not put this machine to sleep?
 question_note=""
 [ "$os" != darwin ] || question_note="it asks for sudo once"
 
-mode_set=$(config_get stay_awake mode) || mode_set="?"
+mode_set=$(config_get stay_awake mode) || mode_set=unreadable
 case $mode_set in
-  "?")
+  unreadable)
     failed_line "could not read $CONFIG_FILE, so stay awake was not set up"
     note "check its permissions, then run this script again"
     ;;
@@ -789,6 +836,7 @@ case $mode_set in
     esac
     ;;
   *)
+    mode_set=${mode_set#=}
     done_line "stay awake already set to $(value "$mode_set") in $CONFIG_FILE"
     toggle_note
     ;;

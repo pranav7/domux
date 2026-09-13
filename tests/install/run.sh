@@ -718,6 +718,128 @@ arr = [
 leader = "C-a"' "$(config)" "the string and the array are left whole, and the table is added after them"
 }
 
+test_adds_the_leader_under_a_keys_header_written_with_quotes() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  printf "['keys']\n\n[ \"stay_awake\" ]\nmode = \"full\"\n" > "$CONFIG"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=yes
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "['keys']
+leader = \"C-a\"
+
+[ \"stay_awake\" ]
+mode = \"full\"" "$(config)" "the leader under the one keys table"
+  assert_contains "$(err)" "✓  stay awake already set to full in $CONFIG" "the quoted stay_awake header"
+}
+
+test_adds_the_leader_under_a_header_after_a_byte_order_mark() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  printf '\357\273\277[keys]\n\n[terminal]\nscrollback = 10\n' > "$CONFIG"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$(printf '\357\273\277[keys]\nleader = "C-a"\n\n[terminal]\nscrollback = 10')" "$(config)" "the leader under the one keys table"
+}
+
+test_reads_a_leader_under_a_quoted_key_as_set() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  printf '[keys]\n"leader" = "C-b"\n' > "$CONFIG"
+  cp "$CONFIG" "$S/before"
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$(cat "$S/before")" "$(config)" "a quoted key: the config file is unchanged"
+  assert_contains "$(err)" "✓  leader C-b already set in $CONFIG" "a quoted key"
+  printf "\"keys\".'leader' = 'M-b'\n" > "$CONFIG"
+  cp "$CONFIG" "$S/before"
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$(cat "$S/before")" "$(config)" "a quoted dotted key: the config file is unchanged"
+  assert_contains "$(err)" "✓  leader M-b already set in $CONFIG" "a quoted dotted key"
+}
+
+test_reads_a_leader_in_a_multi_line_string_as_set() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  printf '[keys]\nleader = """C-b"""\n' > "$CONFIG"
+  cp "$CONFIG" "$S/before"
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$(cat "$S/before")" "$(config)" "on one line: the config file is unchanged"
+  assert_contains "$(err)" "✓  leader C-b already set in $CONFIG" "on one line"
+  printf "[keys]\nleader = '''\nM-b'''\n" > "$CONFIG"
+  cp "$CONFIG" "$S/before"
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$(cat "$S/before")" "$(config)" "over two lines: the config file is unchanged"
+  assert_contains "$(err)" "✓  leader M-b already set in $CONFIG" "over two lines"
+}
+
+test_reads_a_leader_that_is_a_question_mark_or_an_exclamation_mark_as_set() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  for mark in '?' '!'; do
+    printf '[keys]\nleader = "%s"\n\n[stay_awake]\nmode = "%s"\n' "$mark" "$mark" > "$CONFIG"
+    run_install DOMUX_STAY_AWAKE=no
+    assert_exit 0 "$code" "exit: $(err)"
+    assert_contains "$(err)" "✓  leader $mark already set in $CONFIG" "the leader $mark"
+    assert_contains "$(err)" "✓  stay awake already set to $mark in $CONFIG" "the mode $mark"
+    assert_not_contains "$(err)" "✗" "no step failed"
+  done
+}
+
+test_leaves_a_read_only_config_file_alone_without_a_shell_error() {
+  sandbox
+  if [ "$(id -u)" = 0 ]; then
+    printf 'skip %s: root can write anywhere\n' "$CURRENT" >&2
+    return
+  fi
+  mkdir -p "$S/home/.config/domux"
+  printf '[terminal]\nscrollback = 1\n' > "$CONFIG"
+  chmod 0444 "$CONFIG"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  chmod 0644 "$CONFIG"
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq '[terminal]
+scrollback = 1' "$(config)" "the config file is unchanged"
+  assert_contains "$(err)" "✗  could not write the leader to $CONFIG" "state"
+  assert_not_contains "$(err)" "Permission denied" "no error from the shell"
+  assert_not_contains "$(err)" "cannot create" "no error from the shell"
+  assert_no_file "$CONFIG.tmp" "no temp file left"
+}
+
+test_replaces_a_leftover_temp_file_link_rather_than_writing_through_it() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  printf '[terminal]\nscrollback = 1\n' > "$CONFIG"
+  printf 'keep me\n' > "$S/victim"
+  ln -s "$S/victim" "$CONFIG.tmp"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "keep me" "$(cat "$S/victim")" "the file the link points at is untouched"
+  if [ -L "$CONFIG" ]; then fail "the config file became a link"; fi
+  assert_eq '[terminal]
+scrollback = 1
+
+[keys]
+leader = "C-a"' "$(config)" "the config file"
+  assert_no_file "$CONFIG.tmp" "no temp file left"
+}
+
 test_turns_on_full_stay_awake_on_linux_without_sudo() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
@@ -1129,6 +1251,13 @@ run_tests \
   test_writes_through_a_linked_config_file_and_keeps_the_link \
   test_leaves_a_config_file_that_sets_keys_without_a_table_alone \
   test_reads_a_header_inside_a_multi_line_array_or_string_as_part_of_it \
+  test_adds_the_leader_under_a_keys_header_written_with_quotes \
+  test_adds_the_leader_under_a_header_after_a_byte_order_mark \
+  test_reads_a_leader_under_a_quoted_key_as_set \
+  test_reads_a_leader_in_a_multi_line_string_as_set \
+  test_reads_a_leader_that_is_a_question_mark_or_an_exclamation_mark_as_set \
+  test_leaves_a_read_only_config_file_alone_without_a_shell_error \
+  test_replaces_a_leftover_temp_file_link_rather_than_writing_through_it \
   test_turns_on_full_stay_awake_on_linux_without_sudo \
   test_names_the_leader_already_set_for_turning_stay_awake_on \
   test_sets_up_the_lid_and_writes_full_mode_on_macos_when_the_answer_is_yes \
