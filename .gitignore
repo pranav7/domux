@@ -7,3 +7,4 @@
 .domux/
 .claude/settings.local.json
 /dist
+__pycache__/

@@ -1,7 +1,7 @@
 use domux_core::model::Rect as LRect;
 use domux_server::render::boxed::{put, put_within, Boxed};
 use domux_server::render::pane_box::{cursor_position, render_grid, Selection};
-use domux_server::render::{theme, to_rect};
+use domux_server::render::to_rect;
 use domux_term::{Attrs, Color, Cursor, Grid, Rgb, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -21,13 +21,17 @@ fn boxed_draws_title_one_cell_in_and_the_flag_at_the_right_end() {
         flag: Some("zoomed"),
         focused: false,
     }
-    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 20, 3),
+        &mut buf,
+    );
     assert_eq!(row(&buf, 0), "┌ zsh ───── zoomed ┐");
     assert_eq!(row(&buf, 1), "│                  │");
     assert_eq!(row(&buf, 2), "└──────────────────┘");
     assert_eq!(inner, Rect::new(1, 1, 18, 1));
-    assert_eq!(buf[(0, 0)].fg, theme::SURFACE2);
-    assert_eq!(buf[(2, 0)].fg, theme::OVERLAY1);
+    assert_eq!(buf[(0, 0)].fg, ratatui::style::Color::Rgb(0x58, 0x5b, 0x70));
+    assert_eq!(buf[(2, 0)].fg, ratatui::style::Color::Rgb(0x7f, 0x84, 0x9c));
     assert!(!buf[(2, 0)].modifier.contains(Modifier::BOLD));
 }
 
@@ -46,7 +50,11 @@ fn the_measurement_a_box_reports_is_the_one_it_drew() {
         flag: None,
         focused: false,
     }
-    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 20, 3),
+        &mut buf,
+    );
     assert_eq!(row(&buf, 0), "┌ zsh ─────────────┐");
     assert_eq!(row(&buf, 1), "│                  │");
     assert_eq!(row(&buf, 2), "└──────────────────┘");
@@ -66,10 +74,14 @@ fn focused_box_uses_the_accent_and_a_bold_title() {
         flag: None,
         focused: true,
     }
-    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 12, 3),
+        &mut buf,
+    );
     assert_eq!(row(&buf, 0), "┌ sh ──────┐");
-    assert_eq!(buf[(0, 0)].fg, theme::ACCENT);
-    assert_eq!(buf[(2, 0)].fg, theme::ACCENT);
+    assert_eq!(buf[(0, 0)].fg, ratatui::style::Color::Rgb(0xcb, 0xa6, 0xf7));
+    assert_eq!(buf[(2, 0)].fg, ratatui::style::Color::Rgb(0xcb, 0xa6, 0xf7));
     assert!(buf[(2, 0)].modifier.contains(Modifier::BOLD));
     assert!(
         !buf[(6, 0)].modifier.contains(Modifier::BOLD),
@@ -85,7 +97,11 @@ fn long_titles_are_truncated_by_grapheme_and_tiny_boxes_do_not_panic() {
         flag: None,
         focused: false,
     }
-    .render(Rect::new(0, 0, 10, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 10, 3),
+        &mut buf,
+    );
     // `row` reads one symbol per cell, and `put` calls `reset()` on the cell after each
     // wide grapheme, which ratatui renders as a space. So a 10-cell row is 10 symbols:
     // the box corner, the title's leading space, 漢 and its spacer, 字 and its spacer, the
@@ -97,7 +113,11 @@ fn long_titles_are_truncated_by_grapheme_and_tiny_boxes_do_not_panic() {
         flag: Some("zoomed"),
         focused: true,
     }
-    .render(Rect::new(0, 0, 2, 1), &mut tiny);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 2, 1),
+        &mut tiny,
+    );
     assert_eq!(inner.width, 0);
 }
 
@@ -195,7 +215,11 @@ fn a_zero_width_title_stays_inside_its_box() {
         flag: None,
         focused: false,
     }
-    .render(Rect::new(0, 0, 5, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 5, 3),
+        &mut buf,
+    );
     for x in 5..60u16 {
         assert_eq!(
             buf[(x, 0)].symbol(),
@@ -221,7 +245,11 @@ fn a_control_character_title_never_reaches_a_cell() {
         flag: None,
         focused: false,
     }
-    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 20, 3),
+        &mut buf,
+    );
     for x in 0..20u16 {
         let s = buf[(x, 0)].symbol();
         assert!(
@@ -292,7 +320,11 @@ fn a_title_that_sanitizes_to_nothing_leaves_the_border_unbroken() {
         flag: None,
         focused: false,
     }
-    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    .render(
+        domux_core::theme::Theme::domux(),
+        Rect::new(0, 0, 12, 3),
+        &mut buf,
+    );
     assert_eq!(row(&buf, 0), "┌──────────┐");
 }
 
@@ -369,6 +401,7 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
         stay_awake: false,
         toast: None,
         navigator: false,
+        theme: domux_core::theme::Theme::domux(),
     });
     assert_eq!(buffer.area, Rect::new(0, 0, 40, 10));
     assert_eq!(
@@ -414,6 +447,7 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
         stay_awake: false,
         toast: None,
         navigator: false,
+        theme: domux_core::theme::Theme::domux(),
     });
     let top = row(&buffer, 1);
     assert_eq!(top.chars().nth(39), Some('┐'), "{top:?}");
@@ -493,6 +527,7 @@ fn a_wide_grapheme_in_a_tab_name_leaves_no_hole_in_the_top_bar() {
         stay_awake: false,
         toast: None,
         navigator: false,
+        theme: domux_core::theme::Theme::domux(),
     });
     let mantle = ratatui::style::Color::Rgb(0x18, 0x18, 0x25);
     let wide = (0..120u16)

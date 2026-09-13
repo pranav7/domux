@@ -411,6 +411,53 @@ async fn server_status_reports_the_leader_in_force_not_the_one_on_disk() {
     assert!(stopped.status.success());
 }
 
+/// The `domux` binary for a real pty, with a home of its own. `HOME` is the temporary
+/// directory `home`, and the variables that say where the client runs are removed, so `auto`
+/// means the same on a developer's Omarchy machine as on CI and no test reads that machine's
+/// Omarchy state or its ssh session.
+fn domux_in_a_pty(home: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    cmd.env("HOME", home);
+    cmd.env_remove("OMARCHY_PATH");
+    cmd.env_remove("SSH_TTY");
+    cmd.env_remove("SSH_CONNECTION");
+    cmd.env_remove("TMUX");
+    cmd
+}
+
+/// What a pty test waits for before it types an answer.
+enum Wants<'a> {
+    /// Text on the visible screen.
+    Text(&'a str),
+    /// Bytes anywhere in the raw output, for a query the client wrote to the terminal.
+    Bytes(&'a [u8]),
+}
+
+/// Collects what the pty has written until `wants` is in the raw output, or gives up after
+/// 20 seconds. `wait_for_text` compares visible text, which has every escape taken out.
+async fn wait_for_bytes(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    output: &mut Vec<u8>,
+    wants: &[u8],
+) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        while let Ok(chunk) = rx.try_recv() {
+            output.extend(chunk);
+        }
+        if output.windows(wants.len()).any(|w| w == wants) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no output with {:?} within 20 s:\n{:?}",
+            String::from_utf8_lossy(wants),
+            String::from_utf8_lossy(output)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Collects what the pty has written until `wants` shows, or gives up after 20 seconds.
 async fn wait_for_text(rx: &std::sync::mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>, wants: &str) {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -440,24 +487,38 @@ async fn attach_and_detach_in_a_pty(
     answer_then_attach_and_detach_in_a_pty(cmd, &[], wants).await
 }
 
-/// The same, with questions answered on the way in: each pair waits for its text to show and
+/// The same, with questions answered on the way in: each pair waits for what it wants and
 /// then types its answer. `attach` asks one before it attaches, so a test about that question
-/// needs to answer it before there is a screen to wait for.
+/// needs to answer it before there is a screen to wait for, and a test about the terminal's
+/// colours answers the queries the client writes.
 async fn answer_then_attach_and_detach_in_a_pty(
     cmd: CommandBuilder,
-    answers: &[(&str, &str)],
+    answers: &[(Wants<'_>, &[u8])],
     wants: &str,
 ) -> (Vec<u8>, portable_pty::ExitStatus) {
-    change_answer_then_attach_and_detach_in_a_pty(cmd, answers, || {}, wants).await
+    let steps: Vec<(&Wants<'_>, Then<'_>)> = answers
+        .iter()
+        .map(|(question, answer)| (question, Then::Type(answer)))
+        .collect();
+    drive_then_detach_in_a_pty(cmd, &steps, wants).await
 }
 
-/// The same, with `change` run once each question shows and before its answer is typed, so a
-/// test can change the disk between what the command saw when it asked and what it meets once
-/// it is answered.
-async fn change_answer_then_attach_and_detach_in_a_pty(
+/// What a pty test does once what it waits for is there.
+enum Then<'a> {
+    /// Types these bytes, as the terminal or the person at it would.
+    Type(&'a [u8]),
+    /// Runs this, for a change outside the terminal that the client should see.
+    Run(&'a dyn Fn()),
+    /// Waits this long, as a slow terminal does before it answers.
+    Wait(Duration),
+}
+
+/// Runs the client on a real pty and takes each step once what it waits for is there, then waits
+/// for `wants` to show, sends leader d and waits for the client to exit. Hands back everything the
+/// client wrote and how it ended.
+async fn drive_then_detach_in_a_pty(
     cmd: CommandBuilder,
-    answers: &[(&str, &str)],
-    mut change: impl FnMut(),
+    steps: &[(&Wants<'_>, Then<'_>)],
     wants: &str,
 ) -> (Vec<u8>, portable_pty::ExitStatus) {
     let pty = native_pty_system();
@@ -485,11 +546,19 @@ async fn change_answer_then_attach_and_detach_in_a_pty(
         }
     });
     let mut output = Vec::new();
-    for (question, answer) in answers {
-        wait_for_text(&rx, &mut output, question).await;
-        change();
-        writer.write_all(answer.as_bytes()).unwrap();
-        writer.flush().unwrap();
+    for (question, then) in steps {
+        match question {
+            Wants::Text(text) => wait_for_text(&rx, &mut output, text).await,
+            Wants::Bytes(bytes) => wait_for_bytes(&rx, &mut output, bytes).await,
+        }
+        match then {
+            Then::Type(answer) => {
+                writer.write_all(answer).unwrap();
+                writer.flush().unwrap();
+            }
+            Then::Run(run) => run(),
+            Then::Wait(wait) => tokio::time::sleep(*wait).await,
+        }
     }
     wait_for_text(&rx, &mut output, wants).await;
     writer.write_all(b"\x13d").unwrap(); // C-s then d
@@ -529,11 +598,11 @@ async fn change_answer_then_attach_and_detach_in_a_pty(
 #[tokio::test]
 async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
     let h = Harness::start(Config::default(), 40, 10).await;
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
     cmd.arg("attach");
     cmd.env("DOMUX_SOCKET", h.socket_path());
     cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("TMUX");
     // In the project the server is holding, so the attach is the only thing under test.
     // `CommandBuilder` starts in the user's home directory when it is given none, and an
     // attach from a directory the server does not hold asks whether to register it.
@@ -552,6 +621,295 @@ async fn attach_inside_a_pty_draws_the_screen_and_leader_d_detaches_cleanly() {
     );
 }
 
+/// Omarchy's Ristretto as a terminal answers the attach batch: OSC 10, OSC 11 and the 16 OSC 4
+/// slots, each channel in 16-bit `rgb:rrrr/gggg/bbbb` form, then the device attributes answer
+/// that ends the read.
+fn ristretto_answers() -> Vec<u8> {
+    fn answer(code: &str, hex: u32) -> String {
+        let [_, r, g, b] = hex.to_be_bytes();
+        format!("\x1b]{code};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}\x07")
+    }
+    let palette = [
+        0x2c2525, 0xfd6883, 0xadda78, 0xf9cc6c, 0xf38d70, 0xa8a9eb, 0x85dacc, 0xe6d9db, 0x72696a,
+        0xff8297, 0xc8e292, 0xfcd675, 0xf8a788, 0xbebffd, 0x9bf1e1, 0xe6d9db,
+    ];
+    let mut text = answer("10", 0xe6d9db) + &answer("11", 0x2c2525);
+    for (n, hex) in palette.into_iter().enumerate() {
+        text += &answer(&format!("4;{n}"), hex);
+    }
+    text += "\x1b[?62;22c";
+    text.into_bytes()
+}
+
+/// Decision 0042: the client asks the terminal for its colours once, at attach, and the
+/// server paints the terminal theme from the answers. crossterm's keyboard probe goes first
+/// and is answered with device attributes and no flags, which keeps the cap at a second; the
+/// batch is answered with Ristretto, and the chrome is drawn in Ristretto's shade (`#231e1e`).
+/// None of the answers reach the pane as typed text.
+#[tokio::test]
+async fn attach_answers_the_colour_batch_and_draws_the_terminal_theme() {
+    let mut config = Config::default();
+    config.theme.name = "terminal".into();
+    let h = Harness::start(config, 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let answers = ristretto_answers();
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        cmd,
+        &[
+            (Wants::Bytes(b"\x1b[?u\x1b[c"), b"\x1b[?62;22c"),
+            (Wants::Bytes(b"\x1b]4;15;?\x07\x1b[c"), &answers),
+        ],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    let raw = String::from_utf8_lossy(&output);
+    assert!(
+        raw.contains("48;2;35;30;30"),
+        "the chrome was not drawn in Ristretto's shade:\n{}",
+        visible(&output)
+    );
+    assert!(
+        !visible(&output).contains("rgb:"),
+        "a colour answer was typed into the pane:\n{}",
+        visible(&output)
+    );
+}
+
+/// A terminal that answers slowly answers the batch as slowly as it answered the keyboard
+/// probe. This one takes 1.5 s over each, longer than the one second a prompt terminal is
+/// given, and attach still waits for its answers: the chrome is drawn in Ristretto's shade and
+/// no answer is typed into the pane.
+#[tokio::test]
+async fn attach_waits_for_a_slow_terminal_as_long_as_its_keyboard_probe_took() {
+    let mut config = Config::default();
+    config.theme.name = "terminal".into();
+    let h = Harness::start(config, 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let answers = ristretto_answers();
+    let slow = Duration::from_millis(1500);
+    let probe = Wants::Bytes(b"\x1b[?u\x1b[c");
+    let batch = Wants::Bytes(b"\x1b]4;15;?\x07\x1b[c");
+    let (output, status) = drive_then_detach_in_a_pty(
+        cmd,
+        &[
+            (&probe, Then::Wait(slow)),
+            (&probe, Then::Type(b"\x1b[?62;22c")),
+            (&batch, Then::Wait(slow)),
+            (&batch, Then::Type(&answers)),
+        ],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    assert!(
+        !visible(&output).contains("rgb:"),
+        "a colour answer was typed into the pane:\n{}",
+        visible(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("48;2;35;30;30"),
+        "the chrome was not drawn in Ristretto's shade:\n{}",
+        visible(&output)
+    );
+}
+
+/// A `kill -INT` while attach waits for the colour answers ends the client like one in the
+/// session does: the terminal is put back. The probe is answered, so the wait is the full
+/// second, and the batch is never answered, so the signal lands inside it.
+#[tokio::test]
+async fn an_interrupt_while_attach_waits_for_the_colour_answers_restores_the_terminal() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 12,
+            cols: 50,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let mut writer = pair.master.take_writer().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut output = Vec::new();
+    wait_for_bytes(&rx, &mut output, b"\x1b[?u\x1b[c").await;
+    writer.write_all(b"\x1b[?62;22c").unwrap();
+    writer.flush().unwrap();
+    wait_for_bytes(&rx, &mut output, b"\x1b]4;15;?\x07\x1b[c").await;
+    let pid = child.process_id().expect("the client is running") as libc::pid_t;
+    // Safe: the pid of the child this test spawned and has not reaped.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the client did not end");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let drain = Instant::now() + Duration::from_secs(2);
+    loop {
+        match rx.try_recv() {
+            Ok(chunk) => output.extend(chunk),
+            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) if Instant::now() >= drain => break,
+            Err(TryRecvError::Empty) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let raw = String::from_utf8_lossy(&output);
+    let batch = raw.find("\x1b]4;15;?").expect("the batch was written");
+    assert!(
+        raw[batch..].contains("\x1b[?1049l"),
+        "the alternate screen was not left after the interrupt:\n{raw:?}"
+    );
+}
+
+/// `/usr/share/omarchy/themes/ristretto/colors.toml`, word for word.
+const RISTRETTO_COLORS_TOML: &str = r##"mode = "dark"
+
+accent = "#f38d70"
+selection = "#403e41"
+muted = "#72696a"
+
+background = "#2c2525"
+dark_background = "#211b1b"
+darker_background = "#181414"
+lighter_background = "#3d2f2a"
+
+foreground = "#e6d9db"
+dark_foreground = "#72696a"
+light_foreground = "#c3b7b8"
+bright_foreground = "#e6d9db"
+
+red = "#fd6883"
+yellow = "#f9cc6c"
+orange = "#fb9a77"
+green = "#adda78"
+cyan = "#85dacc"
+blue = "#f38d70"
+magenta = "#a8a9eb"
+brown = "#7d4d3b"
+
+bright_red = "#ff8297"
+bright_yellow = "#fcd675"
+bright_green = "#c8e292"
+bright_cyan = "#9bf1e1"
+bright_blue = "#f8a788"
+bright_magenta = "#bebffd"
+"##;
+
+/// `/usr/share/omarchy/themes/catppuccin/colors.toml`, word for word.
+const CATPPUCCIN_COLORS_TOML: &str = r##"mode = "dark"
+
+accent = "#89b4fa"
+selection = "#45475a"
+muted = "#585b70"
+
+background = "#1e1e2e"
+dark_background = "#161622"
+darker_background = "#101019"
+lighter_background = "#313244"
+
+foreground = "#cdd6f4"
+dark_foreground = "#6c7086"
+light_foreground = "#bac2de"
+bright_foreground = "#cdd6f4"
+
+red = "#f38ba8"
+yellow = "#f9e2af"
+orange = "#f6b6ab"
+green = "#a6e3a1"
+cyan = "#94e2d5"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+brown = "#7b5b55"
+
+bright_red = "#f38ba8"
+bright_yellow = "#f9e2af"
+bright_green = "#a6e3a1"
+bright_cyan = "#94e2d5"
+bright_blue = "#89b4fa"
+bright_magenta = "#f5c2e7"
+"##;
+
+/// Decision 0042: on Omarchy, under `auto`, a client whose terminal draws Omarchy's theme
+/// follows a theme change while attached. The home holds Omarchy's current theme as
+/// `omarchy-theme-set` leaves it, Ristretto, and the terminal answers the batch with Ristretto.
+/// Once the screen is drawn the theme is set to Catppuccin the way `omarchy-theme-set` sets it:
+/// a directory built beside the current one is moved into its place and the name is written.
+/// The chrome is then drawn in Catppuccin's shade (`#181825`), and the terminal was asked for
+/// its colours once.
+#[tokio::test]
+async fn an_omarchy_theme_change_while_attached_recolours_the_chrome() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let current = home.path().join(".local/state/omarchy/current");
+    std::fs::create_dir_all(current.join("theme")).unwrap();
+    std::fs::write(current.join("theme/colors.toml"), RISTRETTO_COLORS_TOML).unwrap();
+    std::fs::write(current.join("theme.name"), "ristretto\n").unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let set_catppuccin = || {
+        let next = current.join("next-theme");
+        std::fs::create_dir_all(&next).unwrap();
+        std::fs::write(next.join("colors.toml"), CATPPUCCIN_COLORS_TOML).unwrap();
+        std::fs::remove_dir_all(current.join("theme")).unwrap();
+        std::fs::rename(&next, current.join("theme")).unwrap();
+        std::fs::write(current.join("theme.name"), "catppuccin\n").unwrap();
+    };
+    let answers = ristretto_answers();
+    let (output, status) = drive_then_detach_in_a_pty(
+        cmd,
+        &[
+            (&Wants::Bytes(b"\x1b[?u\x1b[c"), Then::Type(b"\x1b[?62;22c")),
+            (
+                &Wants::Bytes(b"\x1b]4;15;?\x07\x1b[c"),
+                Then::Type(&answers),
+            ),
+            (&Wants::Text("\u{250c} sh"), Then::Run(&set_catppuccin)),
+            (&Wants::Bytes(b"48;2;24;24;37"), Then::Type(b"")),
+        ],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    let raw = String::from_utf8_lossy(&output);
+    assert_eq!(
+        raw.matches("\x1b]11;?").count(),
+        1,
+        "the terminal is asked for its colours once, at attach"
+    );
+}
+
 /// The task's own title, both halves: bare `domux` attaches, and starts the server when the
 /// socket is absent. Nothing points this one at a harness - the socket is where a real run
 /// looks for it, and the server that answers is a real `server run` this command started.
@@ -565,13 +923,13 @@ async fn bare_domux_starts_the_server_when_the_socket_is_absent_and_attaches_to_
     std::fs::write(&config, "[terminal]\nshell = \"/bin/sh\"\n").unwrap();
     let socket = run.join("domux.sock");
     assert!(!socket.exists(), "nothing is listening yet");
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
     cmd.env("XDG_RUNTIME_DIR", &run);
     cmd.env("DOMUX_STATE_DIR", &state);
     cmd.env("DOMUX_CONFIG_FILE", &config);
     cmd.env("TERM", "xterm-256color");
     cmd.env_remove("DOMUX_SOCKET");
-    cmd.env_remove("TMUX");
     // A real shell's name is the machine's business (/bin/sh is bash on macOS and dash on
     // most Linux), so this waits for the pane box rather than for a title.
     let (output, status) = attach_and_detach_in_a_pty(cmd, "\u{250c}").await;
@@ -2136,15 +2494,18 @@ async fn install_names_the_three_kinds_when_asked_for_another() {
 async fn attach_from_an_unregistered_directory_offers_to_register_it() {
     let h = Harness::start(Config::default(), 40, 10).await;
     let elsewhere = tempfile::tempdir().unwrap();
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
     cmd.arg("attach");
     cmd.env("DOMUX_SOCKET", h.socket_path());
     cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("TMUX");
     cmd.cwd(elsewhere.path());
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         cmd,
-        &[("is not a project yet. Register it? [y/N]", "y\n")],
+        &[(
+            Wants::Text("is not a project yet. Register it? [y/N]"),
+            b"y\n",
+        )],
         "\u{250c} sh",
     )
     .await;
@@ -2186,15 +2547,18 @@ async fn attach_with_nothing_attached_registers_the_directory_and_seats_the_clie
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
     cmd.arg("attach");
     cmd.env("DOMUX_SOCKET", h.socket_path());
     cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("TMUX");
     cmd.cwd(&root);
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         cmd,
-        &[("is not a project yet. Register it? [y/N]", "y\n")],
+        &[(
+            Wants::Text("is not a project yet. Register it? [y/N]"),
+            b"y\n",
+        )],
         "dotfiles \u{203a} main",
     )
     .await;
@@ -2222,15 +2586,18 @@ async fn attach_with_nothing_attached_registers_the_directory_and_seats_the_clie
 async fn declining_the_offer_leaves_the_directory_alone_and_still_attaches() {
     let h = Harness::start(Config::default(), 40, 10).await;
     let elsewhere = tempfile::tempdir().unwrap();
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
     cmd.arg("attach");
     cmd.env("DOMUX_SOCKET", h.socket_path());
     cmd.env("TERM", "xterm-256color");
-    cmd.env_remove("TMUX");
     cmd.cwd(elsewhere.path());
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         cmd,
-        &[("is not a project yet. Register it? [y/N]", "\n")],
+        &[(
+            Wants::Text("is not a project yet. Register it? [y/N]"),
+            b"\n",
+        )],
         "\u{250c} sh",
     )
     .await;
@@ -2320,7 +2687,7 @@ async fn attach_from_a_repository_under_a_folder_project_offers_to_register_it()
     );
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         attach_in(&h, &repo),
-        &[(&question, "y\n")],
+        &[(Wants::Text(&question), b"y\n")],
         "domux \u{203a} main",
     )
     .await;
@@ -2378,7 +2745,7 @@ async fn attach_from_inside_a_repository_offers_its_top_level() {
     );
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         attach_in(&h, &crates),
-        &[(&question, "y\n")],
+        &[(Wants::Text(&question), b"y\n")],
         "audrey-app \u{203a} main",
     )
     .await;
@@ -2455,10 +2822,13 @@ async fn attach_goes_on_when_the_server_refuses_to_register_the_directory() {
         canonical.display()
     );
 
-    let (output, status) = change_answer_then_attach_and_detach_in_a_pty(
+    // The directory goes once the question shows and before the answer, so the offer meets a
+    // path that was there when it asked and is gone when it registers.
+    let remove = || std::fs::remove_dir(&canonical).unwrap();
+    let asked = Wants::Text(&question);
+    let (output, status) = drive_then_detach_in_a_pty(
         attach_in(&h, &gone),
-        &[(&question, "y\n")],
-        || std::fs::remove_dir(&canonical).unwrap(),
+        &[(&asked, Then::Run(&remove)), (&asked, Then::Type(b"y\n"))],
         "\u{250c} sh",
     )
     .await;
@@ -2526,7 +2896,10 @@ async fn declining_quotes_a_directory_the_shell_would_split() {
 
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         attach_in(&h, &notes),
-        &[("is not a project yet. Register it? [y/N]", "\n")],
+        &[(
+            Wants::Text("is not a project yet. Register it? [y/N]"),
+            b"\n",
+        )],
         "\u{250c} sh",
     )
     .await;

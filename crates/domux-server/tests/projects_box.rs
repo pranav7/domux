@@ -1,13 +1,13 @@
 use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
 use domux_core::model::Model;
 use domux_core::text::display_width;
+use domux_core::theme::Theme;
 use domux_server::facts::FactRegistry;
 use domux_server::render::list_box::ListRow;
 use domux_server::render::projects_box::{
     filled_index, key_at, pr_style, rows, Extras, PROJECTS_TITLE,
 };
-use domux_server::render::theme;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -91,7 +91,7 @@ fn key(m: &Model, project: usize, workspace: usize) -> String {
 #[test]
 fn the_rows_are_the_header_main_a_named_workspace_and_an_untouched_slot() {
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(
         out.len(),
         6,
@@ -128,7 +128,7 @@ fn the_rows_are_the_header_main_a_named_workspace_and_an_untouched_slot() {
 #[test]
 fn a_project_header_sits_at_the_edge_and_every_name_under_it_starts_two_cells_in() {
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert!(
         text(&out[0], 0).starts_with("AUDREY-APP"),
         "the header takes the box's own left edge: {:?}",
@@ -165,7 +165,7 @@ fn a_named_workspace_draws_its_name_and_its_branch_and_no_handle() {
         FactKey::workspace(&main, FACT_BRANCH),
         Some(fact("p7/feat/harness", None)),
     );
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(
         out[1].lines.len(),
         2,
@@ -195,7 +195,7 @@ fn one_line_rows_stay_tight_and_a_two_line_row_is_parted_from_both_its_neighbour
     let (w1, _) = m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
     m.add_slot(&pid, 2, PathBuf::from("/w2")).unwrap();
     let mut f = FactRegistry::new();
-    let tight = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let tight = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(
         tight.len(),
         4,
@@ -211,7 +211,7 @@ fn one_line_rows_stay_tight_and_a_two_line_row_is_parted_from_both_its_neighbour
         FactKey::workspace(&w1, FACT_BRANCH),
         Some(fact("feat/spike", None)),
     );
-    let parted = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let parted = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(parted.len(), 6, "two blanks added, and only two");
     assert_eq!(said(&parted[1], 0), "main");
     assert!(
@@ -226,10 +226,10 @@ fn one_line_rows_stay_tight_and_a_two_line_row_is_parted_from_both_its_neighbour
 #[test]
 fn colours_follow_interface_spec_5_2_and_the_pull_request_state() {
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(
         out[0].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "the project name"
     );
     assert!(
@@ -241,56 +241,68 @@ fn colours_follow_interface_spec_5_2_and_the_pull_request_state() {
     );
     assert_eq!(
         out[0].lines[0].spans[1].style.fg,
-        Some(theme::SURFACE0),
+        Some(Color::Rgb(0x31, 0x32, 0x44)),
         "the rule"
     );
     assert_eq!(
         out[1].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "main"
     );
     assert_eq!(
         out[3].lines[0].spans[0].style.fg,
-        Some(theme::TEAL),
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
         "a workspace name"
     );
     // Span 0 of a line under line 1 is the indent, which carries no colour of its own.
     assert_eq!(
         out[3].lines[1].spans[1].style.fg,
-        Some(theme::PINK),
+        Some(Color::Rgb(0xe3, 0xb4, 0xd8)),
         "the branch"
     );
     assert_eq!(
         out[3].lines[1].spans[2].style.fg,
-        Some(theme::SURFACE1),
+        Some(Color::Rgb(0x45, 0x47, 0x5a)),
         "the middle dot"
     );
     assert_eq!(
         out[3].lines[1].spans[3].style.fg,
-        Some(theme::GREEN),
+        Some(Color::Rgb(0xa6, 0xe3, 0xa1)),
         "an open pull request"
     );
     assert_eq!(
         out[5].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY0),
+        Some(Color::Rgb(0x6c, 0x70, 0x86)),
         "an untouched slot"
     );
 }
 
 #[test]
 fn every_pull_request_state_takes_v1_s_colour() {
-    assert_eq!(pr_style(Some(&FactState::Open)).fg, Some(theme::GREEN));
-    assert_eq!(pr_style(Some(&FactState::Merged)).fg, Some(theme::MAUVE));
-    assert_eq!(pr_style(Some(&FactState::Closed)).fg, Some(theme::RED));
-    assert_eq!(pr_style(Some(&FactState::Draft)).fg, Some(theme::OVERLAY1));
     assert_eq!(
-        pr_style(Some(&FactState::Other("QUEUED".into()))).fg,
-        Some(theme::OVERLAY1),
+        pr_style(Theme::domux(), Some(&FactState::Open)).fg,
+        Some(Color::Rgb(0xa6, 0xe3, 0xa1))
+    );
+    assert_eq!(
+        pr_style(Theme::domux(), Some(&FactState::Merged)).fg,
+        Some(Color::Rgb(0xcb, 0xa6, 0xf7))
+    );
+    assert_eq!(
+        pr_style(Theme::domux(), Some(&FactState::Closed)).fg,
+        Some(Color::Rgb(0xf3, 0x8b, 0xa8))
+    );
+    assert_eq!(
+        pr_style(Theme::domux(), Some(&FactState::Draft)).fg,
+        Some(Color::Rgb(0x7f, 0x84, 0x9c))
+    );
+    assert_eq!(
+        pr_style(Theme::domux(), Some(&FactState::Other("QUEUED".into()))).fg,
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "a state this version does not know is drawn like a draft"
     );
     assert_eq!(
-        pr_style(None).fg,
-        Some(theme::OVERLAY1),
+        pr_style(Theme::domux(), None).fg,
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "a state nobody reported is drawn like a draft, not guessed as open"
     );
 }
@@ -303,13 +315,16 @@ fn an_unnamed_workspace_with_a_branch_shows_its_handle_in_teal() {
         FactKey::workspace(&w2, FACT_BRANCH),
         Some(fact("feat/spike", None)),
     );
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(
         text(&out[5], 0),
         "  workspace-2",
         "no hollow glyph once the slot has been touched, so the indent is plain"
     );
-    assert_eq!(out[5].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[5].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
     assert_eq!(said(&out[5], 1), "feat/spike");
 }
 
@@ -324,15 +339,21 @@ fn an_unnamed_workspace_on_its_own_branch_with_a_pull_request_is_not_untouched()
         FactKey::workspace(&w2, FACT_PR),
         Some(fact("PR#9", Some(FactState::Merged))),
     );
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(text(&out[5], 0), "  workspace-2");
-    assert_eq!(out[5].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[5].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
     assert_eq!(
         said(&out[5], 1),
         "PR#9",
         "the number alone, with no separator in front of it"
     );
-    assert_eq!(out[5].lines[1].spans[1].style.fg, Some(theme::MAUVE));
+    assert_eq!(
+        out[5].lines[1].spans[1].style.fg,
+        Some(Color::Rgb(0xcb, 0xa6, 0xf7))
+    );
 }
 
 #[test]
@@ -345,6 +366,7 @@ fn a_workspace_whose_branch_never_arrived_draws_no_branch_line_and_no_guess() {
     m.rename_workspace(&w1, Some("auth cleanup".into()))
         .unwrap();
     let out = rows(
+        Theme::domux(),
         &m,
         &FactRegistry::new(),
         "",
@@ -373,6 +395,7 @@ fn a_slot_with_no_branch_and_no_name_is_not_an_untouched_slot() {
         .unwrap();
     m.add_slot(&pid, 1, PathBuf::from("/w1")).unwrap();
     let out = rows(
+        Theme::domux(),
         &m,
         &FactRegistry::new(),
         "",
@@ -382,7 +405,10 @@ fn a_slot_with_no_branch_and_no_name_is_not_an_untouched_slot() {
     )
     .rows;
     assert_eq!(text(&out[2], 0), "  workspace-1");
-    assert_eq!(out[2].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[2].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
 }
 
 #[test]
@@ -396,7 +422,7 @@ fn main_on_a_branch_of_its_own_draws_the_branch_line_it_drops_on_main() {
         FactKey::workspace(&main, FACT_BRANCH),
         Some(fact("feat/hotfix", None)),
     );
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(said(&out[1], 0), "main");
     assert_eq!(
         said(&out[1], 1),
@@ -405,7 +431,7 @@ fn main_on_a_branch_of_its_own_draws_the_branch_line_it_drops_on_main() {
     );
     assert_eq!(
         out[1].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "main keeps its colour on any branch"
     );
 }
@@ -418,6 +444,7 @@ fn a_named_main_draws_its_name_and_not_the_handle() {
         .unwrap();
     m.rename_workspace(&main, Some("trunk".into())).unwrap();
     let out = rows(
+        Theme::domux(),
         &m,
         &FactRegistry::new(),
         "",
@@ -429,7 +456,7 @@ fn a_named_main_draws_its_name_and_not_the_handle() {
     assert_eq!(said(&out[1], 0), "trunk");
     assert_eq!(
         out[1].lines[0].spans[0].style.fg,
-        Some(theme::TEAL),
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
         "a name is a name, on main as on a slot"
     );
 }
@@ -450,6 +477,7 @@ fn projects_are_listed_alphabetically_whatever_order_they_were_added_in() {
     m.add_git_project(PathBuf::from("/repo/c/Mid"), "main".into())
         .unwrap();
     let out = rows(
+        Theme::domux(),
         &m,
         &FactRegistry::new(),
         "",
@@ -482,6 +510,7 @@ fn a_project_name_too_wide_for_the_box_is_shortened_and_leaves_no_rule() {
     )
     .unwrap();
     let out = rows(
+        Theme::domux(),
         &m,
         &FactRegistry::new(),
         "",
@@ -504,22 +533,22 @@ fn the_switcher_adds_the_pull_request_title_when_the_width_allows() {
     let (t1, _, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
     m.rename_tab(&t1, Some("pr1".into())).unwrap();
     m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
-    let out = rows(&m, &f, "", None, Extras::switcher(60), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(60), None).rows;
     assert_eq!(
         said(&out[3], 1),
         "feat/auth-cleanup · PR#212 · Consolidate auth middleware"
     );
     assert_eq!(
         out[3].lines[1].spans[4].style.fg,
-        Some(theme::SURFACE1),
+        Some(Color::Rgb(0x45, 0x47, 0x5a)),
         "the middle dot before the title"
     );
     assert_eq!(
         out[3].lines[1].spans[5].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "the title"
     );
-    let narrow = rows(&m, &f, "", None, Extras::switcher(32), None).rows;
+    let narrow = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(32), None).rows;
     assert_eq!(
         said(&narrow[3], 1),
         "feat/auth-cleanup · PR#212",
@@ -540,14 +569,14 @@ fn a_workspace_row_is_two_lines_at_most_on_either_surface() {
     let (t2, _, _) = m.create_tab(&w1, PathBuf::from("/w1")).unwrap();
     m.rename_tab(&t2, Some("tests".into())).unwrap();
 
-    let sidebar = rows(&m, &f, "", None, Extras::compact(80), None).rows;
+    let sidebar = rows(Theme::domux(), &m, &f, "", None, Extras::compact(80), None).rows;
     assert_eq!(
         said(&sidebar[3], 1),
         "feat/auth-cleanup · PR#212",
         "no title in the sidebar, however wide the box happens to be"
     );
     assert_eq!(sidebar[3].lines.len(), 2, "the name and the branch");
-    let switcher = rows(&m, &f, "", None, Extras::switcher(80), None).rows;
+    let switcher = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(80), None).rows;
     assert_eq!(switcher[3].lines.len(), 2, "the same two in the switcher");
 }
 
@@ -569,7 +598,7 @@ fn truncation_drops_the_title_then_shortens_the_branch_and_never_the_pull_reques
         FactKey::workspace(&w, FACT_PR),
         Some(fact("PR#212", Some(FactState::Open)).with_url("A long title")),
     );
-    let out = rows(&m, &f, "", None, Extras::switcher(28), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(28), None).rows;
     let line2 = said(&out[3], 1);
     // 26 cells left of the box's 28 once the indent has its two: the branch keeps what the
     // number (6) and the separator (3) leave it.
@@ -607,7 +636,7 @@ fn a_title_too_long_for_the_line_is_shortened_to_what_is_left_of_it() {
     let (m, f) = model_with_a_title();
     // `feat/x · PR#212` is 15 cells and the title's own separator is 3, so at 42 the indent
     // takes two, the title gets the remaining 22 and the line fills the box exactly.
-    let out = rows(&m, &f, "", None, Extras::switcher(42), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(42), None).rows;
     let line = said(&out[3], 1);
     assert_eq!(line, "feat/x · PR#212 · Consolidate auth midd…");
     assert_eq!(
@@ -622,9 +651,9 @@ fn a_title_with_under_eight_cells_to_live_in_is_dropped_rather_than_shortened() 
     let (m, f) = model_with_a_title();
     // 15 for `feat/x · PR#212`, 3 for the separator, 2 for the indent: at 28 the title has 8
     // cells, at 27 it has 7 and is not worth its separator.
-    let drawn = rows(&m, &f, "", None, Extras::switcher(28), None).rows;
+    let drawn = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(28), None).rows;
     assert_eq!(said(&drawn[3], 1), "feat/x · PR#212 · Consoli…");
-    let dropped = rows(&m, &f, "", None, Extras::switcher(27), None).rows;
+    let dropped = rows(Theme::domux(), &m, &f, "", None, Extras::switcher(27), None).rows;
     assert_eq!(said(&dropped[3], 1), "feat/x · PR#212");
 }
 
@@ -644,7 +673,7 @@ fn a_branch_the_pull_request_number_leaves_no_room_for_takes_no_separator_with_i
         FactKey::workspace(&w, FACT_PR),
         Some(fact("PR#212", Some(FactState::Open))),
     );
-    let out = rows(&m, &f, "", None, Extras::compact(11), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(11), None).rows;
     assert_eq!(
         said(&out[3], 1),
         "PR#212",
@@ -660,19 +689,45 @@ fn a_branch_the_pull_request_number_leaves_no_room_for_takes_no_separator_with_i
 #[test]
 fn the_filter_keeps_matching_workspaces_with_their_header_and_says_so_when_nothing_matches() {
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "auth", None, Extras::compact(36), None).rows;
+    let out = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "auth",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(out.len(), 2, "the header and the one match");
     assert_eq!(said(&out[1], 0), "auth cleanup");
-    let branch = rows(&m, &f, "FEAT/", None, Extras::compact(36), None).rows;
+    let branch = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "FEAT/",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(
         branch.len(),
         2,
         "the filter matches the branch too, without case"
     );
     assert!(
-        rows(&m, &f, "zzz", None, Extras::compact(36), None)
-            .rows
-            .is_empty(),
+        rows(
+            Theme::domux(),
+            &m,
+            &f,
+            "zzz",
+            None,
+            Extras::compact(36),
+            None
+        )
+        .rows
+        .is_empty(),
         "no matches means no rows; the box draws its empty text"
     );
 }
@@ -700,7 +755,16 @@ fn each_field_of_the_filter_text_can_carry_a_match_on_its_own() {
         Some(fact("PR#77", Some(FactState::Open))),
     );
 
-    let by_name = rows(&m, &f, "cleanup", None, Extras::compact(36), None).rows;
+    let by_name = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "cleanup",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(by_name.len(), 2, "the header and the named workspace");
     assert_eq!(
         said(&by_name[1], 0),
@@ -708,7 +772,16 @@ fn each_field_of_the_filter_text_can_carry_a_match_on_its_own() {
         "the name, which no branch here repeats"
     );
 
-    let by_handle = rows(&m, &f, "workspace-2", None, Extras::compact(36), None).rows;
+    let by_handle = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "workspace-2",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(by_handle.len(), 2, "the header and the slot");
     assert_eq!(
         said(&by_handle[1], 0),
@@ -716,22 +789,57 @@ fn each_field_of_the_filter_text_can_carry_a_match_on_its_own() {
         "the handle, which no branch fact here repeats"
     );
 
-    let by_branch = rows(&m, &f, "XYZ", None, Extras::compact(36), None).rows;
+    let by_branch = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "XYZ",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(by_branch.len(), 2, "the branch, matched without case");
     assert_eq!(said(&by_branch[1], 0), "auth cleanup");
 
-    let by_number = rows(&m, &f, "pr#77", None, Extras::compact(36), None).rows;
+    let by_number = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "pr#77",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(by_number.len(), 2, "the pull request number");
     assert_eq!(said(&by_number[1], 0), "auth cleanup");
 
     assert!(
-        rows(&m, &f, "notes-appmain", None, Extras::compact(36), None)
-            .rows
-            .is_empty(),
+        rows(
+            Theme::domux(),
+            &m,
+            &f,
+            "notes-appmain",
+            None,
+            Extras::compact(36),
+            None
+        )
+        .rows
+        .is_empty(),
         "the fields stay apart, so no filter matches across the join between two of them"
     );
 
-    let by_project = rows(&m, &f, "notes-app", None, Extras::compact(36), None).rows;
+    let by_project = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "notes-app",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(
         by_project.len(),
         6,
@@ -752,7 +860,16 @@ fn the_filter_keeps_the_blank_row_between_two_matches() {
     // Interface spec 5.2's grammar does not change under the filter: `/` chooses which rows
     // are drawn, not how they are separated.
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "audrey", None, Extras::compact(36), None).rows;
+    let out = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "audrey",
+        None,
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     assert_eq!(out.len(), 6, "the header and all three workspaces");
     assert_eq!(
         vec![said(&out[1], 0), said(&out[3], 0), said(&out[5], 0)],
@@ -768,7 +885,15 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
     // dimming, and the row builder decides the bold and the `text` colour. This pins the
     // half that lives here, and that the band is not built here.
     let (m, f) = model_and_facts();
-    let built = rows(&m, &f, "", Some(&key(&m, 0, 1)), Extras::compact(36), None);
+    let built = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "",
+        Some(&key(&m, 0, 1)),
+        Extras::compact(36),
+        None,
+    );
     assert_eq!(
         built.filled,
         Some(3),
@@ -776,7 +901,11 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
     );
     let named = built.rows;
     let style = named[3].lines[0].spans[0].style;
-    assert_eq!(style.fg, Some(theme::TEAL), "a name keeps its teal");
+    assert_eq!(
+        style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
+        "a name keeps its teal"
+    );
     assert!(
         style.add_modifier.contains(Modifier::BOLD),
         "a name goes bold"
@@ -791,35 +920,63 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
     );
     assert_eq!(
         named[1].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "no other row changes"
     );
 
-    let on_main = rows(&m, &f, "", Some(&key(&m, 0, 0)), Extras::compact(36), None).rows;
+    let on_main = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "",
+        Some(&key(&m, 0, 0)),
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     let style = on_main[1].lines[0].spans[0].style;
-    assert_eq!(style.fg, Some(theme::TEXT), "main goes from dim to text");
+    assert_eq!(
+        style.fg,
+        Some(Color::Rgb(0xcd, 0xd6, 0xf4)),
+        "main goes from dim to text"
+    );
     assert!(
         !style.add_modifier.contains(Modifier::BOLD),
         "main brightens without going bold"
     );
     assert_eq!(
         on_main[3].lines[0].spans[0].style.fg,
-        Some(theme::TEAL),
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
         "and the name that is not filled stays as it was"
     );
 
-    let on_slot = rows(&m, &f, "", Some(&key(&m, 0, 2)), Extras::compact(36), None).rows;
+    let on_slot = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "",
+        Some(&key(&m, 0, 2)),
+        Extras::compact(36),
+        None,
+    )
+    .rows;
     let style = on_slot[5].lines[0].spans[0].style;
     assert_eq!(
         style.fg,
-        Some(theme::TEXT),
+        Some(Color::Rgb(0xcd, 0xd6, 0xf4)),
         "a slot handle goes from dim to text"
     );
     assert!(!style.add_modifier.contains(Modifier::BOLD));
 
-    let none = rows(&m, &f, "", None, Extras::compact(36), None).rows;
-    assert_eq!(none[1].lines[0].spans[0].style.fg, Some(theme::OVERLAY1));
-    assert_eq!(none[5].lines[0].spans[0].style.fg, Some(theme::OVERLAY0));
+    let none = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
+    assert_eq!(
+        none[1].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x7f, 0x84, 0x9c))
+    );
+    assert_eq!(
+        none[5].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x6c, 0x70, 0x86))
+    );
     assert!(!none[3].lines[0].spans[0]
         .style
         .add_modifier
@@ -829,8 +986,20 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
 #[test]
 fn a_key_that_names_no_row_fills_no_row() {
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "", Some("w_ffff"), Extras::compact(36), None).rows;
-    assert_eq!(out[3].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    let out = rows(
+        Theme::domux(),
+        &m,
+        &f,
+        "",
+        Some("w_ffff"),
+        Extras::compact(36),
+        None,
+    )
+    .rows;
+    assert_eq!(
+        out[3].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
     assert!(!out[3].lines[0].spans[0]
         .style
         .add_modifier
@@ -842,6 +1011,7 @@ fn a_key_that_names_no_row_fills_no_row() {
 fn a_filled_row_the_filter_dropped_fills_nothing() {
     let (m, f) = model_and_facts();
     let built = rows(
+        Theme::domux(),
         &m,
         &f,
         "workspace-2",
@@ -859,7 +1029,7 @@ fn a_filled_row_the_filter_dropped_fills_nothing() {
 #[test]
 fn filled_index_and_key_at_name_the_same_row() {
     let (m, f) = model_and_facts();
-    let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
+    let out = rows(Theme::domux(), &m, &f, "", None, Extras::compact(36), None).rows;
     let w1 = key(&m, 0, 1);
     assert_eq!(filled_index(&out, Some(&w1)), Some(3));
     assert_eq!(key_at(&out, 3).as_deref(), Some(w1.as_str()));
@@ -881,6 +1051,7 @@ fn the_box_is_titled_projects() {
 #[test]
 fn a_model_with_no_projects_has_no_rows() {
     let out = rows(
+        Theme::domux(),
         &Model::new(7),
         &FactRegistry::new(),
         "",

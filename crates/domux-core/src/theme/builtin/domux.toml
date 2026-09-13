@@ -1,0 +1,58 @@
+# The colours domux drew before themes: Catppuccin Mocha, with the accent, the branch pink and
+# the workspace teal of the interface spec. The root of every theme, so it sets every role.
+
+[roles]
+# grounds
+overlay_background = "#1e1e2e"
+top_bar_background = "#181825"
+toast_background = "#181825"
+fill = "#313244"
+sidebar_background = "default"
+tab_row_background = "default"
+
+# lines
+rule = "#313244"
+separator = "#45475a"
+border = "#585b70"
+
+# text
+text = "#cdd6f4"
+soft_text = "#a6adc8"
+dim_text = "#7f849c"
+faint_text = "#6c7086"
+on_accent = "#1e1e2e"
+on_pill = "#1e1e2e"
+
+# colours
+accent = "#cba6f7"
+hint_key = "#89b4fa"
+workspace_name = "#93e2d5"
+branch = "#e3b4d8"
+pr_open = "#a6e3a1"
+pr_merged = "#cba6f7"
+pr_closed = "#f38ba8"
+pill_ok = "#a6e3a1"
+pill_error = "#f38ba8"
+config_error = "#f38ba8"
+question = "#f38ba8"
+waiting_dot = "#f38ba8"
+stay_awake_dot_on = "#a6e3a1"
+stay_awake_dot_off = "#585b70"
+recap = "#ddcaf7"
+recap_seen = "#a6adc8"
+
+# kinds, the manifests' colours
+claude = "#de7356"
+codex = "#89b4fa"
+opencode = "#c678b8"
+compacting = "#afafff"
+
+# the band's two ends on each working word
+band_claude_dim = "#b85e47"
+band_claude_bright = "#ffc9b0"
+band_codex_dim = "#6478a8"
+band_codex_bright = "#c8daff"
+band_opencode_dim = "#9f5d93"
+band_opencode_bright = "#f0b5e3"
+band_compacting_dim = "#6f6fcf"
+band_compacting_bright = "#d8d8ff"

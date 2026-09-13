@@ -12,7 +12,7 @@ pub struct ConfigCmd {
 
 #[derive(Subcommand)]
 pub enum ConfigAction {
-    /// Reread domux.toml; a bad file keeps the previous config and reports the line
+    /// Reread domux.toml and the theme files; a bad file keeps what was there before and reports the line
     Reload,
 }
 

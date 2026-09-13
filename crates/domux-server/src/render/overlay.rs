@@ -2,10 +2,12 @@
 //! `tab_row` in the tab's cell. M2 adds NameWorkspace and Confirm; M4 adds Usage.
 
 use crate::render::boxed::{put_within, Boxed};
-use crate::render::{theme, RenderInput};
+use crate::render::theme::color;
+use crate::render::RenderInput;
 use domux_core::keymap::{Action, Binding, KeyName};
 use domux_core::model::{Focus, Overlay};
 use domux_core::text::{display_width, truncate_with_ellipsis};
+use domux_core::theme::{Role, Theme};
 use domux_term::{Mods, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -94,11 +96,12 @@ pub fn list_overlay_area(screen: Rect, lines: u16) -> Rect {
 }
 
 /// Paints `area` in the overlay's background, so nothing of the screen shows through.
-pub fn clear(area: Rect, buf: &mut Buffer) {
+pub fn clear(theme: &Theme, area: Rect, buf: &mut Buffer) {
+    let ground = Style::default().bg(color(theme, Role::OverlayBackground));
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             buf[(x, y)].reset();
-            buf[(x, y)].set_style(Style::default().bg(theme::BASE));
+            buf[(x, y)].set_style(ground);
         }
     }
 }
@@ -108,14 +111,14 @@ pub fn clear(area: Rect, buf: &mut Buffer) {
 /// A list overlay calls `clear` instead and lets its `ListBox` draw the border, so the
 /// switcher and the sidebar share one drawing of the Projects box. The name box and the
 /// confirmation are not list boxes and take the whole thing.
-pub fn frame_at(title: &str, area: Rect, buf: &mut Buffer) -> Rect {
-    clear(area, buf);
+pub fn frame_at(theme: &Theme, title: &str, area: Rect, buf: &mut Buffer) -> Rect {
+    clear(theme, area, buf);
     Boxed {
         title,
         flag: None,
         focused: true,
     }
-    .render(area, buf)
+    .render(theme, area, buf)
 }
 
 /// Dims every cell outside `keep`, so the screen reads as being behind the overlay
@@ -154,18 +157,26 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
     if area.height == 0 || area.width == 0 || area.y >= buf.area.bottom() {
         return;
     }
-    let base = Style::default().bg(theme::BASE);
+    let theme = input.theme;
+    let base = Style::default().bg(color(theme, Role::OverlayBackground));
     let y = area.y;
     let x = area.x;
     let last_x = area.x + area.width.saturating_sub(1);
     let width = area.width as usize;
-    let key_style = base.fg(theme::BLUE);
-    let word_style = base.fg(theme::OVERLAY0);
-    let sep_style = base.fg(theme::SURFACE1);
+    let key_style = base.fg(color(theme, Role::HintKey));
+    let word_style = base.fg(color(theme, Role::FaintText));
+    let sep_style = base.fg(color(theme, Role::Separator));
     if let Some(pill) = &input.view.pill {
         let style = base
-            .fg(theme::BASE)
-            .bg(if pill.ok { theme::GREEN } else { theme::RED })
+            .fg(color(theme, Role::OnPill))
+            .bg(color(
+                theme,
+                if pill.ok {
+                    Role::PillOk
+                } else {
+                    Role::PillError
+                },
+            ))
             .add_modifier(Modifier::BOLD);
         put_within(
             buf,
@@ -181,7 +192,14 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
         // `esc clear` is spelled out rather than looked up: no action clears the filter, so
         // there is no binding to read. Task 14 gives Esc that meaning while `/` is open.
         let mut cx = put_within(buf, x, y, last_x, "Filter › ", word_style);
-        cx = put_within(buf, cx, y, last_x, &input.view.filter, base.fg(theme::TEXT));
+        cx = put_within(
+            buf,
+            cx,
+            y,
+            last_x,
+            &input.view.filter,
+            base.fg(color(theme, Role::Text)),
+        );
         cx = put_within(
             buf,
             cx,
@@ -211,7 +229,7 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
             y,
             last_x,
             &truncate_with_ellipsis(&note, width),
-            base.fg(theme::TEXT),
+            base.fg(color(theme, Role::Text)),
         );
         return;
     }
@@ -256,12 +274,12 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
 /// `Boxed::render` indexes the buffer by row without checking it, so an area one row past the
 /// edge panics rather than clips, and a workpanel smaller than the smallest box gets no box at
 /// all rather than one drawn outside itself.
-pub fn frame(title: &str, width: u16, height: u16, buf: &mut Buffer) -> Rect {
+pub fn frame(theme: &Theme, title: &str, width: u16, height: u16, buf: &mut Buffer) -> Rect {
     let area = centred_area(width, height, buf);
     if area.width == 0 || area.height == 0 {
         return area;
     }
-    frame_at(title, area, buf)
+    frame_at(theme, title, area, buf)
 }
 
 /// Where `frame` puts a `width` by `height` box, without drawing anything. Answered on its
@@ -533,7 +551,8 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
         lines.extend(section);
     }
     lines.push((HelpLineKind::Body, String::new()));
-    let inner = frame("Keys", 60, lines.len() as u16 + 3, buf);
+    let theme = input.theme;
+    let inner = frame(theme, "Keys", 60, lines.len() as u16 + 3, buf);
     if inner.width < 3 || inner.height == 0 {
         return;
     }
@@ -549,9 +568,12 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     };
     let width = inner.width.saturating_sub(2) as usize;
     let last_x = inner.x + inner.width - 1;
-    let text = Style::default().fg(theme::TEXT).bg(theme::BASE);
-    let leader_style = text.fg(theme::BLUE).add_modifier(Modifier::BOLD);
-    let legend_style = text.fg(theme::SUBTEXT0);
+    let ground = color(theme, Role::OverlayBackground);
+    let text = Style::default().fg(color(theme, Role::Text)).bg(ground);
+    let leader_style = text
+        .fg(color(theme, Role::HintKey))
+        .add_modifier(Modifier::BOLD);
+    let legend_style = text.fg(color(theme, Role::SoftText));
     let header_style = text.add_modifier(Modifier::BOLD);
     for (i, (kind, line)) in lines.iter().take(shown).enumerate() {
         let style = match kind {
@@ -572,7 +594,7 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     if truncated {
         let more = lines.len() - shown;
         let note = format!("{more} more, see domux.toml");
-        let style = Style::default().fg(theme::SUBTEXT0).bg(theme::BASE);
+        let style = Style::default().fg(color(theme, Role::SoftText)).bg(ground);
         put_within(
             buf,
             inner.x + 1,
@@ -582,7 +604,7 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
             style,
         );
     }
-    let footer = Style::default().fg(theme::BLUE).bg(theme::BASE);
+    let footer = Style::default().fg(color(theme, Role::HintKey)).bg(ground);
     put_within(
         buf,
         inner.x + 1,
@@ -599,6 +621,7 @@ mod tests {
     use crate::facts::FactRegistry;
     use domux_core::keymap::Keymap;
     use domux_core::model::{ClientView, Model, Pill};
+    use ratatui::style::Color;
     use std::collections::HashMap;
 
     fn view() -> ClientView {
@@ -636,6 +659,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         footer(&input, hints, area, buf);
     }
@@ -766,7 +790,12 @@ mod tests {
     #[test]
     fn frame_at_draws_at_its_rectangle_and_clears_only_that() {
         let mut buf = filled(20, 6);
-        let inner = frame_at("T", Rect::new(4, 1, 10, 3), &mut buf);
+        let inner = frame_at(
+            domux_core::theme::Theme::domux(),
+            "T",
+            Rect::new(4, 1, 10, 3),
+            &mut buf,
+        );
         assert_eq!(inner, Rect::new(5, 2, 8, 1));
         assert_eq!(line_of(&buf, 0), "X".repeat(20));
         assert_eq!(line_of(&buf, 1), "XXXX┌ T ─────┐XXXXXX");
@@ -777,7 +806,11 @@ mod tests {
         );
         assert_eq!(line_of(&buf, 3), "XXXX└────────┘XXXXXX");
         assert_eq!(line_of(&buf, 4), "X".repeat(20));
-        assert_eq!(buf[(4, 2)].bg, theme::BASE, "and it is cleared to base");
+        assert_eq!(
+            buf[(4, 2)].bg,
+            Color::Rgb(0x1e, 0x1e, 0x2e),
+            "and it is cleared to base"
+        );
     }
 
     /// Everything outside `keep` is dimmed and nothing inside it is, and the text is left
@@ -820,8 +853,12 @@ mod tests {
         // The separator is the row's quietest colour, under both the key and the word, so a
         // reader's eye lands on the keys. Nothing else here reads a style off the footer.
         assert_eq!(buf[(11, 1)].symbol(), "·");
-        assert_eq!(buf[(11, 1)].fg, theme::SURFACE1);
-        assert_eq!(buf[(10, 1)].fg, theme::SURFACE1, "and its spaces with it");
+        assert_eq!(buf[(11, 1)].fg, Color::Rgb(0x45, 0x47, 0x5a));
+        assert_eq!(
+            buf[(10, 1)].fg,
+            Color::Rgb(0x45, 0x47, 0x5a),
+            "and its spaces with it"
+        );
     }
 
     /// A hint the row has no room for ends the row: the hints are in the order the reader
@@ -906,10 +943,14 @@ mod tests {
         let mut buf = filled(20, 1);
         footer_into(&v, Rect::new(0, 0, 20, 1), &mut buf);
         assert_eq!(line_of(&buf, 0), format!("{}…", "w".repeat(19)));
-        assert_eq!(buf[(0, 0)].bg, theme::RED, "red because it was refused");
+        assert_eq!(
+            buf[(0, 0)].bg,
+            Color::Rgb(0xf3, 0x8b, 0xa8),
+            "red because it was refused"
+        );
         v.pill.as_mut().unwrap().ok = true;
         let mut buf = filled(20, 1);
         footer_into(&v, Rect::new(0, 0, 20, 1), &mut buf);
-        assert_eq!(buf[(0, 0)].bg, theme::GREEN);
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(0xa6, 0xe3, 0xa1));
     }
 }

@@ -1,5 +1,6 @@
-//! `config.reload`: rereads domux.toml. A bad file keeps the previous good config and
-//! reports the line; the keymap follows the config.
+//! `config.reload`: rereads domux.toml and the theme files it names. A bad file keeps the
+//! previous good config and reports the line; the keymap follows the config. A theme that
+//! cannot be used keeps the theme drawn before and reports why.
 
 use super::{ok, Ctx};
 use crate::client::Hint;
@@ -8,14 +9,38 @@ use domux_core::api::{ApiError, ConfigReloadResult, Event};
 use serde_json::Value;
 
 pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
-    let loaded = load_config(&ctx.config.path);
+    let mut loaded = load_config(&ctx.config.path);
     let error = loaded.error.as_ref().map(|e| e.to_string());
     let warnings = loaded.warnings.clone();
+    // Whether each client's theme reads its terminal, before the reload, so a client whose
+    // answer changes can be told.
+    let followed: Vec<(domux_core::ids::ClientId, bool)> = ctx
+        .model
+        .clients
+        .iter()
+        .map(|c| (c.id.clone(), ctx.config.themes.reads_terminal(c.desktop)))
+        .collect();
     if loaded.error.is_none() {
+        // A theme that cannot be used keeps the one drawn before, the way a broken config
+        // keeps the config before it; the rest of the config still applies.
+        if loaded.theme_unused {
+            loaded.themes = ctx.config.themes.clone();
+        }
         *ctx.config = loaded;
         // The config that made the respawn guard trip is gone, so the block on the
         // workspaces it stopped goes with it.
         ctx.release_respawn_blocks = true;
+        for (client, before) in followed {
+            let Some(view) = ctx.model.client(&client) else {
+                continue;
+            };
+            let now = ctx.config.themes.reads_terminal(view.desktop);
+            if now != before {
+                if let Some(conn) = ctx.clients.get_mut(&client) {
+                    conn.send_follow(now);
+                }
+            }
+        }
     } else {
         ctx.config.error = loaded.error;
         ctx.config.warnings = loaded.warnings;

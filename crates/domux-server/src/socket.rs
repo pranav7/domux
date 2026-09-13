@@ -5,7 +5,10 @@ use crate::core::CoreMsg;
 use anyhow::Context;
 use domux_core::api::{ApiError, Method, Request, Response};
 use domux_core::ids::ClientId;
-use domux_core::proto::{encode, is_control_api_first_byte, ClientMsg, Decoder, ServerMsg};
+use domux_core::proto::{
+    decode, encode, is_control_api_first_byte, ClientMsg, Decoder, Hello, ServerMsg,
+    PROTOCOL_VERSION,
+};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -183,6 +186,14 @@ impl Drop for ClientCleanup {
     }
 }
 
+/// The head of a hello from a client built for another protocol or version, which the core then
+/// refuses with the restart sentence. A hello whose head names this build's version and
+/// protocol and still does not decode is corrupt, and gets `None`: the connection ends.
+fn old_hello(body: &[u8]) -> Option<Hello> {
+    Hello::from_head(body)
+        .filter(|h| h.version != domux_core::VERSION || h.protocol != PROTOCOL_VERSION)
+}
+
 async fn attach(
     stream: UnixStream,
     first: u8,
@@ -194,10 +205,11 @@ async fn attach(
     let mut buf = vec![0u8; 64 * 1024];
     // The first message must be the hello.
     let hello = loop {
-        if let Some(msg) = dec.next::<ClientMsg>()? {
-            match msg {
-                ClientMsg::Hello(h) => break h,
-                _ => anyhow::bail!("first message was not a hello"),
+        if let Some(body) = dec.next_frame()? {
+            match decode::<ClientMsg>(&body) {
+                Ok(ClientMsg::Hello(h)) => break h,
+                Ok(_) => anyhow::bail!("first message was not a hello"),
+                Err(e) => break old_hello(&body).ok_or(e)?,
             }
         }
         let n = r.read(&mut buf).await?;

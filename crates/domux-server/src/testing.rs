@@ -18,6 +18,7 @@ use domux_core::proto::{
     encode, Capabilities, ClientMsg, CursorState, Decoder, FrameDiff, Hello, ServerMsg, WireColor,
     PROTOCOL_VERSION,
 };
+use domux_core::theme::{Desktop, TerminalColors};
 use domux_term::{
     Attrs, Cell, Color, Cursor, CursorShape, Grid, Key, KeyAction, KeyEvent, Mods, MouseAction,
     MouseButton, MouseEvent, Rgb, Size,
@@ -88,6 +89,9 @@ pub struct HarnessOptions {
     /// The runner every command goes through. Default: a fresh one. A test that has to set a
     /// program up before the server starts builds its own and passes it here.
     pub runner: Option<Arc<FakeRunner>>,
+    /// Every client drawn in this theme rather than the config's (`ServerOptions.theme`).
+    /// Default `None`. The probe test sets it; nothing else does.
+    pub theme: Option<domux_core::theme::Theme>,
 }
 
 impl HarnessOptions {
@@ -103,6 +107,7 @@ impl HarnessOptions {
             providers: Vec::new(),
             platform: None,
             runner: None,
+            theme: None,
         }
     }
 }
@@ -136,6 +141,8 @@ struct HeadlessClient {
     clipboard: Vec<String>,
     detached: Option<String>,
     bells: usize,
+    /// Every `FollowColors` the server sent, in order.
+    follow_colors: Vec<bool>,
 }
 
 /// An opener that opens nothing and remembers what it was handed (MUX-13), so a test can
@@ -201,7 +208,71 @@ pub struct Harness {
     /// every process a test puts in a foreground has its own, and the numbers a failure
     /// prints are the same every run.
     next_pid: u32,
+    theme: Option<domux_core::theme::Theme>,
 }
+
+/// What the harness's own clients say they can do: truecolor and OSC 52, and no colours.
+fn harness_caps() -> Capabilities {
+    Capabilities {
+        truecolor: true,
+        osc52: true,
+        ..Default::default()
+    }
+}
+
+/// Builds a terminal's answers from hex values, so a constant reads like the theme file it
+/// came from.
+const fn answers(bg: u32, fg: u32, palette: [u32; 16]) -> TerminalColors {
+    const fn rgb(v: u32) -> Option<Rgb> {
+        Some(Rgb {
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+        })
+    }
+    let mut slots = [None; 16];
+    let mut i = 0;
+    while i < 16 {
+        slots[i] = rgb(palette[i]);
+        i += 1;
+    }
+    TerminalColors {
+        fg: rgb(fg),
+        bg: rgb(bg),
+        palette: slots,
+    }
+}
+
+/// What a terminal drawing Omarchy's Ristretto theme answers: its background, foreground and
+/// the 16 palette slots, from the theme's own files.
+pub const RISTRETTO: TerminalColors = answers(
+    0x2c2525,
+    0xe6d9db,
+    [
+        0x2c2525, 0xfd6883, 0xadda78, 0xf9cc6c, 0xf38d70, 0xa8a9eb, 0x85dacc, 0xe6d9db, 0x72696a,
+        0xff8297, 0xc8e292, 0xfcd675, 0xf8a788, 0xbebffd, 0x9bf1e1, 0xe6d9db,
+    ],
+);
+
+/// Omarchy's Catppuccin Latte, a light theme.
+pub const CATPPUCCIN_LATTE: TerminalColors = answers(
+    0xeff1f5,
+    0x4c4f69,
+    [
+        0xeff1f5, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0x4c4f69, 0xacb0be,
+        0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0x4c4f69,
+    ],
+);
+
+/// Omarchy's Vantablack: black and white, with a grey in every palette slot.
+pub const VANTABLACK: TerminalColors = answers(
+    0x000000,
+    0xffffff,
+    [
+        0x000000, 0xa4a4a4, 0xb6b6b6, 0xcecece, 0x8d8d8d, 0x9b9b9b, 0xb0b0b0, 0xffffff, 0x7a7a7a,
+        0xa4a4a4, 0xb6b6b6, 0xcecece, 0x8d8d8d, 0x9b9b9b, 0xb0b0b0, 0xffffff,
+    ],
+);
 
 /// Where `Harness::set_foreground_for` starts numbering. Clear of the pid the harness gives
 /// every pane's default `sh`, and clear of the low numbers a real system uses.
@@ -261,6 +332,7 @@ impl Harness {
             providers: opts.providers,
             platform: opts.platform.unwrap_or("macos"),
             next_pid: FIRST_FAKE_PID,
+            theme: opts.theme,
         };
         h.start_server().await;
         h.client = h.attach(opts.cols, opts.rows).await;
@@ -280,6 +352,11 @@ impl Harness {
             loaded.keymap = Keymap::from_config(&self.config.keys)
                 .expect("test config keymap")
                 .0;
+            // The options' config names its theme the way a file would, from `themes/`.
+            let (themes, warnings) = crate::load_themes(&config_path, &self.config);
+            loaded.warnings.extend(warnings);
+            loaded.theme_unused = themes.is_none();
+            loaded.themes = themes.unwrap_or_default();
         }
         let opts = ServerOptions {
             socket_path: self.socket.clone(),
@@ -287,6 +364,7 @@ impl Harness {
             config: loaded,
             project_root: self.project_root.clone(),
             providers: self.providers.clone(),
+            theme: self.theme.clone(),
             deps: CoreDeps {
                 spawner,
                 inspector,
@@ -321,8 +399,19 @@ impl Harness {
         self.state_dir.join("domux.toml")
     }
 
+    /// Writes `themes/<name>.toml` beside `config_path`, where the server looks for a theme
+    /// file. It is read at the next start or `config.reload`, the same as the config.
+    pub fn write_theme(&self, name: &str, text: &str) {
+        let dir = self.state_dir.join(domux_core::names::THEMES_DIR_NAME);
+        std::fs::create_dir_all(&dir).expect("themes directory");
+        std::fs::write(dir.join(format!("{name}.toml")), text).expect("theme file");
+    }
+
     pub async fn attach(&mut self, cols: u16, rows: u16) -> ClientId {
-        match self.try_attach(cols, rows).await {
+        match self
+            .try_attach(cols, rows, harness_caps(), Desktop::Unknown)
+            .await
+        {
             Ok(id) => id,
             Err(reason) => panic!("refused: {reason}"),
         }
@@ -331,13 +420,38 @@ impl Harness {
     /// Why the server would not take a client. For a test about a server with nothing to
     /// seat one on, where the refusal is the behaviour rather than a failure.
     pub async fn attach_refusal(&mut self, cols: u16, rows: u16) -> String {
-        match self.try_attach(cols, rows).await {
+        match self
+            .try_attach(cols, rows, harness_caps(), Desktop::Unknown)
+            .await
+        {
             Ok(id) => panic!("the server attached client {id} rather than refusing"),
             Err(reason) => reason,
         }
     }
 
-    async fn try_attach(&mut self, cols: u16, rows: u16) -> Result<ClientId, String> {
+    /// A client on a terminal of its own: the capabilities it says it has, which carry the
+    /// colours it answered, and the desktop it runs on. `attach` is this with a terminal that
+    /// answered no colours on a desktop it does not know.
+    pub async fn attach_with(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        caps: Capabilities,
+        desktop: Desktop,
+    ) -> ClientId {
+        match self.try_attach(cols, rows, caps, desktop).await {
+            Ok(id) => id,
+            Err(reason) => panic!("refused: {reason}"),
+        }
+    }
+
+    async fn try_attach(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        caps: Capabilities,
+        desktop: Desktop,
+    ) -> Result<ClientId, String> {
         let stream = UnixStream::connect(&self.socket).await.expect("connect");
         let (mut reader, mut writer) = stream.into_split();
         let hello = ClientMsg::Hello(Hello {
@@ -345,11 +459,8 @@ impl Harness {
             protocol: PROTOCOL_VERSION,
             cols,
             rows,
-            caps: Capabilities {
-                truecolor: true,
-                osc52: true,
-                ..Default::default()
-            },
+            caps,
+            desktop,
         });
         writer.write_all(&encode(&hello).unwrap()).await.unwrap();
         let (tx, rx) = mpsc::channel(1024);
@@ -376,6 +487,7 @@ impl Harness {
             clipboard: Vec::new(),
             detached: None,
             bells: 0,
+            follow_colors: Vec::new(),
         };
         let id = match tokio::time::timeout(SETTLE, client.rx.recv())
             .await
@@ -418,6 +530,17 @@ impl Harness {
             .write_all(&encode(&msg).unwrap())
             .await
             .expect("send");
+    }
+
+    /// The terminal's colours changed: what a client following a desktop theme sends.
+    pub async fn send_colors(&mut self, client: ClientId, colors: TerminalColors) {
+        self.send(&client, ClientMsg::Colors(colors)).await;
+    }
+
+    /// Every `FollowColors` the server has sent this client, in order.
+    pub async fn follow_colors(&mut self, client: ClientId) -> Vec<bool> {
+        self.pump(&client, Duration::from_millis(50)).await;
+        self.clients[&client].follow_colors.clone()
     }
 
     /// A key by its config name: `C-s`, `s`, `Enter`, `Esc`, `S-Left`.
@@ -1066,6 +1189,7 @@ fn apply(c: &mut HeadlessClient, msg: ServerMsg) {
         ServerMsg::Clipboard(text) => c.clipboard.push(text),
         ServerMsg::Bell => c.bells += 1,
         ServerMsg::Detached { reason } => c.detached = Some(reason),
+        ServerMsg::FollowColors(follow) => c.follow_colors.push(follow),
         ServerMsg::Welcome { .. } | ServerMsg::Refused { .. } => {}
     }
 }
@@ -1133,6 +1257,7 @@ pub fn client_view() -> ClientView {
         id: ClientId("c_0001".into()),
         size: Size { cols: 80, rows: 24 },
         caps: Capabilities::default(),
+        desktop: Desktop::Unknown,
         workspace: WorkspaceId("w_0001".into()),
         tab: TabId("t_0001".into()),
         focus: Focus::Pane(PaneId("p_0001".into())),

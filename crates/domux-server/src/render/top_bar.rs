@@ -5,10 +5,12 @@
 use crate::client::HintKind;
 use crate::render::boxed::{put, put_within};
 use crate::render::tab_row::{TabRow, TabTarget};
-use crate::render::{theme, RenderInput};
+use crate::render::theme::color;
+use crate::render::RenderInput;
 use domux_core::ids::TabId;
 use domux_core::model::{ConfirmKind, Focus, Overlay};
 use domux_core::text::{display_width, sanitize_for_display, truncate_to_width};
+use domux_core::theme::{Role, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -85,11 +87,14 @@ fn draw_dot(input: &RenderInput, y: u16, x_max: u16, bg: Color, buf: &mut Buffer
     if x_max < DOT_CELLS {
         return;
     }
-    let colour = if input.stay_awake {
-        theme::GREEN
-    } else {
-        theme::SURFACE2
-    };
+    let colour = color(
+        input.theme,
+        if input.stay_awake {
+            Role::StayAwakeDotOn
+        } else {
+            Role::StayAwakeDotOff
+        },
+    );
     put(
         buf,
         x_max - DOT_CELLS,
@@ -109,7 +114,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     }
     let y = area.y;
     let right_edge = area.x + area.width;
-    let bg = theme::MANTLE;
+    let bg = color(input.theme, Role::TopBarBackground);
     for x in area.x..right_edge {
         buf[(x, y)].reset();
         buf[(x, y)].set_style(Style::default().bg(bg));
@@ -123,7 +128,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         y,
         &location,
         Style::default()
-            .fg(theme::TEXT)
+            .fg(color(input.theme, Role::Text))
             .bg(bg)
             .add_modifier(Modifier::BOLD),
     );
@@ -162,7 +167,13 @@ pub fn tab_row_of(input: &RenderInput) -> Option<TabRow> {
     // Whether the keys go to a pane rather than to a prompt or an overlay. It decides which run
     // of cells is accent-filled: see `tab_row::cell_for`.
     let pane_focus = matches!(input.view.focus, Focus::Pane(_));
-    Some(TabRow::new(&ws.tabs, current, prompt, pane_focus))
+    Some(TabRow::new(
+        input.theme,
+        &ws.tabs,
+        current,
+        prompt,
+        pane_focus,
+    ))
 }
 
 /// What a click at `column` on the full-width bar's row acts on.
@@ -209,8 +220,8 @@ pub fn draw_tabs_and_right(
     let end = right_end(input);
     let limit = before_the_dot(x_max);
     let (tabs_budget, right_x) = share(&end, tabs, x, limit);
-    tabs.draw(x, y, tabs_budget, bg, buf);
-    draw_pieces(end, right_x, y, limit, bg, buf);
+    tabs.draw(input.theme, x, y, tabs_budget, bg, buf);
+    draw_pieces(input.theme, end, right_x, y, limit, bg, buf);
     draw_dot(input, y, x_max, bg, buf);
 }
 
@@ -249,9 +260,17 @@ pub fn tab_target_at(
     tabs.target_at(x, budget, at_x)
 }
 
-fn draw_pieces(end: RightEnd, x_min: u16, y: u16, x_max: u16, bg: Color, buf: &mut Buffer) {
+fn draw_pieces(
+    theme: &Theme,
+    end: RightEnd,
+    x_min: u16,
+    y: u16,
+    x_max: u16,
+    bg: Color,
+    buf: &mut Buffer,
+) {
     let room = x_max.saturating_sub(x_min).saturating_sub(1) as usize;
-    let drawn = fit(squeeze(end.pieces, room), room);
+    let drawn = fit(theme, squeeze(end.pieces, room), room);
     // Flush to the right, on the width the pieces actually came back with rather than on the
     // cells reserved for them: an elastic piece can shrink below its reservation, and a notice
     // that floats short of the edge reads as a label dropped mid-bar rather than as the end of
@@ -311,7 +330,7 @@ fn squeeze(mut pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
 /// cut piece's text. The cells can run out exactly on a piece boundary, and then nothing is cut
 /// and `truncate_with_ellipsis` would hand back text it never touched - so the pieces after it
 /// would be dropped with nothing to say so.
-fn fit(pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
+fn fit(theme: &Theme, pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
     if pieces.iter().map(|p| display_width(&p.text)).sum::<usize>() <= room {
         return pieces;
     }
@@ -321,7 +340,7 @@ fn fit(pieces: Vec<Piece>, room: usize) -> Vec<Piece> {
     let mut left = room - 1;
     let mut out = Vec::new();
     // The mark continues the piece the room ran out in, so it takes that piece's style.
-    let mut mark = Style::default().fg(theme::OVERLAY0);
+    let mut mark = Style::default().fg(color(theme, Role::FaintText));
     for p in pieces {
         let width = display_width(&p.text);
         mark = p.style;
@@ -390,9 +409,10 @@ fn tab_label(input: &RenderInput, tab: &TabId) -> String {
 }
 
 pub fn right_end(input: &RenderInput) -> RightEnd {
-    let key = Style::default().fg(theme::BLUE);
-    let word = Style::default().fg(theme::OVERLAY0);
-    let sep = Style::default().fg(theme::SURFACE1);
+    let theme = input.theme;
+    let key = Style::default().fg(color(theme, Role::HintKey));
+    let word = Style::default().fg(color(theme, Role::FaintText));
+    let sep = Style::default().fg(color(theme, Role::Separator));
     let dot = || Piece::new(" · ", sep);
     // The config error's separator joins its message to the action after it, so it narrows with
     // that message rather than outliving it: see `Piece::joiner`.
@@ -452,7 +472,10 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
         // `err.to_string()` names the file and, when one arrived, the line: the notice says
         // where to look rather than repeating a line number the error may not have.
         return RightEnd::actionable(vec![
-            Piece::elastic(err.to_string(), Style::default().fg(theme::RED)),
+            Piece::elastic(
+                err.to_string(),
+                Style::default().fg(color(theme, Role::ConfigError)),
+            ),
             joining_dot(),
             Piece::new(
                 format!("{} config reload", domux_core::names::BIN_NAME),
@@ -465,7 +488,7 @@ pub fn right_end(input: &RenderInput) -> RightEnd {
     }
     RightEnd::decorative(vec![Piece::new(
         input.now.format("%H:%M   %a %-d %b").to_string(),
-        Style::default().fg(theme::SUBTEXT0),
+        Style::default().fg(color(theme, Role::SoftText)),
     )])
 }
 
@@ -486,24 +509,24 @@ mod tests {
 
     #[test]
     fn the_right_end_fits_untouched_when_the_room_is_enough() {
-        assert_eq!(text(&fit(pieces(&[3, 5]), 8)), "xxxxxxxx");
-        assert_eq!(text(&fit(pieces(&[3, 5]), 9)), "xxxxxxxx");
+        assert_eq!(text(&fit(Theme::domux(), pieces(&[3, 5]), 8)), "xxxxxxxx");
+        assert_eq!(text(&fit(Theme::domux(), pieces(&[3, 5]), 9)), "xxxxxxxx");
     }
 
     /// The cut that a piece-by-piece budget alone would let through silently: the room runs out
     /// exactly on a boundary, so no piece is ever truncated and the ellipsis never appears.
     #[test]
     fn the_right_end_marks_a_cut_that_falls_on_a_piece_boundary() {
-        let out = fit(pieces(&[3, 5, 4]), 8);
+        let out = fit(Theme::domux(), pieces(&[3, 5, 4]), 8);
         assert_eq!(text(&out), "xxxxxxx…");
         assert_eq!(display_width(&text(&out)), 8);
     }
 
     #[test]
     fn the_right_end_cuts_inside_the_piece_the_room_runs_out_in() {
-        let out = fit(pieces(&[3, 9]), 8);
+        let out = fit(Theme::domux(), pieces(&[3, 9]), 8);
         assert_eq!(text(&out), "xxxxxxx…");
-        let out = fit(pieces(&[12]), 4);
+        let out = fit(Theme::domux(), pieces(&[12]), 4);
         assert_eq!(text(&out), "xxx…");
     }
 
@@ -518,11 +541,11 @@ mod tests {
                 Piece::new("domux config reload", Style::default()),
             ]
         };
-        let out = fit(squeeze(notice(), 40), 40);
+        let out = fit(Theme::domux(), squeeze(notice(), 40), 40);
         assert_eq!(text(&out), "domux.toml line 4… · domux config reload");
         assert_eq!(display_width(&text(&out)), 40);
         // Room for everything: nothing is cut and no mark appears.
-        let out = fit(squeeze(notice(), 60), 60);
+        let out = fit(Theme::domux(), squeeze(notice(), 60), 60);
         assert_eq!(
             text(&out),
             "domux.toml line 4: invalid string · domux config reload"
@@ -543,11 +566,11 @@ mod tests {
         // Not " · domux config rel…": a right end that opens with a bare separator reads as a
         // sentence with its subject cut off, and one that shows only the action reads as an
         // offer rather than as an error.
-        let out = fit(squeeze(notice(), 20), 20);
+        let out = fit(Theme::domux(), squeeze(notice(), 20), 20);
         assert_eq!(text(&out), "… domux config relo…");
         assert_eq!(display_width(&text(&out)), 20);
         // The floor an actionable right end keeps. Both marks survive it.
-        let out = fit(squeeze(notice(), RIGHT_FLOOR), RIGHT_FLOOR);
+        let out = fit(Theme::domux(), squeeze(notice(), RIGHT_FLOOR), RIGHT_FLOOR);
         assert_eq!(text(&out), "… domux…");
         assert_eq!(display_width(&text(&out)), RIGHT_FLOOR);
     }
@@ -556,7 +579,7 @@ mod tests {
     /// bar after the words it belonged to are gone.
     #[test]
     fn the_mark_left_by_an_elided_message_keeps_the_message_style() {
-        let red = Style::default().fg(theme::RED);
+        let red = Style::default().fg(Color::Rgb(0xf3, 0x8b, 0xa8));
         let notice = vec![
             Piece::elastic("domux.toml line 4: invalid string", red),
             Piece::joiner(" · ", Style::default()),
@@ -572,12 +595,15 @@ mod tests {
     /// has no one part more important than another keeps behaving as it did.
     #[test]
     fn pieces_with_nothing_elastic_are_left_to_the_room_running_out() {
-        assert_eq!(text(&fit(squeeze(pieces(&[3, 9]), 8), 8)), "xxxxxxx…");
+        assert_eq!(
+            text(&fit(Theme::domux(), squeeze(pieces(&[3, 9]), 8), 8)),
+            "xxxxxxx…"
+        );
     }
 
     #[test]
     fn the_right_end_with_no_room_draws_nothing() {
-        assert!(fit(pieces(&[9]), 0).is_empty());
-        assert_eq!(text(&fit(pieces(&[9]), 1)), "…");
+        assert!(fit(Theme::domux(), pieces(&[9]), 0).is_empty());
+        assert_eq!(text(&fit(Theme::domux(), pieces(&[9]), 1)), "…");
     }
 }

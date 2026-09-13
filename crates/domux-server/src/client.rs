@@ -2,6 +2,7 @@
 
 use domux_core::ids::ClientId;
 use domux_core::proto::{Capabilities, CellUpdate, CursorState, FrameDiff, ServerMsg, WireColor};
+use domux_core::theme::{Desktop, TerminalColors, Theme, Themes};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -63,6 +64,47 @@ pub struct ClientConn {
     pub last_cursor: Option<CursorState>,
     /// A one-line notice for the clock's place, such as a clipboard failure.
     pub hint: Option<Hint>,
+    /// Whether the client's theme reads its terminal, when the message that says so found the
+    /// channel full. It goes out ahead of the next frame.
+    follow_unsent: Option<bool>,
+    /// This client's theme, painted for its terminal's colours.
+    pub theme: ThemeCache,
+}
+
+/// One client's painted theme, with what it was painted from. It is painted again only when
+/// one of those changed: a reload, a colours message, or a new desktop.
+#[derive(Debug, Default)]
+pub struct ThemeCache {
+    painted: Option<(Themes, TerminalColors, Desktop, Theme)>,
+    /// How many times it painted, for the tests.
+    #[cfg(test)]
+    paints: usize,
+}
+
+impl ThemeCache {
+    /// The theme `themes` paints for these colours on this desktop.
+    pub fn get(&mut self, themes: &Themes, colors: &TerminalColors, desktop: Desktop) -> &Theme {
+        let fresh = matches!(
+            &self.painted,
+            Some((t, c, d, _)) if t == themes && c == colors && *d == desktop
+        );
+        if !fresh {
+            self.painted = None;
+        }
+        let (_, _, _, theme) = self.painted.get_or_insert_with(|| {
+            #[cfg(test)]
+            {
+                self.paints += 1;
+            }
+            (
+                themes.clone(),
+                colors.clone(),
+                desktop,
+                themes.paint(colors, desktop),
+            )
+        });
+        theme
+    }
 }
 
 impl ClientConn {
@@ -82,6 +124,8 @@ impl ClientConn {
             needs_full: true,
             last_cursor: None,
             hint: None,
+            follow_unsent: None,
+            theme: ThemeCache::default(),
         }
     }
 
@@ -95,7 +139,24 @@ impl ClientConn {
     /// state that call advances to and the message that carries it cannot disagree: a full
     /// channel means the client never received that state, and the flag set here makes the
     /// next frame replace the whole screen rather than diff against a frame it never saw.
+    /// Tells the client whether its theme reads its terminal. A full channel keeps the message
+    /// for the next frame, since a client never told keeps following, or not, until it attaches
+    /// again.
+    pub fn send_follow(&mut self, follow: bool) {
+        self.follow_unsent = Some(follow);
+        self.flush_follow();
+    }
+
+    fn flush_follow(&mut self) {
+        if let Some(follow) = self.follow_unsent {
+            if self.tx.try_send(ServerMsg::FollowColors(follow)).is_ok() {
+                self.follow_unsent = None;
+            }
+        }
+    }
+
     pub fn queue_frame(&mut self, composed: Buffer, cursor: Option<CursorState>) {
+        self.flush_follow();
         if let Some(diff) = self.take_frame(composed, cursor) {
             if self.tx.try_send(ServerMsg::Frame(diff)).is_err() {
                 self.needs_full = true;
@@ -296,6 +357,70 @@ mod tests {
             ServerMsg::Frame(frame) => assert!(frame.full),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A client whose channel is full when its theme starts or stops reading the terminal is
+    /// told on the next frame queued for it, rather than never.
+    #[tokio::test]
+    async fn a_follow_that_found_the_channel_full_is_sent_with_the_next_frame() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut c = ClientConn::new(ClientId("c_0d77".into()), tx, Capabilities::default(), 3, 2);
+        c.tx.try_send(ServerMsg::Bell).unwrap();
+        c.send_follow(true);
+        assert!(matches!(rx.recv().await, Some(ServerMsg::Bell)));
+        c.queue_frame(buffer_with(0, 0, "a"), None);
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::FollowColors(true))
+        ));
+        // Sent once: the next frame carries no second copy.
+        c.queue_frame(buffer_with(0, 0, "b"), None);
+        assert!(matches!(rx.recv().await, Some(ServerMsg::Frame(_))));
+    }
+
+    /// The theme is painted once for what it is painted from, not on every frame: the guards
+    /// walk every role over every ground, and a working agent composes 14 frames a second.
+    #[test]
+    fn a_theme_is_painted_again_only_when_the_themes_the_colours_or_the_desktop_change() {
+        use domux_core::theme::{Desktop, TerminalColors, ThemeChoice, Themes};
+        let mut cache = ThemeCache::default();
+        let terminal = Themes {
+            choice: ThemeChoice::Builtin("terminal"),
+            file: None,
+        };
+        let rgb = |r, g, b| domux_term::Rgb { r, g, b };
+        let ristretto = TerminalColors {
+            fg: Some(rgb(0xe6, 0xd9, 0xdb)),
+            bg: Some(rgb(0x2c, 0x25, 0x25)),
+            palette: [None; 16],
+        };
+        let first = cache.get(&terminal, &ristretto, Desktop::Unknown).clone();
+        assert_eq!(first, terminal.paint(&ristretto, Desktop::Unknown));
+        cache.get(&terminal, &ristretto, Desktop::Unknown);
+        assert_eq!(cache.paints, 1);
+
+        let latte = TerminalColors {
+            fg: Some(rgb(0x4c, 0x4f, 0x69)),
+            bg: Some(rgb(0xef, 0xf1, 0xf5)),
+            palette: [None; 16],
+        };
+        assert_eq!(
+            cache.get(&terminal, &latte, Desktop::Unknown),
+            &terminal.paint(&latte, Desktop::Unknown)
+        );
+        assert_eq!(cache.paints, 2);
+
+        let auto = Themes::default();
+        assert_eq!(
+            cache.get(&auto, &latte, Desktop::Unknown),
+            &auto.paint(&latte, Desktop::Unknown)
+        );
+        assert_eq!(cache.paints, 3);
+        assert_eq!(
+            cache.get(&auto, &latte, Desktop::Omarchy),
+            &auto.paint(&latte, Desktop::Omarchy)
+        );
+        assert_eq!(cache.paints, 4);
     }
 
     /// ratatui's named colours have no place on the wire, so each maps to the ANSI index it

@@ -11,10 +11,12 @@
 //! question in the tab's own cell (`top_bar::draw`), so a box drawn here would ask it twice.
 
 use crate::render::boxed::put_within;
-use crate::render::{overlay, theme, RenderInput};
+use crate::render::theme::color;
+use crate::render::{overlay, RenderInput};
 use domux_core::facts::{FactKey, FACT_BRANCH};
 use domux_core::model::ConfirmKind;
 use domux_core::text::{display_width, truncate_with_ellipsis};
+use domux_core::theme::{Role, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -55,7 +57,7 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
     }
     // An empty title, then the question written into the border row here: `Boxed` draws a
     // title in the accent when focused and in `overlay1` when not, and this one is red.
-    let inner = overlay::frame_at("", area, buf);
+    let inner = overlay::frame_at(input.theme, "", area, buf);
     let right = area.x + area.width - 1;
     put_within(
         buf,
@@ -66,7 +68,9 @@ pub fn draw(input: &RenderInput, kind: &ConfirmKind, buf: &mut Buffer) {
             " {} ",
             truncate_with_ellipsis(&question.title, area.width.saturating_sub(CHROME) as usize)
         ),
-        Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(color(input.theme, Role::Question))
+            .add_modifier(Modifier::BOLD),
     );
     let width = inner.width.saturating_sub(2) as usize;
     let last_x = inner.x + inner.width.saturating_sub(1);
@@ -171,6 +175,10 @@ fn broken(text: &str, width: usize) -> Vec<String> {
 /// The copy for one question, or `None` when there is nothing to ask about: a project the
 /// model no longer holds, or the tab kind M1 asks about somewhere else.
 fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
+    let theme = input.theme;
+    let dim = Style::default().fg(color(theme, Role::DimText));
+    let text = Style::default().fg(color(theme, Role::Text));
+    let faint = Style::default().fg(color(theme, Role::FaintText));
     match kind {
         // M1's, asked in the tab's own cell.
         ConfirmKind::CloseTab(_) => None,
@@ -184,18 +192,15 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
             Some(Question {
                 title: copy.title,
                 lines: vec![
-                    Line::from(Span::styled(
-                        copy.identity,
-                        Style::default().fg(theme::OVERLAY1),
-                    )),
+                    Line::from(Span::styled(copy.identity, dim)),
                     Line::default(),
-                    Line::from(Span::styled(copy.removes, Style::default().fg(theme::TEXT))),
+                    Line::from(Span::styled(copy.removes, text)),
                     Line::from(Span::styled(
                         crate::api::project::KEEPS_THE_FOLDER.to_string(),
-                        Style::default().fg(theme::OVERLAY0),
+                        faint,
                     )),
                     Line::default(),
-                    keys("y", "remove project", "esc", "keep project"),
+                    keys(theme, "y", "remove project", "esc", "keep project"),
                 ],
             })
         }
@@ -229,21 +234,12 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
             Some(Question {
                 title: copy.title,
                 lines: vec![
-                    Line::from(Span::styled(
-                        copy.identity,
-                        Style::default().fg(theme::OVERLAY1),
-                    )),
+                    Line::from(Span::styled(copy.identity, dim)),
                     Line::default(),
-                    Line::from(Span::styled(
-                        copy.removes_without_the_path,
-                        Style::default().fg(theme::TEXT),
-                    )),
-                    Line::from(Span::styled(
-                        copy.keeps.to_string(),
-                        Style::default().fg(theme::OVERLAY0),
-                    )),
+                    Line::from(Span::styled(copy.removes_without_the_path, text)),
+                    Line::from(Span::styled(copy.keeps.to_string(), faint)),
                     Line::default(),
-                    keys("y", "delete workspace", "esc", "keep workspace"),
+                    keys(theme, "y", "delete workspace", "esc", "keep workspace"),
                 ],
             })
         }
@@ -255,22 +251,13 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
             Some(Question {
                 title: copy.title,
                 lines: vec![
-                    Line::from(Span::styled(
-                        copy.identity,
-                        Style::default().fg(theme::OVERLAY1),
-                    )),
+                    Line::from(Span::styled(copy.identity, dim)),
                     Line::default(),
-                    Line::from(Span::styled(copy.removes, Style::default().fg(theme::TEXT))),
-                    Line::from(Span::styled(
-                        copy.keeps.to_string(),
-                        Style::default().fg(theme::OVERLAY0),
-                    )),
-                    Line::from(Span::styled(
-                        copy.stops.to_string(),
-                        Style::default().fg(theme::OVERLAY0),
-                    )),
+                    Line::from(Span::styled(copy.removes, text)),
+                    Line::from(Span::styled(copy.keeps.to_string(), faint)),
+                    Line::from(Span::styled(copy.stops.to_string(), faint)),
                     Line::default(),
-                    keys("y", "clear workspace", "esc", "keep workspace"),
+                    keys(theme, "y", "clear workspace", "esc", "keep workspace"),
                 ],
             })
         }
@@ -279,9 +266,9 @@ fn question(input: &RenderInput, kind: &ConfirmKind) -> Option<Question> {
 
 /// `y remove project    esc keep project`: the key in blue, what it does in `text`, four
 /// spaces between the pair (interface spec 7.3).
-fn keys(yes: &str, does: &str, no: &str, undoes: &str) -> Line<'static> {
-    let key = Style::default().fg(theme::BLUE);
-    let word = Style::default().fg(theme::TEXT);
+fn keys(theme: &Theme, yes: &str, does: &str, no: &str, undoes: &str) -> Line<'static> {
+    let key = Style::default().fg(color(theme, Role::HintKey));
+    let word = Style::default().fg(color(theme, Role::Text));
     Line::from(vec![
         Span::styled(yes.to_string(), key),
         Span::styled(format!(" {does}    "), word),
@@ -383,6 +370,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, 24));
         for cell in buf.content.iter_mut() {

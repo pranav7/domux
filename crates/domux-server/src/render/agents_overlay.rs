@@ -39,7 +39,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // the row count then decides the box's height, so the width answers first because it does
     // not depend on the rows.
     let inner_width = content_width(overlay::list_overlay_width(screen), OVERLAY_PAD);
-    let all = rows(input.agents, RowForm::Overlay, inner_width);
+    let all = rows(input.theme, input.agents, RowForm::Overlay, inner_width);
     let visible = filter_rows(&all, &input.view.filter);
     let lines = visible
         .iter()
@@ -52,7 +52,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let empty = agents_box::empty_text(&input.view.filter, RowForm::Overlay);
     // `clear` and not `frame_at`: a `ListBox` draws its own border, so the agents overlay and
     // the sidebar share one drawing of the Agents box.
-    overlay::clear(area, buf);
+    overlay::clear(input.theme, area, buf);
     ListBox {
         title: TITLE,
         rows: &visible,
@@ -62,7 +62,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         empty_text: &empty,
         pad: OVERLAY_PAD,
     }
-    .render(area, buf);
+    .render(input.theme, area, buf);
     // The footer's row is the box's last, inside the border, the same as the switcher's
     // (MUX-16).
     if let Some(footer) = footer_area(area, OVERLAY_PAD) {

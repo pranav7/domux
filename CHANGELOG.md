@@ -10,6 +10,13 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Themes. `[theme] name` in `domux.toml` picks the colours the chrome draws in: `domux`, the colours
+  domux has always drawn; `terminal`, which takes them from the terminal's background, foreground and
+  palette; or a theme file under `~/.config/domux/themes/`. The default is `auto`, which draws
+  `terminal` on an Omarchy desktop and `domux` everywhere else, and always over ssh. Under `terminal` on
+  Omarchy, the chrome follows a theme change while you stay attached.
+  [docs/themes.md](https://github.com/pranav7/domux/blob/main/docs/themes.md) says how to choose one
+  and how to write one.
 - The installer asks you to select your leader, from `C-s`, `C-a`, `C-b` and `C-Space` or any key
   name you type, and writes it under `[keys]` in the config file. `DOMUX_LEADER` answers without
   asking, and without a terminal the installer writes `C-s`.
@@ -35,6 +42,10 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
   and says what to send instead. It used to resolve such a path against the server's own
   directory. `domux open` and `domux project add` send full paths, so only `domux api` calls and
   key bindings that pass a path meet the refusal.
+- The attach protocol is version 4, so run `domux server restart` after upgrading: a server and a
+  client from either side of the upgrade refuse each other.
+- At attach the client asks the terminal for its whole palette, not only its background and
+  foreground.
 
 ### Fixed
 

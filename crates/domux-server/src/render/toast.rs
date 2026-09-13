@@ -6,8 +6,10 @@
 //! rule on.
 
 use crate::render::boxed::{put_within, Boxed};
-use crate::render::{theme, to_rect, RenderInput};
+use crate::render::theme::color;
+use crate::render::{to_rect, RenderInput};
 use domux_core::text::wrap_to_width;
+use domux_core::theme::Role;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -70,7 +72,10 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     }
     // The box covers what is under it rather than letting a pane's text show through its
     // padding, so every cell is written before the border goes on.
-    let ground = Style::default().bg(theme::MANTLE).fg(theme::TEXT);
+    let theme = input.theme;
+    let ground = Style::default()
+        .bg(color(theme, Role::ToastBackground))
+        .fg(color(theme, Role::Text));
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             buf[(x, y)].reset();
@@ -82,16 +87,16 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         flag: None,
         focused: false,
     }
-    .render(area, buf);
+    .render(theme, area, buf);
     let last_x = inner.x + inner.width.saturating_sub(1);
     for (i, line) in lines.iter().enumerate() {
         // The first line is the headline and the rest is what the reader needs after it, so
         // the two are told apart by weight rather than by a blank row this box has no space
         // for.
         let style = if i == 0 {
-            Style::default().fg(theme::TEXT).bg(theme::MANTLE)
+            ground
         } else {
-            Style::default().fg(theme::SUBTEXT0).bg(theme::MANTLE)
+            ground.fg(color(theme, Role::SoftText))
         };
         put_within(
             buf,

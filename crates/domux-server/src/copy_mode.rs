@@ -3,9 +3,10 @@
 
 use crate::pane::PaneRuntime;
 use crate::render::pane_box::Selection;
-use crate::render::theme;
+use crate::render::theme::color;
 use crate::render::top_bar::Piece;
 use crate::render::RenderInput;
+use domux_core::theme::Role;
 use domux_term::{Emulator, Key, KeyEvent, Mode, Mods, ScrollbackPos, Size};
 use ratatui::style::Style;
 
@@ -276,9 +277,9 @@ fn move_rows(copy: &mut CopyMode, delta: i64, rows: u16) {
 pub fn hint_pieces(input: &RenderInput) -> Option<Vec<Piece>> {
     let rt = input.panes.get(input.focused_pane()?)?;
     let copy = rt.copy.as_ref()?;
-    let key = Style::default().fg(theme::BLUE);
-    let word = Style::default().fg(theme::OVERLAY0);
-    let sep = Style::default().fg(theme::SURFACE1);
+    let key = Style::default().fg(color(input.theme, Role::HintKey));
+    let word = Style::default().fg(color(input.theme, Role::FaintText));
+    let sep = Style::default().fg(color(input.theme, Role::Separator));
     let mut pieces = Vec::new();
     if copy.anchor.is_none() {
         pieces.push(Piece::new("v", key));
