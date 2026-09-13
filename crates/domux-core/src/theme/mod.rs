@@ -13,6 +13,8 @@ pub mod file;
 mod fixture;
 pub mod guard;
 pub mod role;
+#[cfg(test)]
+mod themes_md;
 pub mod value;
 
 pub use answers::{auto, Desktop, TerminalColors};

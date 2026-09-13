@@ -615,6 +615,14 @@ recap_seen = "#bdb1b3"
 "##;
 
     #[test]
+    fn the_themes_doc_carries_the_ristretto_hex_example_byte_for_byte() {
+        assert!(
+            super::super::themes_md::text().contains(&format!("```toml\n{RISTRETTO_HEX}```\n")),
+            "docs/themes.md does not carry the Ristretto example byte for byte"
+        );
+    }
+
+    #[test]
     fn the_ristretto_hex_example_paints_what_terminal_paints_on_ristretto() {
         let chain = chain_of(RISTRETTO_HEX);
         let layer = chain.layers().next().expect("the file's layer");
