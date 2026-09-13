@@ -1800,15 +1800,16 @@ async fn install_codex_writes_a_session_start_hook_with_valid_json_output() {
     );
 }
 
-/// The hook command is the symlink in `~/bin` when there is one, because it survives a rebuild
-/// that moves the executable (M3 plan assumption 16). Every other install test falls through to
-/// the running binary, so this is the only place the branch that runs on a real machine is taken.
+/// The hook command is the symlink in `~/bin` when it links to this binary, because it survives
+/// a rebuild that moves the executable (decision record 0040). Every other install test falls
+/// through to the running binary, so this is the only place the branch the author's own machine
+/// takes is run.
 #[tokio::test]
-async fn install_writes_the_symlink_path_when_one_is_in_bin() {
+async fn install_writes_the_bin_path_when_it_links_to_this_binary() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("bin")).unwrap();
     let linked = home.path().join("bin/domux");
-    std::fs::write(&linked, "#!/bin/sh\n").unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_domux"), &linked).unwrap();
     let out = install_cmd(home.path())
         .args(["install", "claude"])
         .output()
@@ -1819,6 +1820,248 @@ async fn install_writes_the_symlink_path_when_one_is_in_bin() {
     assert!(
         text.contains(&format!("{} agent report --agent claude", linked.display())),
         "the symlink, not the running binary: {text}"
+    );
+    assert!(!text.contains("is not this domux"), "{text}");
+}
+
+/// A home whose `~/bin/domux` is V1: a program with no `agent` subcommand, which says so on
+/// stderr and exits 1, as V1 does. That file is on every machine V1 was installed on.
+fn home_with_v1_in_bin() -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("bin")).unwrap();
+    let linked = home.path().join("bin/domux");
+    std::fs::write(
+        &linked,
+        "#!/bin/sh\necho 'Error: unknown command \"agent\"' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&linked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (home, linked)
+}
+
+/// Every command a hooks file installs, across every event.
+fn installed_commands(path: &Path) -> Vec<(String, String)> {
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut out = Vec::new();
+    for (event, entries) in file["hooks"].as_object().unwrap() {
+        for entry in entries.as_array().unwrap() {
+            for hook in entry["hooks"].as_array().unwrap() {
+                out.push((event.clone(), hook["command"].as_str().unwrap().to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// MUX-36: an install on a machine that still has V1 at `~/bin/domux` wrote hooks that ran V1,
+/// and Claude Code showed `unknown command "agent"` on every event. The hook has to run this
+/// binary, and the proof is that the command it wrote reports.
+#[tokio::test]
+async fn install_writes_this_binary_when_the_bin_path_is_another_program() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let (home, linked) = home_with_v1_in_bin();
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+
+    let installed = installed_commands(&home.path().join(".claude/settings.json"));
+    let session_start = installed
+        .iter()
+        .find(|(event, _)| event == "SessionStart")
+        .map(|(_, command)| command.clone())
+        .unwrap();
+    let out = report_through_the_cli(
+        Command::new("sh")
+            .arg("-c")
+            .arg(&session_start)
+            .env("DOMUX_SOCKET", h.socket_path())
+            .env("DOMUX_PANE", pane.as_str())
+            .env_remove("TMUX"),
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/tmp"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("[domux] You are agent a_"), "{text}");
+    assert_eq!(installed.len(), 9, "{installed:?}");
+    for (event, command) in &installed {
+        assert!(
+            !command.contains(&linked.display().to_string()),
+            "{event} runs {command}"
+        );
+    }
+}
+
+/// The author's machine after installing 1.0.0: every hook runs V1 at `~/bin/domux`. Running the
+/// install again is the repair, so it must see those lines as something to change.
+#[tokio::test]
+async fn install_replaces_hooks_that_run_another_program_at_the_bin_path() {
+    let (home, linked) = home_with_v1_in_bin();
+    let stale = format!("{} agent report --agent claude", linked.display());
+    let mut hooks = serde_json::Map::new();
+    for event in [
+        "Notification",
+        "PostCompact",
+        "PostToolUse",
+        "PreCompact",
+        "PreToolUse",
+        "SessionEnd",
+        "SessionStart",
+        "Stop",
+        "UserPromptSubmit",
+    ] {
+        hooks.insert(
+            event.to_string(),
+            serde_json::json!([{"hooks": [{"type": "command", "command": stale}]}]),
+        );
+    }
+    let settings = home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks })).unwrap(),
+    )
+    .unwrap();
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Patched "), "{text}");
+
+    let installed = installed_commands(&settings);
+    assert_eq!(installed.len(), 9, "one line per event: {installed:?}");
+    let mut events: Vec<&str> = installed.iter().map(|(e, _)| e.as_str()).collect();
+    events.dedup();
+    assert_eq!(events.len(), 9, "no event holds two lines: {installed:?}");
+    for (event, command) in &installed {
+        assert!(
+            !command.contains(&linked.display().to_string()),
+            "{event} runs {command}"
+        );
+    }
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Nothing to change."), "{text}");
+}
+
+/// Codex and OpenCode take the same binary Claude does: the choice is made once, for every kind.
+#[tokio::test]
+async fn install_codex_and_opencode_pass_over_a_bin_path_that_is_another_program() {
+    let (home, linked) = home_with_v1_in_bin();
+    for kind in ["codex", "opencode"] {
+        let out = install_cmd(home.path())
+            .args(["install", kind, "--apply"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success(), "{kind}: {out:?}");
+    }
+    let running = std::fs::canonicalize(env!("CARGO_BIN_EXE_domux")).unwrap();
+
+    let installed = installed_commands(&home.path().join(".codex/hooks.json"));
+    assert!(!installed.is_empty());
+    for (event, command) in &installed {
+        assert!(
+            !command.contains(&linked.display().to_string()),
+            "codex {event} runs {command}"
+        );
+        let bin = command.trim_end_matches(" agent report --agent codex");
+        assert_eq!(std::fs::canonicalize(bin).unwrap(), running, "{command}");
+    }
+
+    let plugin =
+        std::fs::read_to_string(home.path().join(".config/opencode/plugins/domux.js")).unwrap();
+    let first = plugin.lines().next().unwrap();
+    let bin: String = serde_json::from_str(first.trim_start_matches("const domux = ")).unwrap();
+    assert_ne!(Path::new(&bin), linked, "{first}");
+    assert_eq!(std::fs::canonicalize(&bin).unwrap(), running, "{first}");
+}
+
+/// Nothing showed which program the hooks run, so a file that ran V1 looked installed. An apply
+/// says it, whether or not it wrote anything, and an install that passed over `~/bin/domux`
+/// says why.
+#[tokio::test]
+async fn install_says_which_binary_the_hooks_run() {
+    let running = std::fs::canonicalize(env!("CARGO_BIN_EXE_domux")).unwrap();
+    let named = |text: &str| {
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("The hooks run "))
+            .unwrap_or_else(|| panic!("no line names the binary: {text}"));
+        std::fs::canonicalize(line.trim_end_matches('.')).unwrap()
+    };
+
+    let (home, linked) = home_with_v1_in_bin();
+    let passed_over = format!(
+        "{} is not this domux, so the hooks do not run it.",
+        linked.display()
+    );
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(&passed_over), "the preview says why: {text}");
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(named(&text), running, "{text}");
+    assert!(text.contains(&passed_over), "the apply says why: {text}");
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Nothing to change."), "{text}");
+    assert_eq!(named(&text), running, "{text}");
+}
+
+/// The symlink in `~/bin` points into `target/release`, so a `cargo clean` breaks it, and an
+/// install run in that state writes the path of whatever binary ran it. It says so, rather than
+/// leaving a `target/` path in the file for the reader to find later.
+#[tokio::test]
+async fn install_says_it_passed_over_the_bin_path_when_it_is_a_broken_symlink() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("bin")).unwrap();
+    let linked = home.path().join("bin/domux");
+    std::os::unix::fs::symlink(home.path().join("target/release/domux"), &linked).unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!(
+            "{} is not this domux, so the hooks do not run it.",
+            linked.display()
+        )),
+        "{text}"
     );
 }
 
