@@ -8,10 +8,24 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- The installer asks you to select your leader, from `C-s`, `C-a`, `C-b` and `C-Space` or any key
+  name you type, and writes it under `[keys]` in the config file. `DOMUX_LEADER` answers without
+  asking, and without a terminal the installer writes `C-s`.
+- The installer asks whether to set up stay awake for a closed lid on Linux as well as macOS. A
+  yes writes `mode = "full"` under `[stay_awake]` in the config file, after the sudo setup on
+  macOS, and the installer says which keys turn stay awake on inside domux.
+
 ### Changed
 
 - The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
   `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`.
+- The installer marks each finished step with a tick and says what it detected and did, with one
+  line per coding agent whose hooks it installed. The release lookup and the download turn a
+  spinner while they wait.
+- The installer never replaces a leader or a stay awake mode the config file already sets, and
+  it writes to the file `DOMUX_CONFIG_FILE` names when that is set.
 
 ## [1.0.0] - 2026-09-11
 

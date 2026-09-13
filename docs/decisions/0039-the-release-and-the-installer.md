@@ -1,7 +1,8 @@
 # 0039: The release and the installer
 
 Date: 2026-09-11
-Status: accepted
+Status: accepted; amended by 0043, which adds the leader and stay awake questions and brings the
+spinner back for the steps that wait on the network
 
 ## Context
 
@@ -29,29 +30,41 @@ command upgrades. `install.sh` lives at the repository root and is served from t
 `main`.
 
 **The installer does the setup, not only the copy.** The plan had it copy the binary and print
-what to do next. It now also installs the agent hooks and offers the macOS lid setup, because
-the hooks are the difference between an agent row that says what an agent is doing and one that
-says unknown, and a reader who has to run three more commands will run one of them. It installs
-hooks only for an agent whose configuration directory is already there, so it never creates
-configuration for a tool the reader does not use, and the lid question is asked only when there
-is a terminal to ask on. `DOMUX_HOOKS=no` and `DOMUX_STAY_AWAKE=yes|no` answer both without a
-prompt, which is also how the tests drive those branches.
+what to do next. It now also installs the agent hooks, asks for the leader, and asks whether to
+set up stay awake for a closed lid, because the hooks are the difference between an agent row
+that says what an agent is doing and one that says unknown, and a reader who has to run three
+more commands will run one of them. It installs hooks only for an agent whose configuration
+directory is already there, so it never creates configuration for a tool the reader does not
+use, and the questions are asked only when there is a terminal to ask on. `DOMUX_HOOKS=no`,
+`DOMUX_LEADER=<key>` and `DOMUX_STAY_AWAKE=yes|no` answer all three without a prompt, which is
+also how the tests drive those branches. Decision 0043 records the two questions and what their
+answers write.
 
-**Nothing in the installer moves.** The first version put the band along the logo and along the
-word of a running step, the way domux draws an agent row. Both were invisible in use: the logo
-sweep is over in under a second, and a reader watching an install cannot follow a wave
-travelling through a word they are also trying to read. The braille spinner that replaced them
-was invisible for a plainer reason. Every step the installer runs finishes in a fraction of a
-second, so the spinner turned two or three frames beside the word and read as a flicker.
-Slowing it down only made it fainter. So nothing animates. The logo is printed once, a running
-step is its word, a finished step is a faint dot, and the one question wears the red dot, which
-means the same thing there as it does on an agent row. The color is still domux's mauve.
-Without a terminal, and under `NO_COLOR`, the same lines are printed in the same order, so a
-log file reads as well as a terminal does.
+**Only a step that waits on the network moves.** The first version put the band along the logo
+and along the word of a running step, the way domux draws an agent row. Both were invisible in
+use: the logo sweep is over in under a second, and a reader watching an install cannot follow a
+wave travelling through a word they are also trying to read. The braille spinner that replaced
+them turned beside every step and read as a flicker, so for a while nothing animated.
+
+That reasoning measured every step as finishing in a fraction of a second, which is true of the
+steps that run on the machine and of a download on a fast connection. It is not true of the
+release lookup and the download on a real connection, where a 3 MB archive takes long enough to
+read a spinner on, and a word that stands still leaves the reader unable to tell a slow network
+from a script that has stopped. So the spinner is back on those two steps and on nothing else.
+The first frame waits 80 ms, so a request that answers at once draws nothing, which is the
+flicker the earlier spinner made. Every other step prints its tick as soon as it is done.
+
+The logo is printed once. A finished step is a tick, a step that did not work while the install
+carries on is a cross, and a question wears the red dot, which means the same thing there as it
+does on an agent row. The color is still domux's mauve. Without a terminal, and under
+`NO_COLOR`, nothing moves and the same lines are printed in the same order, so a log file reads
+as well as a terminal does.
 
 A curl installer cannot take a dependency for any of this. It has to be one POSIX sh file that
-runs on a machine with nothing on it, so there is no library to draw an animation properly.
-That is the other half of the answer: draw nothing, rather than hand-roll something better.
+runs on a machine with nothing on it, so the spinner is a background job and a list of frames in
+the script, and the frames are the braille set every command line tool uses rather than
+something invented here. A trap stops the request, clears the line and gives the cursor back
+when the script exits, fails, or is interrupted.
 
 **The line a script reads is only printed when nothing is watching.** The installed path and
 version go to stdout for a caller that pipes the script, and stdout under `curl | sh` is the
@@ -60,8 +73,8 @@ written only when stdout is not a terminal; a reader gets the step that says the
 
 **The archive is checked before it is trusted.** The installer downloads the archive and
 `SHA256SUMS`, compares, and refuses to install on a mismatch. Three network requests, all to
-GitHub. Nothing else is written and no shell startup file is edited: the PATH line is printed
-for the reader to paste.
+GitHub. No shell startup file is edited: the PATH line is printed for the reader to paste. The
+config file gets the lines decision 0043 describes and nothing else.
 
 **Four targets, each smoke-tested on its own platform.** macOS on Apple silicon and Intel, Linux
 on x86_64 and arm64. Linux archives build on the oldest hosted image so the glibc floor is 2.35;
