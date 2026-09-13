@@ -11,9 +11,17 @@ use super::value::ColorValue;
 use super::Paint;
 use domux_term::Rgb;
 
-/// The contrast a text tier or a colour needs on each of its grounds: WCAG 2's minimum for large
-/// text and interface marks.
+/// The contrast a text tier, a colour, a kind or a band end needs on each of its grounds: WCAG 2's
+/// minimum for large text and interface marks.
 pub const FLOOR: f64 = 3.0;
+/// The contrast the rule needs on each of its grounds. It is lower than `LINE_FLOOR` because the
+/// rule on a Mocha or a Ristretto terminal is under 1.4 on the overlay background, and neither
+/// should move.
+pub const RULE_FLOOR: f64 = 1.25;
+/// The contrast the separator and the border need on each of their grounds.
+pub const LINE_FLOOR: f64 = 1.4;
+/// The contrast the stay awake dot for "not held" needs on each of its grounds.
+pub const DOT_OFF_FLOOR: f64 = 2.0;
 /// The contrast the top bar, the toast and the selected row keep from the overlay background.
 pub const GROUND_FLOOR: f64 = 1.05;
 /// A move is in steps of 1/STEPS of the way.
@@ -41,7 +49,12 @@ pub fn passes_hue(guard: Guard, c: Rgb) -> bool {
             let (_, chroma, hue) = oklch(c);
             chroma >= MIN_CHROMA && in_window(hue)
         }
-        Guard::Ground | Guard::TextTier | Guard::Colour | Guard::Unguarded => true,
+        Guard::Ground
+        | Guard::TextTier
+        | Guard::Colour
+        | Guard::Kind
+        | Guard::Line
+        | Guard::Unguarded => true,
     }
 }
 
@@ -170,16 +183,18 @@ pub(super) fn run(
         trace.steps[role as usize] = k;
     }
 
-    // 3. Each colour moves on its own. A red or green palette slot that leaves its hue on the
-    //    way takes the next layer's value, which is guarded in turn.
+    // 3. Each colour, kind, band end and line moves on its own, to its own floor. A red or green
+    //    palette slot that leaves its hue on the way takes the next layer's value, which is
+    //    guarded in turn.
     for role in Role::ALL.iter().copied() {
         let guard = role.guard();
-        if !matches!(guard, Guard::Colour | Guard::Red | Guard::Green) {
-            continue;
-        }
+        let floor = match (guard, role.floor()) {
+            (Guard::Colour | Guard::Red | Guard::Green | Guard::Kind | Guard::Line, Some(f)) => f,
+            _ => continue,
+        };
         while movable(resolved, role) {
             let from = colour(resolved, role);
-            let k = least_steps(&[(from, on(resolved, role))], far, FLOOR);
+            let k = least_steps(&[(from, on(resolved, role))], far, floor);
             let moved = mix(from, far, k, STEPS);
             let found = resolved[role as usize];
             if matches!(found.value, ColorValue::Palette(_)) && !passes_hue(guard, moved) {
@@ -633,6 +648,289 @@ recap_seen = "#bdb1b3"
         }
     }
 
+    /// The four kinds and the eight band ends, then the four lines.
+    const KINDS_AND_LINES: [Role; 16] = [
+        Role::Claude,
+        Role::Codex,
+        Role::Opencode,
+        Role::Compacting,
+        Role::BandClaudeDim,
+        Role::BandClaudeBright,
+        Role::BandCodexDim,
+        Role::BandCodexBright,
+        Role::BandOpencodeDim,
+        Role::BandOpencodeBright,
+        Role::BandCompactingDim,
+        Role::BandCompactingBright,
+        Role::Rule,
+        Role::Separator,
+        Role::Border,
+        Role::StayAwakeDotOff,
+    ];
+
+    #[test]
+    fn the_lines_the_kinds_and_the_band_move_nothing_on_ristretto_or_mocha() {
+        let domux = Theme::domux();
+        let (mocha, trace) = Theme::paint_traced(terminal(), &answers("catppuccin"));
+        for role in KINDS_AND_LINES {
+            assert_eq!(mocha.get(role), domux.get(role), "{}", role.name());
+            assert_eq!(trace.steps[role as usize], 0, "{}", role.name());
+        }
+        let (ristretto, trace) = Theme::paint_traced(terminal(), &answers("ristretto"));
+        for role in KINDS_AND_LINES {
+            assert_eq!(trace.steps[role as usize], 0, "{}", role.name());
+        }
+        // The kinds and the band keep the domux values; the lines are Ristretto's own blends.
+        for role in &KINDS_AND_LINES[..12] {
+            assert_eq!(ristretto.get(*role), domux.get(*role), "{}", role.name());
+        }
+        assert_eq!(ristretto.get(Role::Rule), hex(0x413939));
+        assert_eq!(ristretto.get(Role::Separator), hex(0x554d4d));
+        assert_eq!(ristretto.get(Role::Border), hex(0x6a6162));
+        assert_eq!(ristretto.get(Role::StayAwakeDotOff), hex(0x6a6162));
+    }
+
+    #[test]
+    fn the_kinds_and_bright_band_ends_on_catppuccin_latte_move_toward_black_to_the_floor() {
+        let colors = answers("catppuccin-latte");
+        let (theme, trace) = Theme::paint_traced(terminal(), &colors);
+        let domux = Theme::domux();
+        for (role, want, steps) in [
+            (Role::Codex, 0x6b8cc2, 4),
+            (Role::Compacting, 0x7e7eb8, 5),
+            (Role::Claude, 0xd26d51, 1),
+            (Role::BandClaudeBright, 0x9c7b6c, 7),
+            (Role::BandClaudeDim, 0xb85e47, 0),
+        ] {
+            assert_eq!(theme.get(role), hex(want), "{}", role.name());
+            assert_eq!(trace.steps[role as usize], steps, "{}", role.name());
+            assert!(lowest(&theme, role, &colors) >= FLOOR, "{}", role.name());
+        }
+        // Toward black: every kind or band end that moved is darker than the domux value.
+        for role in &KINDS_AND_LINES[..12] {
+            if trace.steps[*role as usize] > 0 {
+                let was = colour(domux, *role, &colors);
+                assert!(
+                    luminance(colour(&theme, *role, &colors)) < luminance(was),
+                    "{}",
+                    role.name()
+                );
+            }
+        }
+        // One step fewer is under the floor, so each moved to the floor and no further.
+        let codex = rgb(0x89b4fa);
+        let over = colour(&theme, Role::OverlayBackground, &colors);
+        assert!(contrast(mix(codex, BLACK, 3, STEPS), over) < FLOOR);
+    }
+
+    #[test]
+    fn dim_band_ends_move_toward_white_on_nord() {
+        let colors = answers("nord");
+        let (theme, trace) = Theme::paint_traced(terminal(), &colors);
+        assert_eq!(theme.get(Role::BandOpencodeDim), hex(0xaa6f9f));
+        assert_eq!(trace.steps[Role::BandOpencodeDim as usize], 2);
+        assert_eq!(theme.get(Role::BandCodexDim), hex(0x6d80ad));
+        assert_eq!(trace.steps[Role::BandCodexDim as usize], 1);
+        for role in [Role::BandOpencodeDim, Role::BandCodexDim] {
+            let was = colour(Theme::domux(), role, &colors);
+            assert!(luminance(colour(&theme, role, &colors)) > luminance(was));
+            assert!(lowest(&theme, role, &colors) >= FLOOR, "{}", role.name());
+        }
+    }
+
+    #[test]
+    fn kinds_and_band_ends_are_not_held_to_the_floor_on_the_selected_row() {
+        let colors = answers("catppuccin");
+        let theme = on("catppuccin");
+        assert_eq!(theme.get(Role::BandOpencodeDim), hex(0x9f5d93));
+        let dim = colour(&theme, Role::BandOpencodeDim, &colors);
+        let fill = colour(&theme, Role::Fill, &colors);
+        assert!(contrast(dim, fill) < FLOOR);
+        assert!(lowest(&theme, Role::BandOpencodeDim, &colors) >= FLOOR);
+    }
+
+    #[test]
+    fn a_kind_colour_a_theme_file_wrote_in_hex_is_never_moved() {
+        let chain = chain_of("extends = \"terminal\"\n[roles]\ncodex = \"#89b4fa\"\n");
+        let colors = answers("catppuccin-latte");
+        let (theme, trace) = Theme::paint_traced(&chain, &colors);
+        assert_eq!(theme.get(Role::Codex), hex(0x89b4fa));
+        assert_eq!(trace.steps[Role::Codex as usize], 0);
+        assert!(lowest(&theme, Role::Codex, &colors) < FLOOR);
+        // The kinds the file did not write still move.
+        assert_eq!(theme.get(Role::Compacting), hex(0x7e7eb8));
+    }
+
+    #[test]
+    fn kinds_and_the_band_under_the_domux_theme_never_move_on_a_light_terminal() {
+        let colors = answers("catppuccin-latte");
+        let domux = builtin::chain("domux").expect("built in");
+        let theme = Theme::paint(domux, &colors);
+        assert_eq!(theme.get(Role::Codex), hex(0x89b4fa));
+        for role in KINDS_AND_LINES {
+            assert_eq!(theme.get(role), Theme::domux().get(role), "{}", role.name());
+        }
+
+        // A file over domux that reads the answers turns the guards on, and the kinds are still
+        // drawn on the domux grounds, so they do not move.
+        let chain = chain_of("[roles]\nfill = \"blend 1/9\"\n");
+        let (theme, trace) = Theme::paint_traced(&chain, &colors);
+        assert_ne!(theme.get(Role::Fill), Theme::domux().get(Role::Fill));
+        for role in KINDS_AND_LINES {
+            assert_eq!(theme.get(role), Theme::domux().get(role), "{}", role.name());
+            assert_eq!(trace.steps[role as usize], 0, "{}", role.name());
+        }
+    }
+
+    #[test]
+    fn the_rule_the_separator_and_the_not_held_dot_meet_their_floors_on_catppuccin_latte() {
+        let colors = answers("catppuccin-latte");
+        let (theme, trace) = Theme::paint_traced(terminal(), &colors);
+        for (role, want, steps) in [
+            (Role::Rule, 0xd1d3d8, 1),
+            (Role::Separator, 0xc0c2ca, 1),
+            (Role::StayAwakeDotOff, 0xa4a6b0, 2),
+            (Role::Border, 0xb9bbc6, 0),
+        ] {
+            assert_eq!(theme.get(role), hex(want), "{}", role.name());
+            assert_eq!(trace.steps[role as usize], steps, "{}", role.name());
+            let floor = role.floor().expect("a line has a floor");
+            assert!(lowest(&theme, role, &colors) >= floor, "{}", role.name());
+        }
+    }
+
+    #[test]
+    fn the_rule_on_the_top_bar_meets_its_floor_on_rose_pine() {
+        let colors = answers("rose-pine");
+        let (theme, trace) = Theme::paint_traced(terminal(), &colors);
+        assert_eq!(theme.get(Role::Rule), hex(0xcec9c7));
+        assert_eq!(trace.steps[Role::Rule as usize], 2);
+        assert_eq!(theme.get(Role::StayAwakeDotOff), hex(0xa39ea5));
+        assert_eq!(trace.steps[Role::StayAwakeDotOff as usize], 3);
+
+        // One step meets the floor on the overlay background but not on the top bar, which is
+        // what takes the rule a second step.
+        let bg = colors.bg.expect("answered");
+        let fg = colors.fg.expect("answered");
+        let one = mix(mix(bg, fg, 1, 9), BLACK, 1, STEPS);
+        let over = colour(&theme, Role::OverlayBackground, &colors);
+        let bar = colour(&theme, Role::TopBarBackground, &colors);
+        assert!(contrast(one, over) >= RULE_FLOOR);
+        assert!(contrast(one, bar) < RULE_FLOOR);
+        let rule = colour(&theme, Role::Rule, &colors);
+        assert!(contrast(rule, bar) >= RULE_FLOOR);
+    }
+
+    #[test]
+    fn the_rule_floor_is_lower_than_the_line_floor() {
+        assert_eq!(RULE_FLOOR, 1.25);
+        assert_eq!(LINE_FLOOR, 1.4);
+        assert_eq!(DOT_OFF_FLOOR, 2.0);
+        assert_eq!(Role::Rule.floor(), Some(RULE_FLOOR));
+        // The rule on a Mocha terminal is 1.30 on the overlay background: a floor of 1.4 would
+        // move it.
+        let colors = answers("catppuccin");
+        let theme = on("catppuccin");
+        let rule = contrast(
+            colour(&theme, Role::Rule, &colors),
+            colour(&theme, Role::OverlayBackground, &colors),
+        );
+        assert!((RULE_FLOOR..LINE_FLOOR).contains(&rule), "{rule}");
+    }
+
+    #[test]
+    fn the_lines_the_kinds_and_the_band_move_the_steps_the_reference_model_names_on_every_omarchy_theme(
+    ) {
+        use Role::*;
+        let brights = |c, x, o, p| {
+            vec![
+                (BandClaudeBright, c),
+                (BandCodexBright, x),
+                (BandOpencodeBright, o),
+                (BandCompactingBright, p),
+            ]
+        };
+        let dims = vec![
+            (BandClaudeDim, 1),
+            (BandCodexDim, 1),
+            (BandOpencodeDim, 2),
+            (BandCompactingDim, 1),
+        ];
+        let rule = vec![(Rule, 1)];
+        let want: [(&str, Vec<(Role, u8)>); 22] = [
+            (
+                "catppuccin-latte",
+                [
+                    vec![(Rule, 1), (Separator, 1), (StayAwakeDotOff, 2)],
+                    vec![(Claude, 1), (Codex, 4), (Opencode, 1), (Compacting, 5)],
+                    brights(7, 7, 6, 7),
+                ]
+                .concat(),
+            ),
+            ("catppuccin", vec![]),
+            ("ethereal", rule.clone()),
+            ("everforest", dims.clone()),
+            (
+                "flexoki-light",
+                [
+                    vec![(Rule, 1), (StayAwakeDotOff, 1), (Codex, 4), (Compacting, 4)],
+                    brights(6, 6, 5, 6),
+                ]
+                .concat(),
+            ),
+            ("gruvbox", vec![]),
+            ("hackerman", rule.clone()),
+            ("kanagawa", vec![]),
+            ("last-horizon", rule.clone()),
+            ("lumon", vec![]),
+            (
+                "lupine",
+                [
+                    vec![(Rule, 1), (StayAwakeDotOff, 1)],
+                    vec![(Codex, 4), (Opencode, 1), (Compacting, 4)],
+                    brights(6, 6, 5, 7),
+                ]
+                .concat(),
+            ),
+            ("matte-black", rule.clone()),
+            ("miasma", vec![]),
+            ("nord", dims.clone()),
+            ("osaka-jade", vec![]),
+            ("retro-82", rule.clone()),
+            ("ristretto", vec![]),
+            (
+                "rose-pine",
+                [
+                    vec![(Rule, 2), (Separator, 1), (StayAwakeDotOff, 3)],
+                    vec![(Claude, 1), (Codex, 4), (Opencode, 1), (Compacting, 4)],
+                    brights(6, 7, 6, 7),
+                ]
+                .concat(),
+            ),
+            ("solitude", rule.clone()),
+            ("tokyo-night", rule.clone()),
+            ("vantablack", rule.clone()),
+            (
+                "white",
+                [
+                    vec![(Rule, 1), (Codex, 3), (Compacting, 4)],
+                    brights(6, 6, 5, 6),
+                ]
+                .concat(),
+            ),
+        ];
+        for (name, moved) in want {
+            let (_, trace) = Theme::paint_traced(terminal(), &answers(name));
+            for role in KINDS_AND_LINES {
+                let steps = moved
+                    .iter()
+                    .find(|(r, _)| *r == role)
+                    .map_or(0, |(_, k)| *k);
+                assert_eq!(trace.steps[role as usize], steps, "{name}: {}", role.name());
+            }
+        }
+    }
+
     #[test]
     fn every_omarchy_theme_keeps_the_guards_promises() {
         assert_eq!(OMARCHY.len(), 22);
@@ -655,12 +953,23 @@ recap_seen = "#bdb1b3"
 
             for role in Role::ALL {
                 match role.guard() {
-                    Guard::TextTier | Guard::Colour | Guard::Red | Guard::Green => assert!(
-                        lowest(&theme, *role, &colors) >= FLOOR,
-                        "{name}: {} is {:.2} on its grounds",
-                        role.name(),
-                        lowest(&theme, *role, &colors)
-                    ),
+                    Guard::TextTier | Guard::Colour | Guard::Red | Guard::Green | Guard::Kind => {
+                        assert!(
+                            lowest(&theme, *role, &colors) >= FLOOR,
+                            "{name}: {} is {:.2} on its grounds",
+                            role.name(),
+                            lowest(&theme, *role, &colors)
+                        )
+                    }
+                    Guard::Line => {
+                        let floor = role.floor().expect("a line has a floor");
+                        assert!(
+                            lowest(&theme, *role, &colors) >= floor,
+                            "{name}: {} is {:.4} on its grounds, under {floor}",
+                            role.name(),
+                            lowest(&theme, *role, &colors)
+                        )
+                    }
                     Guard::Ground | Guard::Unguarded => {}
                 }
                 assert!(
@@ -669,6 +978,23 @@ recap_seen = "#bdb1b3"
                     role.name()
                 );
             }
+            // The kinds and the band ends are held on the overlay and the sidebar.
+            for role in Role::ALL.iter().filter(|r| r.guard() == Guard::Kind) {
+                for ground in [Role::OverlayBackground, Role::SidebarBackground] {
+                    assert!(
+                        contrast(c(*role), c(ground)) >= FLOOR,
+                        "{name}: {} is under the floor on {}",
+                        role.name(),
+                        ground.name()
+                    );
+                }
+            }
+            // The lines keep their order against the overlay background.
+            let lines = [Role::Rule, Role::Separator, Role::Border].map(|r| contrast(c(r), over));
+            assert!(
+                lines[0] < lines[1] && lines[1] < lines[2],
+                "{name}: the rule, the separator and the border are out of order: {lines:?}"
+            );
             for role in [Role::TopBarBackground, Role::ToastBackground, Role::Fill] {
                 assert!(
                     contrast(c(role), over) >= GROUND_FLOOR,

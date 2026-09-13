@@ -1,6 +1,8 @@
 //! The roles: the public names a theme sets and rendering reads. Adding a role is fine.
 //! Renaming or removing one breaks theme files, so it needs a decision record.
 
+use super::guard::{DOT_OFF_FLOOR, FLOOR, GROUND_FLOOR, LINE_FLOOR, RULE_FLOOR};
+
 /// Declares every role once: its variant, its public name, what it colours, how the readability
 /// guards treat it, and the grounds it is held to its floor on. The order here is the order of
 /// `Role::ALL` and of a theme's values.
@@ -72,6 +74,10 @@ pub enum Guard {
     Red,
     /// A colour that says something is well. A palette slot is used for it only when it is green.
     Green,
+    /// A kind colour or a band end, held to the floor on its own. It is never hue tested.
+    Kind,
+    /// A line, or the stay awake dot for "not held": held on its own to a floor lower than text's.
+    Line,
     /// Never moved.
     Unguarded,
 }
@@ -93,11 +99,27 @@ roles! {
 
     // Lines
     /// The rule under a project header, and the bar between tabs and the tab row's elision.
-    Rule = "rule", Unguarded on [];
+    Rule = "rule", Line on [
+        OverlayBackground,
+        SidebarBackground,
+        TopBarBackground,
+        TabRowBackground,
+    ];
     /// The dot and the arrow between words in the top bar, the hint row, the footer and an agent row.
-    Separator = "separator", Unguarded on [];
+    Separator = "separator", Line on [
+        OverlayBackground,
+        SidebarBackground,
+        TopBarBackground,
+        TabRowBackground,
+    ];
     /// An unfocused box's border and flag, the new tab plus, and the toast's border.
-    Border = "border", Unguarded on [];
+    Border = "border", Line on [
+        OverlayBackground,
+        SidebarBackground,
+        TopBarBackground,
+        TabRowBackground,
+        ToastBackground,
+    ];
 
     // Text
     /// Ordinary text.
@@ -179,7 +201,11 @@ roles! {
         TabRowBackground,
     ];
     /// The stay awake dot while the hold is off.
-    StayAwakeDotOff = "stay_awake_dot_off", Unguarded on [];
+    StayAwakeDotOff = "stay_awake_dot_off", Line on [
+        OverlayBackground,
+        TopBarBackground,
+        TabRowBackground,
+    ];
     /// A recap on a working, waiting, compacting or unseen row.
     Recap = "recap", TextTier on [
         OverlayBackground,
@@ -199,34 +225,51 @@ roles! {
 
     // Kinds and the band
     /// A Claude agent's kind colour.
-    Claude = "claude", Unguarded on [];
+    Claude = "claude", Kind on [OverlayBackground, SidebarBackground];
     /// A Codex agent's kind colour.
-    Codex = "codex", Unguarded on [];
+    Codex = "codex", Kind on [OverlayBackground, SidebarBackground];
     /// An OpenCode agent's kind colour.
-    Opencode = "opencode", Unguarded on [];
+    Opencode = "opencode", Kind on [OverlayBackground, SidebarBackground];
     /// The glyph and the word while compacting.
-    Compacting = "compacting", Unguarded on [];
+    Compacting = "compacting", Kind on [OverlayBackground, SidebarBackground];
     /// The dim end of the band on a Claude agent's working word.
-    BandClaudeDim = "band_claude_dim", Unguarded on [];
+    BandClaudeDim = "band_claude_dim", Kind on [OverlayBackground, SidebarBackground];
     /// The bright end of the band on a Claude agent's working word.
-    BandClaudeBright = "band_claude_bright", Unguarded on [];
+    BandClaudeBright = "band_claude_bright", Kind on [OverlayBackground, SidebarBackground];
     /// The dim end of the band on a Codex agent's working word.
-    BandCodexDim = "band_codex_dim", Unguarded on [];
+    BandCodexDim = "band_codex_dim", Kind on [OverlayBackground, SidebarBackground];
     /// The bright end of the band on a Codex agent's working word.
-    BandCodexBright = "band_codex_bright", Unguarded on [];
+    BandCodexBright = "band_codex_bright", Kind on [OverlayBackground, SidebarBackground];
     /// The dim end of the band on an OpenCode agent's working word.
-    BandOpencodeDim = "band_opencode_dim", Unguarded on [];
+    BandOpencodeDim = "band_opencode_dim", Kind on [OverlayBackground, SidebarBackground];
     /// The bright end of the band on an OpenCode agent's working word.
-    BandOpencodeBright = "band_opencode_bright", Unguarded on [];
+    BandOpencodeBright = "band_opencode_bright", Kind on [OverlayBackground, SidebarBackground];
     /// The dim end of the band on the compacting word.
-    BandCompactingDim = "band_compacting_dim", Unguarded on [];
+    BandCompactingDim = "band_compacting_dim", Kind on [OverlayBackground, SidebarBackground];
     /// The bright end of the band on the compacting word.
-    BandCompactingBright = "band_compacting_bright", Unguarded on [];
+    BandCompactingBright = "band_compacting_bright", Kind on [OverlayBackground, SidebarBackground];
 }
 
 impl Role {
     /// How many roles a theme holds.
     pub const COUNT: usize = Role::ALL.len();
+
+    /// The contrast the readability guards hold the role to on each of its grounds, or `None`
+    /// for a role they never guard. For a ground, the step it keeps from the overlay background.
+    pub fn floor(self) -> Option<f64> {
+        match self.guard() {
+            Guard::Ground => Some(GROUND_FLOOR),
+            Guard::TextTier | Guard::Colour | Guard::Red | Guard::Green | Guard::Kind => {
+                Some(FLOOR)
+            }
+            Guard::Line => Some(match self {
+                Role::Rule => RULE_FLOOR,
+                Role::StayAwakeDotOff => DOT_OFF_FLOOR,
+                _ => LINE_FLOOR,
+            }),
+            Guard::Unguarded => None,
+        }
+    }
 
     /// True for a role other roles are drawn on.
     pub fn is_ground(self) -> bool {
@@ -280,9 +323,11 @@ mod tests {
         );
     }
 
-    /// The readability table, written out: each role's guard and the grounds it is held on.
+    /// The readability table, written out: each role's guard, its floor and the grounds it is
+    /// held on.
     #[test]
     fn every_guarded_role_is_held_against_the_grounds_the_readability_table_names() {
+        use super::super::guard::{DOT_OFF_FLOOR, FLOOR, GROUND_FLOOR, LINE_FLOOR, RULE_FLOOR};
         use Guard::*;
         use Role::*;
         const TIER: &[Role] = &[
@@ -301,54 +346,78 @@ mod tests {
         const ROW: &[Role] = &[OverlayBackground, Fill, SidebarBackground];
         const LIST: &[Role] = &[OverlayBackground, SidebarBackground];
         const BAR: &[Role] = &[OverlayBackground, TopBarBackground, TabRowBackground];
-        let want: &[(Role, Guard, &[Role])] = &[
-            (OverlayBackground, Ground, &[]),
-            (TopBarBackground, Ground, &[OverlayBackground]),
-            (ToastBackground, Ground, &[OverlayBackground]),
-            (Fill, Ground, &[OverlayBackground]),
-            (SidebarBackground, Ground, &[]),
-            (TabRowBackground, Ground, &[]),
-            (Rule, Unguarded, &[]),
-            (Separator, Unguarded, &[]),
-            (Border, Unguarded, &[]),
-            (Text, TextTier, TIER),
-            (SoftText, TextTier, TIER),
-            (DimText, TextTier, TIER),
-            (FaintText, TextTier, TIER),
-            (OnAccent, Unguarded, &[]),
-            (OnPill, Unguarded, &[]),
-            (Accent, Colour, KEYS),
-            (HintKey, Colour, KEYS),
-            (WorkspaceName, Colour, ROW),
-            (Branch, Colour, LIST),
-            (PrOpen, Green, LIST),
-            (PrMerged, Colour, LIST),
-            (PrClosed, Red, LIST),
-            (PillOk, Green, LIST),
-            (PillError, Red, LIST),
-            (ConfigError, Red, BAR),
-            (Question, Red, &[OverlayBackground]),
-            (WaitingDot, Red, ROW),
-            (StayAwakeDotOn, Green, BAR),
-            (StayAwakeDotOff, Unguarded, &[]),
-            (Recap, TextTier, TIER),
-            (RecapSeen, TextTier, TIER),
-            (Claude, Unguarded, &[]),
-            (Codex, Unguarded, &[]),
-            (Opencode, Unguarded, &[]),
-            (Compacting, Unguarded, &[]),
-            (BandClaudeDim, Unguarded, &[]),
-            (BandClaudeBright, Unguarded, &[]),
-            (BandCodexDim, Unguarded, &[]),
-            (BandCodexBright, Unguarded, &[]),
-            (BandOpencodeDim, Unguarded, &[]),
-            (BandOpencodeBright, Unguarded, &[]),
-            (BandCompactingDim, Unguarded, &[]),
-            (BandCompactingBright, Unguarded, &[]),
+        const LINES: &[Role] = &[
+            OverlayBackground,
+            SidebarBackground,
+            TopBarBackground,
+            TabRowBackground,
+        ];
+        const BORDER: &[Role] = &[
+            OverlayBackground,
+            SidebarBackground,
+            TopBarBackground,
+            TabRowBackground,
+            ToastBackground,
+        ];
+        let want: &[(Role, Guard, Option<f64>, &[Role])] = &[
+            (OverlayBackground, Ground, Some(GROUND_FLOOR), &[]),
+            (
+                TopBarBackground,
+                Ground,
+                Some(GROUND_FLOOR),
+                &[OverlayBackground],
+            ),
+            (
+                ToastBackground,
+                Ground,
+                Some(GROUND_FLOOR),
+                &[OverlayBackground],
+            ),
+            (Fill, Ground, Some(GROUND_FLOOR), &[OverlayBackground]),
+            (SidebarBackground, Ground, Some(GROUND_FLOOR), &[]),
+            (TabRowBackground, Ground, Some(GROUND_FLOOR), &[]),
+            (Rule, Line, Some(RULE_FLOOR), LINES),
+            (Separator, Line, Some(LINE_FLOOR), LINES),
+            (Border, Line, Some(LINE_FLOOR), BORDER),
+            (Text, TextTier, Some(FLOOR), TIER),
+            (SoftText, TextTier, Some(FLOOR), TIER),
+            (DimText, TextTier, Some(FLOOR), TIER),
+            (FaintText, TextTier, Some(FLOOR), TIER),
+            (OnAccent, Unguarded, None, &[]),
+            (OnPill, Unguarded, None, &[]),
+            (Accent, Colour, Some(FLOOR), KEYS),
+            (HintKey, Colour, Some(FLOOR), KEYS),
+            (WorkspaceName, Colour, Some(FLOOR), ROW),
+            (Branch, Colour, Some(FLOOR), LIST),
+            (PrOpen, Green, Some(FLOOR), LIST),
+            (PrMerged, Colour, Some(FLOOR), LIST),
+            (PrClosed, Red, Some(FLOOR), LIST),
+            (PillOk, Green, Some(FLOOR), LIST),
+            (PillError, Red, Some(FLOOR), LIST),
+            (ConfigError, Red, Some(FLOOR), BAR),
+            (Question, Red, Some(FLOOR), &[OverlayBackground]),
+            (WaitingDot, Red, Some(FLOOR), ROW),
+            (StayAwakeDotOn, Green, Some(FLOOR), BAR),
+            (StayAwakeDotOff, Line, Some(DOT_OFF_FLOOR), BAR),
+            (Recap, TextTier, Some(FLOOR), TIER),
+            (RecapSeen, TextTier, Some(FLOOR), TIER),
+            (Claude, Kind, Some(FLOOR), LIST),
+            (Codex, Kind, Some(FLOOR), LIST),
+            (Opencode, Kind, Some(FLOOR), LIST),
+            (Compacting, Kind, Some(FLOOR), LIST),
+            (BandClaudeDim, Kind, Some(FLOOR), LIST),
+            (BandClaudeBright, Kind, Some(FLOOR), LIST),
+            (BandCodexDim, Kind, Some(FLOOR), LIST),
+            (BandCodexBright, Kind, Some(FLOOR), LIST),
+            (BandOpencodeDim, Kind, Some(FLOOR), LIST),
+            (BandOpencodeBright, Kind, Some(FLOOR), LIST),
+            (BandCompactingDim, Kind, Some(FLOOR), LIST),
+            (BandCompactingBright, Kind, Some(FLOOR), LIST),
         ];
         assert_eq!(want.len(), Role::COUNT);
-        for (role, guard, grounds) in want {
+        for (role, guard, floor, grounds) in want {
             assert_eq!(role.guard(), *guard, "{}", role.name());
+            assert_eq!(role.floor(), *floor, "{}", role.name());
             assert_eq!(role.grounds(), *grounds, "{}", role.name());
             assert!(
                 role.grounds().iter().all(|g| g.is_ground()),
