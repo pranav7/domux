@@ -158,7 +158,8 @@ crossterm as `Alt+]` and characters and typed into the focused pane, and before 
 to any answer slower than 100 ms. A flat 1 s was tried first, and a terminal that took 2 s over each answer
 had all eighteen colour answers typed into the pane; one that is that slow over the probe is as slow over
 the batch, so the cap follows the probe, to at most 3 s. A terminal that gives no device attributes answer
-and answers colours after 100 ms still has them typed into the pane, as it did before.
+and answers colours after 100 ms still has them typed into the pane, all eighteen where the old attach
+asked for two. Every terminal domux runs in answers device attributes, so this is left as a limit.
 
 After attach the client asks nothing and reads no answer. Key, mouse and paste input stay crossterm's.
 
