@@ -201,6 +201,10 @@ pub struct ServerOptions {
     /// Who observes the facts. A real server passes `facts::default_providers()`; a test
     /// passes its own list, so no test shells out to git or `gh`.
     pub providers: Vec<Arc<dyn FactProvider>>,
+    /// Every client drawn in this theme rather than the config's. The probe test sets it, so
+    /// each role can be told apart on the screen; nothing else does, and a real server passes
+    /// `None`.
+    pub theme: Option<domux_core::theme::Theme>,
 }
 
 pub struct ServerHandle {

@@ -444,6 +444,8 @@ pub struct Core {
     /// readers at two screens therefore share one note, and the first of them to look at a
     /// list takes it away from the other.
     notes: Vec<String>,
+    /// `ServerOptions.theme`: when set, every client is drawn in it.
+    theme: Option<domux_core::theme::Theme>,
 }
 
 impl Core {
@@ -550,6 +552,7 @@ impl Core {
             agents: crate::agents::AgentsState::default(),
             stay_awake: crate::stay_awake::StayAwake::new(&state_dir_for_hold),
             toast: None,
+            theme: opts.theme,
         };
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
@@ -2635,6 +2638,10 @@ impl Core {
         // wherever it is drawn, and the glyph is the core's frame, not each client's.
         let now = self.deps.clock.now();
         let agents = agents_view(&self.model, &mut self.agents, now);
+        let theme = self
+            .theme
+            .as_ref()
+            .unwrap_or_else(|| domux_core::theme::Theme::domux());
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
@@ -2653,7 +2660,7 @@ impl Core {
                 stay_awake: self.stay_awake.on(),
                 toast: self.toast.as_ref(),
                 navigator: self.config.config.navigator.enabled,
-                theme: domux_core::theme::Theme::domux(),
+                theme,
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -3225,6 +3232,7 @@ mod tests {
             config: load_config(&dir.join("none.toml")),
             project_root: project,
             providers,
+            theme: None,
             deps: CoreDeps {
                 spawner: Arc::new(FakeSpawner::default()),
                 inspector: Arc::new(FakeInspector::default()),

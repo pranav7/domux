@@ -31,6 +31,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .list_cursor()
         .unwrap_or_else(|| input.view.workspace.as_str());
     let rows = rows(
+        input.theme,
         input.model,
         input.facts,
         &input.view.filter,
@@ -46,7 +47,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let empty = empty_text(input);
     // `clear` and not `frame_at`: a `ListBox` draws its own `Boxed`, so the switcher paints
     // the background and lets the box own the border.
-    overlay::clear(domux_core::theme::Theme::domux(), area, buf);
+    overlay::clear(input.theme, area, buf);
     ListBox {
         title: crate::render::projects_box::title(input.navigator),
         rows: &rows.rows,
@@ -56,7 +57,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         empty_text: &empty,
         pad: OVERLAY_PAD,
     }
-    .render(area, buf);
+    .render(input.theme, area, buf);
     // The footer's row is the box's last, inside the border (MUX-16), so the keys read as
     // part of the box they act on.
     if let Some(footer) = footer_area(area, OVERLAY_PAD) {

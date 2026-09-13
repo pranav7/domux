@@ -8,11 +8,12 @@
 
 use crate::render::list_box::ListRow;
 use crate::render::projects_box::{self, INDENT};
-use crate::render::theme;
+use crate::render::theme::{self, color};
 use chrono::{DateTime, Local};
 use domux_core::ids::{AgentId, WorkspaceId};
 use domux_core::model::agent::{AgentKind, AgentState};
 use domux_core::text::{display_width, truncate_with_ellipsis};
+use domux_core::theme::{Role, Theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -163,7 +164,7 @@ pub fn row_key(id: &AgentId) -> String {
 /// **The projects come in the order their first agent does**, which is `sorted_agents` order,
 /// so the project holding the agent that most wants you is the first group in the box. Sorting
 /// the headers by name instead would put a waiting agent below two idle projects.
-pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
+pub fn rows(theme: &Theme, view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
     let mut out: Vec<ListRow> = Vec::with_capacity(view.agents.len().saturating_mul(2));
     let shown = || view.agents.iter();
     if form == RowForm::Sidebar {
@@ -171,7 +172,7 @@ pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
             if !out.is_empty() {
                 out.push(ListRow::blank());
             }
-            out.push(row(a, view, form, width));
+            out.push(row(theme, a, view, form, width));
         }
         return out;
     }
@@ -192,7 +193,7 @@ pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
             // so it takes no header and no indent rather than a blank one (principle 4).
             0
         } else {
-            out.push(projects_box::header(project, width as usize));
+            out.push(projects_box::header(theme, project, width as usize));
             INDENT
         };
         let mut first = true;
@@ -201,7 +202,7 @@ pub fn rows(view: &AgentsView, form: RowForm, width: u16) -> Vec<ListRow> {
                 out.push(ListRow::blank());
             }
             first = false;
-            let row = row(a, view, form, width.saturating_sub(indent as u16));
+            let row = row(theme, a, view, form, width.saturating_sub(indent as u16));
             out.push(match indent {
                 0 => row,
                 _ => indented(row),
@@ -233,21 +234,31 @@ fn indented(row: ListRow) -> ListRow {
 /// One agent's row, for a caller that places it itself. `render::projects_box` uses it to put
 /// an agent under the workspace it runs in, so the Navigator draws the same grammar this box
 /// draws and there is still one place it is written (principle 14).
-pub fn one_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
-    row(a, view, form, width)
+pub fn one_row(
+    theme: &Theme,
+    a: &AgentEntry,
+    view: &AgentsView,
+    form: RowForm,
+    width: u16,
+) -> ListRow {
+    row(theme, a, view, form, width)
 }
 
-fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
+fn row(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
     let width = width as usize;
     if form.nested() {
-        return nested_row(a, view, form, width);
+        return nested_row(theme, a, view, form, width);
     }
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + RECAP_LINES);
-    lines.push(Line::from(line_one(a, view, form, width)));
-    lines.push(Line::from(line_two(a, form, width)));
+    lines.push(Line::from(line_one(theme, a, view, form, width)));
+    lines.push(Line::from(line_two(theme, a, form, width)));
     if form == RowForm::Overlay {
         if let Some(recap) = &a.recap {
-            lines.extend(recap_lines(recap, a, width).into_iter().map(Line::from));
+            lines.extend(
+                recap_lines(theme, recap, a, width)
+                    .into_iter()
+                    .map(Line::from),
+            );
         }
     }
     ListRow::selectable(row_key(&a.id), filter_text(a), lines)
@@ -260,23 +271,38 @@ fn row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow 
 /// that, so repeating either here is the reading MUX-21 complained of, one level deeper. What
 /// the switcher adds is what the sidebar has no room for and the rows above never said: which
 /// kind this is, which tab it is in, and what it did last.
-fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> ListRow {
+fn nested_row(
+    theme: &Theme,
+    a: &AgentEntry,
+    view: &AgentsView,
+    form: RowForm,
+    width: usize,
+) -> ListRow {
     let lead = display_width(NEST);
     let room = width.saturating_sub(lead);
-    let mut first = vec![Span::styled(NEST, Style::default().fg(theme::OVERLAY0))];
+    let mut first = vec![Span::styled(
+        NEST,
+        Style::default().fg(color(theme, Role::FaintText)),
+    )];
     let tail = if form == RowForm::NestedWide {
-        kind_tab_and_pane(a)
+        kind_tab_and_pane(theme, a)
     } else {
         Vec::new()
     };
     let tail_width: usize = tail.iter().map(|s| display_width(&s.content)).sum();
-    first.extend(line_one(a, view, form, room.saturating_sub(tail_width)));
+    first.extend(line_one(
+        theme,
+        a,
+        view,
+        form,
+        room.saturating_sub(tail_width),
+    ));
     first.extend(tail);
     let mut lines = vec![Line::from(first)];
     if form == RowForm::NestedWide {
         if let Some(recap) = &a.recap {
             // The same two-cell lead the arrow takes, so the recap sits under the name.
-            lines.extend(recap_lines(recap, a, room).into_iter().map(|spans| {
+            lines.extend(recap_lines(theme, recap, a, room).into_iter().map(|spans| {
                 let mut line = vec![Span::raw(" ".repeat(lead))];
                 line.extend(spans);
                 Line::from(line)
@@ -292,30 +318,26 @@ fn nested_row(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) ->
 /// follows for the same reason: an unnamed agent would otherwise read `codex  codex › pr2`.
 /// The tab is dropped when the record names no pane the model still holds, which is what
 /// `place_in_project` already says by leaving it off.
-fn kind_tab_and_pane(a: &AgentEntry) -> Vec<Span<'static>> {
+fn kind_tab_and_pane(theme: &Theme, a: &AgentEntry) -> Vec<Span<'static>> {
     let tab = a.place_in_project.rsplit_once(" › ").map(|(_, t)| t);
     let mut spans = vec![Span::raw(TAIL_GAP)];
     if a.name.is_some() {
         spans.push(Span::styled(
             a.kind.as_str(),
-            Style::default().fg(theme::agent_color(a.kind)),
+            Style::default().fg(theme::agent_color(theme, a.kind)),
         ));
     }
+    let separator = Style::default().fg(color(theme, Role::Separator));
+    let dim = Style::default().fg(color(theme, Role::DimText));
     if let Some(tab) = tab {
         if a.name.is_some() {
-            spans.push(Span::styled(" › ", Style::default().fg(theme::SURFACE1)));
+            spans.push(Span::styled(" › ", separator));
         }
-        spans.push(Span::styled(
-            tab.to_string(),
-            Style::default().fg(theme::OVERLAY1),
-        ));
+        spans.push(Span::styled(tab.to_string(), dim));
     }
     if let Some(pane) = &a.pane_name {
-        spans.push(Span::styled(" › ", Style::default().fg(theme::SURFACE1)));
-        spans.push(Span::styled(
-            pane.clone(),
-            Style::default().fg(theme::OVERLAY1),
-        ));
+        spans.push(Span::styled(" › ", separator));
+        spans.push(Span::styled(pane.clone(), dim));
     }
     // Nothing to add, so not even the gap: a trailing pair of spaces would take two cells of
     // the name's budget for a field that is not there.
@@ -352,12 +374,18 @@ fn filter_text(a: &AgentEntry) -> String {
 /// the slot the glyph would have taken, because a waiting agent draws no glyph and a mark in
 /// front of the name would push that name out of the column every other row keeps it in
 /// (decision record 0030).
-fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> Vec<Span<'static>> {
+fn line_one(
+    theme: &Theme,
+    a: &AgentEntry,
+    view: &AgentsView,
+    form: RowForm,
+    width: usize,
+) -> Vec<Span<'static>> {
     let label = a
         .name
         .clone()
         .unwrap_or_else(|| a.kind.as_str().to_string());
-    let activity = activity(a, view, form);
+    let activity = activity(theme, a, view, form);
     let activity_width: usize = activity.iter().map(|s| display_width(&s.content)).sum();
     let lead = if activity.is_empty() {
         0
@@ -367,7 +395,7 @@ fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> V
     let room = width.saturating_sub(lead + activity_width);
     let mut spans = vec![Span::styled(
         truncate_with_ellipsis(&label, room),
-        label_style(a),
+        label_style(theme, a),
     )];
     if !activity.is_empty() {
         spans.push(Span::raw(GAP));
@@ -376,16 +404,16 @@ fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> V
     spans
 }
 
-/// The name in `text` bold, a kind standing in for one in the agent's colour, and both dimmed
-/// on an unknown row (interface spec 6.2).
-fn label_style(a: &AgentEntry) -> Style {
+/// The name in `text` bold, a kind standing in for one in the agent's colour, and both in
+/// `faint_text` on an unknown row (interface spec 6.2).
+fn label_style(theme: &Theme, a: &AgentEntry) -> Style {
     match a.state {
-        AgentState::Unknown => Style::default().fg(theme::OVERLAY0),
+        AgentState::Unknown => Style::default().fg(color(theme, Role::FaintText)),
         _ if a.name.is_some() => Style::default()
-            .fg(theme::TEXT)
+            .fg(color(theme, Role::Text))
             .add_modifier(Modifier::BOLD),
         _ => Style::default()
-            .fg(theme::agent_color(a.kind))
+            .fg(theme::agent_color(theme, a.kind))
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -398,24 +426,27 @@ fn label_style(a: &AgentEntry) -> Style {
 /// nothing, because nothing is happening and "idle" would be a word for the absence of one
 /// (principle 5). Unknown says so, because an agent domux can see and cannot hear is a fact
 /// worth reporting rather than a quiet row.
-fn activity(a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'static>> {
+fn activity(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'static>> {
     match a.state {
         AgentState::Working => working(
             view.tick,
             form.shows_word().then_some(a.word),
-            theme::agent_color(a.kind),
-            theme::agent_shimmer(a.kind),
+            theme::agent_color(theme, a.kind),
+            theme::agent_shimmer(theme, a.kind),
         ),
         AgentState::Compacting => working(
             view.tick,
             form.shows_word().then_some("Compacting"),
-            theme::COMPACTING,
-            theme::SHIMMER_COMPACTING,
+            color(theme, Role::Compacting),
+            theme::compacting_shimmer(theme),
         ),
-        AgentState::Waiting => vec![Span::styled(DOT, Style::default().fg(theme::RED))],
+        AgentState::Waiting => vec![Span::styled(
+            DOT,
+            Style::default().fg(color(theme, Role::WaitingDot)),
+        )],
         AgentState::Unknown => vec![Span::styled(
             "unknown",
-            Style::default().fg(theme::OVERLAY0),
+            Style::default().fg(color(theme, Role::FaintText)),
         )],
         AgentState::Idle => Vec::new(),
     }
@@ -456,16 +487,19 @@ fn working(
 /// `[kind] · [place] › [pane]`, or the place and pane when line 1 showed the kind.
 ///
 /// The two flat forms only. A nested row's place is the rows above it (decision record 0030).
-fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
+fn line_two(theme: &Theme, a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
     let place = match form {
         // The header above the row has already said the project (MUX-21).
         RowForm::Overlay => &a.place_in_project,
         _ => &a.place_without_tab,
     };
-    let place_style = Style::default().fg(match form {
-        RowForm::Overlay => theme::OVERLAY1,
-        _ => theme::OVERLAY0,
-    });
+    let place_style = Style::default().fg(color(
+        theme,
+        match form {
+            RowForm::Overlay => Role::DimText,
+            _ => Role::FaintText,
+        },
+    ));
     let mut spans = Vec::new();
     let mut room = width;
     if a.name.is_some() {
@@ -474,9 +508,12 @@ fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
         room = room.saturating_sub(display_width(kind) + display_width(sep));
         spans.push(Span::styled(
             kind,
-            Style::default().fg(theme::agent_color(a.kind)),
+            Style::default().fg(theme::agent_color(theme, a.kind)),
         ));
-        spans.push(Span::styled(sep, Style::default().fg(theme::SURFACE1)));
+        spans.push(Span::styled(
+            sep,
+            Style::default().fg(color(theme, Role::Separator)),
+        ));
     }
     let pane = match form {
         RowForm::Overlay => a.pane_name.as_deref(),
@@ -489,20 +526,28 @@ fn line_two(a: &AgentEntry, form: RowForm, width: usize) -> Vec<Span<'static>> {
         place_style,
     ));
     if let Some(suffix) = suffix {
-        spans.push(Span::styled(suffix, Style::default().fg(theme::OVERLAY1)));
+        spans.push(Span::styled(
+            suffix,
+            Style::default().fg(color(theme, Role::DimText)),
+        ));
     }
     spans
 }
 
 /// `※ ` and the recap, wrapping onto a second line indented two spaces (interface spec 12.20).
 /// A recap of nothing but spaces draws no line at all rather than an empty one.
-fn recap_lines(recap: &str, a: &AgentEntry, width: usize) -> Vec<Vec<Span<'static>>> {
+fn recap_lines(
+    theme: &Theme,
+    recap: &str,
+    a: &AgentEntry,
+    width: usize,
+) -> Vec<Vec<Span<'static>>> {
     // Both lines carry a two-cell lead: the glyph and its space, then the indent that lines
     // the wrap up under it.
     let indent = "  ";
     let room = width.saturating_sub(display_width(indent));
     let style = Style::default()
-        .fg(recap_color(a))
+        .fg(recap_color(theme, a))
         .add_modifier(Modifier::ITALIC);
     wrap(recap, room)
         .into_iter()
@@ -518,17 +563,17 @@ fn recap_lines(recap: &str, a: &AgentEntry, width: usize) -> Vec<Vec<Span<'stati
         .collect()
 }
 
-/// Bright while the agent is working, waiting, compacting or unseen; `subtext0` once you have
-/// seen it (interface spec 6.2).
-fn recap_color(a: &AgentEntry) -> Color {
+/// `recap` while the agent is working, waiting, compacting or unseen; `recap_seen` once you
+/// have seen it (interface spec 6.2).
+fn recap_color(theme: &Theme, a: &AgentEntry) -> Color {
     let busy = matches!(
         a.state,
         AgentState::Working | AgentState::Waiting | AgentState::Compacting
     );
     if a.unseen || busy {
-        theme::RECAP
+        color(theme, Role::Recap)
     } else {
-        theme::RECAP_SEEN
+        color(theme, Role::RecapSeen)
     }
 }
 
@@ -642,7 +687,7 @@ mod tests {
     /// `rows` and taken off here, and a test that asks what a working row says reads the same
     /// string it read before MUX-21 put a project over it.
     fn overlay_rows(v: &AgentsView, width: u16) -> Vec<ListRow> {
-        rows(v, RowForm::Overlay, width + INDENT as u16)
+        rows(Theme::domux(), v, RowForm::Overlay, width + INDENT as u16)
             .into_iter()
             .filter(|r| r.key.is_some())
             .map(|r| ListRow {
@@ -748,7 +793,7 @@ mod tests {
             Some("auth-cleanup"),
             AgentKind::Claude,
         )]);
-        let rows = rows(&v, RowForm::Sidebar, 36);
+        let rows = rows(Theme::domux(), &v, RowForm::Sidebar, 36);
         assert_eq!(
             text(&rows[0]),
             vec!["auth-cleanup ✶", "claude · audrey-app › auth cleanup"]
@@ -895,7 +940,9 @@ mod tests {
             (AgentState::Compacting, "Compacting…"),
         ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
-            let first = |form: RowForm| text(&one_row(&v.agents[0], &v, form, 72))[0].clone();
+            let first = |form: RowForm| {
+                text(&one_row(Theme::domux(), &v.agents[0], &v, form, 72))[0].clone()
+            };
             assert_eq!(first(RowForm::Nested), "└ auth-cleanup ✶", "{state}");
             assert_eq!(first(RowForm::Sidebar), "auth-cleanup ✶", "{state}");
             assert_eq!(
@@ -1037,7 +1084,7 @@ mod tests {
         // 34, which is `list_box::content_width` of the sidebar's 38: the border takes a
         // column each side and the box's pad takes another, and the drawing cuts anything
         // wider, so a row built to 36 would be cut by the drawing rather than laid out.
-        let rows = rows(&view(vec![e]), RowForm::Sidebar, 34);
+        let rows = rows(Theme::domux(), &view(vec![e]), RowForm::Sidebar, 34);
         for l in text(&rows[0]) {
             assert!(domux_core::text::display_width(&l) <= 34, "{l:?}");
         }
@@ -1066,7 +1113,12 @@ mod tests {
         second.id = AgentId("a_9c04".into());
         second.place_with_tab = "audrey-app › billing export › pr2".into();
         second.place_in_project = "billing export › pr2".into();
-        let rows = rows(&view(vec![first, second]), RowForm::Overlay, 72);
+        let rows = rows(
+            Theme::domux(),
+            &view(vec![first, second]),
+            RowForm::Overlay,
+            72,
+        );
         assert_eq!(rows.len(), 4, "a header, two agents and the blank between");
         assert!(
             rows[0].key.is_none(),
@@ -1103,7 +1155,7 @@ mod tests {
         assert_eq!(text(&wide[0])[1], "auth cleanup › pr1 › node");
         assert!(wide[0].filter_text.contains("node"));
 
-        let narrow = rows(&view, RowForm::Sidebar, 34);
+        let narrow = rows(Theme::domux(), &view, RowForm::Sidebar, 34);
         assert_eq!(text(&narrow[0])[1], "audrey-app › auth cleanup");
     }
 
@@ -1118,7 +1170,12 @@ mod tests {
         idle.id = AgentId("a_9c04".into());
         idle.project = "audrey-app".into();
         idle.place_in_project = "main › pr2".into();
-        let rows = rows(&view(vec![waiting, idle]), RowForm::Overlay, 72);
+        let rows = rows(
+            Theme::domux(),
+            &view(vec![waiting, idle]),
+            RowForm::Overlay,
+            72,
+        );
         assert_eq!(rows.len(), 5, "two headers, two agents, one blank between");
         assert!(text(&rows[0])[0].starts_with("ZEBRA-APP "));
         assert_eq!(rows[1].key.as_deref(), Some("a_5e21"));
@@ -1134,7 +1191,12 @@ mod tests {
         let mut second = entry(AgentState::Idle, Some("billing-export"), AgentKind::Codex);
         second.id = AgentId("a_9c04".into());
         let first = entry(AgentState::Waiting, Some("auth-cleanup"), AgentKind::Claude);
-        let rows = rows(&view(vec![first, second]), RowForm::Sidebar, 34);
+        let rows = rows(
+            Theme::domux(),
+            &view(vec![first, second]),
+            RowForm::Sidebar,
+            34,
+        );
         assert_eq!(rows.len(), 3, "two agents and the blank between them");
         assert_eq!(text(&rows[0])[0], "auth-cleanup ◉");
         assert_eq!(text(&rows[0])[1], "claude · audrey-app › auth cleanup");
@@ -1146,7 +1208,7 @@ mod tests {
     fn a_record_with_no_project_takes_no_header() {
         let mut e = entry(AgentState::Idle, Some("orphan"), AgentKind::Claude);
         e.project = String::new();
-        let rows = rows(&view(vec![e]), RowForm::Overlay, 72);
+        let rows = rows(Theme::domux(), &view(vec![e]), RowForm::Overlay, 72);
         assert_eq!(rows.len(), 1);
         assert_eq!(text(&rows[0])[0], "orphan");
     }

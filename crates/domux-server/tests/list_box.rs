@@ -1,7 +1,8 @@
+use domux_core::theme::{Role, Theme};
 use domux_server::render::list_box::{
     filter_rows, footer_area, scroll_to_show, text_area, ListBox, ListRow, OVERLAY_PAD, SIDEBAR_PAD,
 };
-use domux_server::render::theme;
+use domux_server::render::theme::color;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -61,7 +62,7 @@ fn the_overlay_pad_keeps_a_blank_row_a_footer_row_and_two_cells_at_each_side() {
         empty_text: "",
         pad: OVERLAY_PAD,
     }
-    .render(area, &mut buf);
+    .render(Theme::domux(), area, &mut buf);
     assert_eq!(scroll, 0);
     assert_eq!(row(&buf, 0), "┌ Projects ──────────┐");
     assert_eq!(
@@ -117,7 +118,7 @@ fn the_box_draws_its_title_its_rows_and_one_filled_row() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 22, 9), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 22, 9), &mut buf);
     assert_eq!(scroll, 0);
     assert_eq!(row(&buf, 0), "┌ Projects ──────────┐");
     assert_eq!(row(&buf, 1), "│ PROJ ─────────     │");
@@ -168,7 +169,7 @@ fn the_box_draws_at_the_area_it_is_given_and_touches_nothing_outside_it() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(3, 2, 20, 9), &mut buf);
+    .render(Theme::domux(), Rect::new(3, 2, 20, 9), &mut buf);
     assert_eq!(
         row(&buf, 1),
         " ".repeat(26),
@@ -203,7 +204,7 @@ fn a_box_that_is_not_focused_keeps_the_plain_border_and_still_fills_the_current_
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 20, 9), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 20, 9), &mut buf);
     assert_eq!(buf[(0, 0)].fg, Color::Rgb(0x58, 0x5b, 0x70));
     assert!(
         !buf[(2, 0)].modifier.contains(Modifier::BOLD),
@@ -304,7 +305,7 @@ fn a_row_taller_than_the_box_shows_its_first_line_so_the_fill_stays_visible() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 8, 4), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 8, 4), &mut buf);
     assert_eq!(scroll, 1);
     assert_eq!(row(&buf, 1), "│ a    │");
     assert_eq!(row(&buf, 2), "│ b    │");
@@ -327,7 +328,7 @@ fn a_scrolled_box_starts_at_the_scroll_line_and_never_draws_a_sticky_header() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 22, 5), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 22, 5), &mut buf);
     assert_eq!(scroll, 4);
     assert_eq!(
         row(&buf, 1),
@@ -361,7 +362,7 @@ fn a_row_above_the_scroll_line_is_not_drawn() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 20, 4), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 20, 4), &mut buf);
     assert_eq!(
         scroll, 1,
         "the cursor above the view pulls it back to the row"
@@ -391,7 +392,7 @@ fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
         empty_text: "No projects yet. domux open .",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 34, 5), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 34, 5), &mut buf);
     assert_eq!(scroll, 0, "there is nothing to scroll past");
     assert_eq!(row(&buf, 1), "│ No projects yet. domux open .  │");
     assert_eq!(buf[(2, 1)].fg, Color::Rgb(0x6c, 0x70, 0x86));
@@ -415,7 +416,7 @@ fn an_empty_text_wider_than_the_box_is_cut_rather_than_written_over_the_border()
         empty_text: "No projects yet. domux open .",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 1), "│ No proj… │");
 }
 
@@ -433,7 +434,7 @@ fn an_empty_text_wider_than_the_box_wraps_onto_the_rows_below_it() {
         empty_text: "No projects yet. open",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 14, 5), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 14, 5), &mut buf);
     // 14 wide and not 12: the pad takes a column off each side, and at 12 the last line has
     // one cell too few and ends in the mark, which is the other test's case.
     assert_eq!(row(&buf, 1), "│ No         │");
@@ -458,7 +459,7 @@ fn a_line_wider_than_the_box_is_cut_by_grapheme_with_an_ellipsis() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 12, 3), &mut buf);
     // The cell after a wide grapheme is reset to a space, as `render_grid` and `put` leave
     // it, so a row read cell by cell has a space between each pair.
     assert_eq!(
@@ -502,7 +503,7 @@ fn nothing_is_drawn_after_the_span_that_was_cut() {
             empty_text: "",
             pad: SIDEBAR_PAD,
         }
-        .render(Rect::new(0, 0, 10, 3), &mut buf);
+        .render(Theme::domux(), Rect::new(0, 0, 10, 3), &mut buf);
         (row(&buf, 1), buf[(7, 1)].symbol().to_string())
     };
 
@@ -545,7 +546,7 @@ fn spans_that_fit_are_drawn_one_after_another_in_their_own_styles() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 20, 3), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 20, 3), &mut buf);
     assert_eq!(row(&buf, 1), "│ auth feat/auth   │");
     assert_eq!(
         buf[(2, 1)].fg,
@@ -584,7 +585,7 @@ fn the_fill_brightens_the_row_and_leaves_the_rows_around_it_alone() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 14, 4), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 14, 4), &mut buf);
     assert!(
         buf[(2, 1)].modifier.contains(Modifier::BOLD),
         "bold text on the filled row stays bold"
@@ -626,7 +627,7 @@ fn a_row_cannot_write_over_the_border_with_text_a_terminal_cannot_draw() {
         empty_text: "",
         pad: SIDEBAR_PAD,
     }
-    .render(Rect::new(0, 0, 12, 3), &mut buf);
+    .render(Theme::domux(), Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(
         row(&buf, 1),
         "│ abcdefg… │",
@@ -656,7 +657,7 @@ fn a_box_with_no_room_inside_draws_nothing_and_keeps_the_scroll_it_was_given() {
             empty_text: "nothing",
             pad: SIDEBAR_PAD,
         }
-        .render(Rect::new(0, 0, w, h), &mut buf);
+        .render(Theme::domux(), Rect::new(0, 0, w, h), &mut buf);
         assert_eq!(scroll, 3, "a {w}x{h} box has no view to correct");
     }
 }
@@ -837,10 +838,14 @@ fn a_blank_row_before_a_match_is_dropped_rather_than_kept_as_its_header() {
 
 #[test]
 fn the_branch_and_workspace_colours_are_the_hexes_the_spec_names() {
-    // The literals, not the tokens: interface spec 9.1 fixes these two hexes, and comparing
-    // a token against itself would pass for any value.
-    assert_eq!(theme::PINK, Color::Rgb(0xe3, 0xb4, 0xd8));
-    assert_eq!(theme::TEAL, Color::Rgb(0x93, 0xe2, 0xd5));
+    // The literals, not the roles: interface spec 9.1 fixes these two hexes for the `domux`
+    // theme, and comparing a role against itself would pass for any value.
+    let domux = Theme::domux();
+    assert_eq!(color(domux, Role::Branch), Color::Rgb(0xe3, 0xb4, 0xd8));
+    assert_eq!(
+        color(domux, Role::WorkspaceName),
+        Color::Rgb(0x93, 0xe2, 0xd5)
+    );
     // 5.3 names this one: the filled row's dim text goes to `text`.
-    assert_eq!(theme::TEXT, Color::Rgb(0xcd, 0xd6, 0xf4));
+    assert_eq!(color(domux, Role::Text), Color::Rgb(0xcd, 0xd6, 0xf4));
 }

@@ -37,6 +37,7 @@ async fn start_with_config(config: &str) -> (domux_server::ServerHandle, tempfil
         config: load_config(&dir.path().join(config)),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
@@ -326,6 +327,7 @@ async fn a_broken_config_is_reported_and_the_server_still_starts() {
         config: loaded,
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
@@ -389,6 +391,7 @@ async fn a_shell_that_exits_immediately_has_bounded_respawns_and_keeps_the_serve
         config,
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -485,6 +488,7 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         config: load_config(&dir.path().join("none.toml")),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -571,6 +575,7 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
         config,
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -665,6 +670,7 @@ async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded()
         config: load_config(&config_path),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -819,6 +825,7 @@ async fn a_pane_that_is_not_the_workspaces_last_does_not_spend_the_respawn_allow
         config: load_config(&dir.path().join("none.toml")),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),

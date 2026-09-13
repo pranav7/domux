@@ -3,10 +3,11 @@
 //! about workspaces or agents; the caller builds the rows.
 
 use crate::render::boxed::{put_within, Boxed};
-use crate::render::theme;
+use crate::render::theme::color;
 use domux_core::text::{
     display_width, sanitize_for_display, truncate_with_ellipsis, wrap_to_width,
 };
+use domux_core::theme::{Role, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -217,13 +218,13 @@ impl ListBox<'_> {
     /// whatever was under the box**: `overlay::frame` clears its rectangle before drawing
     /// one, and `sidebar::draw` clears `projects_area` for the same reason. Both happen to
     /// do it, which is not the same as it being written down, so it is written down here.
-    pub fn render(&self, area: Rect, buf: &mut Buffer) -> u16 {
+    pub fn render(&self, theme: &Theme, area: Rect, buf: &mut Buffer) -> u16 {
         let inner = Boxed {
             title: self.title,
             flag: None,
             focused: self.focused,
         }
-        .render(domux_core::theme::Theme::domux(), area, buf);
+        .render(theme, area, buf);
         if inner.width == 0 || inner.height == 0 {
             return self.scroll;
         }
@@ -274,7 +275,7 @@ impl ListBox<'_> {
                     rows_area.y + n as u16,
                     text_x + text_width - 1,
                     &text,
-                    Style::default().fg(theme::OVERLAY0),
+                    Style::default().fg(color(theme, Role::FaintText)),
                 );
             }
             return 0;
@@ -296,10 +297,10 @@ impl ListBox<'_> {
                 let fill = self.filled == Some(i) && n == 0;
                 if fill {
                     for x in inner.x..=right {
-                        buf[(x, at)].set_style(Style::default().bg(theme::SURFACE0));
+                        buf[(x, at)].set_style(Style::default().bg(color(theme, Role::Fill)));
                     }
                 }
-                draw_line(line, text_x, at, text_width, fill, buf);
+                draw_line(theme, line, text_x, at, text_width, fill, buf);
             }
         }
         scroll
@@ -331,7 +332,15 @@ pub fn row_at(rows: &[ListRow], scroll: u16, inner: Rect, y: u16) -> Option<usiz
 /// Draws one line's spans, cut to `width` by grapheme with a trailing ellipsis. The filled
 /// line takes the fill as its background and brightens: bold text stays bold, and dim text
 /// loses its dimming (interface spec 5.3).
-fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: &mut Buffer) {
+fn draw_line(
+    theme: &Theme,
+    line: &Line<'static>,
+    x: u16,
+    y: u16,
+    width: u16,
+    fill: bool,
+    buf: &mut Buffer,
+) {
     let end = x + width;
     let mut cx = x;
     for span in &line.spans {
@@ -351,7 +360,9 @@ fn draw_line(line: &Line<'static>, x: u16, y: u16, width: u16, fill: bool, buf: 
         };
         let mut style = span.style;
         if fill {
-            style = style.bg(theme::SURFACE0).remove_modifier(Modifier::DIM);
+            style = style
+                .bg(color(theme, Role::Fill))
+                .remove_modifier(Modifier::DIM);
         }
         // `put_within` and not `put`: the budget above keeps text inside the border, and the
         // box's own right edge keeps a wrong budget from writing over it.

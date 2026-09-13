@@ -223,7 +223,7 @@ impl TabRow {
     /// returns the x after the last cell it drew.
     ///
     /// `bg` is the row's own background, not the cells': the full-width top bar sits on
-    /// mantle and the row on the panes sits on nothing (`Color::Reset`). It is applied here
+    /// `top_bar_background` and the row on the panes on `tab_row_background`. It is applied here
     /// rather than baked into the cells so that a cell with a background of its own - the
     /// accent fill on the tab that owns the keys - keeps it either way.
     pub fn draw(
@@ -385,9 +385,9 @@ fn prompt_cell(theme: &Theme, number: usize, input: &TextInput) -> TabCell {
 
 /// The tab row at the top of the workpanel, with the right end's pieces at its end.
 ///
-/// It sits on the panes: no background of its own and no rule under it, so the sidebar's
-/// column and the workpanel read as two things rather than one banded screen (interface
-/// spec 4.2). The cells it shares with the right end are shared by the same rule the
+/// It sits on the panes: no rule under it, and the ground is `tab_row_background`, which both
+/// built-in themes leave to the terminal's own, so the sidebar's column and the workpanel read
+/// as two things rather than one banded screen (interface spec 4.2). The cells it shares with the right end are shared by the same rule the
 /// full-width bar uses, so the clock gives way to the tabs in one place, not two.
 pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
     let area = crate::render::workpanel_area(input.view);
@@ -400,7 +400,7 @@ pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
         area.x,
         0,
         area.x + area.width,
-        Color::Reset,
+        color(input.theme, Role::TabRowBackground),
         buf,
     );
 }

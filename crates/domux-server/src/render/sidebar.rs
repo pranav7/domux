@@ -11,10 +11,12 @@ use crate::render::list_box::{
     content_width, filter_rows, text_area, ListBox, Pad, NAVIGATOR_PAD, SIDEBAR_PAD,
 };
 use crate::render::projects_box::{filled_index, rows, Extras};
+use crate::render::theme::color;
 use crate::render::top_bar::Piece;
-use crate::render::{theme, RenderInput};
+use crate::render::RenderInput;
 use domux_core::model::{ClientView, Focus, RegionKind, SIDEBAR_WIDTH};
 use domux_core::text::truncate_with_ellipsis;
+use domux_core::theme::{Role, Theme};
 use domux_term::Size;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -86,7 +88,9 @@ pub fn wanted_projects_height(
     facts: &crate::facts::FactRegistry,
     width: u16,
 ) -> u16 {
+    // Measured, not drawn, so the styles are thrown away and any theme gives the same rows.
     let built = rows(
+        Theme::domux(),
         model,
         facts,
         "",
@@ -225,6 +229,7 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         false => "",
     };
     let built = rows(
+        input.theme,
         input.model,
         input.facts,
         filter,
@@ -266,7 +271,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // row's text as it found them, so the region has to be cleared by whoever owns it. The
     // whole column and not each box: the row between them belongs to nothing else, and
     // `hint_row` clears its own.
-    clear(column, buf);
+    clear(input.theme, column, buf);
     draw_projects(input, projects, buf);
     // One box with the Navigator on, so there is nothing under it to draw (decision record
     // 0030) and `agents` is the empty rectangle `split_for` hands back.
@@ -276,13 +281,17 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     hint_row(input, hint, buf);
 }
 
-/// Every cell of `area` back to the terminal's own blank, clipped to the buffer.
-fn clear(area: Rect, buf: &mut Buffer) {
+/// Every cell of `area` back to a blank on `sidebar_background`, clipped to the buffer. Both
+/// built-in themes paint that role in the terminal's default, which is the terminal's own
+/// blank.
+fn clear(theme: &Theme, area: Rect, buf: &mut Buffer) {
     let right = area.x.saturating_add(area.width).min(buf.area.right());
     let bottom = area.y.saturating_add(area.height).min(buf.area.bottom());
+    let ground = Style::default().bg(color(theme, Role::SidebarBackground));
     for y in area.y..bottom {
         for x in area.x..right {
             buf[(x, y)].reset();
+            buf[(x, y)].set_style(ground);
         }
     }
 }
@@ -302,7 +311,7 @@ fn draw_projects(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         empty_text: &empty,
         pad: pad_for(input.navigator),
     }
-    .render(area, buf);
+    .render(input.theme, area, buf);
 }
 
 /// The Agents box: the same rows the agents overlay draws, in the two-line form the 38
@@ -321,6 +330,7 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         false => "",
     };
     let all = agents_box::rows(
+        input.theme,
         input.agents,
         RowForm::Sidebar,
         content_width(area.width, SIDEBAR_PAD),
@@ -344,7 +354,7 @@ fn draw_agents(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         // indent nobody meant (decision record 0023).
         pad: SIDEBAR_PAD,
     }
-    .render(area, buf);
+    .render(input.theme, area, buf);
 }
 
 /// The hint row's pieces: the keys of the row the cursor is on while focus is in one of the
@@ -357,14 +367,20 @@ pub fn hint_for(input: &RenderInput) -> Vec<Piece> {
         // Either box: Enter opens the row under the cursor, and `list.activate` is the action
         // both name. The Agents box said `resume` on an exited row until decision record 0030
         // took the verb and the row away; every row here is a live session and Enter opens it.
-        Some(_) => pieces(&[
-            (input.keymap.list_key_for("list.activate"), "open"),
-            (input.keymap.list_key_for("help"), "more"),
-        ]),
-        None => pieces(&[
-            (input.keymap.hint_for("sidebar.toggle"), "hide"),
-            (input.keymap.hint_for("switcher.open"), "search"),
-        ]),
+        Some(_) => pieces(
+            input.theme,
+            &[
+                (input.keymap.list_key_for("list.activate"), "open"),
+                (input.keymap.list_key_for("help"), "more"),
+            ],
+        ),
+        None => pieces(
+            input.theme,
+            &[
+                (input.keymap.hint_for("sidebar.toggle"), "hide"),
+                (input.keymap.hint_for("switcher.open"), "search"),
+            ],
+        ),
     }
 }
 
@@ -374,20 +390,20 @@ pub fn hint_for(input: &RenderInput) -> Vec<Piece> {
 /// to nothing and naming a key that does nothing is worse than saying nothing (principle 3).
 /// The joiner counts the pieces already built rather than the pair's place in the list, so a
 /// dropped first pair does not leave the row starting with a separator.
-fn pieces(pairs: &[(Option<String>, &str)]) -> Vec<Piece> {
+fn pieces(theme: &Theme, pairs: &[(Option<String>, &str)]) -> Vec<Piece> {
+    let key_style = Style::default().fg(color(theme, Role::HintKey));
+    let word_style = Style::default().fg(color(theme, Role::FaintText));
+    let sep_style = Style::default().fg(color(theme, Role::Separator));
     let mut out = Vec::new();
     for (key, word) in pairs
         .iter()
         .filter_map(|(key, word)| key.as_deref().map(|key| (key, word)))
     {
         if !out.is_empty() {
-            out.push(Piece::new(" · ", Style::default().fg(theme::SURFACE1)));
+            out.push(Piece::new(" · ", sep_style));
         }
-        out.push(Piece::new(key, Style::default().fg(theme::BLUE)));
-        out.push(Piece::new(
-            format!(" {word}"),
-            Style::default().fg(theme::OVERLAY0),
-        ));
+        out.push(Piece::new(key, key_style));
+        out.push(Piece::new(format!(" {word}"), word_style));
     }
     out
 }
@@ -395,7 +411,8 @@ fn pieces(pairs: &[(Option<String>, &str)]) -> Vec<Piece> {
 /// The pieces `hint_for` names; a pill while one is showing, the filter field while it is
 /// open, and a start-up note ahead of them (interface spec 12.11 and 12.12).
 pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
-    let word = Style::default().fg(theme::OVERLAY0);
+    let theme = input.theme;
+    let word = Style::default().fg(color(theme, Role::FaintText));
     // Both bounds are guards with no test, deliberately: nothing in the running program
     // passes an area outside the buffer, and `buf[(x, y)]` panics rather than clips, so
     // being wrong costs a crash and the guard costs two comparisons. The same argument
@@ -404,13 +421,22 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
         return;
     }
     let right = area.x.saturating_add(area.width).min(buf.area.right());
+    let ground = Style::default().bg(color(theme, Role::SidebarBackground));
     for x in area.x..right {
         buf[(x, area.y)].reset();
+        buf[(x, area.y)].set_style(ground);
     }
     if let Some(pill) = &input.view.pill {
         let style = Style::default()
-            .fg(theme::BASE)
-            .bg(if pill.ok { theme::GREEN } else { theme::RED })
+            .fg(color(theme, Role::OnPill))
+            .bg(color(
+                theme,
+                if pill.ok {
+                    Role::PillOk
+                } else {
+                    Role::PillError
+                },
+            ))
             .add_modifier(Modifier::BOLD);
         put(
             buf,
@@ -448,7 +474,7 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
             area.y,
             last_x,
             &input.view.filter,
-            Style::default().fg(theme::TEXT),
+            Style::default().fg(color(theme, Role::Text)),
         );
         cx = put_within(
             buf,
@@ -469,7 +495,7 @@ pub fn hint_row(input: &RenderInput, area: Rect, buf: &mut Buffer) {
             area.x + 1,
             area.y,
             &truncate_with_ellipsis(&note, area.width.saturating_sub(2) as usize),
-            Style::default().fg(theme::TEXT),
+            Style::default().fg(color(theme, Role::Text)),
         );
         return;
     }
@@ -927,9 +953,9 @@ mod tests {
 
     /// Green when it worked, red when it was refused (interface spec 7.3).
     ///
-    /// The colours are interface spec 9.1's literals rather than `theme::GREEN` and
-    /// `theme::RED`, so a token that moved would fail here instead of moving the assertion
-    /// with it.
+    /// The colours are interface spec 9.1's literals rather than the `domux` theme's `pill_ok`
+    /// and `pill_error` roles, so a role that moved would fail here instead of moving the
+    /// assertion with it.
     #[test]
     fn a_refused_pill_is_red_and_a_good_one_is_green() {
         let mut v = view(120, 24);
@@ -1247,12 +1273,15 @@ mod tests {
     /// dropped first pair left a leading ` · `.
     #[test]
     fn a_pair_whose_key_is_unbound_draws_nothing_and_leaves_no_separator() {
-        let drawn: String = pieces(&[(None, "open"), (Some("?".into()), "more")])
-            .iter()
-            .map(|p| p.text.clone())
-            .collect();
+        let drawn: String = pieces(
+            Theme::domux(),
+            &[(None, "open"), (Some("?".into()), "more")],
+        )
+        .iter()
+        .map(|p| p.text.clone())
+        .collect();
         assert_eq!(drawn, "? more");
-        assert!(pieces(&[(None, "open"), (None, "more")]).is_empty());
+        assert!(pieces(Theme::domux(), &[(None, "open"), (None, "more")]).is_empty());
     }
 
     /// The Agents box shows the fill on the cursor only while it has the keys, and applies

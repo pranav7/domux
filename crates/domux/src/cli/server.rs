@@ -322,6 +322,7 @@ async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
         config: load_config(&paths::config_file()),
         project_root: std::env::current_dir()?,
         providers: domux_server::facts::default_providers(),
+        theme: None,
         deps: CoreDeps {
             spawner: Arc::new(RealSpawner),
             inspector: Arc::new(RealInspector),

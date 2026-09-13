@@ -88,6 +88,9 @@ pub struct HarnessOptions {
     /// The runner every command goes through. Default: a fresh one. A test that has to set a
     /// program up before the server starts builds its own and passes it here.
     pub runner: Option<Arc<FakeRunner>>,
+    /// Every client drawn in this theme rather than the config's (`ServerOptions.theme`).
+    /// Default `None`. The probe test sets it; nothing else does.
+    pub theme: Option<domux_core::theme::Theme>,
 }
 
 impl HarnessOptions {
@@ -103,6 +106,7 @@ impl HarnessOptions {
             providers: Vec::new(),
             platform: None,
             runner: None,
+            theme: None,
         }
     }
 }
@@ -201,6 +205,7 @@ pub struct Harness {
     /// every process a test puts in a foreground has its own, and the numbers a failure
     /// prints are the same every run.
     next_pid: u32,
+    theme: Option<domux_core::theme::Theme>,
 }
 
 /// Where `Harness::set_foreground_for` starts numbering. Clear of the pid the harness gives
@@ -261,6 +266,7 @@ impl Harness {
             providers: opts.providers,
             platform: opts.platform.unwrap_or("macos"),
             next_pid: FIRST_FAKE_PID,
+            theme: opts.theme,
         };
         h.start_server().await;
         h.client = h.attach(opts.cols, opts.rows).await;
@@ -287,6 +293,7 @@ impl Harness {
             config: loaded,
             project_root: self.project_root.clone(),
             providers: self.providers.clone(),
+            theme: self.theme.clone(),
             deps: CoreDeps {
                 spawner,
                 inspector,
