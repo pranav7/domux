@@ -2197,6 +2197,46 @@ async fn attach_goes_on_when_the_server_refuses_to_register_the_directory() {
     assert_eq!(h.model().projects.len(), 1, "and no project was added");
 }
 
+/// A path reaches the server as a JSON string, so a repository whose path is not UTF-8 cannot
+/// be registered, and the offer says so in one line instead of asking.
+///
+/// It asked before. git prints the top level as the directory's own bytes, and reading them as
+/// text turned the path into one that does not exist: the question named it, a no named a
+/// command that could not open it, and a yes was told the directory did not exist.
+#[tokio::test]
+async fn attach_from_a_repository_whose_path_is_not_utf8_says_why_it_does_not_ask() {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    // A file system that refuses a name that is not UTF-8, as APFS does, has no such
+    // repository to attach from.
+    if std::fs::create_dir(&repo).is_err() {
+        return;
+    }
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let h = Harness::start(Config::default(), 40, 10).await;
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &repo), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    let said = format!(
+        "Could not ask whether to register {}: its path is not valid UTF-8, which a project's path has to be.",
+        repo.canonicalize().unwrap().display()
+    );
+    assert!(
+        visible(&output).contains(&said),
+        "it says why:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
 /// The line after a no is for pasting, so a directory a shell would split is quoted in it.
 #[tokio::test]
 async fn declining_quotes_a_directory_the_shell_would_split() {

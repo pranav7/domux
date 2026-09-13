@@ -234,10 +234,12 @@ struct Repository {
 /// A fork, and it is allowed here because this is the command a person typed, before the
 /// attach and nowhere near the core task. `rev-parse` answers in milliseconds.
 fn repository_of(dir: &Path) -> Option<Repository> {
-    let top = domux_server::git::run(dir, &["rev-parse", "--show-toplevel"])
+    // Read as a path and not as text, so a top level whose name is not UTF-8 is still the
+    // directory it names, and the offer can say it cannot be registered.
+    let top = domux_server::git::run_for_path(dir, &["rev-parse", "--show-toplevel"])
         .ok()
-        .filter(|top| !top.is_empty())
-        .map(|top| resolved(Path::new(&top)))?;
+        .filter(|top| !top.as_os_str().is_empty())
+        .map(|top| resolved(&top))?;
     let common_dir = common_dir_of(&top);
     Some(Repository { top, common_dir })
 }
@@ -249,18 +251,19 @@ fn repository_of(dir: &Path) -> Option<Repository> {
 /// `--path-format=absolute` is git 2.31 and later; an older git does not know it, so anything
 /// but one full path is asked again without it, and the relative answer is read from `top`.
 fn common_dir_of(top: &Path) -> Option<PathBuf> {
-    let git = |args: &[&str]| domux_server::git::run(top, args).ok();
+    let git = |args: &[&str]| domux_server::git::run_for_path(top, args).ok();
     let common_dir = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .and_then(|answer| full_path_answer(&answer))
+        .and_then(full_path_answer)
         .or_else(|| git(&["rev-parse", "--git-common-dir"]).map(|answer| top.join(answer)))?;
     common_dir.canonicalize().ok()
 }
 
 /// `answer` as a path when it is exactly one full path. An older git echoes the flag it does
 /// not know on a line of its own before its answer, and that is not one.
-fn full_path_answer(answer: &str) -> Option<PathBuf> {
-    let path = Path::new(answer);
-    (path.is_absolute() && !answer.contains('\n')).then(|| path.to_path_buf())
+fn full_path_answer(answer: PathBuf) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let one_line = !answer.as_os_str().as_bytes().contains(&b'\n');
+    (answer.is_absolute() && one_line).then_some(answer)
 }
 
 /// A path the server holds: a project's root or a workspace's path.
@@ -735,13 +738,14 @@ mod tests {
     /// line of its own, so anything but one full path is asked again without it.
     #[test]
     fn only_one_full_path_is_taken_as_the_common_directory() {
+        let answer = |said: &str| full_path_answer(PathBuf::from(said));
         assert_eq!(
-            full_path_answer("/repo/audrey-app/.git"),
+            answer("/repo/audrey-app/.git"),
             Some(PathBuf::from("/repo/audrey-app/.git"))
         );
-        assert_eq!(full_path_answer("--path-format=absolute\n.git"), None);
-        assert_eq!(full_path_answer(".git"), None);
-        assert_eq!(full_path_answer(""), None);
+        assert_eq!(answer("--path-format=absolute\n.git"), None);
+        assert_eq!(answer(".git"), None);
+        assert_eq!(answer(""), None);
     }
 
     /// Against real repositories: the checkout and a worktree made beside it answer one common
@@ -777,6 +781,31 @@ mod tests {
         assert_ne!(common_dir_of(&other), Some(common));
         assert_eq!(common_dir_of(&plain), None);
         assert!(repository_of(&plain).is_none());
+    }
+
+    /// A directory's name does not have to be UTF-8, and git prints a top level as the
+    /// directory's own bytes. Read as text, `caf\xe9` became `caf\u{fffd}`, a directory that
+    /// is not there, so the offer asked about a path that could not be registered and then
+    /// said it did not exist.
+    #[test]
+    fn a_repository_whose_path_is_not_utf8_is_found_at_its_own_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join(OsString::from_vec(b"caf\xe9".to_vec()));
+        // A file system that refuses a name that is not UTF-8, as APFS does, has no such
+        // repository to find.
+        if std::fs::create_dir(&repo).is_err() {
+            return;
+        }
+        domux_server::testing::git(&repo, &["init", "-q", "-b", "main"]);
+        let inside = repo.join("src");
+        std::fs::create_dir(&inside).unwrap();
+
+        let found = repository_of(&inside).expect("the directory is a repository");
+        assert_eq!(found.top, repo.canonicalize().unwrap());
+        assert_eq!(
+            found.common_dir,
+            Some(repo.join(".git").canonicalize().unwrap())
+        );
     }
 
     /// `open .` registers the directory it is typed in, which is the wrong one when the offer
