@@ -7,7 +7,7 @@ use crate::names::{
     CONFIG_DIR_NAME, OLD_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME,
     THEMES_DIR_NAME, V1_SESSIONS_DIR_NAME, V1_STATE_DIR_NAME,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The inputs the paths depend on.
 #[derive(Debug, Clone)]
@@ -85,7 +85,11 @@ pub fn config_file_in(env: &Env) -> PathBuf {
 /// Where theme files live: `themes/` beside the config file, so `DOMUX_CONFIG_FILE` moves the
 /// themes with the config.
 pub fn themes_dir_in(env: &Env) -> PathBuf {
-    let config = config_file_in(env);
+    themes_dir_beside(&config_file_in(env))
+}
+
+/// The theme directory for a config file at `config`: `themes/` in the same directory.
+pub fn themes_dir_beside(config: &Path) -> PathBuf {
     config
         .parent()
         .map(|dir| dir.join(THEMES_DIR_NAME))
@@ -175,6 +179,10 @@ mod tests {
         );
         env.config_file_override = Some("/scratch/cfg/domux.toml".into());
         assert_eq!(themes_dir_in(&env), PathBuf::from("/scratch/cfg/themes"));
+        assert_eq!(
+            themes_dir_beside(Path::new("domux.toml")),
+            PathBuf::from("themes")
+        );
     }
 
     #[test]

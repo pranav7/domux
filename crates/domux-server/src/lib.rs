@@ -35,7 +35,6 @@ use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::PaneId;
 use domux_core::keymap::Keymap;
 use domux_core::model::Model;
-use domux_core::names::THEMES_DIR_NAME;
 use domux_core::theme::{builtin::BUILTIN, Themes};
 use domux_term::Size;
 use std::collections::HashMap;
@@ -63,10 +62,7 @@ pub struct LoadedConfig {
 /// file. Answers the themes, or `None` when the theme cannot be used, with every warning to
 /// report. Each warning is also logged, so a theme that failed at start is in the log.
 pub fn load_themes(config_path: &Path, config: &Config) -> (Option<Themes>, Vec<String>) {
-    let dir = config_path
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(THEMES_DIR_NAME);
+    let dir = domux_core::paths::themes_dir_beside(config_path);
     let choice = config.theme.choice();
     // The name was checked before it reaches here, so it is never more than a file name.
     let read = |name: &str| match std::fs::read_to_string(dir.join(format!("{name}.toml"))) {
