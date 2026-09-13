@@ -75,6 +75,25 @@ pub fn hook_command(bin: &Path, kind: AgentKind) -> String {
     )
 }
 
+/// Which path a hook runs: `linked`, the `~/bin` path, when it resolves to the same file as
+/// `running`, the binary doing the install, and `running` otherwise (decision record 0040).
+///
+/// The symlink is worth writing because it survives a rebuild that moves the binary. But a
+/// file at that path is not evidence that it is the running binary: V1 installed itself at
+/// `~/bin/domux` and has no `agent` subcommand, so a hook that ran it failed on every event. A
+/// missing path, a dangling link, a directory, a copy and a link to any other file all fall
+/// through. Both sides are resolved, because macOS answers `current_exe` with the path the
+/// binary was started by, which can itself be a link.
+pub fn hook_binary(linked: &Path, running: &Path) -> PathBuf {
+    match (
+        std::fs::canonicalize(linked),
+        std::fs::canonicalize(running),
+    ) {
+        (Ok(a), Ok(b)) if a == b => linked.to_path_buf(),
+        _ => running.to_path_buf(),
+    }
+}
+
 /// A path a shell reads as one word is written bare; anything else is single quoted (V1's
 /// `shellCommandPath`, commit 34db116).
 ///
