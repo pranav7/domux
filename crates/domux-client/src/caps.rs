@@ -177,11 +177,18 @@ fn read_answers(fd: std::os::fd::RawFd, cap: Duration) -> String {
             .as_millis() as i32;
         // Safe: one pollfd, a bounded timeout.
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 1, left.max(1)) };
+        // A signal, a resize say, interrupts the wait without ending it.
+        if n < 0 && interrupted() {
+            continue;
+        }
         if n <= 0 {
             break;
         }
         // Safe: a one byte buffer this call owns, on a descriptor poll just called readable.
         let n = unsafe { libc::read(fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n < 0 && interrupted() {
+            continue;
+        }
         if n <= 0 {
             break;
         }
@@ -191,6 +198,11 @@ fn read_answers(fd: std::os::fd::RawFd, cap: Duration) -> String {
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Whether the call that just failed was interrupted by a signal.
+fn interrupted() -> bool {
+    std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
 }
 
 /// Whether `buf` ends with a device attributes answer: `ESC [ ?`, digits and `;`, then `c`.
@@ -472,6 +484,42 @@ mod tests {
         let colors = colors_from_answers(&text);
         assert_eq!((colors.fg, colors.bg), (Some(FG), Some(BG)));
         assert_eq!(colors.palette, [None; 16]);
+    }
+
+    extern "C" fn ignore_signal(_: libc::c_int) {}
+
+    /// A signal that lands during the read, a window resized while attach waits, interrupts
+    /// `poll`. The read carries on to the answers rather than ending there and leaving them to
+    /// be typed into the pane.
+    #[test]
+    fn read_answers_carries_on_past_a_signal_that_interrupts_the_wait() {
+        // Safe: a handler that does nothing, installed without SA_RESTART so `poll` sees EINTR,
+        // for a signal nothing else in this test binary uses.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = ignore_signal as *const () as libc::sighandler_t;
+            libc::sigemptyset(&mut action.sa_mask);
+            assert_eq!(
+                libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()),
+                0
+            );
+        }
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        // Safe: the calling thread's own id.
+        let reading = unsafe { libc::pthread_self() };
+        let answerer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            // Safe: the reading thread is inside `read_answers` for the next two seconds.
+            unsafe { libc::pthread_kill(reading, libc::SIGUSR1) };
+            std::thread::sleep(Duration::from_millis(100));
+            writer
+                .write_all(&[BG_ANSWER, DEVICE_ATTRIBUTES].concat())
+                .unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let text = read_answers(reader.as_raw_fd(), Duration::from_secs(2));
+        assert_eq!(colors_from_answers(&text).bg, Some(BG), "{text:?}");
+        drop(answerer);
     }
 
     /// A terminal that answers nothing costs the cap and gives nothing. Absent, not black.
