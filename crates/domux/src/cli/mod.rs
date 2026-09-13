@@ -39,8 +39,21 @@ pub fn socket() -> PathBuf {
 /// than under this one. `.` then meant the server's directory, and `open .` answered for the
 /// wrong folder with a status of 0 (decision record 0041). The path is made full against this
 /// command's directory and not resolved further: the server resolves links itself.
-pub fn full_path(typed: &str) -> anyhow::Result<PathBuf> {
-    std::path::absolute(typed).with_context(|| format!("make {typed:?} a full path"))
+pub fn full_path(typed: &str) -> anyhow::Result<String> {
+    let full = std::path::absolute(typed).with_context(|| format!("make {typed:?} a full path"))?;
+    as_text(full)
+}
+
+/// A full path as the text the server takes. A path reaches it as a JSON string, so a path that
+/// is not UTF-8 cannot be sent, and `json!` panics on one rather than failing: the directory
+/// the command was typed in is refused here instead, with a status of 1.
+fn as_text(full: PathBuf) -> anyhow::Result<String> {
+    full.into_os_string().into_string().map_err(|full| {
+        anyhow::anyhow!(
+            "{} is not valid UTF-8, which a project's path has to be",
+            std::path::Path::new(&full).display()
+        )
+    })
 }
 
 /// The one message for a server that is not listening, so every subcommand names the same
@@ -312,6 +325,22 @@ mod tests {
         }));
         e.code = ErrorCode::NotFound;
         assert_eq!(question(&e), None);
+    }
+
+    /// A path reaches the server as a JSON string, and `json!` panics on a path it cannot
+    /// write as one.
+    #[test]
+    fn a_full_path_that_is_not_utf8_is_refused_rather_than_sent() {
+        use std::os::unix::ffi::OsStringExt;
+        let full = PathBuf::from(std::ffi::OsString::from_vec(b"/home/u/caf\xe9".to_vec()));
+        assert_eq!(
+            as_text(full).unwrap_err().to_string(),
+            "/home/u/caf\u{fffd} is not valid UTF-8, which a project's path has to be"
+        );
+        assert_eq!(
+            as_text(PathBuf::from("/home/u/cafe")).unwrap(),
+            "/home/u/cafe"
+        );
     }
 
     #[test]

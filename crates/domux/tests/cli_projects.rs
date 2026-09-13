@@ -394,6 +394,41 @@ async fn project_add_dot_prints_the_directory_it_was_typed_in() {
     );
 }
 
+/// A directory whose path is not UTF-8 cannot be sent, because a path reaches the server as a
+/// JSON string. `open .` and `project add .` say so and exit 1. Once they sent the full path
+/// rather than the `.` that was typed, they panicked with a status of 101 there instead.
+///
+/// Linux only: a Mac's file systems refuse a name that is not UTF-8, so the directory cannot
+/// be made there and the case cannot arise.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn open_and_project_add_in_a_directory_that_is_not_utf8_say_so_and_register_nothing() {
+    use std::os::unix::ffi::OsStrExt;
+    let h = Harness::start(Config::default(), 80, 24).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    std::fs::create_dir(&dir).unwrap();
+    let before = h.model().projects.len();
+
+    for args in [&["open", "."][..], &["project", "add", "."]] {
+        let said = run(domux(&h).args(args).current_dir(&dir)).await;
+        assert_eq!(said.code, Some(1), "{args:?}: {}", said.err);
+        assert_eq!(
+            said.err.trim(),
+            format!(
+                "{} is not valid UTF-8, which a project's path has to be",
+                dir.display()
+            ),
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        h.model().projects.len(),
+        before,
+        "and nothing was registered"
+    );
+}
+
 // ---------------------------------------------------------------- name
 
 /// The names one workspace has, read back through `workspace list` rather than polled out of

@@ -122,4 +122,6 @@ offered now.
   the line says so. A reader who is not on a terminal is still not asked and told nothing.
 - `project.add` with a relative path answers `invalid_params` and registers nothing. An empty
   path and a path that starts with `~` are refused the same way, each with its own sentence:
-  one is no path at all, and the other was written for a shell that never saw it.
+  one is no path at all, and the other was written for a shell that never saw it. `open` and
+  `project add` typed in a directory whose path is not UTF-8 say so and exit 1, because the
+  full path they now send cannot be written as a JSON string.
