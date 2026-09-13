@@ -969,20 +969,43 @@ mod tests {
     }
 
     /// What is pasted is what was asked about: the command in the line, run by a shell,
-    /// hands `open` the directory back whole.
+    /// hands `open` the directory back whole. zsh is asked too where it is installed, with
+    /// `EXTENDED_GLOB` set, because that is the shell that reads `~`, `#` and `^` as patterns.
     #[test]
     fn the_command_in_the_decline_line_hands_a_shell_the_directory_whole() {
-        for dir in ["/home/u/my notes", "/home/u/it's $HOME", "/home/u/a*b [1]"] {
+        let zsh = std::process::Command::new("zsh")
+            .args(["-f", "-c", "true"])
+            .output()
+            .is_ok_and(|out| out.status.success());
+        let mut shells = vec![vec!["sh", "-c"]];
+        if zsh {
+            shells.push(vec!["zsh", "-f", "-o", "extendedglob", "-c"]);
+        }
+        for dir in [
+            "/home/u/my notes",
+            "/home/u/it's $HOME",
+            "/home/u/a*b [1]",
+            "/home/u/a~b/c#d^e",
+        ] {
             let line = declined(dir);
             let command = line
                 .strip_prefix("Left unregistered. Run domux open ")
                 .and_then(|rest| rest.strip_suffix(" to register it later."))
                 .unwrap_or_else(|| panic!("{line}"));
-            let out = std::process::Command::new("sh")
-                .args(["-c", &format!("printf %s {command}")])
-                .output()
-                .unwrap();
-            assert_eq!(String::from_utf8_lossy(&out.stdout), dir, "{line}");
+            for shell in &shells {
+                let out = std::process::Command::new(shell[0])
+                    .args(&shell[1..])
+                    .arg(format!("printf %s {command}"))
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout),
+                    dir,
+                    "{} read {line}: {}",
+                    shell[0],
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
         }
     }
 

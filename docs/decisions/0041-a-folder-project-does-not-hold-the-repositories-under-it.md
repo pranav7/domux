@@ -109,6 +109,8 @@ offered now.
   `Left unregistered. Run domux open <dir> to register it later.` `open .` is only the same
   thing when attach was typed at the top level. The line is for pasting, so a directory a shell
   would split or expand is single quoted in it, by the one helper the hook installer also uses.
+  That helper quotes `~`, `#` and `^` as well, which a POSIX shell leaves alone inside a word
+  but zsh with `EXTENDED_GLOB` set reads as patterns.
 - A folder project registered over a tree of repositories, such as `domux open ~/code`, now
   asks in each repository under it, on every attach there, until each is registered. Before,
   the folder held them all and nothing was asked. Removing the folder project with
