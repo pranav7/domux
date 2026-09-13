@@ -7,7 +7,8 @@
 use domux_core::model::agent::AgentKind;
 use domux_server::agents::hooks::EVENTS_OPENCODE;
 use domux_server::agents::install::{
-    apply, backup_path, hook_command, is_v1_line, is_v2_line, opencode_plugin, plan, preview,
+    apply, backup_path, hook_binary, hook_command, is_v1_line, is_v2_line, opencode_plugin, plan,
+    preview,
 };
 use domux_server::agents::manifests::Registry;
 use serde_json::Value;
@@ -538,5 +539,114 @@ fn v1s_lines_are_recognised_and_the_authors_own_lines_are_not() {
     ] {
         assert!(is_v2_line(command), "{command}");
         assert!(!is_v1_line(command), "{command}");
+    }
+}
+
+/// A temporary directory holding a script at `release/domux`, standing in for the binary that
+/// runs the install. Its contents are what make it one binary and not another.
+fn running_binary() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let running = dir.path().join("release/domux");
+    std::fs::create_dir_all(running.parent().unwrap()).unwrap();
+    std::fs::write(&running, "#!/bin/sh\necho v2\n").unwrap();
+    (dir, running)
+}
+
+/// The symlink in `~/bin` survives a rebuild that moves the binary, so an install run
+/// through it writes the symlink (decision record 0040). A chain of two links is the same file.
+#[test]
+fn the_hook_runs_the_bin_path_when_it_links_to_the_running_binary() {
+    let (dir, running) = running_binary();
+    let linked = dir.path().join("bin/domux");
+    std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&running, &linked).unwrap();
+    assert_eq!(hook_binary(&linked, &running), linked);
+
+    let middle = dir.path().join("links/domux");
+    std::fs::create_dir_all(middle.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&running, &middle).unwrap();
+    let chained = dir.path().join("bin/domux-chained");
+    std::os::unix::fs::symlink(&middle, &chained).unwrap();
+    assert_eq!(
+        hook_binary(&chained, &running),
+        chained,
+        "two links that end at the running binary are still the running binary"
+    );
+}
+
+/// V1 installed itself at `~/bin/domux`, and V1 has no `agent` subcommand, so a hook that runs it
+/// fails on every event with `unknown command "agent"` (MUX-36).
+#[test]
+fn the_hook_runs_the_running_binary_when_the_bin_path_is_another_binary() {
+    let (dir, running) = running_binary();
+    let linked = dir.path().join("bin/domux");
+    std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    std::fs::write(
+        &linked,
+        "#!/bin/sh\necho 'Error: unknown command \"agent\"' >&2\nexit 1\n",
+    )
+    .unwrap();
+    assert_eq!(hook_binary(&linked, &running), running);
+}
+
+#[test]
+fn the_hook_runs_the_running_binary_when_the_bin_path_links_elsewhere() {
+    let (dir, running) = running_binary();
+    let v1 = dir.path().join("v1/domux");
+    std::fs::create_dir_all(v1.parent().unwrap()).unwrap();
+    std::fs::write(&v1, "#!/bin/sh\necho v1\n").unwrap();
+    let linked = dir.path().join("bin/domux");
+    std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&v1, &linked).unwrap();
+    assert_eq!(hook_binary(&linked, &running), running);
+}
+
+#[test]
+fn the_hook_runs_the_running_binary_when_the_bin_path_is_missing_dangling_or_a_directory() {
+    let (dir, running) = running_binary();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    assert_eq!(
+        hook_binary(&bin.join("domux"), &running),
+        running,
+        "missing"
+    );
+
+    let dangling = bin.join("dangling");
+    std::os::unix::fs::symlink(dir.path().join("target/release/domux"), &dangling).unwrap();
+    assert_eq!(hook_binary(&dangling, &running), running, "dangling");
+
+    let directory = bin.join("directory");
+    std::fs::create_dir_all(&directory).unwrap();
+    assert_eq!(hook_binary(&directory, &running), running, "a directory");
+}
+
+/// The repair for a file whose hooks run the wrong binary: an install for another binary takes
+/// every line the previous one wrote and puts one line per event in their place.
+#[test]
+fn a_plan_for_another_binary_replaces_every_line_the_previous_binary_wrote() {
+    let (_d, home) = home_with(None);
+    let dir = home.join(".claude");
+    let old = PathBuf::from("/home/a/bin/domux");
+    let new = PathBuf::from("/home/a/.local/bin/domux");
+    apply(&plan(&Registry::builtin(), AgentKind::Claude, &dir, &old).unwrap()).unwrap();
+
+    let p = plan(&Registry::builtin(), AgentKind::Claude, &dir, &new).unwrap();
+    let old_command = hook_command(&old, AgentKind::Claude);
+    let new_command = hook_command(&new, AgentKind::Claude);
+    assert_eq!(p.removed.len(), 9, "{p:?}");
+    assert!(p.removed.iter().all(|(_, c)| *c == old_command), "{p:?}");
+    assert_eq!(p.added.len(), 9, "{p:?}");
+    assert!(p.added.iter().all(|(_, c)| *c == new_command), "{p:?}");
+
+    apply(&p).unwrap();
+    let after = read_json(&dir.join("settings.json"));
+    for (event, _) in &p.added {
+        assert_eq!(
+            commands(&after, event),
+            vec![new_command.clone()],
+            "{event} runs the new binary once"
+        );
     }
 }
