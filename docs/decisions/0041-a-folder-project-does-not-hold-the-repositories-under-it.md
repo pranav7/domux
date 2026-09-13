@@ -141,5 +141,7 @@ offered now.
 - `project.add` with a relative path answers `invalid_params` and registers nothing. An empty
   path and a path that starts with `~` are refused the same way, each with its own sentence:
   one is no path at all, and the other was written for a shell that never saw it. `open` and
-  `project add` typed in a directory whose path is not UTF-8 say so and exit 1, because the
-  full path they now send cannot be written as a JSON string.
+  `project add` given a path that is not UTF-8 once it is made full say so and exit 1, because
+  that full path cannot be written as a JSON string. A path like that is resolved first, so
+  `open ../x` typed in such a directory still registers `x` when its own path is UTF-8, and
+  `open .` there is refused.
