@@ -78,8 +78,8 @@ pub async fn run() -> anyhow::Result<()> {
 /// not on a terminal, skips the offer and says nothing. Anything that stops the offer once
 /// there is someone to ask comes back as `Stopped`, which `run` prints as one line before it
 /// attaches: a server that will not answer `project.list`, a terminal that will not take the
-/// question, a `project.add` the server refuses, a switch that fails. A git that will not answer only means the directory is treated as a
-/// plain folder.
+/// question, a `project.add` the server refuses, a switch that fails. A git that will not
+/// answer only means the directory is treated as a plain folder.
 async fn offer_to_register_here() -> Result<(), Stopped> {
     let Ok(cwd) = std::env::current_dir() else {
         return Ok(());
@@ -331,9 +331,9 @@ fn claims(projects: &[ProjectInfo], workspaces: &[WorkspaceInfo]) -> Vec<Claim> 
 /// submodule checked out in a linked worktree keeps its own under the project's
 /// `.git/worktrees`, so both are the project's wherever they were made (decision record 0041).
 /// A git directory inside another repository's is only ever a worktree's or a submodule's.
-/// `common_dir` answers the common directory of the worktree at a path, and every
-/// answer is a git process, so it is asked only then: first about `top`, then about each git
-/// project's root until one holds.
+/// `common_dir` answers the common directory of the worktree at a path, and every answer is a
+/// git process, so it is asked only then: first about `top`, then about each git project's
+/// root until one holds.
 ///
 /// The common directory only ever adds to what is held. A submodule or a clone under a git
 /// project has a common directory of its own, and the project's root holds it by its path, as
