@@ -108,8 +108,8 @@ pub enum ClientMsg {
     Detach,
     /// The client could not write the clipboard; the reason is shown as a hint.
     ClipboardFailed(String),
-    /// The terminal's colours changed from what this client last sent. Not the reader's
-    /// activity: it moves no focus and no most recent client.
+    /// The terminal's colours now, sent when the desktop theme the client follows changed. Not
+    /// the reader's activity: it moves no focus and no most recent client.
     Colors(TerminalColors),
 }
 

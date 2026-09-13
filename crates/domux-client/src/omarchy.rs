@@ -250,9 +250,9 @@ pub enum NotFollowing {
 pub enum Polled {
     /// The stamp is the one from the last look, so nothing was read.
     Unchanged,
-    /// The theme was read and gives the colours last sent.
+    /// The theme was read and gives the colours it gave the last time it was read.
     Same,
-    /// The theme was read and gives these colours, which differ from the last sent.
+    /// The theme was read and gives these colours, which differ from the last it gave.
     Changed(TerminalColors),
     /// The theme could not be read; the string says why and names the directory.
     Unreadable(String),
@@ -263,6 +263,10 @@ pub enum Polled {
 pub struct Follow {
     current: PathBuf,
     stamp: Stamp,
+    /// The colours the theme gave the last time it was read. A read is a change only against
+    /// these, never against what the terminal answered at attach: a terminal can draw the
+    /// theme's ground with its own colour in a palette slot, and that is not a change.
+    read: TerminalColors,
 }
 
 impl Follow {
@@ -276,25 +280,34 @@ impl Follow {
         if !matches(answers, &theme) {
             return Err(NotFollowing::NotOmarchysTheme);
         }
-        Ok(Follow { current, stamp })
+        Ok(Follow {
+            current,
+            stamp,
+            read: theme,
+        })
     }
 
     /// Reads the theme only when the stamp changed since the last look, and keeps the new stamp
     /// whether or not the read works, so a file that stays broken is reported once.
-    pub fn poll(&mut self, last_sent: &TerminalColors) -> Polled {
+    pub fn poll(&mut self) -> Polled {
         if Stamp::take(&self.current) == self.stamp {
             return Polled::Unchanged;
         }
-        self.read_now(last_sent)
+        self.read_now()
     }
 
-    /// Reads the theme whatever the stamp, and records the stamp. The stamp is taken before the
-    /// read, so a change made during the read is read again at the next poll.
-    pub fn read_now(&mut self, last_sent: &TerminalColors) -> Polled {
+    /// Reads the theme whatever the stamp, and records the stamp and the colours. The stamp is
+    /// taken before the read, so a change made during the read is read again at the next poll.
+    /// A theme that cannot be read leaves the colours as they were, so the next good read is
+    /// compared with the last good one.
+    pub fn read_now(&mut self) -> Polled {
         self.stamp = Stamp::take(&self.current);
         match read_theme(&self.current.join(THEME_IN_CURRENT)) {
-            Ok(colors) if colors == *last_sent => Polled::Same,
-            Ok(colors) => Polled::Changed(colors),
+            Ok(colors) if colors == self.read => Polled::Same,
+            Ok(colors) => {
+                self.read = colors.clone();
+                Polled::Changed(colors)
+            }
             Err(reason) => Polled::Unreadable(reason),
         }
     }
@@ -776,8 +789,8 @@ mod tests {
     fn poll_reads_nothing_while_the_stamp_is_unchanged() {
         let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
         let mut follow = Follow::start(home.path(), &ristretto()).expect("follows");
-        assert_eq!(follow.poll(&ristretto()), Polled::Unchanged);
-        assert_eq!(follow.poll(&ristretto()), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Unchanged);
 
         // Garbage of the same length with the time put back leaves the stamp as it was, so a
         // poll that read the file would say it is unreadable.
@@ -787,24 +800,22 @@ mod tests {
         let handle = fs::OpenOptions::new().write(true).open(&file).unwrap();
         handle.set_modified(mtime).unwrap();
         drop(handle);
-        assert_eq!(follow.poll(&ristretto()), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Unchanged);
     }
 
     #[test]
-    fn poll_gives_the_new_colours_once_after_a_theme_change_and_same_when_they_equal_the_last_sent()
-    {
+    fn poll_gives_the_new_colours_once_after_a_theme_change_and_same_when_the_file_gives_the_last_read(
+    ) {
         let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
         let mut follow = Follow::start(home.path(), &ristretto()).expect("follows");
-        let mut last_sent = ristretto();
 
         set_theme(
             home.path(),
             "catppuccin",
             &[("colors.toml", CATPPUCCIN_COLORS_TOML)],
         );
-        assert_eq!(follow.poll(&last_sent), Polled::Changed(catppuccin()));
-        last_sent = catppuccin();
-        assert_eq!(follow.poll(&last_sent), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Changed(catppuccin()));
+        assert_eq!(follow.poll(), Polled::Unchanged);
 
         // Catppuccin set again: new files, the same colours.
         set_theme(
@@ -812,27 +823,32 @@ mod tests {
             "catppuccin",
             &[("colors.toml", CATPPUCCIN_COLORS_TOML)],
         );
-        assert_eq!(follow.poll(&last_sent), Polled::Same);
-        assert_eq!(follow.poll(&last_sent), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Same);
+        assert_eq!(follow.poll(), Polled::Unchanged);
+    }
 
-        // Colours that differ from the last sent only in the palette are a change.
-        let partial = TerminalColors {
-            palette: [None; 16],
-            ..catppuccin()
-        };
+    /// Start matches the background and the foreground only, so a terminal with its own colour
+    /// in a palette slot still follows. The file it read at start is what a read is compared
+    /// with, so the theme left as it is gives `Same` rather than the file's palette.
+    #[test]
+    fn a_read_is_compared_with_the_file_start_read_and_not_with_the_answers() {
+        let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
+        let mut answers = ristretto();
+        answers.palette[4] = Some(rgb(0xff5555));
+        let mut follow = Follow::start(home.path(), &answers).expect("follows");
+        assert_eq!(follow.read_now(), Polled::Same);
         set_theme(
             home.path(),
-            "catppuccin",
-            &[("colors.toml", CATPPUCCIN_COLORS_TOML)],
+            "ristretto",
+            &[("colors.toml", RISTRETTO_COLORS_TOML)],
         );
-        assert_eq!(follow.poll(&partial), Polled::Changed(catppuccin()));
+        assert_eq!(follow.poll(), Polled::Same);
     }
 
     #[test]
     fn a_file_that_cannot_be_parsed_is_unreadable_once_and_unchanged_until_it_changes() {
         let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
         let mut follow = Follow::start(home.path(), &ristretto()).expect("follows");
-        let last_sent = ristretto();
 
         set_theme(
             home.path(),
@@ -840,23 +856,23 @@ mod tests {
             &[("colors.toml", "background = \"#000000\"\n")],
         );
         let dir = home.path().join(THEME_DIR);
-        match follow.poll(&last_sent) {
+        match follow.poll() {
             Polled::Unreadable(reason) => {
                 assert!(reason.contains(&dir.display().to_string()), "{reason}")
             }
             other => panic!("expected unreadable, got {other:?}"),
         }
-        assert_eq!(follow.poll(&last_sent), Polled::Unchanged);
-        assert_eq!(follow.poll(&last_sent), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Unchanged);
+        assert_eq!(follow.poll(), Polled::Unchanged);
 
         // A directory removed between polls is unreadable once too.
         fs::remove_dir_all(&dir).unwrap();
-        assert!(matches!(follow.poll(&last_sent), Polled::Unreadable(_)));
-        assert_eq!(follow.poll(&last_sent), Polled::Unchanged);
+        assert!(matches!(follow.poll(), Polled::Unreadable(_)));
+        assert_eq!(follow.poll(), Polled::Unchanged);
 
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("colors.toml"), CATPPUCCIN_COLORS_TOML).unwrap();
-        assert_eq!(follow.poll(&last_sent), Polled::Changed(catppuccin()));
+        assert_eq!(follow.poll(), Polled::Changed(catppuccin()));
     }
 
     #[test]
@@ -864,8 +880,7 @@ mod tests {
         let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
         let mut follow = Follow::start(home.path(), &ristretto()).expect("follows");
 
-        assert_eq!(follow.read_now(&ristretto()), Polled::Same);
-        assert_eq!(follow.read_now(&catppuccin()), Polled::Changed(ristretto()));
+        assert_eq!(follow.read_now(), Polled::Same);
 
         // read_now records the stamp it read under, so a poll after it reads nothing.
         set_theme(
@@ -873,18 +888,13 @@ mod tests {
             "catppuccin",
             &[("colors.toml", CATPPUCCIN_COLORS_TOML)],
         );
-        assert_eq!(follow.read_now(&ristretto()), Polled::Changed(catppuccin()));
-        assert_eq!(follow.poll(&ristretto()), Polled::Unchanged);
+        assert_eq!(follow.read_now(), Polled::Changed(catppuccin()));
+        assert_eq!(follow.poll(), Polled::Unchanged);
+        assert_eq!(follow.read_now(), Polled::Same);
 
         fs::remove_dir_all(home.path().join(THEME_DIR)).unwrap();
-        assert!(matches!(
-            follow.read_now(&catppuccin()),
-            Polled::Unreadable(_)
-        ));
-        assert!(matches!(
-            follow.read_now(&catppuccin()),
-            Polled::Unreadable(_)
-        ));
+        assert!(matches!(follow.read_now(), Polled::Unreadable(_)));
+        assert!(matches!(follow.read_now(), Polled::Unreadable(_)));
     }
 
     #[test]

@@ -94,8 +94,6 @@ struct Session<B: Backend> {
     follow: Option<omarchy::Follow>,
     /// Whether the server said the client's theme reads the terminal, with `FollowColors`.
     following: bool,
-    /// The terminal colours the server was last told: the hello's, then each `Colors` sent.
-    last_sent: TerminalColors,
 }
 
 impl<B: Backend> Session<B>
@@ -185,7 +183,7 @@ where
                 }
                 _ = follow_poll.tick(), if self.following && self.follow.is_some() => {
                     let polled = match self.follow.as_mut() {
-                        Some(follow) => follow.poll(&self.last_sent),
+                        Some(follow) => follow.poll(),
                         None => omarchy::Polled::Unchanged,
                     };
                     if !self.on_polled(polled, writer).await {
@@ -239,7 +237,8 @@ where
             ServerMsg::FollowColors(true) => {
                 // A client with no `Follow` watches nothing, whatever the server says. One that
                 // turns on reads the theme at once, so a change made since attach, or while it
-                // was not following, is sent now rather than never.
+                // was not following, is sent now rather than never. A theme left as attach
+                // found it sends nothing: the terminal's answers stand until the first change.
                 if self.following {
                     return Ok(None);
                 }
@@ -247,19 +246,19 @@ where
                     return Ok(None);
                 };
                 self.following = true;
-                let polled = follow.read_now(&self.last_sent);
+                let polled = follow.read_now();
                 if !self.on_polled(polled, writer).await {
                     return Ok(Some(AttachOutcome::ConnectionLost));
                 }
             }
-            // The poll stops. The last sent stays, so following again sends only a difference.
+            // The poll stops. The last read stays, so following again sends only a difference.
             ServerMsg::FollowColors(false) => self.following = false,
         }
         Ok(None)
     }
 
-    /// What one look at Omarchy's theme found: new colours are sent and become the last sent,
-    /// and a theme that could not be read is logged. `false` means the write failed, so the
+    /// What one look at Omarchy's theme found: new colours are sent, and a theme that could not
+    /// be read is logged. `false` means the write failed, so the
     /// connection is gone.
     async fn on_polled<W: AsyncWrite + Unpin>(
         &mut self,
@@ -272,7 +271,6 @@ where
                     if writer.write_all(&bytes).await.is_err() {
                         return false;
                     }
-                    self.last_sent = colors;
                 }
                 Err(err) => {
                     tracing::warn!(%err, "the terminal colours could not be framed and were not sent")
@@ -523,7 +521,6 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     // Every `?` from here on leaves through the guard's `Drop`, which restores the terminal
     // before the error reaches a caller that prints it (principle 11).
     send_hello(&mut writer, &capabilities, desktop, cols, rows).await?;
-    let last_sent = capabilities.colors.clone();
     let mut session = Session {
         caps: capabilities,
         screen: Screen::new(cols, rows),
@@ -533,7 +530,6 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         clicks: Clicks::default(),
         follow,
         following: false,
-        last_sent,
     };
     let mut events = EventStream::new();
     let stop = async move {
@@ -594,17 +590,16 @@ mod tests {
         copy: CopyFn,
         stop: impl Future<Output = Stop> + Send + 'static,
     ) -> (Events, DuplexStream, Ran) {
-        running_with(cols, rows, copy, stop, None, TerminalColors::default())
+        running_with(cols, rows, copy, stop, None)
     }
 
-    /// The same, with the `Follow` attach kept and the colours the hello carried.
+    /// The same, with the `Follow` attach kept.
     fn running_with(
         cols: u16,
         rows: u16,
         copy: CopyFn,
         stop: impl Future<Output = Stop> + Send + 'static,
         follow: Option<omarchy::Follow>,
-        last_sent: TerminalColors,
     ) -> (Events, DuplexStream, Ran) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let (mut reader, mut writer) = tokio::io::split(client);
@@ -618,7 +613,6 @@ mod tests {
             clicks: Clicks::default(),
             follow,
             following: false,
-            last_sent,
         };
         let task = tokio::spawn(async move {
             let outcome = session
@@ -1079,7 +1073,7 @@ mod tests {
     }
 
     /// A session on Omarchy whose terminal draws Ristretto, as attach leaves it: the `Follow`
-    /// kept, and Ristretto as the colours the hello carried. The clipboard fails, so a
+    /// kept, having read Ristretto. The clipboard fails, so a
     /// clipboard message is answered and the test can tell when the session has read what came
     /// before it.
     fn following_ristretto() -> (tempfile::TempDir, Events, DuplexStream, Ran) {
@@ -1091,7 +1085,6 @@ mod tests {
             clipboard_fails,
             std::future::pending::<Stop>(),
             Some(follow),
-            ristretto(),
         );
         (home, events, server, task)
     }
@@ -1162,18 +1155,47 @@ mod tests {
             "the theme is read when following turns on, not at the next poll"
         );
         drop(server);
-        let (_, session) = task.await.unwrap();
-        assert_eq!(session.last_sent, catppuccin());
+        task.await.unwrap().0.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
-    async fn following_turned_on_sends_nothing_when_the_theme_matches_the_last_sent() {
+    async fn following_turned_on_sends_nothing_when_the_theme_is_the_one_attach_read() {
         let (_home, events, mut server, task) = following_ristretto();
         send_and_settle(&mut server, &ServerMsg::FollowColors(true)).await;
         expect_nothing_sent(&events, &mut server).await;
         drop(server);
         let (_, session) = task.await.unwrap();
         assert!(session.following);
+    }
+
+    /// The terminal draws Omarchy's background and foreground but its own colour in a palette
+    /// slot, the way a Ghostty config that sets `palette` after the theme does. Attach sent the
+    /// terminal's answers, and the theme has not changed, so following sends nothing: the file's
+    /// palette wins only from the first change on.
+    #[tokio::test(start_paused = true)]
+    async fn following_turned_on_sends_nothing_when_the_theme_is_unchanged_since_attach() {
+        let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
+        let mut answers = ristretto();
+        answers.palette[4] = Some(Rgb {
+            r: 0xff,
+            g: 0x55,
+            b: 0x55,
+        });
+        let follow = omarchy::Follow::start(home.path(), &answers).unwrap();
+        let (events, mut server, task) = running_with(
+            4,
+            2,
+            clipboard_fails,
+            std::future::pending::<Stop>(),
+            Some(follow),
+        );
+        send_and_settle(&mut server, &ServerMsg::FollowColors(true)).await;
+        expect_nothing_sent(&events, &mut server).await;
+        // A theme change is sent whole, the file's palette included.
+        set_catppuccin(home.path());
+        expect_soon(&mut server, &ClientMsg::Colors(catppuccin())).await;
+        drop(server);
+        task.await.unwrap().0.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -1194,7 +1216,7 @@ mod tests {
     }
 
     /// `omarchy-theme-set` with the theme already set replaces every file, so the stamp
-    /// changes and the files are read, but the colours are the last sent and nothing goes out.
+    /// changes and the files are read, but the colours are the last read and nothing goes out.
     #[tokio::test(start_paused = true)]
     async fn a_theme_set_again_with_the_same_colours_sends_nothing() {
         let (home, events, mut server, task) = following_ristretto();
@@ -1212,7 +1234,7 @@ mod tests {
         task.await.unwrap().0.unwrap();
     }
 
-    /// Off stops the poll and keeps the last sent, so turning following on again sends only
+    /// Off stops the poll and keeps the last read, so turning following on again sends only
     /// what differs from what the server was last told.
     #[tokio::test(start_paused = true)]
     async fn following_turned_off_stops_the_watch() {
@@ -1227,8 +1249,7 @@ mod tests {
             .unwrap();
         expect_soon(&mut server, &ClientMsg::Colors(catppuccin())).await;
         drop(server);
-        let (_, session) = task.await.unwrap();
-        assert_eq!(session.last_sent, catppuccin());
+        task.await.unwrap().0.unwrap();
     }
 
     /// A theme directory whose `colors.toml` is incomplete and which has no `ghostty.conf`
@@ -1255,21 +1276,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_session_with_no_follow_ignores_follow_colors_true() {
         let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
-        let (events, mut server, task) = running_with(
-            4,
-            2,
-            clipboard_fails,
-            std::future::pending::<Stop>(),
-            None,
-            ristretto(),
-        );
+        let (events, mut server, task) =
+            running_with(4, 2, clipboard_fails, std::future::pending::<Stop>(), None);
         send_and_settle(&mut server, &ServerMsg::FollowColors(true)).await;
         set_catppuccin(home.path());
         expect_nothing_sent(&events, &mut server).await;
         drop(server);
         let (_, session) = task.await.unwrap();
         assert!(!session.following);
-        assert_eq!(session.last_sent, ristretto());
     }
 
     #[test]
