@@ -364,6 +364,31 @@ async fn adding_a_file_rather_than_a_folder_says_so_and_registers_nothing() {
     );
 }
 
+/// A relative path is refused rather than read against the server's own directory.
+///
+/// MUX-37: the server inherits its directory from whichever command started it, so `.` sent
+/// as typed named that directory and not the one the reader was standing in, and the call
+/// answered for the wrong folder with a status of 0. The CLI resolves what a person types; a
+/// caller that sends a relative path by hand is told to send a full one.
+#[tokio::test]
+async fn adding_a_relative_path_is_refused_and_registers_nothing() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    let err = h
+        .api("project.add", json!({"path": "."}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidParams, "{err}");
+    assert_eq!(
+        err.message,
+        ". is a relative path, and the server cannot tell which directory it was typed in; give the full path"
+    );
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before
+    );
+}
+
 /// The removal asks first, says what goes and what stays, and leaves the worktrees where
 /// they are (interface spec 12.8).
 #[tokio::test]

@@ -60,9 +60,17 @@ pub async fn run() -> anyhow::Result<()> {
 /// It asks rather than registering, so a bare command typed in a scratch directory, a
 /// downloads folder or somebody else's checkout does not quietly leave a project behind.
 ///
+/// The directory it asks about is the repository's top level when this was typed inside a
+/// repository, and the directory itself otherwise, because that is what a project is. It says
+/// nothing when `at_home` finds the directory already held, and a folder project holds only
+/// the plain folders under it, not the repositories (decision record 0041). Before that, a
+/// server first started in the home directory seeded it as a folder project, and every
+/// repository under it was held and never offered.
+///
 /// Everything here is best effort. A directory that cannot be read, a server that will not
 /// answer `project.list`, a reader who is not on a terminal: each one skips the offer and
-/// attaches, because the attach is what was asked for and the offer is an extra.
+/// attaches, because the attach is what was asked for and the offer is an extra. A git that
+/// will not answer only means the directory is treated as a plain folder.
 async fn offer_to_register_here() -> anyhow::Result<()> {
     let Ok(cwd) = std::env::current_dir() else {
         return Ok(());
@@ -74,21 +82,18 @@ async fn offer_to_register_here() -> anyhow::Result<()> {
     }
     let projects: Vec<ProjectInfo> = call_as("project.list", json!({})).await?;
     let workspaces: Vec<WorkspaceInfo> = call_as("workspace.list", json!({})).await?;
-    let known: Vec<PathBuf> = projects
-        .iter()
-        .map(|p| p.root.clone())
-        .chain(workspaces.iter().map(|w| w.path.clone()))
-        .collect();
-    if is_inside_any(&cwd, &known) {
+    let repository = repository_of(&cwd);
+    if at_home(&cwd, repository.as_deref(), &claims(&projects, &workspaces)) {
         return Ok(());
     }
-    if !answered_yes(&question(&cwd))? {
-        eprintln!("Left unregistered. Run {BIN_NAME} open . to register it later.");
+    let dir = repository.unwrap_or(cwd);
+    if !answered_yes(&question(&dir))? {
+        eprintln!("{}", declined(&dir));
         return Ok(());
     }
     // The same two calls `open` makes, in the same order and for the same reason: the
     // registration is true whether or not the switch works, so it is said first.
-    let added: ProjectAdded = call_as("project.add", json!({ "path": cwd })).await?;
+    let added: ProjectAdded = call_as("project.add", json!({ "path": dir })).await?;
     if !added.adopted.is_empty() {
         eprintln!("Adopted {}.", added.adopted.join(", "));
     }
@@ -97,22 +102,86 @@ async fn offer_to_register_here() -> anyhow::Result<()> {
 }
 
 /// The question, as the state, the object and the next action (principle 9).
-fn question(cwd: &Path) -> String {
+fn question(dir: &Path) -> String {
     format!(
         "{} is not a project yet. Register it? [y/N] ",
-        cwd.display()
+        dir.display()
     )
 }
 
-/// Whether `dir` is one of `known` or lives under one of them.
+/// What a reader who said no is told. It names the directory rather than `.`, because the
+/// directory asked about is the repository's top level and `open .` typed in a subdirectory
+/// would register the subdirectory.
+fn declined(dir: &Path) -> String {
+    format!(
+        "Left unregistered. Run {BIN_NAME} open {} to register it later.",
+        dir.display()
+    )
+}
+
+/// The top level of the repository `dir` is in, or `None` when it is in none or git will not
+/// say.
 ///
-/// Both sides are resolved, because the server answers with the path it canonicalized and
+/// A fork, and it is allowed here because this is the command a person typed, before the
+/// attach and nowhere near the core task. `rev-parse` answers in milliseconds.
+fn repository_of(dir: &Path) -> Option<PathBuf> {
+    domux_server::git::run(dir, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .filter(|top| !top.is_empty())
+        .map(PathBuf::from)
+}
+
+/// A path the server holds: a project's root or a workspace's path.
+struct Claim {
+    path: PathBuf,
+    /// Whether the claim belongs to a git project. A git project holds everything under its
+    /// root, repositories included, so a slot, a worktree made by hand beside the slots and a
+    /// submodule are all quiet. A folder project holds only the plain folders under it.
+    git: bool,
+}
+
+/// Every path the server holds, each with the kind of the project it belongs to.
+fn claims(projects: &[ProjectInfo], workspaces: &[WorkspaceInfo]) -> Vec<Claim> {
+    let is_git = |kind: &str| kind == "git";
+    let roots = projects.iter().map(|p| Claim {
+        path: p.root.clone(),
+        git: is_git(&p.kind),
+    });
+    let paths = workspaces.iter().map(|w| Claim {
+        path: w.path.clone(),
+        git: projects
+            .iter()
+            .any(|p| p.id == w.project && is_git(&p.kind)),
+    });
+    roots.chain(paths).collect()
+}
+
+/// Whether `cwd` is already somewhere the server holds, so there is nothing to offer.
+///
+/// `repository` is the top level of the repository `cwd` is in, if it is in one. A git claim
+/// holds `cwd` when `cwd` is the claim's path or lies under it. A folder claim holds it on the
+/// same terms, except that there must be no repository between the two: a repository whose top
+/// level lies below the folder is a project of its own. A folder claim at the top level or
+/// inside the repository still holds: a state file written before decision record 0010 has
+/// folder records at repository roots, and those are the projects their readers are in.
+///
+/// Every side is resolved, because the server answers with the path it canonicalized and
 /// this reads the path the shell is standing in: on a Mac `/tmp/x` here is `/private/tmp/x`
 /// there, and comparing them as written would offer to register a directory that is already
 /// a project. A path that will not resolve is compared as it stands.
-fn is_inside_any(dir: &Path, known: &[PathBuf]) -> bool {
-    let dir = resolved(dir);
-    known.iter().any(|k| dir.starts_with(resolved(k)))
+fn at_home(cwd: &Path, repository: Option<&Path>, claims: &[Claim]) -> bool {
+    let cwd = resolved(cwd);
+    let repository = repository.map(resolved);
+    claims.iter().any(|claim| {
+        let path = resolved(&claim.path);
+        if !cwd.starts_with(&path) {
+            return false;
+        }
+        match &repository {
+            Some(top) if !claim.git => path.starts_with(top),
+            _ => true,
+        }
+    })
 }
 
 fn resolved(path: &Path) -> PathBuf {
@@ -175,6 +244,7 @@ fn inside_a_pane(pane_var: Option<OsString>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domux_core::ids::{ProjectId, WorkspaceId};
 
     #[test]
     fn a_detach_and_a_stopped_server_are_endings_the_reader_is_told_about() {
@@ -220,30 +290,159 @@ mod tests {
         assert!(!says_yes("yes please"));
     }
 
+    fn git(path: &str) -> Claim {
+        Claim {
+            path: PathBuf::from(path),
+            git: true,
+        }
+    }
+
+    fn folder(path: &str) -> Claim {
+        Claim {
+            path: PathBuf::from(path),
+            git: false,
+        }
+    }
+
+    const APP: &str = "/repo/audrey-app";
+
     #[test]
     fn a_directory_under_a_registered_path_is_already_at_home() {
-        let known = vec![PathBuf::from("/repo/audrey-app"), PathBuf::from("/notes")];
-        assert!(is_inside_any(Path::new("/repo/audrey-app"), &known));
-        assert!(is_inside_any(
+        let claims = [git(APP), folder("/notes")];
+        assert!(at_home(Path::new(APP), Some(Path::new(APP)), &claims));
+        assert!(at_home(
             Path::new("/repo/audrey-app/crates/api"),
-            &known
+            Some(Path::new(APP)),
+            &claims
         ));
-        assert!(is_inside_any(Path::new("/notes"), &known));
+        assert!(at_home(Path::new("/notes"), None, &claims));
+    }
+
+    /// MUX-37. The start-up seed registered the home directory as a folder project, and every
+    /// repository under it was then at home, so attach typed in one of them never asked. A
+    /// folder project holds folders; a repository below it is a project of its own.
+    #[test]
+    fn a_repository_under_a_folder_project_is_not_at_home() {
+        let claims = [folder("/home/u")];
+        let top = Path::new("/home/u/domux");
+        assert!(!at_home(top, Some(top), &claims));
+        assert!(!at_home(
+            Path::new("/home/u/domux/crates"),
+            Some(top),
+            &claims
+        ));
+    }
+
+    #[test]
+    fn a_plain_folder_under_a_folder_project_is_still_at_home() {
+        let claims = [folder("/home/u")];
+        assert!(at_home(Path::new("/home/u"), None, &claims));
+        assert!(at_home(Path::new("/home/u/notes"), None, &claims));
+    }
+
+    /// A git project holds everything under its root, so a subdirectory, a slot and a linked
+    /// worktree made by hand beside the slots are all quiet, although each of the last two is
+    /// a work tree of its own with its own top level.
+    #[test]
+    fn a_directory_under_a_git_project_or_its_slot_is_still_at_home() {
+        let slot = "/repo/audrey-app/.domux/worktrees/workspace-1";
+        let claims = [git(APP), git(slot)];
+        assert!(at_home(
+            Path::new("/repo/audrey-app/crates"),
+            Some(Path::new(APP)),
+            &claims
+        ));
+        assert!(at_home(Path::new(slot), Some(Path::new(slot)), &claims));
+        let by_hand = Path::new("/repo/audrey-app/.worktrees/mux-37");
+        assert!(at_home(by_hand, Some(by_hand), &claims));
+    }
+
+    /// A folder record at a repository's top level is what a state file written before decision
+    /// record 0010 holds, and a folder record inside a repository is a folder registered before
+    /// the repository around it was made. Neither has a repository below it, so both hold where
+    /// the reader is.
+    #[test]
+    fn a_folder_project_at_or_inside_the_repository_is_at_home() {
+        assert!(at_home(
+            Path::new("/repo/audrey-app/crates"),
+            Some(Path::new(APP)),
+            &[folder(APP)]
+        ));
+        assert!(at_home(
+            Path::new("/repo/audrey-app/docs/notes"),
+            Some(Path::new(APP)),
+            &[folder("/repo/audrey-app/docs")]
+        ));
     }
 
     /// Component by component, not character by character: `/repo/audrey-app-2` is a
     /// different directory from `/repo/audrey-app` and must still be offered.
     #[test]
     fn a_directory_whose_name_merely_starts_the_same_is_not_at_home() {
-        let known = vec![PathBuf::from("/repo/audrey-app")];
-        assert!(!is_inside_any(Path::new("/repo/audrey-app-2"), &known));
-        assert!(!is_inside_any(Path::new("/repo"), &known));
-        assert!(!is_inside_any(Path::new("/elsewhere"), &known));
+        let claims = [git(APP)];
+        assert!(!at_home(Path::new("/repo/audrey-app-2"), None, &claims));
+        assert!(!at_home(Path::new("/repo"), None, &claims));
+        assert!(!at_home(Path::new("/elsewhere"), None, &claims));
     }
 
     #[test]
     fn nothing_registered_means_every_directory_is_offered() {
-        assert!(!is_inside_any(Path::new("/repo/audrey-app"), &[]));
+        assert!(!at_home(Path::new(APP), Some(Path::new(APP)), &[]));
+        assert!(!at_home(Path::new("/notes"), None, &[]));
+    }
+
+    /// A workspace is held on its project's terms, so a slot of a git project holds the
+    /// repositories under it and the `main` of a folder project does not.
+    #[test]
+    fn a_workspace_path_takes_the_kind_of_its_project() {
+        let project = |id: &str, root: &str, kind: &str| ProjectInfo {
+            id: ProjectId(id.into()),
+            name: "x".into(),
+            root: PathBuf::from(root),
+            kind: kind.into(),
+            default_branch: None,
+            workspaces: 1,
+        };
+        let workspace = |project: &str, path: &str| WorkspaceInfo {
+            id: WorkspaceId("w_0001".into()),
+            project: ProjectId(project.into()),
+            handle: "main".into(),
+            name: None,
+            path: PathBuf::from(path),
+            branch: None,
+            pr: None,
+            pr_state: None,
+            tabs: 1,
+        };
+        let projects = [
+            project("pr_0001", APP, "git"),
+            project("pr_0002", "/home/u", "folder"),
+        ];
+        let slot = "/elsewhere/audrey-app-1";
+        let workspaces = [workspace("pr_0001", slot), workspace("pr_0002", "/home/u")];
+        let said: Vec<(PathBuf, bool)> = claims(&projects, &workspaces)
+            .into_iter()
+            .map(|c| (c.path, c.git))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (PathBuf::from(APP), true),
+                (PathBuf::from("/home/u"), false),
+                (PathBuf::from(slot), true),
+                (PathBuf::from("/home/u"), false),
+            ]
+        );
+    }
+
+    /// `open .` registers the directory it is typed in, which is the wrong one when the offer
+    /// was about the repository above it.
+    #[test]
+    fn the_decline_line_names_the_directory_to_open() {
+        assert_eq!(
+            declined(Path::new(APP)),
+            "Left unregistered. Run domux open /repo/audrey-app to register it later."
+        );
     }
 
     #[test]

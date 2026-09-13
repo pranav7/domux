@@ -1,7 +1,10 @@
 # 0009: Attach offers to register the directory it was typed in
 
 **Date:** 2026-09-09
-**Status:** Accepted. Extends decision record 0006, which stands.
+**Status:** Accepted. Extends decision record 0006, which stands. **Amended by decision record
+0041:** inside a repository the offer is about the repository's top level, and a folder project
+does not hold the repositories under it, so "under one" below no longer covers a repository
+under a folder project.
 **Decision:** Before it attaches, `domux2` and `domux2 attach` ask once whether the directory
 they were typed in should become a project, when that directory is not one already and is not
 under one. Answering yes runs the two calls `open` runs, `project.add` and `workspace.focus`.

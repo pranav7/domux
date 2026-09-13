@@ -32,6 +32,17 @@ pub fn socket() -> PathBuf {
     domux_core::paths::socket_path()
 }
 
+/// A path typed on the command line, as the full path the server needs.
+///
+/// The server is another process, and its directory is wherever the command that started it
+/// was typed, so a relative path sent as typed would name a folder under that directory rather
+/// than under this one. `.` then meant the server's directory, and `open .` answered for the
+/// wrong folder with a status of 0 (decision record 0041). The path is made full against this
+/// command's directory and not resolved further: the server resolves links itself.
+pub fn full_path(typed: &str) -> anyhow::Result<PathBuf> {
+    std::path::absolute(typed).with_context(|| format!("make {typed:?} a full path"))
+}
+
 /// The one message for a server that is not listening, so every subcommand names the same
 /// state, object and next action (principle 9).
 pub fn not_running() -> anyhow::Error {

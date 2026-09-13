@@ -4,7 +4,7 @@
 //! `workspace.focus` moves the client onto the project's main. Every other M2 subcommand is
 //! one call; this one is the domain model's Open row, which is both halves.
 
-use super::{call, call_as};
+use super::{call, call_as, full_path};
 use clap::Args;
 use domux_core::api::ProjectAdded;
 use serde_json::json;
@@ -17,7 +17,8 @@ pub struct OpenCmd {
 }
 
 pub async fn run(cmd: OpenCmd) -> anyhow::Result<()> {
-    let added: ProjectAdded = call_as("project.add", json!({ "path": cmd.path })).await?;
+    let path = full_path(&cmd.path)?;
+    let added: ProjectAdded = call_as("project.add", json!({ "path": path })).await?;
     // Said as soon as it is true, and before the switch, because it stays true whether or
     // not the switch works: the worktrees are registered either way, and a reader whose
     // switch failed still has slots they did not ask for.

@@ -338,6 +338,62 @@ async fn open_names_what_it_adopted_and_still_switches_with_nobody_attached() {
     );
 }
 
+/// `open .` means the directory it was typed in.
+///
+/// MUX-37: the path went to the server as typed, and the server read it against its own
+/// directory, which is wherever the command that started it was typed. So `open .` answered
+/// for that folder with a status of 0 and a switch to it, and the folder the reader was
+/// standing in was never registered. Here the harness server runs inside this test binary,
+/// whose directory is the crate, so the wrong answer is a project named `domux`.
+#[tokio::test]
+async fn open_dot_registers_the_directory_it_was_typed_in() {
+    let h = Harness::start(Config::default(), 80, 24).await;
+    let dir = tempfile::tempdir().unwrap();
+    let notes = dir.path().join("notes");
+    std::fs::create_dir(&notes).unwrap();
+    let client = h.client.clone();
+    let before = where_the_client_is(&h.model(), &client);
+
+    run(domux(&h).args(["open", "."]).current_dir(&notes))
+        .await
+        .quiet();
+
+    let canonical = notes.canonicalize().unwrap();
+    let m = model_when(&h, "the client moves to the project it opened", |m| {
+        where_the_client_is(m, &client) != before
+    })
+    .await;
+    assert!(
+        m.projects.iter().any(|p| p.root == canonical),
+        "the directory it was typed in became a project: {:?}",
+        m.projects.iter().map(|p| &p.root).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        where_the_client_is(&m, &client),
+        ("notes".to_string(), "main".to_string())
+    );
+}
+
+/// `project add .` prints the record of the directory it was typed in.
+#[tokio::test]
+async fn project_add_dot_prints_the_directory_it_was_typed_in() {
+    let h = Harness::start(Config::default(), 80, 24).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let added = run(domux(&h)
+        .args(["project", "add", "."])
+        .current_dir(dir.path()))
+    .await
+    .ok();
+
+    assert_eq!(
+        added.json()["root"],
+        dir.path().canonicalize().unwrap().to_str().unwrap(),
+        "{}",
+        added.out
+    );
+}
+
 // ---------------------------------------------------------------- name
 
 /// The names one workspace has, read back through `workspace list` rather than polled out of

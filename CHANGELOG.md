@@ -8,6 +8,12 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- `domux attach` in a repository under a folder project, such as a home directory the first
+  server was started in, now offers to register the repository instead of saying nothing, and
+  `domux open .` registers the directory it was typed in rather than the server's.
+
 ## [1.0.0] - 2026-09-11
 
 ```sh

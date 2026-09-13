@@ -52,7 +52,18 @@ pub fn list(ctx: &mut Ctx, _p: domux_core::api::NoParams) -> Result<Value, ApiEr
 /// (decision record 0006); the model change happens in `Core::project_read`, back on the
 /// core task, which is also where a path that is already registered is recognised, because
 /// only the job knows the canonical path.
+///
+/// A relative path is refused before anything is queued. The server's directory is wherever
+/// the command that started it was typed, so reading `.` against it answered for a folder the
+/// caller never named, with no error to say so (decision record 0041). The CLI makes what a
+/// person types full before it sends it; this is the guard for every other caller.
 pub fn add(ctx: &mut Ctx, p: ProjectAddParams) -> Result<Value, ApiError> {
+    if !Path::new(&p.path).is_absolute() {
+        return Err(ApiError::invalid_params(format!(
+            "{} is a relative path, and the server cannot tell which directory it was typed in; give the full path",
+            p.path
+        )));
+    }
     ctx.jobs.push(CoreJob::ReadProject {
         path: p.path.clone(),
     });
