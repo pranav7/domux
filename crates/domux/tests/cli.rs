@@ -2117,7 +2117,7 @@ async fn attach_from_inside_a_repository_offers_its_top_level() {
 ///
 /// `git worktree add ../app-feature` puts the worktree beside the checkout rather than under
 /// it, so no registered path holds it, and the offer asked on every attach there: decision
-/// record 0009 keeps no record of a no. It shares the project's common git directory, which is
+/// record 0009 keeps no record of a no. It shares the project's common directory, which is
 /// what says it is the same repository (decision record 0041).
 #[tokio::test]
 async fn attach_from_a_linked_worktree_beside_a_git_project_asks_nothing() {

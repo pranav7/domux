@@ -4,8 +4,10 @@
 **Status:** Accepted. Extends decision record 0006, which stands. **Amended by decision record
 0041:** inside a repository the offer is about the repository's top level, and a folder project
 does not hold the repositories under it, so "under one" below no longer covers a repository
-under a folder project, and a linked worktree of a registered git project counts as under it
-wherever it was made. The offer's failures are said in one line rather than skipped in silence.
+under a folder project, and a linked worktree of a registered git project, or a submodule
+checked out in one, counts as under it wherever it was made. The offer's failures are said in
+one line and the attach goes on, where the first version of the code ended the attach with the
+error although the text below called them skips.
 **Decision:** Before it attaches, `domux2` and `domux2 attach` ask once whether the directory
 they were typed in should become a project, when that directory is not one already and is not
 under one. Answering yes runs the two calls `open` runs, `project.add` and `workspace.focus`.

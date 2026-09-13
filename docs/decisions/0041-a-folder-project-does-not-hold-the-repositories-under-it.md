@@ -9,7 +9,8 @@ nothing is asked, when the directory attach was typed in is a registered project
 workspace path or lies under one, with one exception: a folder project does not hold a
 repository whose top level lies below the folder. A git project still holds everything under
 it, and it also holds a linked worktree of its repository wherever the worktree was made: a
-repository whose common git directory is a registered git project's, or lies inside it, is held.
+repository whose common directory, the git directory every worktree of a repository shares, is a
+registered git project's or lies inside it is held.
 The offer is best
 effort, so anything that stops it short is said in one line and the attach goes on.
 Separately, `project.add` takes a full path. The CLI makes `open` and `project add`
@@ -62,7 +63,7 @@ A review of the first change found the other half of the same nuisance. `git wor
 holds it, and the offer asked there on every attach. 0009 keeps no record of a no, so there was
 no way to make it stop short of registering a second git project out of one repository.
 
-Every work tree of a repository shares one common git directory: `.git` in the checkout, which a
+Every worktree of a repository shares one common directory: `.git` in the checkout, which a
 linked worktree's `.git` file points back to. So the CLI asks git for the common directory of
 the repository it was typed in and of each registered git project's root, and a match is held.
 It asks with `git rev-parse --path-format=absolute --git-common-dir`. A git older than 2.31 does
@@ -115,7 +116,7 @@ offered now.
   asks in each repository under it, on every attach there, until each is registered. Before,
   the folder held them all and nothing was asked. Removing the folder project with
   `domux project remove` does not stop it; registering the repositories does.
-- Every work tree of a registered git project's repository is held wherever it was made: a
+- Every worktree of a registered git project's repository is held wherever it was made: a
   linked worktree beside the checkout, and the checkout itself when what was registered is a
   linked worktree. So is a submodule checked out in any of them. A second clone of the same
   remote has a common directory of its own and is offered.
@@ -124,13 +125,18 @@ offered now.
   directory, and then for each registered git project's root until one matches. The CLI waits
   on each git process in steps of 10 ms, so each costs about 10 ms: attach typed inside a
   registered project costs one, and a repository no path holds costs one more for itself and
-  one for each root asked, twice that on a git older than 2.31.
-  These run in the command a person typed, not on the core task. A git that will not answer
-  treats the directory as a plain folder, and a root git will not answer for matches nothing
-  and is not asked twice.
-- A repository under a git project at an ancestor is still held. A home directory that is itself
-  a git work tree, seeded as a git project, keeps every repository under it quiet. Nothing
-  observed produces one yet.
+  one for each root asked, twice that on a git older than 2.31. These run in the command a
+  person typed, not on the core task. A git that will not answer treats the directory as a
+  plain folder, and a root git will not answer for matches nothing and is not asked twice.
+- A git project rooted at a subdirectory of a repository holds the whole repository, because
+  its root answers the repository's common directory: the top level, every other directory in
+  it, its linked worktrees and their submodules. `project.add` keeps the path it is given, so
+  `domux open ~/app/crates`, or a first `domux` typed in `~/app/crates`, makes one. Before the
+  common directory counted, attach typed in `~/app` asked about `~/app`; now it asks nothing,
+  because a yes would make a second git project out of one repository.
+- A repository under a git project at an ancestor is still held. A home directory that is
+  itself a repository's top level, seeded as a git project, keeps every repository under it
+  quiet. Nothing observed produces one yet.
 - The offer never ends the attach. A terminal that will not take the question, a `project.add`
   the server refuses and a switch that fails are each said in one line that names the directory
   and the `domux open` that does it, and then the client attaches. A server that will not answer
