@@ -153,7 +153,9 @@ spin() {
 
 # --- the terminal -----------------------------------------------------------------------------
 
-TTY_SAVED=""
+TTY_SAVED=""     # the terminal's settings from before the first question, which cleanup gives back
+TTY_ASKING=""    # the same settings with flow control off, kept from the first question to the exit
+KEY_WAITING=""   # yes while a question waits on the reader, so an interrupt ends the prompt's line
 
 # True when the terminal can actually be opened. The file can be there and still refuse to open,
 # in a session with no controlling terminal, so this opens it rather than asking about the path.
@@ -167,25 +169,40 @@ asking() {
   [ -t 2 ] && tty_is_open
 }
 
+# flow_control_off: turns flow control off on the terminal and keeps it off until the script
+# exits, when cleanup gives back the settings from before. C-s is XOFF: with flow control on, the
+# terminal keeps the key and stops all output until C-q. A reader who presses the leader at its
+# own question can press it twice, or hold it, and a second C-s can land after one question and
+# before the next, so turning flow control back on after each key would still stop the install.
+# Fails when the terminal's settings cannot be read or changed.
+flow_control_off() {
+  if [ -z "$TTY_ASKING" ]; then
+    [ -n "$TTY_SAVED" ] || TTY_SAVED=$(stty -g < /dev/tty 2>/dev/null) || TTY_SAVED=""
+    [ -n "$TTY_SAVED" ] || return 1
+    stty -ixon < /dev/tty 2>/dev/null || return 1
+    TTY_ASKING=$(stty -g < /dev/tty 2>/dev/null) || TTY_ASKING=""
+  fi
+  [ -n "$TTY_ASKING" ]
+}
+
 # read_key: one keypress from the terminal into KEY, with echo off while it waits. KEY is empty
 # for enter, the digit or the letter for 1 to 5, y and n, the key name for C-s, C-a, C-b and
 # C-Space, and "other" for any other key. Keys typed before the question are thrown away, so a
 # key pressed while a download turned is not taken as the answer, and so is the rest of a key
-# that sends more than one byte, such as an arrow. Flow control is off while it waits, because
-# C-s is XOFF: with it on, the terminal would keep the key and stop all output. Where the
-# terminal will not give single keys, a typed line instead, and KEY_LINE is yes.
+# that sends more than one byte, such as an arrow. Where the terminal will not give single keys,
+# a typed line instead, and KEY_LINE is yes.
 read_key() {
   KEY=""
   KEY_LINE=""
-  TTY_SAVED=$(stty -g < /dev/tty 2>/dev/null || echo "")
-  if [ -n "$TTY_SAVED" ] && command -v od >/dev/null 2>&1 \
-    && stty -icanon -echo -ixon min 0 time 0 < /dev/tty 2>/dev/null; then
+  if flow_control_off && command -v od >/dev/null 2>&1 \
+    && stty -icanon -echo min 0 time 0 < /dev/tty 2>/dev/null; then
+    KEY_WAITING=yes
     dd bs=1024 count=1 < /dev/tty >/dev/null 2>&1 || true
     stty min 1 time 0 < /dev/tty 2>/dev/null || true
     # od writes the byte as hex, so C-Space, which sends a zero byte, survives the shell.
     k_byte=$(dd bs=1 count=1 < /dev/tty 2>/dev/null | od -An -tx1 | tr -d ' \n')
-    stty "$TTY_SAVED" < /dev/tty 2>/dev/null || true
-    TTY_SAVED=""
+    stty "$TTY_ASKING" < /dev/tty 2>/dev/null || true
+    KEY_WAITING=""
     case $k_byte in
       ""|0a|0d) KEY="" ;;
       00) KEY=C-Space ;;
@@ -198,9 +215,10 @@ read_key() {
       *) KEY=other ;;
     esac
   else
-    TTY_SAVED=""
     KEY_LINE=yes
+    KEY_WAITING=yes
     read -r KEY < /dev/tty || KEY=""
+    KEY_WAITING=""
   fi
 }
 
@@ -240,6 +258,10 @@ cleanup() {
   if [ -n "$TTY_SAVED" ]; then
     stty "$TTY_SAVED" < /dev/tty 2>/dev/null || true
     TTY_SAVED=""
+    TTY_ASKING=""
+  fi
+  if [ -n "$KEY_WAITING" ]; then
+    KEY_WAITING=""
     printf '\n' >&2
   fi
   if [ -n "${tmp:-}" ]; then
@@ -701,16 +723,16 @@ choose_leader() {
 }
 
 # type_leader: reads a typed key name into CHOSEN, and asks again until it is one. An empty line
-# takes the default. Flow control is off while the line is typed, for the reason read_key gives.
+# takes the default. Flow control is off while the line is typed, for the reason
+# flow_control_off gives.
 type_leader() {
   while :; do
     printf '      key name  ' >&2
     t_name=""
-    TTY_SAVED=$(stty -g < /dev/tty 2>/dev/null || echo "")
-    [ -z "$TTY_SAVED" ] || stty -ixon < /dev/tty 2>/dev/null || true
+    flow_control_off || true
+    KEY_WAITING=yes
     read -r t_name < /dev/tty || printf '\n' >&2
-    [ -z "$TTY_SAVED" ] || stty "$TTY_SAVED" < /dev/tty 2>/dev/null || true
-    TTY_SAVED=""
+    KEY_WAITING=""
     if [ -z "$t_name" ]; then
       CHOSEN=$LEADER_DEFAULT
       return 0

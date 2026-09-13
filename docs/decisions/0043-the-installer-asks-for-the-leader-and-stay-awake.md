@@ -31,7 +31,11 @@ itself, and enter takes the default.
 
 A key is read as one byte with the terminal's line editing, echo and flow control off. Flow
 control has to be off because `C-s` is XOFF: with it on, the terminal keeps the key and stops all
-output, so pressing the default leader at its own question froze the install until `C-q`. The
+output, so pressing the default leader at its own question froze the install until `C-q`. It
+stays off from the first question until the script exits, when the trap gives the terminal back
+the settings it had. Turning it back on after each key was not enough: a reader who presses
+`C-s` twice, or holds it, sends a second one while the installer writes the leader, and that one
+stopped the output before the next question could turn flow control off again. The
 byte goes through `od`, because `C-Space` sends a zero byte and a shell drops one. Keys typed
 before a question are thrown away, so an enter pressed while the download turned does not answer
 it, and so is the rest of a key that sends several bytes, such as an arrow, which the y or n

@@ -121,14 +121,19 @@ on_a_terminal() {
 
 # start_install_tty [VAR=value ...]: run_install on a terminal, in the background. What the
 # terminal shows, stdout and stderr together, lands in $S/tty; what the reader types comes from
-# $S/keys, a file or a pipe the test makes first. Sets TTY_PID.
+# $S/keys, a file or a pipe the test makes first. The terminal's settings from just before and
+# just after the installer land in $S/stty.before and $S/stty.after. The shell around the
+# installer catches SIGINT and does nothing with it, so a C-c typed on the terminal reaches the
+# installer and still leaves that shell to read the settings after it. Sets TTY_PID.
 start_install_tty() {
+  rm -f "$S/stty.before" "$S/stty.after"
   env ${DEFAULT_INT:+"$DEFAULT_INT"} -i HOME="$S/home" TMPDIR="$S/tmp" PATH="$FAKEBIN:$PATH" \
     FAKE_HTTP_DIR="$FAKE_HTTP_DIR" FAKE_CURL_FAIL="$FAKE_CURL_FAIL" FAKE_LDD="$FAKE_LDD" \
     FAKE_CURL_DELAY="$FAKE_CURL_DELAY" FAKE_DOMUX_DELAY="$FAKE_DOMUX_DELAY" \
     FAKE_UNAME_S="$FAKE_UNAME_S" FAKE_UNAME_M="$FAKE_UNAME_M" \
     DOMUX_INSTALL_DIR="$S/bin" "$@" \
-    script -qec "\"$TEST_SHELL\" \"$ROOT/install.sh\"" /dev/null <"$S/keys" >"$S/tty" 2>&1 &
+    script -qec "trap : INT; stty -g > \"$S/stty.before\"; \"$TEST_SHELL\" \"$ROOT/install.sh\"; c=\$?; stty -g > \"$S/stty.after\"; exit \$c" \
+    /dev/null <"$S/keys" >"$S/tty" 2>&1 &
   TTY_PID=$!
 }
 
@@ -162,6 +167,16 @@ type_after() {
   else
     fail "the terminal never showed '$1': $(tty_text)"
     return 1
+  fi
+}
+
+# assert_terminal_given_back: the terminal's settings after the installer are the ones it had
+# before, flow control included.
+assert_terminal_given_back() {
+  if [ -s "$S/stty.before" ]; then
+    assert_eq "$(cat "$S/stty.before")" "$(cat "$S/stty.after" 2>/dev/null)" "the terminal's settings after the installer"
+  else
+    fail "the terminal's settings from before the installer were not recorded"
   fi
 }
 
@@ -1165,9 +1180,9 @@ test_stops_the_request_and_restores_the_cursor_on_int() {
   stops_on_signal INT 130
 }
 
-# answer_on_a_terminal [<text> <keys>]...: runs the installer on Linux on a terminal with nothing
-# preset, and types each answer once the text before it is on the screen. Sets code.
-answer_on_a_terminal() {
+# start_answering: starts the installer on Linux on a terminal with nothing preset, with what the
+# reader types going in on descriptor 3.
+start_answering() {
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
   releases v1.0.0
   release v1.0.0 linux amd64
@@ -1175,6 +1190,19 @@ answer_on_a_terminal() {
   mkfifo "$S/keys"
   start_install_tty
   exec 3>"$S/keys"
+}
+
+# finish_answering: waits for the installer that start_answering started. Sets code.
+finish_answering() {
+  wait "$TTY_PID"
+  code=$?
+  exec 3>&-
+}
+
+# answer_on_a_terminal [<text> <keys>]...: start_answering, then types each answer once the text
+# before it is on the screen, then finish_answering. Sets code.
+answer_on_a_terminal() {
+  start_answering
   while [ $# -ge 2 ]; do
     if ! type_after "$1" "$2"; then
       kill "$TTY_PID" 2>/dev/null
@@ -1182,9 +1210,7 @@ answer_on_a_terminal() {
     fi
     shift 2
   done
-  wait "$TTY_PID"
-  code=$?
-  exec 3>&-
+  finish_answering
 }
 
 test_writes_the_leader_picked_from_the_list_on_a_terminal() {
@@ -1230,6 +1256,44 @@ test_takes_c_s_pressed_at_the_leader_list_without_pausing_the_terminal() {
   assert_eq '[keys]
 leader = "C-s"' "$(config)" "the key pressed"
   assert_contains "$(tty_text)" "domux is ready" "the install carries on"
+}
+
+test_takes_c_s_pressed_again_after_the_leader_list_without_pausing_the_terminal() {
+  sandbox
+  on_a_terminal || return 0
+  start_answering
+  if type_after "or enter for C-s  " '\023'; then
+    # The key again and again, as a reader who presses it twice or holds it down sends it, while
+    # the installer writes the leader and moves on to the next question.
+    held=0
+    while [ "$held" -lt 200 ]; do
+      (trap '' PIPE; printf '\023' >&3) 2>/dev/null
+      held=$((held + 1))
+    done
+    type_after "put this machine to sleep?" n || kill "$TTY_PID" 2>/dev/null
+  else
+    kill "$TTY_PID" 2>/dev/null
+  fi
+  finish_answering
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  assert_eq '[keys]
+leader = "C-s"' "$(config)" "the key pressed first"
+  assert_contains "$(tty_text)" "domux is ready" "the install carries on"
+  assert_terminal_given_back
+}
+
+test_gives_the_terminal_back_its_settings_when_c_c_is_pressed_at_the_leader_list() {
+  sandbox
+  on_a_terminal || return 0
+  if [ -z "$DEFAULT_INT" ]; then
+    printf 'skip %s: needs GNU env to give the installer SIGINT\n' "$CURRENT" >&2
+    return 0
+  fi
+  answer_on_a_terminal "or enter for C-s  " '\003'
+  assert_exit 130 "$code" "exit: $(tty_text)"
+  assert_terminal_given_back
+  assert_no_file "$CONFIG" "nothing written"
+  assert_eq "" "$(ls "$S/tmp")" "temp dir removed"
 }
 
 test_takes_c_space_pressed_at_the_leader_list() {
@@ -1354,6 +1418,8 @@ run_tests \
   test_writes_the_default_leader_when_enter_is_pressed_on_a_terminal \
   test_writes_a_leader_typed_after_picking_another_key_on_a_terminal \
   test_takes_c_s_pressed_at_the_leader_list_without_pausing_the_terminal \
+  test_takes_c_s_pressed_again_after_the_leader_list_without_pausing_the_terminal \
+  test_gives_the_terminal_back_its_settings_when_c_c_is_pressed_at_the_leader_list \
   test_takes_c_space_pressed_at_the_leader_list \
   test_refuses_a_control_key_typed_as_a_key_name_without_pausing_the_terminal \
   test_ignores_keys_typed_before_a_question_is_asked \
