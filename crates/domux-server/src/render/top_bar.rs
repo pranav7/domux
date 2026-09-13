@@ -556,7 +556,7 @@ mod tests {
     /// bar after the words it belonged to are gone.
     #[test]
     fn the_mark_left_by_an_elided_message_keeps_the_message_style() {
-        let red = Style::default().fg(theme::RED);
+        let red = Style::default().fg(Color::Rgb(0xf3, 0x8b, 0xa8));
         let notice = vec![
             Piece::elastic("domux.toml line 4: invalid string", red),
             Piece::joiner(" · ", Style::default()),

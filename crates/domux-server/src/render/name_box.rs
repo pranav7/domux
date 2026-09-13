@@ -133,6 +133,7 @@ mod tests {
         WorkspaceHandle,
     };
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use std::collections::HashMap;
 
     /// One project with `main` and one slot, the slot carrying `name`.
@@ -346,7 +347,7 @@ mod tests {
         );
         assert_eq!(
             buf[(13u16, 13u16)].bg,
-            theme::RED,
+            Color::Rgb(0xf3, 0x8b, 0xa8),
             "refused reads as refused"
         );
     }

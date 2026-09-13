@@ -599,6 +599,7 @@ mod tests {
     use crate::facts::FactRegistry;
     use domux_core::keymap::Keymap;
     use domux_core::model::{ClientView, Model, Pill};
+    use ratatui::style::Color;
     use std::collections::HashMap;
 
     fn view() -> ClientView {
@@ -777,7 +778,11 @@ mod tests {
         );
         assert_eq!(line_of(&buf, 3), "XXXX└────────┘XXXXXX");
         assert_eq!(line_of(&buf, 4), "X".repeat(20));
-        assert_eq!(buf[(4, 2)].bg, theme::BASE, "and it is cleared to base");
+        assert_eq!(
+            buf[(4, 2)].bg,
+            Color::Rgb(0x1e, 0x1e, 0x2e),
+            "and it is cleared to base"
+        );
     }
 
     /// Everything outside `keep` is dimmed and nothing inside it is, and the text is left
@@ -820,8 +825,12 @@ mod tests {
         // The separator is the row's quietest colour, under both the key and the word, so a
         // reader's eye lands on the keys. Nothing else here reads a style off the footer.
         assert_eq!(buf[(11, 1)].symbol(), "·");
-        assert_eq!(buf[(11, 1)].fg, theme::SURFACE1);
-        assert_eq!(buf[(10, 1)].fg, theme::SURFACE1, "and its spaces with it");
+        assert_eq!(buf[(11, 1)].fg, Color::Rgb(0x45, 0x47, 0x5a));
+        assert_eq!(
+            buf[(10, 1)].fg,
+            Color::Rgb(0x45, 0x47, 0x5a),
+            "and its spaces with it"
+        );
     }
 
     /// A hint the row has no room for ends the row: the hints are in the order the reader
@@ -906,10 +915,14 @@ mod tests {
         let mut buf = filled(20, 1);
         footer_into(&v, Rect::new(0, 0, 20, 1), &mut buf);
         assert_eq!(line_of(&buf, 0), format!("{}…", "w".repeat(19)));
-        assert_eq!(buf[(0, 0)].bg, theme::RED, "red because it was refused");
+        assert_eq!(
+            buf[(0, 0)].bg,
+            Color::Rgb(0xf3, 0x8b, 0xa8),
+            "red because it was refused"
+        );
         v.pill.as_mut().unwrap().ok = true;
         let mut buf = filled(20, 1);
         footer_into(&v, Rect::new(0, 0, 20, 1), &mut buf);
-        assert_eq!(buf[(0, 0)].bg, theme::GREEN);
+        assert_eq!(buf[(0, 0)].bg, Color::Rgb(0xa6, 0xe3, 0xa1));
     }
 }

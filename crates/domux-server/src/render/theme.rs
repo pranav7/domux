@@ -118,7 +118,10 @@ mod tests {
     /// stored: `at` mixes them.
     #[test]
     fn a_shimmer_runs_from_its_dim_end_to_its_bright_end() {
-        let band = SHIMMER_CLAUDE;
+        let band = Shimmer {
+            dim: (0xb8, 0x5e, 0x47),
+            bright: (0xff, 0xc9, 0xb0),
+        };
         assert_eq!(band.at(0.0), Color::Rgb(0xb8, 0x5e, 0x47), "unlit is dim");
         assert_eq!(
             band.at(1.0),

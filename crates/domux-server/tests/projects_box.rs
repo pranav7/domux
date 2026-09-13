@@ -6,8 +6,7 @@ use domux_server::render::list_box::ListRow;
 use domux_server::render::projects_box::{
     filled_index, key_at, pr_style, rows, Extras, PROJECTS_TITLE,
 };
-use domux_server::render::theme;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -229,7 +228,7 @@ fn colours_follow_interface_spec_5_2_and_the_pull_request_state() {
     let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(
         out[0].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "the project name"
     );
     assert!(
@@ -241,56 +240,68 @@ fn colours_follow_interface_spec_5_2_and_the_pull_request_state() {
     );
     assert_eq!(
         out[0].lines[0].spans[1].style.fg,
-        Some(theme::SURFACE0),
+        Some(Color::Rgb(0x31, 0x32, 0x44)),
         "the rule"
     );
     assert_eq!(
         out[1].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "main"
     );
     assert_eq!(
         out[3].lines[0].spans[0].style.fg,
-        Some(theme::TEAL),
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
         "a workspace name"
     );
     // Span 0 of a line under line 1 is the indent, which carries no colour of its own.
     assert_eq!(
         out[3].lines[1].spans[1].style.fg,
-        Some(theme::PINK),
+        Some(Color::Rgb(0xe3, 0xb4, 0xd8)),
         "the branch"
     );
     assert_eq!(
         out[3].lines[1].spans[2].style.fg,
-        Some(theme::SURFACE1),
+        Some(Color::Rgb(0x45, 0x47, 0x5a)),
         "the middle dot"
     );
     assert_eq!(
         out[3].lines[1].spans[3].style.fg,
-        Some(theme::GREEN),
+        Some(Color::Rgb(0xa6, 0xe3, 0xa1)),
         "an open pull request"
     );
     assert_eq!(
         out[5].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY0),
+        Some(Color::Rgb(0x6c, 0x70, 0x86)),
         "an untouched slot"
     );
 }
 
 #[test]
 fn every_pull_request_state_takes_v1_s_colour() {
-    assert_eq!(pr_style(Some(&FactState::Open)).fg, Some(theme::GREEN));
-    assert_eq!(pr_style(Some(&FactState::Merged)).fg, Some(theme::MAUVE));
-    assert_eq!(pr_style(Some(&FactState::Closed)).fg, Some(theme::RED));
-    assert_eq!(pr_style(Some(&FactState::Draft)).fg, Some(theme::OVERLAY1));
+    assert_eq!(
+        pr_style(Some(&FactState::Open)).fg,
+        Some(Color::Rgb(0xa6, 0xe3, 0xa1))
+    );
+    assert_eq!(
+        pr_style(Some(&FactState::Merged)).fg,
+        Some(Color::Rgb(0xcb, 0xa6, 0xf7))
+    );
+    assert_eq!(
+        pr_style(Some(&FactState::Closed)).fg,
+        Some(Color::Rgb(0xf3, 0x8b, 0xa8))
+    );
+    assert_eq!(
+        pr_style(Some(&FactState::Draft)).fg,
+        Some(Color::Rgb(0x7f, 0x84, 0x9c))
+    );
     assert_eq!(
         pr_style(Some(&FactState::Other("QUEUED".into()))).fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "a state this version does not know is drawn like a draft"
     );
     assert_eq!(
         pr_style(None).fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "a state nobody reported is drawn like a draft, not guessed as open"
     );
 }
@@ -309,7 +320,10 @@ fn an_unnamed_workspace_with_a_branch_shows_its_handle_in_teal() {
         "  workspace-2",
         "no hollow glyph once the slot has been touched, so the indent is plain"
     );
-    assert_eq!(out[5].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[5].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
     assert_eq!(said(&out[5], 1), "feat/spike");
 }
 
@@ -326,13 +340,19 @@ fn an_unnamed_workspace_on_its_own_branch_with_a_pull_request_is_not_untouched()
     );
     let out = rows(&m, &f, "", None, Extras::compact(36), None).rows;
     assert_eq!(text(&out[5], 0), "  workspace-2");
-    assert_eq!(out[5].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[5].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
     assert_eq!(
         said(&out[5], 1),
         "PR#9",
         "the number alone, with no separator in front of it"
     );
-    assert_eq!(out[5].lines[1].spans[1].style.fg, Some(theme::MAUVE));
+    assert_eq!(
+        out[5].lines[1].spans[1].style.fg,
+        Some(Color::Rgb(0xcb, 0xa6, 0xf7))
+    );
 }
 
 #[test]
@@ -382,7 +402,10 @@ fn a_slot_with_no_branch_and_no_name_is_not_an_untouched_slot() {
     )
     .rows;
     assert_eq!(text(&out[2], 0), "  workspace-1");
-    assert_eq!(out[2].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[2].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
 }
 
 #[test]
@@ -405,7 +428,7 @@ fn main_on_a_branch_of_its_own_draws_the_branch_line_it_drops_on_main() {
     );
     assert_eq!(
         out[1].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "main keeps its colour on any branch"
     );
 }
@@ -429,7 +452,7 @@ fn a_named_main_draws_its_name_and_not_the_handle() {
     assert_eq!(said(&out[1], 0), "trunk");
     assert_eq!(
         out[1].lines[0].spans[0].style.fg,
-        Some(theme::TEAL),
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
         "a name is a name, on main as on a slot"
     );
 }
@@ -511,12 +534,12 @@ fn the_switcher_adds_the_pull_request_title_when_the_width_allows() {
     );
     assert_eq!(
         out[3].lines[1].spans[4].style.fg,
-        Some(theme::SURFACE1),
+        Some(Color::Rgb(0x45, 0x47, 0x5a)),
         "the middle dot before the title"
     );
     assert_eq!(
         out[3].lines[1].spans[5].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "the title"
     );
     let narrow = rows(&m, &f, "", None, Extras::switcher(32), None).rows;
@@ -776,7 +799,11 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
     );
     let named = built.rows;
     let style = named[3].lines[0].spans[0].style;
-    assert_eq!(style.fg, Some(theme::TEAL), "a name keeps its teal");
+    assert_eq!(
+        style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
+        "a name keeps its teal"
+    );
     assert!(
         style.add_modifier.contains(Modifier::BOLD),
         "a name goes bold"
@@ -791,20 +818,24 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
     );
     assert_eq!(
         named[1].lines[0].spans[0].style.fg,
-        Some(theme::OVERLAY1),
+        Some(Color::Rgb(0x7f, 0x84, 0x9c)),
         "no other row changes"
     );
 
     let on_main = rows(&m, &f, "", Some(&key(&m, 0, 0)), Extras::compact(36), None).rows;
     let style = on_main[1].lines[0].spans[0].style;
-    assert_eq!(style.fg, Some(theme::TEXT), "main goes from dim to text");
+    assert_eq!(
+        style.fg,
+        Some(Color::Rgb(0xcd, 0xd6, 0xf4)),
+        "main goes from dim to text"
+    );
     assert!(
         !style.add_modifier.contains(Modifier::BOLD),
         "main brightens without going bold"
     );
     assert_eq!(
         on_main[3].lines[0].spans[0].style.fg,
-        Some(theme::TEAL),
+        Some(Color::Rgb(0x93, 0xe2, 0xd5)),
         "and the name that is not filled stays as it was"
     );
 
@@ -812,14 +843,20 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
     let style = on_slot[5].lines[0].spans[0].style;
     assert_eq!(
         style.fg,
-        Some(theme::TEXT),
+        Some(Color::Rgb(0xcd, 0xd6, 0xf4)),
         "a slot handle goes from dim to text"
     );
     assert!(!style.add_modifier.contains(Modifier::BOLD));
 
     let none = rows(&m, &f, "", None, Extras::compact(36), None).rows;
-    assert_eq!(none[1].lines[0].spans[0].style.fg, Some(theme::OVERLAY1));
-    assert_eq!(none[5].lines[0].spans[0].style.fg, Some(theme::OVERLAY0));
+    assert_eq!(
+        none[1].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x7f, 0x84, 0x9c))
+    );
+    assert_eq!(
+        none[5].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x6c, 0x70, 0x86))
+    );
     assert!(!none[3].lines[0].spans[0]
         .style
         .add_modifier
@@ -830,7 +867,10 @@ fn the_filled_row_takes_the_bold_and_the_bright_text_the_box_cannot_give_it() {
 fn a_key_that_names_no_row_fills_no_row() {
     let (m, f) = model_and_facts();
     let out = rows(&m, &f, "", Some("w_ffff"), Extras::compact(36), None).rows;
-    assert_eq!(out[3].lines[0].spans[0].style.fg, Some(theme::TEAL));
+    assert_eq!(
+        out[3].lines[0].spans[0].style.fg,
+        Some(Color::Rgb(0x93, 0xe2, 0xd5))
+    );
     assert!(!out[3].lines[0].spans[0]
         .style
         .add_modifier

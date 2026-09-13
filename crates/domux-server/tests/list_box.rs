@@ -100,7 +100,7 @@ fn the_overlay_pad_keeps_a_blank_row_a_footer_row_and_two_cells_at_each_side() {
     );
     assert_eq!(
         (buf[(1, 3)].bg, buf[(20, 3)].bg),
-        (theme::SURFACE0, theme::SURFACE0),
+        (Color::Rgb(0x31, 0x32, 0x44), Color::Rgb(0x31, 0x32, 0x44)),
         "the fill still reaches both borders"
     );
 }
@@ -129,7 +129,7 @@ fn the_box_draws_its_title_its_rows_and_one_filled_row() {
     for x in 1..21 {
         assert_eq!(
             buf[(x, 4)].bg,
-            theme::SURFACE0,
+            Color::Rgb(0x31, 0x32, 0x44),
             "the fill covers the whole first line of the row"
         );
     }
@@ -148,7 +148,7 @@ fn the_box_draws_its_title_its_rows_and_one_filled_row() {
     );
     assert_eq!(
         buf[(0, 0)].fg,
-        theme::ACCENT,
+        Color::Rgb(0xcb, 0xa6, 0xf7),
         "a focused box takes the accent border"
     );
 }
@@ -181,7 +181,7 @@ fn the_box_draws_at_the_area_it_is_given_and_touches_nothing_outside_it() {
     assert_eq!(row(&buf, 11), " ".repeat(26), "and the row below it");
     assert_eq!(
         buf[(4, 6)].bg,
-        theme::SURFACE0,
+        Color::Rgb(0x31, 0x32, 0x44),
         "the fill lands at the offset too"
     );
     assert_eq!(
@@ -204,14 +204,14 @@ fn a_box_that_is_not_focused_keeps_the_plain_border_and_still_fills_the_current_
         pad: SIDEBAR_PAD,
     }
     .render(Rect::new(0, 0, 20, 9), &mut buf);
-    assert_eq!(buf[(0, 0)].fg, theme::SURFACE2);
+    assert_eq!(buf[(0, 0)].fg, Color::Rgb(0x58, 0x5b, 0x70));
     assert!(
         !buf[(2, 0)].modifier.contains(Modifier::BOLD),
         "an unfocused title is plain"
     );
     assert_eq!(
         buf[(1, 2)].bg,
-        theme::SURFACE0,
+        Color::Rgb(0x31, 0x32, 0x44),
         "the current row is filled while focus is elsewhere"
     );
 }
@@ -308,7 +308,11 @@ fn a_row_taller_than_the_box_shows_its_first_line_so_the_fill_stays_visible() {
     assert_eq!(scroll, 1);
     assert_eq!(row(&buf, 1), "│ a    │");
     assert_eq!(row(&buf, 2), "│ b    │");
-    assert_eq!(buf[(1, 1)].bg, theme::SURFACE0, "the fill is in view");
+    assert_eq!(
+        buf[(1, 1)].bg,
+        Color::Rgb(0x31, 0x32, 0x44),
+        "the fill is in view"
+    );
 }
 
 #[test]
@@ -390,7 +394,6 @@ fn an_empty_box_says_what_is_missing_rather_than_drawing_nothing() {
     .render(Rect::new(0, 0, 34, 5), &mut buf);
     assert_eq!(scroll, 0, "there is nothing to scroll past");
     assert_eq!(row(&buf, 1), "│ No projects yet. domux open .  │");
-    assert_eq!(buf[(2, 1)].fg, theme::OVERLAY0);
     assert_eq!(buf[(2, 1)].fg, Color::Rgb(0x6c, 0x70, 0x86));
 }
 
@@ -472,7 +475,7 @@ fn a_line_wider_than_the_box_is_cut_by_grapheme_with_an_ellipsis() {
     assert_eq!(buf[(11, 1)].symbol(), "│", "the border survives");
     assert_eq!(
         buf[(3, 1)].bg,
-        theme::SURFACE0,
+        Color::Rgb(0x31, 0x32, 0x44),
         "the spacer cell after a wide grapheme keeps the fill, so the band has no hole"
     );
 }
@@ -524,9 +527,12 @@ fn spans_that_fit_are_drawn_one_after_another_in_their_own_styles() {
         "w_1",
         "x",
         vec![Line::from(vec![
-            Span::styled("auth", Style::default().fg(theme::TEAL)),
+            Span::styled("auth", Style::default().fg(Color::Rgb(0x93, 0xe2, 0xd5))),
             Span::raw(" "),
-            Span::styled("feat/auth", Style::default().fg(theme::PINK)),
+            Span::styled(
+                "feat/auth",
+                Style::default().fg(Color::Rgb(0xe3, 0xb4, 0xd8)),
+            ),
         ])],
     )];
     let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
@@ -541,8 +547,16 @@ fn spans_that_fit_are_drawn_one_after_another_in_their_own_styles() {
     }
     .render(Rect::new(0, 0, 20, 3), &mut buf);
     assert_eq!(row(&buf, 1), "│ auth feat/auth   │");
-    assert_eq!(buf[(2, 1)].fg, theme::TEAL, "the workspace name is teal");
-    assert_eq!(buf[(7, 1)].fg, theme::PINK, "the branch name is pink");
+    assert_eq!(
+        buf[(2, 1)].fg,
+        Color::Rgb(0x93, 0xe2, 0xd5),
+        "the workspace name is teal"
+    );
+    assert_eq!(
+        buf[(7, 1)].fg,
+        Color::Rgb(0xe3, 0xb4, 0xd8),
+        "the branch name is pink"
+    );
 }
 
 #[test]
@@ -581,7 +595,7 @@ fn the_fill_brightens_the_row_and_leaves_the_rows_around_it_alone() {
     );
     assert_eq!(
         buf[(7, 1)].bg,
-        theme::SURFACE0,
+        Color::Rgb(0x31, 0x32, 0x44),
         "the text takes the fill too"
     );
     assert!(

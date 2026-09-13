@@ -694,18 +694,26 @@ mod tests {
         );
         let name = &rows[0].lines[0].spans[0];
         assert_eq!(name.content, "auth-cleanup");
-        assert_eq!(name.style.fg, Some(theme::TEXT), "a name reads in text");
+        assert_eq!(
+            name.style.fg,
+            Some(Color::Rgb(0xcd, 0xd6, 0xf4)),
+            "a name reads in text"
+        );
         assert!(name.style.add_modifier.contains(Modifier::BOLD), "and bold");
         let two = &rows[0].lines[1].spans;
         assert_eq!(
             two[0].style.fg,
-            Some(theme::CLAUDE),
+            Some(Color::Rgb(0xde, 0x73, 0x56)),
             "the kind's own colour"
         );
-        assert_eq!(two[1].style.fg, Some(theme::SURFACE1), "the separator");
+        assert_eq!(
+            two[1].style.fg,
+            Some(Color::Rgb(0x45, 0x47, 0x5a)),
+            "the separator"
+        );
         assert_eq!(
             two[2].style.fg,
-            Some(theme::OVERLAY1),
+            Some(Color::Rgb(0x7f, 0x84, 0x9c)),
             "the place in the agents overlay"
         );
     }
@@ -722,7 +730,11 @@ mod tests {
         );
         let label = &rows[0].lines[0].spans[0];
         assert_eq!(label.content, "codex");
-        assert_eq!(label.style.fg, Some(theme::CODEX), "a kind standing in");
+        assert_eq!(
+            label.style.fg,
+            Some(Color::Rgb(0x89, 0xb4, 0xfa)),
+            "a kind standing in"
+        );
         assert!(
             label.style.add_modifier.contains(Modifier::BOLD),
             "and bold"
@@ -743,7 +755,7 @@ mod tests {
         );
         assert_eq!(
             rows[0].lines[1].spans[2].style.fg,
-            Some(theme::OVERLAY0),
+            Some(Color::Rgb(0x6c, 0x70, 0x86)),
             "the sidebar's place is dimmer than the agents overlay's"
         );
     }
@@ -777,11 +789,21 @@ mod tests {
         // "Compacting…".
         assert_eq!(
             spans[2].style.fg,
-            Some(theme::COMPACTING),
+            Some(Color::Rgb(0xaf, 0xaf, 0xff)),
             "the glyph, in the compacting colour"
         );
         let word: Vec<Option<Color>> = spans[4..].iter().map(|s| s.style.fg).collect();
-        assert_eq!(word, lit_by(theme::SHIMMER_COMPACTING, word.len(), 4));
+        assert_eq!(
+            word,
+            lit_by(
+                theme::Shimmer {
+                    dim: (0x6f, 0x6f, 0xcf),
+                    bright: (0xd8, 0xd8, 0xff)
+                },
+                word.len(),
+                4
+            )
+        );
     }
 
     /// The colours a band gives a word of `len` characters at `tick`, which is what a working
@@ -818,11 +840,22 @@ mod tests {
         // Tick 10 has the band in the middle of a twelve character word, which is where it
         // has characters on both sides of it to be brighter than.
         let (glyph, word) = word_of(10);
-        assert_eq!(glyph, Some(theme::CLAUDE), "the glyph is the kind's colour");
+        assert_eq!(
+            glyph,
+            Some(Color::Rgb(0xde, 0x73, 0x56)),
+            "the glyph is the kind's colour"
+        );
         assert_eq!(word.len(), 12, "one span per character of Percolating…");
         assert_eq!(
             word,
-            lit_by(theme::SHIMMER_CLAUDE, 12, 10),
+            lit_by(
+                theme::Shimmer {
+                    dim: (0xb8, 0x5e, 0x47),
+                    bright: (0xff, 0xc9, 0xb0)
+                },
+                12,
+                10
+            ),
             "the word is lit by the kind's band"
         );
         assert!(
@@ -847,7 +880,7 @@ mod tests {
         assert_eq!(label.content, "claude");
         assert_eq!(
             label.style.fg,
-            Some(theme::OVERLAY0),
+            Some(Color::Rgb(0x6c, 0x70, 0x86)),
             "the kind stands in dimmed, not in its own colour"
         );
     }
@@ -903,7 +936,7 @@ mod tests {
             let dot = spans.iter().find(|s| s.content == DOT);
             assert_eq!(dot.is_some(), dotted, "{state} unseen={unseen}");
             if let Some(dot) = dot {
-                assert_eq!(dot.style.fg, Some(theme::RED), "{state}");
+                assert_eq!(dot.style.fg, Some(Color::Rgb(0xf3, 0x8b, 0xa8)), "{state}");
                 assert_ne!(
                     spans[0].content, DOT,
                     "the dot follows the name rather than leading the row"
@@ -944,7 +977,10 @@ mod tests {
         let mut e = entry(AgentState::Waiting, Some("x"), AgentKind::Claude);
         e.unseen = true;
         let bright = overlay_rows(&view(vec![e.clone()]), 72);
-        assert_eq!(bright[0].lines[2].spans[1].style.fg, Some(theme::RECAP));
+        assert_eq!(
+            bright[0].lines[2].spans[1].style.fg,
+            Some(Color::Rgb(0xdd, 0xca, 0xf7))
+        );
         assert!(
             bright[0].lines[2].spans[1]
                 .style
@@ -956,7 +992,10 @@ mod tests {
         seen.state = AgentState::Idle;
         seen.unseen = false;
         let dim = overlay_rows(&view(vec![seen]), 72);
-        assert_eq!(dim[0].lines[2].spans[1].style.fg, Some(theme::RECAP_SEEN));
+        assert_eq!(
+            dim[0].lines[2].spans[1].style.fg,
+            Some(Color::Rgb(0xa6, 0xad, 0xc8))
+        );
         // Unseen carries the brightness on its own, on a state that would not: an idle row
         // you have not looked at yet reads the same as a waiting one.
         let mut idle_unseen = e.clone();
@@ -964,7 +1003,7 @@ mod tests {
         let bright_idle = overlay_rows(&view(vec![idle_unseen]), 72);
         assert_eq!(
             bright_idle[0].lines[2].spans[1].style.fg,
-            Some(theme::RECAP)
+            Some(Color::Rgb(0xdd, 0xca, 0xf7))
         );
     }
 

@@ -1,7 +1,7 @@
 use domux_core::model::Rect as LRect;
 use domux_server::render::boxed::{put, put_within, Boxed};
 use domux_server::render::pane_box::{cursor_position, render_grid, Selection};
-use domux_server::render::{theme, to_rect};
+use domux_server::render::to_rect;
 use domux_term::{Attrs, Color, Cursor, Grid, Rgb, Size};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
@@ -26,8 +26,8 @@ fn boxed_draws_title_one_cell_in_and_the_flag_at_the_right_end() {
     assert_eq!(row(&buf, 1), "│                  │");
     assert_eq!(row(&buf, 2), "└──────────────────┘");
     assert_eq!(inner, Rect::new(1, 1, 18, 1));
-    assert_eq!(buf[(0, 0)].fg, theme::SURFACE2);
-    assert_eq!(buf[(2, 0)].fg, theme::OVERLAY1);
+    assert_eq!(buf[(0, 0)].fg, ratatui::style::Color::Rgb(0x58, 0x5b, 0x70));
+    assert_eq!(buf[(2, 0)].fg, ratatui::style::Color::Rgb(0x7f, 0x84, 0x9c));
     assert!(!buf[(2, 0)].modifier.contains(Modifier::BOLD));
 }
 
@@ -68,8 +68,8 @@ fn focused_box_uses_the_accent_and_a_bold_title() {
     }
     .render(Rect::new(0, 0, 12, 3), &mut buf);
     assert_eq!(row(&buf, 0), "┌ sh ──────┐");
-    assert_eq!(buf[(0, 0)].fg, theme::ACCENT);
-    assert_eq!(buf[(2, 0)].fg, theme::ACCENT);
+    assert_eq!(buf[(0, 0)].fg, ratatui::style::Color::Rgb(0xcb, 0xa6, 0xf7));
+    assert_eq!(buf[(2, 0)].fg, ratatui::style::Color::Rgb(0xcb, 0xa6, 0xf7));
     assert!(buf[(2, 0)].modifier.contains(Modifier::BOLD));
     assert!(
         !buf[(6, 0)].modifier.contains(Modifier::BOLD),

@@ -95,6 +95,7 @@ mod tests {
     use domux_term::Size;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use std::collections::HashMap;
 
     fn view(filter: &str) -> ClientView {
@@ -187,11 +188,11 @@ mod tests {
         // Rows inside the box: 4 header, 5 main, 6 workspace-1, 7 workspace-2. The pad and
         // the indent are in the text because the assertion is on the drawn line.
         assert_eq!(inner_line(&buf, 8), "    workspace-2");
-        assert_eq!(buf[(11, 8)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(buf[(11, 8)].bg, Color::Rgb(0x31, 0x32, 0x44));
         assert_eq!(inner_line(&buf, 6), "    main");
         assert_ne!(
             buf[(11, 6)].bg,
-            crate::render::theme::SURFACE0,
+            Color::Rgb(0x31, 0x32, 0x44),
             "and the workspace this client is in does not also carry one"
         );
     }
@@ -208,11 +209,11 @@ mod tests {
         v.projects_cursor = None;
         let buf = draw_into(&model, &v, 80, 24);
         assert_eq!(inner_line(&buf, 8), "    workspace-2");
-        assert_eq!(buf[(11, 8)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(buf[(11, 8)].bg, Color::Rgb(0x31, 0x32, 0x44));
         assert_eq!(inner_line(&buf, 6), "    main");
         assert_ne!(
             buf[(11, 6)].bg,
-            crate::render::theme::SURFACE0,
+            Color::Rgb(0x31, 0x32, 0x44),
             "and no other row carries one"
         );
     }
@@ -320,7 +321,7 @@ mod tests {
         let buf = draw_into(&model, &v, 80, 13);
         assert_eq!(inner_line(&buf, 5), "    workspace-2");
         assert_eq!(inner_line(&buf, 6), "    workspace-3");
-        assert_eq!(buf[(11, 6)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(buf[(11, 6)].bg, Color::Rgb(0x31, 0x32, 0x44));
     }
 
     /// The switcher over a model with no projects at all, which is the only way to reach the
