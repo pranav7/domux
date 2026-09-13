@@ -865,8 +865,8 @@ impl Core {
             .and_then(|id| self.model.client(&id).map(|c| c.caps.clone()));
         match recent {
             Some(caps) => (
-                caps.default_fg.unwrap_or(DEFAULT_FG),
-                caps.default_bg.unwrap_or(DEFAULT_BG),
+                caps.colors.fg.unwrap_or(DEFAULT_FG),
+                caps.colors.bg.unwrap_or(DEFAULT_BG),
             ),
             None => (DEFAULT_FG, DEFAULT_BG),
         }
@@ -1014,6 +1014,7 @@ impl Core {
                 rows: hello.rows,
             },
             caps: hello.caps.clone(),
+            desktop: hello.desktop,
             workspace: workspace.clone(),
             tab,
             focus: Focus::Pane(focused),
@@ -1041,6 +1042,11 @@ impl Core {
             client: id.clone(),
             version: domux_core::VERSION.into(),
         });
+        // A client starts out not following its terminal's colours, so only a theme that reads
+        // them needs saying; a reload that changes the answer says either (`api::config`).
+        if self.config.themes.reads_terminal(hello.desktop) {
+            let _ = tx.try_send(ServerMsg::FollowColors(true));
+        }
         self.clients.insert(
             id.clone(),
             ClientConn::new(id.clone(), tx, hello.caps, hello.cols, hello.rows),
@@ -1071,9 +1077,20 @@ impl Core {
         if !self.clients.contains_key(&client) {
             return;
         }
+        // A colours message is not the reader's activity: the most recent client decides where
+        // a reload's notice goes and whose colours a new pane gets, so it is handled before
+        // the touch.
+        if let ClientMsg::Colors(colors) = msg {
+            if let Some(conn) = self.clients.get_mut(&client) {
+                conn.caps.colors = colors.clone();
+            }
+            self.model.set_client_colors(&client, colors);
+            self.view_dirty = true;
+            return;
+        }
         self.model.touch_client(&client);
         match msg {
-            ClientMsg::Hello(_) => {}
+            ClientMsg::Hello(_) | ClientMsg::Colors(_) => {}
             ClientMsg::Key(key) => {
                 self.clear_action_hint(&client);
                 self.key(&client, key);
@@ -2642,17 +2659,13 @@ impl Core {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
             };
-            // Each client's own theme, painted from the chosen one. Until clients send their
-            // terminal's colours and desktop, every client paints with no answers on an
-            // unknown desktop.
+            // Each client's own theme, painted from the chosen one against that client's
+            // terminal colours and desktop.
             let painted;
             let theme = match &self.theme {
                 Some(theme) => theme,
                 None => {
-                    painted = self.config.themes.paint(
-                        &domux_core::theme::TerminalColors::default(),
-                        domux_core::theme::Desktop::Unknown,
-                    );
+                    painted = self.config.themes.paint(&view.caps.colors, view.desktop);
                     &painted
                 }
             };
@@ -3280,6 +3293,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     caps: Default::default(),
+                    desktop: Default::default(),
                 },
                 tx,
             )
@@ -3519,6 +3533,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     caps: Default::default(),
+                    desktop: Default::default(),
                 },
                 tx,
             )

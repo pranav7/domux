@@ -1,6 +1,7 @@
 //! What the outer terminal can do, from the environment and two OSC queries.
 
 use domux_core::proto::Capabilities;
+use domux_core::theme::TerminalColors;
 use domux_term::Rgb;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
@@ -49,8 +50,7 @@ pub fn detect(env: &CapsEnv) -> Capabilities {
         kitty_keyboard: env.keyboard_enhancement,
         hyperlinks: rich,
         osc52: rich || env.ssh_tty.is_some(),
-        default_fg: None,
-        default_bg: None,
+        colors: TerminalColors::default(),
     }
 }
 
@@ -270,7 +270,7 @@ mod tests {
             keyboard_enhancement: false,
         };
         assert_eq!(detect(&silent), Capabilities::default());
-        assert!(detect(&silent).default_fg.is_none() && detect(&silent).default_bg.is_none());
+        assert!(detect(&silent).colors == TerminalColors::default());
     }
 
     #[test]

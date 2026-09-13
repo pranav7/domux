@@ -1,7 +1,8 @@
 //! The attach protocol. Task 9 fills this file; the Model needs `Capabilities` first.
 
 use crate::ids::ClientId;
-use domux_term::{CursorShape, KeyEvent, MouseEvent, Rgb};
+use crate::theme::{Desktop, TerminalColors};
+use domux_term::{CursorShape, KeyEvent, MouseEvent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -13,14 +14,17 @@ pub struct Capabilities {
     pub hyperlinks: bool,
     /// The outer terminal accepts OSC 52 for the clipboard.
     pub osc52: bool,
-    /// The outer terminal's default colours when it answered OSC 10 and 11.
-    pub default_fg: Option<Rgb>,
-    pub default_bg: Option<Rgb>,
+    /// What the outer terminal said its colours are. It replaced protocol 3's `default_fg`
+    /// and `default_bg` and starts with the same two fields in the same order, so a protocol 3
+    /// server still reads the hello far enough to refuse it with the restart sentence.
+    pub colors: TerminalColors,
 }
 
 /// Bumped when a message shape changes. The server refuses a client with another value.
-/// 3 added `ClientMsg::Mouse` (decision 0014).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 3 added `ClientMsg::Mouse` (decision 0014). 4 carries the terminal's palette and the
+/// desktop in the hello, and adds `ClientMsg::Colors` and `ServerMsg::FollowColors` (decision
+/// 0042).
+pub const PROTOCOL_VERSION: u32 = 4;
 /// A frame larger than this is a bug or an attack, never a screen. The value is also what
 /// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.
 pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
@@ -35,6 +39,9 @@ const _: () = assert!(
     "MAX_FRAME is so large that a frame's first byte could be the control API's opening brace"
 );
 
+/// `ClientMsg::Hello` is variant 0 and starts with `version` and `protocol`, forever: an old
+/// server reads those two to refuse a new client with the restart sentence, and a new server
+/// reads them from an old client's hello the same way (`Hello::from_head`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     /// `CARGO_PKG_VERSION` of the client binary. Must equal the server's, so a stale server
@@ -44,6 +51,27 @@ pub struct Hello {
     pub cols: u16,
     pub rows: u16,
     pub caps: Capabilities,
+    /// Where the client runs, for the `auto` theme. A new variant is a protocol change: bump
+    /// `PROTOCOL_VERSION`, or a client of the same version is dropped without the sentence.
+    pub desktop: Desktop,
+}
+
+impl Hello {
+    /// The head of a hello this build cannot decode whole: its version and protocol, with
+    /// defaults for the rest. A client built for another protocol sends a hello of another
+    /// shape, and the head is what the server needs to refuse it with the restart sentence
+    /// rather than dropping the connection. `None` when the body is not a hello at all.
+    pub fn from_head(body: &[u8]) -> Option<Hello> {
+        let (variant, version, protocol) = bincode::deserialize::<(u32, String, u32)>(body).ok()?;
+        (variant == 0).then(|| Hello {
+            version,
+            protocol,
+            cols: 0,
+            rows: 0,
+            caps: Capabilities::default(),
+            desktop: Desktop::default(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +108,9 @@ pub enum ClientMsg {
     Detach,
     /// The client could not write the clipboard; the reason is shown as a hint.
     ClipboardFailed(String),
+    /// The terminal's colours changed from what this client last sent. Not the reader's
+    /// activity: it moves no focus and no most recent client.
+    Colors(TerminalColors),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +167,9 @@ pub enum ServerMsg {
     Detached {
         reason: String,
     },
+    /// Whether this client's theme reads the terminal, so whether to follow a desktop theme
+    /// change. Sent after `Welcome`, and after a config reload that changes it.
+    FollowColors(bool),
 }
 
 /// The reason the server sends when the whole server is going away, rather than one view. Both
@@ -180,6 +214,11 @@ pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
     Ok(out)
 }
 
+/// One frame's body as a message.
+pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ProtoError> {
+    bincode::deserialize::<T>(body).map_err(|e| ProtoError::Decode(e.to_string()))
+}
+
 /// Accumulates bytes and yields whole messages.
 #[derive(Debug, Default)]
 pub struct Decoder {
@@ -202,6 +241,28 @@ impl Decoder {
     // Not `Iterator::next`: the message type is chosen per call, and decoding can fail.
     #[allow(clippy::should_implement_trait)]
     pub fn next<T: serde::de::DeserializeOwned>(&mut self) -> Result<Option<T>, ProtoError> {
+        let Some(end) = self.frame_end()? else {
+            return Ok(None);
+        };
+        let msg = decode::<T>(&self.buf[4..end])?;
+        self.buf.drain(..end);
+        Ok(Some(msg))
+    }
+
+    /// The next whole frame's body, taken from the buffer, or `Ok(None)` when the buffer does
+    /// not hold one yet. For a caller that decodes one body in more than one way: the attach
+    /// reads an old client's hello by its head when the whole of it does not decode.
+    pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, ProtoError> {
+        let Some(end) = self.frame_end()? else {
+            return Ok(None);
+        };
+        let body = self.buf[4..end].to_vec();
+        self.buf.drain(..end);
+        Ok(Some(body))
+    }
+
+    /// Where the first whole frame in the buffer ends, length prefix included.
+    fn frame_end(&self) -> Result<Option<usize>, ProtoError> {
         if self.buf.len() < 4 {
             return Ok(None);
         }
@@ -210,13 +271,7 @@ impl Decoder {
             return Err(ProtoError::FrameTooLarge(len));
         }
         let end = 4 + len as usize;
-        if self.buf.len() < end {
-            return Ok(None);
-        }
-        let msg = bincode::deserialize::<T>(&self.buf[4..end])
-            .map_err(|e| ProtoError::Decode(e.to_string()))?;
-        self.buf.drain(..end);
-        Ok(Some(msg))
+        Ok((self.buf.len() >= end).then_some(end))
     }
 }
 
@@ -231,7 +286,7 @@ pub fn is_control_api_first_byte(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domux_term::{Key, KeyAction, KeyEvent, Mods};
+    use domux_term::{Key, KeyAction, KeyEvent, Mods, Rgb};
 
     #[test]
     fn messages_round_trip_through_the_length_prefixed_frames() {
@@ -244,6 +299,7 @@ mod tests {
                 truecolor: true,
                 ..Default::default()
             },
+            desktop: Desktop::Unknown,
         });
         let key = ClientMsg::Key(KeyEvent {
             key: Key::Char('|'),
@@ -268,6 +324,166 @@ mod tests {
             }
         }
         assert_eq!(out, vec![hello, key, scroll]);
+    }
+
+    fn ristretto() -> TerminalColors {
+        let rgb = |v: u32| {
+            Some(Rgb {
+                r: (v >> 16) as u8,
+                g: (v >> 8) as u8,
+                b: v as u8,
+            })
+        };
+        let mut palette = [None; 16];
+        palette[1] = rgb(0xfd6883);
+        palette[4] = rgb(0xf38d70);
+        palette[15] = rgb(0xe6d9db);
+        TerminalColors {
+            fg: rgb(0xe6d9db),
+            bg: rgb(0x2c2525),
+            palette,
+        }
+    }
+
+    #[test]
+    fn terminal_colors_round_trip_through_the_frames() {
+        let hello = ClientMsg::Hello(Hello {
+            version: "1.1.0".into(),
+            protocol: PROTOCOL_VERSION,
+            cols: 80,
+            rows: 24,
+            caps: Capabilities {
+                truecolor: true,
+                colors: ristretto(),
+                ..Default::default()
+            },
+            desktop: Desktop::Omarchy,
+        });
+        let colors = ClientMsg::Colors(ristretto());
+        let mut bytes = encode(&hello).unwrap();
+        bytes.extend(encode(&colors).unwrap());
+        let mut d = Decoder::default();
+        d.push(&bytes);
+        assert_eq!(d.next::<ClientMsg>().unwrap(), Some(hello));
+        assert_eq!(d.next::<ClientMsg>().unwrap(), Some(colors));
+        assert_eq!(d.next::<ClientMsg>().unwrap(), None);
+
+        for follow in [true, false] {
+            d.push(&encode(&ServerMsg::FollowColors(follow)).unwrap());
+            assert_eq!(
+                d.next::<ServerMsg>().unwrap(),
+                Some(ServerMsg::FollowColors(follow))
+            );
+        }
+    }
+
+    /// Protocol 3's shapes, copied here so the bytes a server built before protocol 4 reads
+    /// can be checked without that server.
+    mod v3 {
+        use domux_term::Rgb;
+        use serde::Deserialize;
+
+        #[derive(Debug, Deserialize)]
+        pub struct Capabilities {
+            pub truecolor: bool,
+            pub kitty_keyboard: bool,
+            pub hyperlinks: bool,
+            pub osc52: bool,
+            pub default_fg: Option<Rgb>,
+            pub default_bg: Option<Rgb>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub struct Hello {
+            pub version: String,
+            pub protocol: u32,
+            pub cols: u16,
+            pub rows: u16,
+            pub caps: Capabilities,
+        }
+
+        #[derive(Debug, Deserialize)]
+        pub enum ClientMsg {
+            Hello(Hello),
+        }
+    }
+
+    /// A new client meeting an old server: the old server decodes the new hello as its own
+    /// shape, ignores the bytes after it, sees protocol 4 and refuses with the restart
+    /// sentence rather than dropping the connection.
+    #[test]
+    fn a_protocol_4_hello_starts_with_the_bytes_a_protocol_3_server_reads() {
+        let colors = ristretto();
+        let hello = ClientMsg::Hello(Hello {
+            version: "1.1.0".into(),
+            protocol: PROTOCOL_VERSION,
+            cols: 120,
+            rows: 40,
+            caps: Capabilities {
+                truecolor: true,
+                kitty_keyboard: false,
+                hyperlinks: true,
+                osc52: true,
+                colors: colors.clone(),
+            },
+            desktop: Desktop::Omarchy,
+        });
+        let frame = encode(&hello).unwrap();
+        // The old server's decoder is bincode's default, which allows trailing bytes.
+        let v3::ClientMsg::Hello(old) = bincode::deserialize::<v3::ClientMsg>(&frame[4..])
+            .expect("a protocol 3 server reads it");
+        assert_eq!(old.version, "1.1.0");
+        assert_eq!(old.protocol, 4);
+        assert_eq!((old.cols, old.rows), (120, 40));
+        assert!(old.caps.truecolor && !old.caps.kitty_keyboard);
+        assert!(old.caps.hyperlinks && old.caps.osc52);
+        assert_eq!(
+            (old.caps.default_fg, old.caps.default_bg),
+            (colors.fg, colors.bg)
+        );
+    }
+
+    /// The hello a domux 1.0.0 client sends, protocol 3, byte for byte: variant 0, the
+    /// version, the protocol, the size, four capability flags and the two default colours.
+    const PROTOCOL_3_HELLO: &[u8] = &[
+        0, 0, 0, 0, // ClientMsg::Hello
+        5, 0, 0, 0, 0, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version
+        3, 0, 0, 0, // protocol
+        80, 0, 24, 0, // cols, rows
+        1, 0, 1, 1, // truecolor, kitty_keyboard, hyperlinks, osc52
+        1, 0xcd, 0xd6, 0xf4, // default_fg
+        1, 0x1e, 0x1e, 0x2e, // default_bg
+    ];
+
+    /// An old client meeting a new server: its hello is too short for protocol 4, so the
+    /// server reads the head alone to refuse it with the restart sentence.
+    #[test]
+    fn a_protocol_3_hello_decodes_as_a_head() {
+        let mut d = Decoder::default();
+        d.push(&(PROTOCOL_3_HELLO.len() as u32).to_be_bytes());
+        d.push(PROTOCOL_3_HELLO);
+        let body = d.next_frame().unwrap().expect("one whole frame");
+        assert_eq!(body, PROTOCOL_3_HELLO);
+        assert_eq!(d.next_frame().unwrap(), None, "the frame was taken");
+        assert!(
+            decode::<ClientMsg>(&body).is_err(),
+            "protocol 4 cannot read a protocol 3 hello"
+        );
+        assert_eq!(
+            Hello::from_head(&body),
+            Some(Hello {
+                version: "1.0.0".into(),
+                protocol: 3,
+                cols: 0,
+                rows: 0,
+                caps: Capabilities::default(),
+                desktop: Desktop::Unknown,
+            })
+        );
+        // Only a hello has a head: another message's first variant is not 0.
+        let detach = encode(&ClientMsg::Detach).unwrap();
+        assert_eq!(Hello::from_head(&detach[4..]), None);
+        assert_eq!(Hello::from_head(&[0, 0, 0, 0, 9]), None, "too short");
     }
 
     #[test]
@@ -322,6 +538,7 @@ mod tests {
             cols: 120,
             rows: 40,
             caps: Capabilities::default(),
+            desktop: Desktop::Unknown,
         });
         assert!(!is_control_api_first_byte(encode(&hello).unwrap()[0]));
     }

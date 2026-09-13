@@ -6,12 +6,21 @@ use super::{ok, Ctx};
 use crate::client::Hint;
 use crate::load_config;
 use domux_core::api::{ApiError, ConfigReloadResult, Event};
+use domux_core::proto::ServerMsg;
 use serde_json::Value;
 
 pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
     let mut loaded = load_config(&ctx.config.path);
     let error = loaded.error.as_ref().map(|e| e.to_string());
     let warnings = loaded.warnings.clone();
+    // Whether each client's theme reads its terminal, before the reload, so a client whose
+    // answer changes can be told.
+    let followed: Vec<(domux_core::ids::ClientId, bool)> = ctx
+        .model
+        .clients
+        .iter()
+        .map(|c| (c.id.clone(), ctx.config.themes.reads_terminal(c.desktop)))
+        .collect();
     if loaded.error.is_none() {
         // A theme that cannot be used keeps the one drawn before, the way a broken config
         // keeps the config before it; the rest of the config still applies.
@@ -22,6 +31,17 @@ pub fn reload(ctx: &mut Ctx) -> Result<Value, ApiError> {
         // The config that made the respawn guard trip is gone, so the block on the
         // workspaces it stopped goes with it.
         ctx.release_respawn_blocks = true;
+        for (client, before) in followed {
+            let Some(view) = ctx.model.client(&client) else {
+                continue;
+            };
+            let now = ctx.config.themes.reads_terminal(view.desktop);
+            if now != before {
+                if let Some(conn) = ctx.clients.get(&client) {
+                    let _ = conn.tx.try_send(ServerMsg::FollowColors(now));
+                }
+            }
+        }
     } else {
         ctx.config.error = loaded.error;
         ctx.config.warnings = loaded.warnings;

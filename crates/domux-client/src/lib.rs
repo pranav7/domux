@@ -17,6 +17,7 @@ use crossterm::event::{Event, EventStream, MouseEventKind};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION, SERVER_STOPPED,
 };
+use domux_core::theme::Desktop;
 use domux_term::{Mods, MouseAction, MouseButton, MouseEvent, Rgb};
 use futures::{Stream, StreamExt};
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -210,6 +211,9 @@ where
                 let _ = write_bell(&mut std::io::stdout());
             }
             ServerMsg::Detached { reason } => return Ok(Some(detach_outcome(reason))),
+            // The client does not follow colour changes yet: the terminal's colours are the
+            // ones it answered at attach.
+            ServerMsg::FollowColors(_) => {}
         }
         Ok(None)
     }
@@ -358,7 +362,7 @@ const COLOR_QUERY_TIMEOUT: Duration = Duration::from_millis(100);
 /// so the server paints in its own default rather than in a colour nobody chose.
 fn client_capabilities(env: &caps::CapsEnv, colors: (Option<Rgb>, Option<Rgb>)) -> Capabilities {
     let mut capabilities = caps::detect(env);
-    (capabilities.default_fg, capabilities.default_bg) = colors;
+    (capabilities.colors.fg, capabilities.colors.bg) = colors;
     capabilities
 }
 
@@ -377,6 +381,8 @@ async fn send_hello<W: AsyncWrite + Unpin>(
         cols,
         rows,
         caps: caps.clone(),
+        // The client does not look for the desktop yet, so `auto` draws the domux theme.
+        desktop: Desktop::Unknown,
     });
     writer.write_all(&encode(&hello)?).await?;
     Ok(())
@@ -866,7 +872,7 @@ mod tests {
         assert_eq!(hello.version, domux_core::VERSION);
         assert_eq!((hello.cols, hello.rows), (80, 24));
         assert_eq!(
-            (hello.caps.default_fg, hello.caps.default_bg),
+            (hello.caps.colors.fg, hello.caps.colors.bg),
             (Some(fg), Some(bg)),
             "the colours the terminal answered with must reach the server"
         );

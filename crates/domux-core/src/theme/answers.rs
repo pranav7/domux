@@ -18,7 +18,7 @@ pub struct TerminalColors {
 }
 
 /// The desktop the client runs on, as far as `auto` needs to know.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum Desktop {
     #[default]
     Unknown,
