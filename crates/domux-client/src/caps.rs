@@ -160,7 +160,7 @@ pub fn colors_from_answers(text: &str) -> TerminalColors {
 /// The descriptor is read directly rather than through `std::io::Stdin`. A `StdinLock` reads
 /// into an 8 KB `BufReader`, so a one byte request pulls every byte the terminal sent into a
 /// buffer this loop cannot see: `poll` then reports an empty descriptor for the rest of the
-/// window, the answers are stranded, and anything the user typed ahead is stranded with them,
+/// wait, the answers are stranded, and anything the user typed ahead is stranded with them,
 /// because the event stream reads the descriptor and never that buffer.
 ///
 /// One byte per read, so the loop stops on the byte that finishes the device attributes answer
@@ -499,7 +499,7 @@ mod tests {
 
     extern "C" fn ignore_signal(_: libc::c_int) {}
 
-    /// A signal that lands during the read, a window resized while attach waits, interrupts
+    /// A signal that lands during the read, a terminal resized while attach waits, interrupts
     /// `poll`. The read carries on to the answers rather than ending there and leaving them to
     /// be typed into the pane.
     #[test]

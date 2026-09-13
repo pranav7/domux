@@ -198,11 +198,12 @@ theme's. A role `terminal` does not set keeps the domux value.
 | `toast_background` | the toast's cells | `#181825` | `shade 1/5` |
 | `fill` | the selected row in a box | `#313244` | `blend 1/9` |
 | `sidebar_background` | the sidebar column, its boxes and its hint row | `default` | `default` |
-| `tab_row_background` | the tab row on the panes | `default` | `default` |
+| `tab_row_background` | the tab row on the panes, every cell of it to the right edge | `default` | `default` |
 
 `sidebar_background` and `tab_row_background` are the terminal's own ground in both built-in themes, so
 the sidebar and the tab row sit on the panes' ground with no background of their own. A theme may paint
-them.
+them. The one column between the sidebar and the workpanel is neither: it is the panes' ground, the
+terminal's own, on every row.
 
 ### Lines
 

@@ -170,9 +170,12 @@ found Omarchy, looks at Omarchy's current theme about once a second: it compares
 of `current/theme.name`, `current/theme/colors.toml` and `current/theme/ghostty.conf`, which
 `omarchy-theme-set` replaces on every theme change, the same theme set again included. When they changed,
 it reads the background, foreground and 16 palette slots from the theme's files and sends
-`ClientMsg::Colors` when they differ from what it last sent; the server paints that client's chrome again.
-When nothing changed, nothing is read and nothing is sent. A file that cannot be read or parsed changes
-nothing, is logged, and is not read again until it changes.
+`ClientMsg::Colors` when they differ from what the files gave the last time they were read, starting from
+the read at attach; the server paints that client's chrome again. So a theme left as attach found it sends
+nothing, even when the terminal answered a palette slot of its own, and the terminal's answers stand until
+the first change. When nothing changed, nothing is read and nothing is sent. A file that cannot be read or
+parsed changes nothing, is reported as a warning, and is not read again until it changes. The attach
+client has no log file, so that warning reaches no file today; see Consequences.
 
 The colours come from `colors.toml` when it carries all 16 keys Omarchy's terminal templates use, and from
 `ghostty.conf` otherwise. `colors.toml` is the theme's own palette and the same for every terminal Omarchy
@@ -257,7 +260,11 @@ protocol, forever.
   files. If Omarchy moves the files, the chrome stops following and the next attach still reads the
   terminal.
 - The attach client installs no log, so the watch's warnings, like the client's other warnings, reach no
-  file.
+  file, and a theme file the watch cannot read is seen only as a chrome that did not change. A log of the
+  client's own is left open.
+- A key typed while attach waits for the answers is read with them and dropped, as it was before this
+  record, but the wait is now as long as the terminal takes to answer, up to the cap, rather than 100 ms.
+  Over a slow ssh link that is about a round trip. A signal is held and ends the session once it starts.
 - A colour answer slower than the attach read is still typed into the pane, as it was before; the read now
   waits 1 s past the keyboard probe's time for a terminal that answers device attributes, rather than
   100 ms.
