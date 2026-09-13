@@ -1,4 +1,5 @@
-//! What the outer terminal can do, from the environment and two OSC queries.
+//! What the outer terminal can do, from the environment, and what its colours are, from one
+//! batch of queries at attach.
 
 use domux_core::proto::Capabilities;
 use domux_core::theme::TerminalColors;
@@ -15,18 +16,24 @@ pub struct CapsEnv {
     pub term_program: Option<String>,
     pub ssh_tty: Option<String>,
     pub keyboard_enhancement: bool,
+    /// Whether crossterm's keyboard probe got any answer. It asks for the flags and then for
+    /// device attributes, and gives up after 2 s when neither arrives. A terminal that did not
+    /// answer that will not answer the attach batch either, so this sets the batch's cap.
+    pub probe_answered: bool,
 }
 
 impl CapsEnv {
     pub fn from_process() -> CapsEnv {
         let var = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
+        // `Err` when neither the flags nor the device attributes answer came back in 2 s.
+        let probe = crossterm::terminal::supports_keyboard_enhancement();
         CapsEnv {
             colorterm: var("COLORTERM"),
             term: var("TERM"),
             term_program: var("TERM_PROGRAM"),
             ssh_tty: var("SSH_TTY"),
-            keyboard_enhancement: crossterm::terminal::supports_keyboard_enhancement()
-                .unwrap_or(false),
+            keyboard_enhancement: probe.as_ref().is_ok_and(|supported| *supported),
+            probe_answered: probe.is_ok(),
         }
     }
 }
@@ -34,7 +41,7 @@ impl CapsEnv {
 const RICH_TERMINALS: &[&str] = &["ghostty", "WezTerm", "iTerm.app", "kitty"];
 
 /// A terminal that says nothing about itself gets nothing: every capability is false and
-/// both default colours stay absent. A guess here would show as wrong colour on the screen.
+/// every colour stays absent. A guess here would show as wrong colour on the screen.
 pub fn detect(env: &CapsEnv) -> Capabilities {
     let truecolor = matches!(env.colorterm.as_deref(), Some("truecolor") | Some("24bit"));
     let rich = env
@@ -54,45 +61,98 @@ pub fn detect(env: &CapsEnv) -> Capabilities {
     }
 }
 
-/// `rgb:rrrr/gggg/bbbb` or `rgb:rr/gg/bb` as terminals answer OSC 10 and 11.
+/// How long attach waits for the batch's answers when the terminal answered the keyboard
+/// probe. A terminal that answers ends the wait sooner, at its device attributes answer, so
+/// the cap is only felt by one that answers slowly. An answer that arrives after the wait is
+/// read by the event stream as keys and typed into the focused pane, which is what a longer
+/// cap keeps out.
+pub const ATTACH_ANSWER_CAP: Duration = Duration::from_secs(1);
+
+/// How long attach waits when the keyboard probe got no answer: a terminal that did not answer
+/// device attributes two seconds ago will not answer them now, and its attach should cost no
+/// more than a short wait (principle 8).
+pub const SILENT_TERMINAL_CAP: Duration = Duration::from_millis(100);
+
+/// The cap on the attach read, from whether the keyboard probe was answered.
+pub fn attach_cap(probe_answered: bool) -> Duration {
+    if probe_answered {
+        ATTACH_ANSWER_CAP
+    } else {
+        SILENT_TERMINAL_CAP
+    }
+}
+
+/// The palette slots the batch asks for, 0 to 15.
+const SLOTS: usize = 16;
+
+/// The queries attach writes, in the order the terminal answers them: the default foreground
+/// (OSC 10), the default background (OSC 11), one OSC 4 per palette slot, because every
+/// terminal that answers OSC 4 accepts that form, and device attributes (DA1) last. Every
+/// terminal answers DA1, so its answer says the terminal has answered all it is going to.
+pub fn attach_batch() -> Vec<u8> {
+    let mut batch = b"\x1b]10;?\x07\x1b]11;?\x07".to_vec();
+    for n in 0..SLOTS {
+        batch.extend(format!("\x1b]4;{n};?\x07").as_bytes());
+    }
+    batch.extend(b"\x1b[c");
+    batch
+}
+
+/// A colour as terminals answer OSC 10, 11 and 4: `rgb:` and three channels of one to four hex
+/// digits. A channel of `k` digits is scaled to a byte as `v * 255 / (16^k - 1)`, rounded, so
+/// `f`, `ff`, `fff` and `ffff` are all 255.
 pub fn parse_osc_color(s: &str) -> Option<Rgb> {
     let rest = s.strip_prefix("rgb:")?;
     let mut parts = rest.split('/');
     let mut channel = || -> Option<u8> {
         let p = parts.next()?;
-        let v = u16::from_str_radix(p, 16).ok()?;
-        Some(if p.len() > 2 { (v >> 8) as u8 } else { v as u8 })
+        if p.is_empty() || p.len() > 4 || !p.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let v = u32::from_str_radix(p, 16).ok()?;
+        let max = (1u32 << (4 * p.len())) - 1;
+        u8::try_from((v * 255 + max / 2) / max).ok()
     };
-    Some(Rgb {
+    let rgb = Rgb {
         r: channel()?,
         g: channel()?,
         b: channel()?,
-    })
+    };
+    parts.next().is_none().then_some(rgb)
 }
 
-/// Asks the terminal for its default foreground and background. Must run in raw mode and
-/// before the event stream reads stdin. A terminal that does not answer within `timeout`
-/// gives `(None, None)`; the server then uses its own defaults.
+/// Asks the terminal for its colours: writes the attach batch and reads the answers until the
+/// device attributes answer arrives or `cap` passes. Must run in raw mode and before the event
+/// stream reads stdin. A colour the terminal did not answer stays absent; the server then uses
+/// its own.
 ///
-/// Stdin that is not a terminal answers nothing, so the query is not written at all: a test
-/// runner or a piped stdin would otherwise be sent escape bytes and read for 100 ms.
-pub fn query_default_colors(timeout: Duration) -> (Option<Rgb>, Option<Rgb>) {
+/// Stdin that is not a terminal answers nothing, so the batch is not written at all: a test
+/// runner or a piped stdin would otherwise be sent escape bytes and read for the whole cap.
+pub fn ask_terminal_colors(cap: Duration) -> TerminalColors {
     if !std::io::stdin().is_terminal() {
-        return (None, None);
+        return TerminalColors::default();
     }
     let mut out = std::io::stdout();
     if out
-        .write_all(b"\x1b]10;?\x07\x1b]11;?\x07")
+        .write_all(&attach_batch())
         .and_then(|_| out.flush())
         .is_err()
     {
-        return (None, None);
+        return TerminalColors::default();
     }
-    let text = read_replies(libc::STDIN_FILENO, timeout);
-    (find_reply(&text, "10"), find_reply(&text, "11"))
+    colors_from_answers(&read_answers(libc::STDIN_FILENO, cap))
 }
 
-/// Reads OSC answers off a descriptor until both have arrived or `timeout` passes.
+/// The colours in what the terminal answered, each found by its code and slot.
+pub fn colors_from_answers(text: &str) -> TerminalColors {
+    TerminalColors {
+        fg: find_answer(text, "10"),
+        bg: find_answer(text, "11"),
+        palette: std::array::from_fn(|n| find_answer(text, &format!("4;{n}"))),
+    }
+}
+
+/// Reads answers off a descriptor until the device attributes answer arrives or `cap` passes.
 ///
 /// The descriptor is read directly rather than through `std::io::Stdin`. A `StdinLock` reads
 /// into an 8 KB `BufReader`, so a one byte request pulls every byte the terminal sent into a
@@ -100,10 +160,10 @@ pub fn query_default_colors(timeout: Duration) -> (Option<Rgb>, Option<Rgb>) {
 /// window, the answers are stranded, and anything the user typed ahead is stranded with them,
 /// because the event stream reads the descriptor and never that buffer.
 ///
-/// One byte per read, so the loop stops on the byte that finishes the second answer and
-/// leaves whatever follows it - type-ahead - on the descriptor for the event stream.
-fn read_replies(fd: std::os::fd::RawFd, timeout: Duration) -> String {
-    let deadline = Instant::now() + timeout;
+/// One byte per read, so the loop stops on the byte that finishes the device attributes answer
+/// and leaves whatever follows it - type-ahead - on the descriptor for the event stream.
+fn read_answers(fd: std::os::fd::RawFd, cap: Duration) -> String {
+    let deadline = Instant::now() + cap;
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     while Instant::now() < deadline {
@@ -126,23 +186,33 @@ fn read_replies(fd: std::os::fd::RawFd, timeout: Duration) -> String {
             break;
         }
         buf.push(byte[0]);
-        if count_replies(&buf) >= 2 {
+        if byte[0] == b'c' && ends_with_device_attributes(&buf) {
             break;
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-fn count_replies(buf: &[u8]) -> usize {
-    let s = String::from_utf8_lossy(buf);
-    s.matches("\x1b]1")
-        .count()
-        .min(s.matches('\x07').count() + s.matches("\x1b\\").count())
+/// Whether `buf` ends with a device attributes answer: `ESC [ ?`, digits and `;`, then `c`.
+fn ends_with_device_attributes(buf: &[u8]) -> bool {
+    let Some((b'c', before)) = buf.split_last() else {
+        return false;
+    };
+    let params = before
+        .iter()
+        .rev()
+        .take_while(|b| b.is_ascii_digit() || **b == b';')
+        .count();
+    before[..before.len() - params].ends_with(b"\x1b[?")
 }
 
-/// The colour in one OSC answer, or `None` when the terminal did not answer that one.
-fn find_reply(text: &str, code: &str) -> Option<Rgb> {
-    let start = text.find(&format!("\x1b]{code};"))? + 3 + code.len();
+/// The colour in one answer, or `None` when the terminal did not answer that one. `code` is
+/// `10`, `11` or `4;n`, and is matched with the `ESC ]` before it and the `;` after it, so slot
+/// 1 is not found in slot 10's answer and OSC 10 is not found in `4;10;`. The colour ends at
+/// BEL or at the ESC of ST.
+fn find_answer(text: &str, code: &str) -> Option<Rgb> {
+    let prefix = format!("\x1b]{code};");
+    let start = text.find(&prefix)? + prefix.len();
     let rest = &text[start..];
     let end = rest.find(['\x07', '\x1b']).unwrap_or(rest.len());
     parse_osc_color(&rest[..end])
@@ -154,25 +224,59 @@ mod tests {
     use std::io::Read;
     use std::os::fd::AsRawFd;
 
+    const RED: Rgb = Rgb {
+        r: 0xff,
+        g: 0x00,
+        b: 0x88,
+    };
+    const FG: Rgb = Rgb {
+        r: 0xcd,
+        g: 0xd6,
+        b: 0xf4,
+    };
+    const BG: Rgb = Rgb {
+        r: 0x1e,
+        g: 0x1e,
+        b: 0x2e,
+    };
+    const FG_ANSWER: &[u8] = b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07";
+    const BG_ANSWER: &[u8] = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07";
+    const DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?62;22c";
+
     #[test]
-    fn parse_osc_color_reads_16_bit_channels() {
+    fn the_attach_batch_asks_both_colours_every_slot_and_ends_with_device_attributes() {
+        let mut want = b"\x1b]10;?\x07\x1b]11;?\x07".to_vec();
+        for n in 0..16 {
+            want.extend(format!("\x1b]4;{n};?\x07").as_bytes());
+        }
+        want.extend(b"\x1b[c");
         assert_eq!(
-            parse_osc_color("rgb:cdcd/d6d6/f4f4"),
+            String::from_utf8_lossy(&attach_batch()),
+            String::from_utf8_lossy(&want)
+        );
+    }
+
+    #[test]
+    fn parse_osc_color_scales_1_2_3_and_4_digit_channels() {
+        assert_eq!(parse_osc_color("rgb:f/0/8"), Some(RED));
+        assert_eq!(parse_osc_color("rgb:ff/00/88"), Some(RED));
+        assert_eq!(parse_osc_color("rgb:fff/000/888"), Some(RED));
+        assert_eq!(parse_osc_color("rgb:ffff/0000/8888"), Some(RED));
+        assert_eq!(
+            parse_osc_color("rgb:2c2c/2525/2525"),
             Some(Rgb {
-                r: 0xcd,
-                g: 0xd6,
-                b: 0xf4
+                r: 0x2c,
+                g: 0x25,
+                b: 0x25
             })
         );
-        assert_eq!(
-            parse_osc_color("rgb:1e/1e/2e"),
-            Some(Rgb {
-                r: 0x1e,
-                g: 0x1e,
-                b: 0x2e
-            })
-        );
+        assert_eq!(parse_osc_color("rgb:1e/1e/2e"), Some(BG));
         assert_eq!(parse_osc_color("nonsense"), None);
+        assert_eq!(parse_osc_color("rgb:ff/00"), None, "a channel is missing");
+        assert_eq!(parse_osc_color("rgb:ff/00/88/00"), None, "one too many");
+        assert_eq!(parse_osc_color("rgb:fffff/0/0"), None, "five digits");
+        assert_eq!(parse_osc_color("rgb:/0/0"), None, "no digits");
+        assert_eq!(parse_osc_color("rgb:+f/0/0"), None, "a sign is not a digit");
     }
 
     #[test]
@@ -183,6 +287,7 @@ mod tests {
             term_program: Some("ghostty".into()),
             ssh_tty: None,
             keyboard_enhancement: true,
+            probe_answered: true,
         };
         let c = detect(&env);
         assert!(c.truecolor && c.kitty_keyboard && c.hyperlinks && c.osc52);
@@ -192,6 +297,7 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: false,
+            probe_answered: false,
         };
         let c = detect(&plain);
         assert!(!c.truecolor && !c.kitty_keyboard && !c.hyperlinks && !c.osc52);
@@ -216,6 +322,7 @@ mod tests {
             term_program: None,
             ssh_tty: Some("/dev/pts/3".into()),
             keyboard_enhancement: false,
+            probe_answered: false,
         };
         for term in ["xterm-ghostty", "xterm-kitty"] {
             let c = detect(&over_ssh(term));
@@ -242,6 +349,7 @@ mod tests {
             term_program: Some(program.into()),
             ssh_tty: None,
             keyboard_enhancement: false,
+            probe_answered: false,
         };
         for program in ["ghostty", "WezTerm", "iTerm.app", "kitty"] {
             let c = detect(&local(program, None));
@@ -258,7 +366,7 @@ mod tests {
         assert!(!detect(&local("ghostty", Some("256"))).truecolor);
     }
 
-    /// A terminal that answers nothing at all. Every capability is off and both colours stay
+    /// A terminal that answers nothing at all. Every capability is off and the colours stay
     /// absent: a default here would paint the screen in colours the terminal never named.
     #[test]
     fn a_terminal_that_says_nothing_gets_no_capabilities_and_no_colours() {
@@ -268,106 +376,145 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: false,
+            probe_answered: false,
         };
         assert_eq!(detect(&silent), Capabilities::default());
-        assert!(detect(&silent).colors == TerminalColors::default());
+        assert_eq!(detect(&silent).colors, TerminalColors::default());
+        assert_eq!(colors_from_answers(""), TerminalColors::default());
     }
 
     #[test]
-    fn find_reply_reads_each_answer_and_leaves_a_missing_one_absent() {
-        let both = "\x1b]10;rgb:cdcd/d6d6/f4f4\x07\x1b]11;rgb:1e1e/1e1e/2e2e\x07";
-        assert_eq!(
-            find_reply(both, "10"),
-            Some(Rgb {
-                r: 0xcd,
-                g: 0xd6,
-                b: 0xf4
-            })
-        );
-        assert_eq!(
-            find_reply(both, "11"),
-            Some(Rgb {
-                r: 0x1e,
-                g: 0x1e,
-                b: 0x2e
-            })
-        );
-        // Some terminals end the answer with ST rather than BEL.
-        assert_eq!(
-            find_reply("\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\", "11"),
-            Some(Rgb {
-                r: 0x1e,
-                g: 0x1e,
-                b: 0x2e
-            })
-        );
-        assert_eq!(find_reply("", "10"), None, "no answer is absent, not black");
-        assert_eq!(find_reply(both, "12"), None);
+    fn the_cap_is_a_second_when_the_keyboard_probe_was_answered_and_100_ms_when_it_was_not() {
+        assert_eq!(attach_cap(true), Duration::from_secs(1));
+        assert_eq!(attach_cap(false), Duration::from_millis(100));
+        assert_eq!(ATTACH_ANSWER_CAP, Duration::from_secs(1));
+        assert_eq!(SILENT_TERMINAL_CAP, Duration::from_millis(100));
     }
 
     #[test]
-    fn count_replies_counts_only_finished_answers() {
-        assert_eq!(count_replies(b"\x1b]10;rgb:1e/1e/2e"), 0);
-        assert_eq!(count_replies(b"\x1b]10;rgb:1e/1e/2e\x07"), 1);
-        assert_eq!(count_replies(b"\x1b]10;a\x07\x1b]11;b\x07"), 2);
+    fn find_answer_reads_slot_1_without_finding_slot_10_and_ten_without_slot_4_10() {
+        let slot_10 = "\x1b]4;10;rgb:ffff/0000/8888\x07";
+        assert_eq!(find_answer(slot_10, "4;10"), Some(RED));
+        assert_eq!(find_answer(slot_10, "4;1"), None, "slot 1 is not slot 10");
+        assert_eq!(find_answer(slot_10, "10"), None, "OSC 10 is not slot 10");
+        let both = format!("{slot_10}\x1b]4;1;rgb:cdcd/d6d6/f4f4\x07");
+        assert_eq!(find_answer(&both, "4;1"), Some(FG));
+        assert_eq!(find_answer(&both, "4;10"), Some(RED));
+        let fg = "\x1b]10;rgb:cdcd/d6d6/f4f4\x07";
+        assert_eq!(find_answer(fg, "10"), Some(FG));
+        assert_eq!(find_answer(fg, "4;10"), None);
+        assert_eq!(
+            find_answer("", "10"),
+            None,
+            "no answer is absent, not black"
+        );
     }
 
-    /// The terminal answers both queries in one write, and the user has typed ahead. Both
-    /// answers are collected, and the type-ahead is still on the descriptor for the event
+    #[test]
+    fn answers_ended_by_bel_and_by_st_are_both_read() {
+        let text = "\x1b]10;rgb:cdcd/d6d6/f4f4\x07\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\
+                    \x1b]4;3;rgb:ff/00/88\x1b\\\x1b]4;4;rgb:f/0/8\x07";
+        let colors = colors_from_answers(text);
+        assert_eq!((colors.fg, colors.bg), (Some(FG), Some(BG)));
+        assert_eq!(colors.palette[3], Some(RED));
+        assert_eq!(colors.palette[4], Some(RED));
+        assert_eq!(
+            colors.palette.iter().filter(|s| s.is_some()).count(),
+            2,
+            "a slot nobody answered is absent"
+        );
+    }
+
+    /// The terminal answers the whole batch in one write, and the user has typed ahead. Every
+    /// answer is collected, and the type-ahead is still on the descriptor for the event
     /// stream: a read that buffered would have taken it and lost those keystrokes.
     #[test]
-    fn read_replies_collects_both_answers_and_leaves_what_follows_them() {
+    fn read_answers_stops_at_the_device_attributes_answer_and_leaves_what_follows_it() {
         let (reader, mut writer) = std::io::pipe().unwrap();
-        writer
-            .write_all(b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07\x1b]11;rgb:1e1e/1e1e/2e2e\x07hi")
-            .unwrap();
-        let text = read_replies(reader.as_raw_fd(), Duration::from_millis(500));
-        assert_eq!(
-            (find_reply(&text, "10"), find_reply(&text, "11")),
-            (
-                Some(Rgb {
-                    r: 0xcd,
-                    g: 0xd6,
-                    b: 0xf4
-                }),
-                Some(Rgb {
-                    r: 0x1e,
-                    g: 0x1e,
-                    b: 0x2e
-                })
-            )
-        );
+        let mut bytes = [FG_ANSWER, BG_ANSWER].concat();
+        for n in 0..16 {
+            bytes.extend(format!("\x1b]4;{n};rgb:ffff/0000/8888\x07").as_bytes());
+        }
+        bytes.extend(DEVICE_ATTRIBUTES);
+        bytes.extend(b"hi");
+        writer.write_all(&bytes).unwrap();
+        let text = read_answers(reader.as_raw_fd(), Duration::from_millis(500));
+        let colors = colors_from_answers(&text);
+        assert_eq!((colors.fg, colors.bg), (Some(FG), Some(BG)));
+        assert_eq!(colors.palette, [Some(RED); 16]);
         let mut rest = [0u8; 2];
         let mut reader = reader;
         reader.read_exact(&mut rest).unwrap();
         assert_eq!(&rest, b"hi", "type-ahead stays on the descriptor");
     }
 
-    /// The two answers arrive in two writes, which is what a terminal that answers each
-    /// query as it reaches it does. The loop polls again rather than stopping at the first.
+    /// A terminal that answers OSC 10 and 11 and not OSC 4 still answers DA1, and the read
+    /// ends there rather than waiting out the cap for slots that are never coming.
     #[test]
-    fn read_replies_collects_answers_that_arrive_in_two_writes() {
+    fn read_answers_ends_on_device_attributes_without_waiting_for_slots_the_terminal_did_not_answer(
+    ) {
         let (reader, mut writer) = std::io::pipe().unwrap();
         std::thread::spawn(move || {
-            writer.write_all(b"\x1b]10;rgb:cdcd/d6d6/f4f4\x07").unwrap();
+            writer.write_all(FG_ANSWER).unwrap();
             std::thread::sleep(Duration::from_millis(20));
-            writer.write_all(b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07").unwrap();
+            writer.write_all(BG_ANSWER).unwrap();
+            writer.write_all(DEVICE_ATTRIBUTES).unwrap();
+            // Held open past the cap, so only the answer can end the read.
+            std::thread::sleep(Duration::from_secs(3));
         });
-        let text = read_replies(reader.as_raw_fd(), Duration::from_millis(2000));
+        let started = Instant::now();
+        let text = read_answers(reader.as_raw_fd(), Duration::from_secs(2));
         assert!(
-            find_reply(&text, "10").is_some() && find_reply(&text, "11").is_some(),
-            "{text:?}"
+            started.elapsed() < Duration::from_millis(1000),
+            "the read waited {:?}",
+            started.elapsed()
         );
+        let colors = colors_from_answers(&text);
+        assert_eq!((colors.fg, colors.bg), (Some(FG), Some(BG)));
+        assert_eq!(colors.palette, [None; 16]);
     }
 
-    /// A terminal that answers nothing costs the timeout and gives nothing. Absent, not black.
+    /// A terminal that answers nothing costs the cap and gives nothing. Absent, not black.
     #[test]
-    fn read_replies_gives_up_at_the_deadline_when_nothing_answers() {
+    fn read_answers_gives_up_at_the_cap_when_nothing_answers() {
         let (reader, _writer) = std::io::pipe().unwrap();
         let started = Instant::now();
-        let text = read_replies(reader.as_raw_fd(), Duration::from_millis(30));
+        let text = read_answers(reader.as_raw_fd(), Duration::from_millis(30));
         assert_eq!(text, "");
+        assert!(started.elapsed() >= Duration::from_millis(25));
         assert!(started.elapsed() < Duration::from_millis(2000));
-        assert_eq!(find_reply(&text, "10"), None);
+        assert_eq!(colors_from_answers(&text), TerminalColors::default());
+    }
+
+    /// A `c` typed ahead, and the `c`s inside the answers' own hex digits, end nothing: only
+    /// `ESC [ ?`, digits and `;`, then `c` is the device attributes answer.
+    #[test]
+    fn a_c_that_is_not_a_device_attributes_answer_ends_nothing() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let bytes = [
+            b"c1c;c[c?c".as_slice(),
+            b"\x1b]10;rgb:1c1c/2c2c/3c3c\x07",
+            BG_ANSWER,
+            DEVICE_ATTRIBUTES,
+            b"hi",
+        ]
+        .concat();
+        writer.write_all(&bytes).unwrap();
+        let text = read_answers(reader.as_raw_fd(), Duration::from_millis(500));
+        let colors = colors_from_answers(&text);
+        assert_eq!(
+            colors.fg,
+            Some(Rgb {
+                r: 0x1c,
+                g: 0x2c,
+                b: 0x3c
+            })
+        );
+        assert_eq!(colors.bg, Some(BG));
+        assert!(text.ends_with("\x1b[?62;22c"), "{text:?}");
+        let mut rest = [0u8; 2];
+        let mut reader = reader;
+        reader.read_exact(&mut rest).unwrap();
+        assert_eq!(&rest, b"hi");
     }
 }

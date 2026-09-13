@@ -3,6 +3,7 @@
 pub mod caps;
 pub mod clipboard;
 pub mod control;
+pub mod desktop;
 pub mod frame;
 pub mod input;
 pub mod omarchy;
@@ -18,8 +19,8 @@ use crossterm::event::{Event, EventStream, MouseEventKind};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION, SERVER_STOPPED,
 };
-use domux_core::theme::Desktop;
-use domux_term::{Mods, MouseAction, MouseButton, MouseEvent, Rgb};
+use domux_core::theme::{Desktop, TerminalColors};
+use domux_term::{Mods, MouseAction, MouseButton, MouseEvent};
 use futures::{Stream, StreamExt};
 use ratatui::backend::{Backend, CrosstermBackend};
 use std::future::Future;
@@ -353,26 +354,23 @@ fn write_bell(out: &mut impl std::io::Write) -> std::io::Result<()> {
     out.flush()
 }
 
-/// How long the client waits for the terminal to answer the two colour queries. Part of the
-/// attach budget, so it is short enough that a terminal that never answers is not felt
-/// (principle 8).
-const COLOR_QUERY_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// What the client tells the server it can do: the environment's answer, plus the two
-/// colours the terminal named for itself. A colour the terminal did not name stays absent,
-/// so the server paints in its own default rather than in a colour nobody chose.
-fn client_capabilities(env: &caps::CapsEnv, colors: (Option<Rgb>, Option<Rgb>)) -> Capabilities {
-    let mut capabilities = caps::detect(env);
-    (capabilities.colors.fg, capabilities.colors.bg) = colors;
-    capabilities
+/// What the client tells the server it can do: the environment's answer, plus the colours
+/// the terminal named for itself. A colour the terminal did not name stays absent, so the
+/// server paints in its own default rather than in a colour nobody chose.
+fn client_capabilities(env: &caps::CapsEnv, colors: TerminalColors) -> Capabilities {
+    Capabilities {
+        colors,
+        ..caps::detect(env)
+    }
 }
 
-/// The first message on the wire: who the client is, how big its terminal is and what that
-/// terminal can do. A function rather than a block inside `attach`, so a test reads the
-/// bytes the server would have read.
+/// The first message on the wire: who the client is, how big its terminal is, what that
+/// terminal can do and the desktop it runs on. A function rather than a block inside
+/// `attach`, so a test reads the bytes the server would have read.
 async fn send_hello<W: AsyncWrite + Unpin>(
     writer: &mut W,
     caps: &Capabilities,
+    desktop: Desktop,
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<()> {
@@ -382,8 +380,7 @@ async fn send_hello<W: AsyncWrite + Unpin>(
         cols,
         rows,
         caps: caps.clone(),
-        // The client does not look for the desktop yet, so `auto` draws the domux theme.
-        desktop: Desktop::Unknown,
+        desktop,
     });
     writer.write_all(&encode(&hello)?).await?;
     Ok(())
@@ -420,12 +417,15 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     TerminalGuard::install_panic_hook(env.keyboard_enhancement);
     let guard = TerminalGuard::enter(env.keyboard_enhancement)?;
     // In raw mode and before the event stream reads stdin: the answers are on stdin, and
-    // whichever reader gets there first keeps them.
-    let capabilities = client_capabilities(&env, caps::query_default_colors(COLOR_QUERY_TIMEOUT));
+    // whichever reader gets there first keeps them. Focus reports are already on, so the one
+    // a terminal sends when they are turned on is read and dropped here.
+    let colors = caps::ask_terminal_colors(caps::attach_cap(env.probe_answered));
+    let capabilities = client_capabilities(&env, colors);
     let (cols, rows) = crossterm::terminal::size()?;
+    let desktop = desktop::detect(&desktop::DesktopEnv::from_process());
     // Every `?` from here on leaves through the guard's `Drop`, which restores the terminal
     // before the error reaches a caller that prints it (principle 11).
-    send_hello(&mut writer, &capabilities, cols, rows).await?;
+    send_hello(&mut writer, &capabilities, desktop, cols, rows).await?;
     let mut session = Session {
         caps: capabilities,
         screen: Screen::new(cols, rows),
@@ -468,7 +468,7 @@ mod tests {
         MouseButton as CtButton, MouseEvent as CtMouse,
     };
     use domux_core::proto::{CellUpdate, FrameDiff, WireColor, MAX_FRAME};
-    use domux_term::{Key, KeyEvent, Mods};
+    use domux_term::{Key, KeyEvent, Mods, Rgb};
     use futures::channel::mpsc::{unbounded, UnboundedSender};
     use ratatui::backend::TestBackend;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
@@ -839,7 +839,8 @@ mod tests {
     }
 
     /// The hello is the first thing on the wire and the only consumer of the colour queries.
-    /// Its bytes are read back the way the server reads them.
+    /// Its bytes are read back the way the server reads them: the palette and the desktop
+    /// reach the server along with the two default colours.
     #[tokio::test]
     async fn the_hello_carries_the_protocol_version_the_size_and_the_terminals_own_colours() {
         let env = caps::CapsEnv {
@@ -848,6 +849,7 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: true,
+            probe_answered: true,
         };
         let fg = Rgb {
             r: 0xcd,
@@ -859,9 +861,19 @@ mod tests {
             g: 0x1e,
             b: 0x2e,
         };
-        let caps = client_capabilities(&env, (Some(fg), Some(bg)));
+        let mut palette = [None; 16];
+        palette[4] = Some(fg);
+        palette[15] = Some(bg);
+        let colors = TerminalColors {
+            fg: Some(fg),
+            bg: Some(bg),
+            palette,
+        };
+        let caps = client_capabilities(&env, colors.clone());
         let (mut client, mut server) = tokio::io::duplex(4096);
-        send_hello(&mut client, &caps, 80, 24).await.unwrap();
+        send_hello(&mut client, &caps, Desktop::Omarchy, 80, 24)
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = server.read(&mut buf).await.unwrap();
         let mut dec = Decoder::default();
@@ -873,10 +885,10 @@ mod tests {
         assert_eq!(hello.version, domux_core::VERSION);
         assert_eq!((hello.cols, hello.rows), (80, 24));
         assert_eq!(
-            (hello.caps.colors.fg, hello.caps.colors.bg),
-            (Some(fg), Some(bg)),
+            hello.caps.colors, colors,
             "the colours the terminal answered with must reach the server"
         );
+        assert_eq!(hello.desktop, Desktop::Omarchy);
         assert!(hello.caps.truecolor && hello.caps.kitty_keyboard && hello.caps.osc52);
     }
 
@@ -889,8 +901,9 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: false,
+            probe_answered: false,
         };
-        let caps = client_capabilities(&env, (None, None));
+        let caps = client_capabilities(&env, TerminalColors::default());
         assert_eq!(caps, Capabilities::default());
     }
 
