@@ -2638,13 +2638,23 @@ impl Core {
         // wherever it is drawn, and the glyph is the core's frame, not each client's.
         let now = self.deps.clock.now();
         let agents = agents_view(&self.model, &mut self.agents, now);
-        let theme = self
-            .theme
-            .as_ref()
-            .unwrap_or_else(|| domux_core::theme::Theme::domux());
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
+            };
+            // Each client's own theme, painted from the chosen one. Until clients send their
+            // terminal's colours and desktop, every client paints with no answers on an
+            // unknown desktop.
+            let painted;
+            let theme = match &self.theme {
+                Some(theme) => theme,
+                None => {
+                    painted = self.config.themes.paint(
+                        &domux_core::theme::TerminalColors::default(),
+                        domux_core::theme::Desktop::Unknown,
+                    );
+                    &painted
+                }
             };
             let input = RenderInput {
                 model: &self.model,

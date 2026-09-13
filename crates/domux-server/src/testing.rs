@@ -286,6 +286,11 @@ impl Harness {
             loaded.keymap = Keymap::from_config(&self.config.keys)
                 .expect("test config keymap")
                 .0;
+            // The options' config names its theme the way a file would, from `themes/`.
+            let (themes, warnings) = crate::load_themes(&config_path, &self.config);
+            loaded.warnings.extend(warnings);
+            loaded.theme_unused = themes.is_none();
+            loaded.themes = themes.unwrap_or_default();
         }
         let opts = ServerOptions {
             socket_path: self.socket.clone(),
@@ -326,6 +331,14 @@ impl Harness {
     /// Writes a config file into the harness state dir and reloads. For config tests.
     pub fn config_path(&self) -> PathBuf {
         self.state_dir.join("domux.toml")
+    }
+
+    /// Writes `themes/<name>.toml` beside `config_path`, where the server looks for a theme
+    /// file. It is read at the next start or `config.reload`, the same as the config.
+    pub fn write_theme(&self, name: &str, text: &str) {
+        let dir = self.state_dir.join(domux_core::names::THEMES_DIR_NAME);
+        std::fs::create_dir_all(&dir).expect("themes directory");
+        std::fs::write(dir.join(format!("{name}.toml")), text).expect("theme file");
     }
 
     pub async fn attach(&mut self, cols: u16, rows: u16) -> ClientId {

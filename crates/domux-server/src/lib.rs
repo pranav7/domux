@@ -35,6 +35,8 @@ use domux_core::facts::{Fact, FactKey};
 use domux_core::ids::PaneId;
 use domux_core::keymap::Keymap;
 use domux_core::model::Model;
+use domux_core::names::THEMES_DIR_NAME;
+use domux_core::theme::{builtin::BUILTIN, Themes};
 use domux_term::Size;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,6 +52,38 @@ pub struct LoadedConfig {
     pub keymap: Keymap,
     pub error: Option<ConfigError>,
     pub warnings: Vec<String>,
+    /// The theme `config` names, resolved. A theme that cannot be used gives `auto` here.
+    pub themes: Themes,
+    /// True when the theme `config` names cannot be used, and `warnings` says why. At start
+    /// `themes` is `auto`; a reload keeps the themes drawn before instead (design section 3.5).
+    pub theme_unused: bool,
+}
+
+/// Resolves the theme a config names, reading its files from `themes/` beside the config
+/// file. Answers the themes, or `None` when the theme cannot be used, with every warning to
+/// report. Each warning is also logged, so a theme that failed at start is in the log.
+pub fn load_themes(config_path: &Path, config: &Config) -> (Option<Themes>, Vec<String>) {
+    let dir = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .join(THEMES_DIR_NAME);
+    let choice = config.theme.choice();
+    // The name was checked before it reaches here, so it is never more than a file name.
+    let read = |name: &str| match std::fs::read_to_string(dir.join(format!("{name}.toml"))) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("could not read the file: {e}")),
+    };
+    let (chain, found) = domux_core::theme::resolve(&choice, BUILTIN, read);
+    let warnings: Vec<String> = found.into_iter().map(|w| w.0).collect();
+    for warning in &warnings {
+        tracing::warn!("{warning}");
+    }
+    let themes = chain.ok().map(|chain| Themes {
+        file: matches!(choice, domux_core::theme::ThemeChoice::File(_)).then_some(chain),
+        choice,
+    });
+    (themes, warnings)
 }
 
 pub fn load_config(path: &Path) -> LoadedConfig {
@@ -68,6 +102,8 @@ pub fn load_config(path: &Path) -> LoadedConfig {
                     message: format!("could not read the file: {e}"),
                 }),
                 warnings: Vec::new(),
+                themes: Themes::default(),
+                theme_unused: false,
             };
         }
     };
@@ -77,12 +113,16 @@ pub fn load_config(path: &Path) -> LoadedConfig {
             match Keymap::from_config(&parsed.config.keys) {
                 Ok((keymap, kw)) => {
                     warnings.extend(kw.into_iter().map(|w| w.0));
+                    let (themes, tw) = load_themes(path, &parsed.config);
+                    warnings.extend(tw);
                     LoadedConfig {
                         path: path.to_path_buf(),
                         config: parsed.config,
                         keymap,
                         error: None,
                         warnings,
+                        theme_unused: themes.is_none(),
+                        themes: themes.unwrap_or_default(),
                     }
                 }
                 // The file parsed, so the toml has no error and there is no span to take a
@@ -97,6 +137,8 @@ pub fn load_config(path: &Path) -> LoadedConfig {
                         message,
                     }),
                     warnings,
+                    themes: Themes::default(),
+                    theme_unused: false,
                 },
             }
         }
@@ -106,6 +148,8 @@ pub fn load_config(path: &Path) -> LoadedConfig {
             keymap: Keymap::defaults(),
             error: Some(error),
             warnings: Vec::new(),
+            themes: Themes::default(),
+            theme_unused: false,
         },
     }
 }
