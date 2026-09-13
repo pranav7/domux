@@ -495,6 +495,29 @@ async fn answer_then_attach_and_detach_in_a_pty(
     answers: &[(Wants<'_>, &[u8])],
     wants: &str,
 ) -> (Vec<u8>, portable_pty::ExitStatus) {
+    let steps: Vec<(&Wants<'_>, Then<'_>)> = answers
+        .iter()
+        .map(|(question, answer)| (question, Then::Type(answer)))
+        .collect();
+    drive_then_detach_in_a_pty(cmd, &steps, wants).await
+}
+
+/// What a pty test does once what it waits for is there.
+enum Then<'a> {
+    /// Types these bytes, as the terminal or the person at it would.
+    Type(&'a [u8]),
+    /// Runs this, for a change outside the terminal that the client should see.
+    Run(&'a dyn Fn()),
+}
+
+/// Runs the client on a real pty and takes each step once what it waits for is there, then waits
+/// for `wants` to show, sends leader d and waits for the client to exit. Hands back everything the
+/// client wrote and how it ended.
+async fn drive_then_detach_in_a_pty(
+    cmd: CommandBuilder,
+    steps: &[(&Wants<'_>, Then<'_>)],
+    wants: &str,
+) -> (Vec<u8>, portable_pty::ExitStatus) {
     let pty = native_pty_system();
     let pair = pty
         .openpty(PtySize {
@@ -520,13 +543,18 @@ async fn answer_then_attach_and_detach_in_a_pty(
         }
     });
     let mut output = Vec::new();
-    for (question, answer) in answers {
+    for (question, then) in steps {
         match question {
             Wants::Text(text) => wait_for_text(&rx, &mut output, text).await,
             Wants::Bytes(bytes) => wait_for_bytes(&rx, &mut output, bytes).await,
         }
-        writer.write_all(answer).unwrap();
-        writer.flush().unwrap();
+        match then {
+            Then::Type(answer) => {
+                writer.write_all(answer).unwrap();
+                writer.flush().unwrap();
+            }
+            Then::Run(run) => run(),
+        }
     }
     wait_for_text(&rx, &mut output, wants).await;
     writer.write_all(b"\x01d").unwrap(); // C-a then d
@@ -646,6 +674,126 @@ async fn attach_answers_the_colour_batch_and_draws_the_terminal_theme() {
         !visible(&output).contains("rgb:"),
         "a colour answer was typed into the pane:\n{}",
         visible(&output)
+    );
+}
+
+/// `/usr/share/omarchy/themes/ristretto/colors.toml`, word for word.
+const RISTRETTO_COLORS_TOML: &str = r##"mode = "dark"
+
+accent = "#f38d70"
+selection = "#403e41"
+muted = "#72696a"
+
+background = "#2c2525"
+dark_background = "#211b1b"
+darker_background = "#181414"
+lighter_background = "#3d2f2a"
+
+foreground = "#e6d9db"
+dark_foreground = "#72696a"
+light_foreground = "#c3b7b8"
+bright_foreground = "#e6d9db"
+
+red = "#fd6883"
+yellow = "#f9cc6c"
+orange = "#fb9a77"
+green = "#adda78"
+cyan = "#85dacc"
+blue = "#f38d70"
+magenta = "#a8a9eb"
+brown = "#7d4d3b"
+
+bright_red = "#ff8297"
+bright_yellow = "#fcd675"
+bright_green = "#c8e292"
+bright_cyan = "#9bf1e1"
+bright_blue = "#f8a788"
+bright_magenta = "#bebffd"
+"##;
+
+/// `/usr/share/omarchy/themes/catppuccin/colors.toml`, word for word.
+const CATPPUCCIN_COLORS_TOML: &str = r##"mode = "dark"
+
+accent = "#89b4fa"
+selection = "#45475a"
+muted = "#585b70"
+
+background = "#1e1e2e"
+dark_background = "#161622"
+darker_background = "#101019"
+lighter_background = "#313244"
+
+foreground = "#cdd6f4"
+dark_foreground = "#6c7086"
+light_foreground = "#bac2de"
+bright_foreground = "#cdd6f4"
+
+red = "#f38ba8"
+yellow = "#f9e2af"
+orange = "#f6b6ab"
+green = "#a6e3a1"
+cyan = "#94e2d5"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+brown = "#7b5b55"
+
+bright_red = "#f38ba8"
+bright_yellow = "#f9e2af"
+bright_green = "#a6e3a1"
+bright_cyan = "#94e2d5"
+bright_blue = "#89b4fa"
+bright_magenta = "#f5c2e7"
+"##;
+
+/// Decision 0042: on Omarchy, under `auto`, a client whose terminal draws Omarchy's theme
+/// follows a theme change while attached. The home holds Omarchy's current theme as
+/// `omarchy-theme-set` leaves it, Ristretto, and the terminal answers the batch with Ristretto.
+/// Once the screen is drawn the theme is set to Catppuccin the way `omarchy-theme-set` sets it:
+/// a directory built beside the current one is moved into its place and the name is written.
+/// The chrome is then drawn in Catppuccin's shade (`#181825`), and the terminal was asked for
+/// its colours once.
+#[tokio::test]
+async fn an_omarchy_theme_change_while_attached_recolours_the_chrome() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let current = home.path().join(".local/state/omarchy/current");
+    std::fs::create_dir_all(current.join("theme")).unwrap();
+    std::fs::write(current.join("theme/colors.toml"), RISTRETTO_COLORS_TOML).unwrap();
+    std::fs::write(current.join("theme.name"), "ristretto\n").unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let set_catppuccin = || {
+        let next = current.join("next-theme");
+        std::fs::create_dir_all(&next).unwrap();
+        std::fs::write(next.join("colors.toml"), CATPPUCCIN_COLORS_TOML).unwrap();
+        std::fs::remove_dir_all(current.join("theme")).unwrap();
+        std::fs::rename(&next, current.join("theme")).unwrap();
+        std::fs::write(current.join("theme.name"), "catppuccin\n").unwrap();
+    };
+    let answers = ristretto_answers();
+    let (output, status) = drive_then_detach_in_a_pty(
+        cmd,
+        &[
+            (&Wants::Bytes(b"\x1b[?u\x1b[c"), Then::Type(b"\x1b[?62;22c")),
+            (
+                &Wants::Bytes(b"\x1b]4;15;?\x07\x1b[c"),
+                Then::Type(&answers),
+            ),
+            (&Wants::Text("\u{250c} sh"), Then::Run(&set_catppuccin)),
+            (&Wants::Bytes(b"48;2;24;24;37"), Then::Type(b"")),
+        ],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    let raw = String::from_utf8_lossy(&output);
+    assert_eq!(
+        raw.matches("\x1b]11;?").count(),
+        1,
+        "the terminal is asked for its colours once, at attach"
     );
 }
 

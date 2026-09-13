@@ -300,14 +300,15 @@ impl Follow {
     }
 }
 
+/// Omarchy theme directories and colours for tests, shared by this module's tests and the
+/// session's.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixture {
     use super::*;
     use std::fs;
-    use std::time::{Duration, SystemTime};
 
     /// `/usr/share/omarchy/themes/ristretto/colors.toml`, word for word.
-    const RISTRETTO_COLORS_TOML: &str = r##"mode = "dark"
+    pub(crate) const RISTRETTO_COLORS_TOML: &str = r##"mode = "dark"
 
 accent = "#f38d70"
 selection = "#403e41"
@@ -341,7 +342,7 @@ bright_magenta = "#bebffd"
 "##;
 
     /// `/usr/share/omarchy/themes/catppuccin/colors.toml`, word for word.
-    const CATPPUCCIN_COLORS_TOML: &str = r##"mode = "dark"
+    pub(crate) const CATPPUCCIN_COLORS_TOML: &str = r##"mode = "dark"
 
 accent = "#89b4fa"
 selection = "#45475a"
@@ -374,7 +375,7 @@ bright_blue = "#89b4fa"
 bright_magenta = "#f5c2e7"
 "##;
 
-    fn rgb(hex: u32) -> Rgb {
+    pub(crate) fn rgb(hex: u32) -> Rgb {
         Rgb {
             r: (hex >> 16) as u8,
             g: (hex >> 8) as u8,
@@ -382,7 +383,7 @@ bright_magenta = "#f5c2e7"
         }
     }
 
-    fn colors(bg: u32, fg: u32, palette: [u32; 16]) -> TerminalColors {
+    pub(crate) fn colors(bg: u32, fg: u32, palette: [u32; 16]) -> TerminalColors {
         TerminalColors {
             bg: Some(rgb(bg)),
             fg: Some(rgb(fg)),
@@ -391,7 +392,7 @@ bright_magenta = "#f5c2e7"
     }
 
     /// Ristretto as `omarchy-themes.json` gives it.
-    fn ristretto() -> TerminalColors {
+    pub(crate) fn ristretto() -> TerminalColors {
         colors(
             0x2c2525,
             0xe6d9db,
@@ -403,7 +404,7 @@ bright_magenta = "#f5c2e7"
     }
 
     /// Catppuccin (Mocha) as `omarchy-themes.json` gives it.
-    fn catppuccin() -> TerminalColors {
+    pub(crate) fn catppuccin() -> TerminalColors {
         colors(
             0x1e1e2e,
             0xcdd6f4,
@@ -413,6 +414,40 @@ bright_magenta = "#f5c2e7"
             ],
         )
     }
+
+    /// A HOME with Omarchy's current theme laid out as `omarchy-theme-set` leaves it.
+    pub(crate) fn omarchy_home(name: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let theme = home.path().join(THEME_DIR);
+        fs::create_dir_all(&theme).unwrap();
+        for (file, text) in files {
+            fs::write(theme.join(file), text).unwrap();
+        }
+        fs::write(home.path().join(THEME_NAME_FILE), format!("{name}\n")).unwrap();
+        home
+    }
+
+    /// Sets a theme the way `omarchy-theme-set` does: the new directory is built beside the old
+    /// one, the old one is removed, the new one moved in, and the name written.
+    pub(crate) fn set_theme(home: &Path, name: &str, files: &[(&str, &str)]) {
+        let current = home.join(CURRENT_DIR);
+        let next = current.join("next-theme");
+        fs::create_dir_all(&next).unwrap();
+        for (file, text) in files {
+            fs::write(next.join(file), text).unwrap();
+        }
+        fs::remove_dir_all(current.join("theme")).unwrap();
+        fs::rename(&next, current.join("theme")).unwrap();
+        fs::write(home.join(THEME_NAME_FILE), format!("{name}\n")).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::*;
+    use super::*;
+    use std::fs;
+    use std::time::{Duration, SystemTime};
 
     /// A `ghostty.conf` rendered the way `ghostty.conf.tpl` renders one.
     fn ghostty_conf(theme: &TerminalColors) -> String {
@@ -430,32 +465,6 @@ bright_magenta = "#f5c2e7"
             text.push_str(&format!("palette = {n}={}\n", hex(*slot)));
         }
         text
-    }
-
-    /// A HOME with Omarchy's current theme laid out as `omarchy-theme-set` leaves it.
-    fn omarchy_home(name: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
-        let home = tempfile::tempdir().unwrap();
-        let theme = home.path().join(THEME_DIR);
-        fs::create_dir_all(&theme).unwrap();
-        for (file, text) in files {
-            fs::write(theme.join(file), text).unwrap();
-        }
-        fs::write(home.path().join(THEME_NAME_FILE), format!("{name}\n")).unwrap();
-        home
-    }
-
-    /// Sets a theme the way `omarchy-theme-set` does: the new directory is built beside the old
-    /// one, the old one is removed, the new one moved in, and the name written.
-    fn set_theme(home: &Path, name: &str, files: &[(&str, &str)]) {
-        let current = home.join(CURRENT_DIR);
-        let next = current.join("next-theme");
-        fs::create_dir_all(&next).unwrap();
-        for (file, text) in files {
-            fs::write(next.join(file), text).unwrap();
-        }
-        fs::remove_dir_all(current.join("theme")).unwrap();
-        fs::rename(&next, current.join("theme")).unwrap();
-        fs::write(home.join(THEME_NAME_FILE), format!("{name}\n")).unwrap();
     }
 
     /// Kernel file times are coarse, so a test that needs a new time sets one.
