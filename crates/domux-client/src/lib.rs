@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod control;
 pub mod frame;
 pub mod input;
+pub mod omarchy;
 pub mod terminal;
 
 use crate::frame::Screen;
