@@ -495,6 +495,15 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         .await
         .with_context(|| format!("connect to {}", socket.display()))?;
     let (mut reader, mut writer) = stream.into_split();
+    // Raw mode turns off ISIG, so the terminal never sends these itself, but `kill -INT` and
+    // `pkill -INT` on the binary do. Without them the process ends with no unwind, no panic hook and
+    // no `Drop`, leaving the user in raw mode on the alternate screen with a hidden cursor
+    // (principle 11: every exit path). They go on before raw mode does, so one that lands while
+    // attach waits for the terminal's answers is held and ends the session as soon as it starts.
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sighup = signal(SignalKind::hangup())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigquit = signal(SignalKind::quit())?;
     let env = caps::CapsEnv::from_process();
     // The hook goes on before raw mode does, so even a panic inside `enter` prints on a
     // terminal the user can still type into.
@@ -527,14 +536,6 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         last_sent,
     };
     let mut events = EventStream::new();
-    let mut sigterm = signal(SignalKind::terminate())?;
-    let mut sighup = signal(SignalKind::hangup())?;
-    // Raw mode turns off ISIG, so the terminal never sends these itself, but `kill -INT` and
-    // `pkill -INT` on the binary do. Without them the process ends with no unwind, no panic hook and
-    // no `Drop`, leaving the user in raw mode on the alternate screen with a hidden cursor
-    // (principle 11: every exit path).
-    let mut sigint = signal(SignalKind::interrupt())?;
-    let mut sigquit = signal(SignalKind::quit())?;
     let stop = async move {
         tokio::select! {
             _ = sigterm.recv() => Stop::Terminate,

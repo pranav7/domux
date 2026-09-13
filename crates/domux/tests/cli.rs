@@ -677,6 +677,72 @@ async fn attach_answers_the_colour_batch_and_draws_the_terminal_theme() {
     );
 }
 
+/// A `kill -INT` while attach waits for the colour answers ends the client like one in the
+/// session does: the terminal is put back. The probe is answered, so the wait is the full
+/// second, and the batch is never answered, so the signal lands inside it.
+#[tokio::test]
+async fn an_interrupt_while_attach_waits_for_the_colour_answers_restores_the_terminal() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 12,
+            cols: 50,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let mut writer = pair.master.take_writer().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut output = Vec::new();
+    wait_for_bytes(&rx, &mut output, b"\x1b[?u\x1b[c").await;
+    writer.write_all(b"\x1b[?62;22c").unwrap();
+    writer.flush().unwrap();
+    wait_for_bytes(&rx, &mut output, b"\x1b]4;15;?\x07\x1b[c").await;
+    let pid = child.process_id().expect("the client is running") as libc::pid_t;
+    // Safe: the pid of the child this test spawned and has not reaped.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the client did not end");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let drain = Instant::now() + Duration::from_secs(2);
+    loop {
+        match rx.try_recv() {
+            Ok(chunk) => output.extend(chunk),
+            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) if Instant::now() >= drain => break,
+            Err(TryRecvError::Empty) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+    let raw = String::from_utf8_lossy(&output);
+    let batch = raw.find("\x1b]4;15;?").expect("the batch was written");
+    assert!(
+        raw[batch..].contains("\x1b[?1049l"),
+        "the alternate screen was not left after the interrupt:\n{raw:?}"
+    );
+}
+
 /// `/usr/share/omarchy/themes/ristretto/colors.toml`, word for word.
 const RISTRETTO_COLORS_TOML: &str = r##"mode = "dark"
 
