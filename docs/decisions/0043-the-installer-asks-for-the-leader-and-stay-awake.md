@@ -104,11 +104,13 @@ tools it needs before it starts. The other ways were worse:
 awk is on every machine the script runs on and reads the whole file the same way on each. The
 program knows table headers, bare or quoted, keys inside a table and dotted keys before the first
 header, bare or quoted, a byte order mark at the start of the file, and values in one-line and
-multi-line strings. It follows multi-line arrays and strings so a line inside one that looks like
-a header is not read as one. A file that sets `keys` or `stay_awake` without a header, as an
-inline table, with dotted keys, or as an array of tables, is left alone, because a header added
-under it would define the table twice; the step says what to add by hand. A leftover `path.tmp`
-is removed before the write, so a link there is never written through.
+multi-line strings. A quoted part of a table name keeps every character in it, so `["ke ys"]` is
+not `[keys]`, and a header with `é` or `]` inside its quotes still starts a table of its own. It
+follows multi-line arrays and strings so a line inside one that looks like a header is not read
+as one. A file that sets `keys` or `stay_awake` without a header, as an inline table, with dotted
+keys, or as an array of tables, is left alone, because a header added under it would define the
+table twice; the step says what to add by hand. A leftover `path.tmp` is removed before the
+write, so a link there is never written through.
 
 It is not a TOML parser, and a parser reads forms it does not. A table or key name spelled with
 an escape, such as `"le\u0061der"`, is not recognized, so the installer would add a second one

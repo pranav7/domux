@@ -790,6 +790,36 @@ mode = \"full\"" "$(config)" "the leader under the one keys table"
   assert_contains "$(err)" "✓  stay awake already set to full in $CONFIG" "the quoted stay_awake header"
 }
 
+# A quoted table name can hold any character, a blank or a ] among them. A header the installer
+# did not read as one would leave the table before it open, and a key under it would be read as
+# that table's.
+test_reads_a_header_whose_quoted_name_holds_any_character_as_its_own_table() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  printf '[keys]\n\n["\303\251"]\nleader = "C-b"\n\n["a]b" ] # a comment\nleader = "C-x"\n' > "$CONFIG"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$(printf '[keys]\nleader = "C-a"\n\n["\303\251"]\nleader = "C-b"\n\n["a]b" ] # a comment\nleader = "C-x"')" "$(config)" "the leader under [keys], and the other tables left as they were"
+  assert_contains "$(err)" "✓  leader C-a written to $CONFIG" "step"
+}
+
+test_adds_a_keys_table_when_a_quoted_name_only_spells_keys_with_a_blank() {
+  sandbox
+  mkdir -p "$S/home/.config/domux"
+  printf '["ke ys"]\nother = 1\n' > "$CONFIG"
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq '["ke ys"]
+other = 1
+
+[keys]
+leader = "C-a"' "$(config)" "a table named ke ys is not keys"
+}
+
 test_adds_the_leader_under_a_header_after_a_byte_order_mark() {
   sandbox
   mkdir -p "$S/home/.config/domux"
@@ -1449,6 +1479,8 @@ run_tests \
   test_leaves_a_config_file_that_sets_keys_without_a_table_alone \
   test_reads_a_header_inside_a_multi_line_array_or_string_as_part_of_it \
   test_adds_the_leader_under_a_keys_header_written_with_quotes \
+  test_reads_a_header_whose_quoted_name_holds_any_character_as_its_own_table \
+  test_adds_a_keys_table_when_a_quoted_name_only_spells_keys_with_a_blank \
   test_adds_the_leader_under_a_header_after_a_byte_order_mark \
   test_reads_a_leader_under_a_quoted_key_as_set \
   test_reads_a_leader_in_a_multi_line_string_as_set \

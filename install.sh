@@ -491,7 +491,8 @@ fi
 # classify(line) reads one line of TOML. It sets text to the line without the byte order mark a
 # file can start with. It sets header to the table the line opens, "keys" for "[keys]", "["keys"]"
 # or "['keys']" with or without a comment after it, or "[keys" for an array of tables,
-# "[[keys]]", so that one never matches a table; header is "" for any other line. It sets plain
+# "[[keys]]", so that one never matches a table; header is "" for any other line. A quoted part
+# of the name can hold any character, so "["ke ys"]" is "ke ys" and never "keys". It sets plain
 # when the line starts outside a multi-line array or string, where a key or a header can be, and
 # then follows the brackets and multi-line strings the line opens and closes, so a line inside
 # one is never read as either.
@@ -503,14 +504,11 @@ function classify(line,   h, i, n, c, three, bom) {
   text = line
   plain = (depth == 0 && long == "")
   header = ""
-  if (plain && line ~ /^[ \t]*\[\[?[ \t]*[A-Za-z0-9_."\047 \t-]+[ \t]*\]\]?[ \t]*(#.*)?\r?$/) {
+  if (plain && line ~ /^[ \t]*\[\[?([A-Za-z0-9_. \t-]|"([^"\\]|\\.)*"|\047[^\047]*\047)+\]\]?[ \t]*(#.*)?\r?$/) {
     h = line
     sub(/^[ \t]*/, "", h)
     header = (substr(h, 1, 2) == "[[") ? "[" : ""
-    sub(/^\[\[?[ \t]*/, "", h)
-    sub(/[ \t]*\]\]?[ \t]*(#.*)?\r?$/, "", h)
-    gsub(/[ \t"\047]/, "", h)
-    header = header h
+    header = header table_name(h)
     return
   }
   n = length(line)
@@ -540,6 +538,29 @@ function classify(line,   h, i, n, c, three, bom) {
       depth--
     }
   }
+}
+# table_name(h): the name in a table header, without the blanks and quotes around its parts. A
+# quoted part keeps every character in it, and a ] inside one does not end the name.
+function table_name(h,   i, n, c, q, name) {
+  sub(/^\[\[?/, "", h)
+  n = length(h)
+  for (i = 1; i <= n; i++) {
+    c = substr(h, i, 1)
+    if (q != "") {
+      if (c == q) q = ""
+      else {
+        if (q == "\"" && c == "\\") { i++; c = substr(h, i, 1) }
+        name = name c
+      }
+    } else if (c == "]") {
+      break
+    } else if (c == "\"" || c == "\047") {
+      q = c
+    } else if (c != " " && c != "\t") {
+      name = name c
+    }
+  }
+  return name
 }
 '
 
