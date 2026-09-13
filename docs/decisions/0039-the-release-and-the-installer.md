@@ -53,7 +53,9 @@ read a spinner on, and a word that stands still leaves the reader unable to tell
 from a script that has stopped. So the spinner is back on those two steps and on nothing else.
 A frame or two that turns into a check mark before it can be read is the flicker the earlier
 spinner made, so the first frame waits a quarter second and a request that answers sooner draws
-nothing. Every other step prints its check mark as soon as it is done.
+nothing. A request that answers just after the quarter second still draws a single frame, which
+the check mark replaces at once; decision 0043 says why that edge is left. Every other step
+prints its check mark as soon as it is done.
 
 The logo is printed once. A finished step is a check mark, a step that did not work while the
 install carries on is a cross, and a question wears the red dot, which means the same thing there

@@ -116,11 +116,12 @@ frame() {
 }
 
 # spin <word> <command...>: runs a command that waits on the network and answers its status. On
-# a terminal the command runs in the background while a frame turns beside the word. The first
-# frame waits a quarter second, so a request that answers in less time than a frame can be read
-# draws nothing, and then a frame turns every 80 ms. The last frame stays until the step's own
-# line replaces it, so two requests in a row read as one step. What the command writes on
-# stderr is shown only when it fails.
+# a terminal the command runs in the background while a frame turns beside the word. The script
+# looks every 40 ms, so a request costs no more time than it takes. The first frame waits for the
+# sixth look, a quarter second, so a request that answers in less time than a frame can be read
+# draws nothing, and then a frame turns every second look, every 80 ms. The last frame stays
+# until the step's own line replaces it, so two requests in a row read as one step. What the
+# command writes on stderr is shown only when it fails.
 spin() {
   s_word=$1
   shift
@@ -131,11 +132,15 @@ spin() {
     "$@" </dev/null >/dev/null 2>"$tmp/spin.err" &
     SPIN_PID=$!
     printf '%s' "$HIDE" >&2
-    s_wait=0.25
+    s_look=0
+    s_next=6
     while :; do
-      sleep "$s_wait" 2>/dev/null || sleep 1
-      s_wait=0.08
+      # A sleep that takes no fraction sleeps a second, and every look after it draws a frame.
+      sleep 0.04 2>/dev/null || { sleep 1; s_look=$s_next; }
+      s_look=$((s_look + 1))
       kill -0 "$SPIN_PID" 2>/dev/null || break
+      [ "$s_look" -ge "$s_next" ] || continue
+      s_next=$((s_look + 2))
       frame
       printf '%s   %s%s%s  %s%s' "$CR" "$MAUVE" "$FRAME" "$OFF" "$s_word" "$EOL" >&2
       FRAMES_DRAWN=$((FRAMES_DRAWN + 1))

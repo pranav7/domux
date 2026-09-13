@@ -4,6 +4,8 @@
 # -o <file>. FAKE_CURL_FAIL is a substring: a URL containing it fails with curl's exit code 22
 # and curl's message. FAKE_CURL_DELAY is a number of seconds every request takes; while it is
 # set, each request also writes its own process id and its parent's to $FAKE_HTTP_DIR/curl.pids.
+# FAKE_CURL_TIMES set: each request that answers appends "<start> <end> <url>" to
+# $FAKE_HTTP_DIR/times.log, both in nanoseconds, the way GNU date prints them.
 #   https://api.github.com/repos/<repo>/releases...          -> $FAKE_HTTP_DIR/releases.json
 #   https://github.com/<repo>/releases/download/<tag>/<file> -> $FAKE_HTTP_DIR/<tag>/<file>
 #   https://raw.githubusercontent.com/<repo>/<branch>/install.sh -> $FAKE_HTTP_DIR/install.sh
@@ -19,6 +21,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$url" ] || { echo "fake curl: no url" >&2; exit 2; }
+[ -z "${FAKE_CURL_TIMES:-}" ] || started=$(date +%s%N)
 printf '%s\n' "$url" >> "$FAKE_HTTP_DIR/requests.log"
 if [ -n "${FAKE_CURL_DELAY:-}" ]; then
   printf '%s %s\n' "$$" "$PPID" >> "$FAKE_HTTP_DIR/curl.pids"
@@ -41,3 +44,4 @@ case $url in
 esac
 [ -f "$src" ] || not_found
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
+[ -z "${FAKE_CURL_TIMES:-}" ] || printf '%s %s %s\n' "$started" "$(date +%s%N)" "$url" >> "$FAKE_HTTP_DIR/times.log"

@@ -1082,6 +1082,24 @@ test_draws_no_frame_for_a_request_that_answers_within_a_quarter_second() {
   assert_contains "$(tty_text)" "domux is ready" "the steps still end"
 }
 
+test_starts_the_next_request_as_soon_as_one_answers_on_a_terminal() {
+  sandbox
+  on_a_terminal || return 0
+  case $(date +%N) in
+    ""|*[!0-9]*) printf 'skip %s: needs a date that prints nanoseconds\n' "$CURRENT" >&2; return 0 ;;
+  esac
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  run_install_tty FAKE_CURL_TIMES=yes DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  # Nothing runs between the archive request and the SHA256SUMS request but the wait for the
+  # first to answer, so the gap between them is what the spinner adds to a request.
+  gap=$(awk '/[.]tar[.]gz$/ { end = $2 } /SHA256SUMS$/ { start = $1 } END { printf "%d", (start - end) / 1000000 }' "$FAKE_HTTP_DIR/times.log")
+  if [ "$gap" -ge 200 ]; then
+    fail "the SHA256SUMS request started ${gap} ms after the archive request answered"
+  fi
+}
+
 test_prints_no_frame_for_a_step_that_does_not_wait_on_the_network() {
   sandbox
   on_a_terminal || return 0
@@ -1409,6 +1427,7 @@ run_tests \
   test_prints_no_spinner_frames_when_stderr_is_not_a_terminal \
   test_turns_a_spinner_while_the_network_steps_run_on_a_terminal \
   test_draws_no_frame_for_a_request_that_answers_within_a_quarter_second \
+  test_starts_the_next_request_as_soon_as_one_answers_on_a_terminal \
   test_prints_no_frame_for_a_step_that_does_not_wait_on_the_network \
   test_prints_the_same_lines_under_no_color_on_a_terminal \
   test_clears_the_spinner_when_a_download_fails_on_a_terminal \
