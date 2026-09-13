@@ -11,6 +11,7 @@
 
 use crate::agents::manifests::{HookTarget, Registry};
 use domux_core::model::agent::AgentKind;
+use domux_core::shell;
 use serde_json::{json, Map, Value};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -67,28 +68,33 @@ impl Plan {
 
 /// The command every installed hook runs: the binary's absolute path, so a hook that runs in
 /// the agent's environment finds it whatever that environment's PATH holds (M3 plan assumption
-/// 16). The kind selects both the input adapter and the SessionStart output format.
+/// 16). The kind selects both the input adapter and the SessionStart output format. A path
+/// that needs quoting is quoted and a plain one is written bare, because a person reads and
+/// edits the file it goes into; `a_binary_path_that_needs_quoting_is_quoted_for_the_shell`
+/// pins both halves.
 pub fn hook_command(bin: &Path, kind: AgentKind) -> String {
     format!(
         "{} agent report --agent {kind}",
-        shell_command_path(&bin.to_string_lossy())
+        shell::word(&bin.to_string_lossy())
     )
 }
 
-/// A path a shell reads as one word is written bare; anything else is single quoted (V1's
-/// `shellCommandPath`, commit 34db116).
+/// Which path a hook runs: `linked`, the `~/bin` path, when it resolves to the same file as
+/// `running`, the binary doing the install, and `running` otherwise (decision record 0040).
 ///
-/// Deliberately not `resume::shell_quote`, which quotes every value it is given, and named
-/// apart from it so the two cannot be mistaken for one rule. They are two functions in V1 too,
-/// and the difference is load-bearing here: this path is written into `settings.json` and
-/// `hooks.json`, files a person reads and edits by hand, so a plain path stays plain and only
-/// one that would not survive the shell gains quotes.
-/// `a_binary_path_that_needs_quoting_is_quoted_for_the_shell` pins both halves.
-fn shell_command_path(path: &str) -> String {
-    if path.contains(|c: char| " \t\n'\"\\$`!*?[]{}()<>|&;".contains(c)) {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    } else {
-        path.to_string()
+/// The symlink is worth writing because it survives a rebuild that moves the binary. But a
+/// file at that path is not evidence that it is the running binary: V1 installed itself at
+/// `~/bin/domux` and has no `agent` subcommand, so a hook that ran it failed on every event. A
+/// missing path, a dangling link, a directory, a copy and a link to any other file all fall
+/// through. Both sides are resolved, because macOS answers `current_exe` with the path the
+/// binary was started by, which can itself be a link.
+pub fn hook_binary(linked: &Path, running: &Path) -> PathBuf {
+    match (
+        std::fs::canonicalize(linked),
+        std::fs::canonicalize(running),
+    ) {
+        (Ok(a), Ok(b)) if a == b => linked.to_path_buf(),
+        _ => running.to_path_buf(),
     }
 }
 

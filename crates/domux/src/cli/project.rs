@@ -1,6 +1,6 @@
 //! `project ...`: each subcommand is one project.* call.
 
-use super::{call, call_that_asks, print_line};
+use super::{call, call_that_asks, full_path, print_line};
 use clap::{Args, Subcommand};
 use serde_json::json;
 
@@ -39,7 +39,7 @@ pub async fn run(cmd: ProjectCmd) -> anyhow::Result<()> {
         // The record it made, on stdout. A create that said nothing would leave the caller
         // with no way to name what it had just made, and the id is in the answer already.
         ProjectAction::Add { path } => {
-            let added = call("project.add", json!({ "path": path })).await?;
+            let added = call("project.add", json!({ "path": full_path(&path)? })).await?;
             print_line(&serde_json::to_string_pretty(&added)?)?;
         }
         // It asks first, and the answer to a removal that went through is the project no
