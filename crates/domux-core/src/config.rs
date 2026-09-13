@@ -398,7 +398,7 @@ pub(crate) fn one_line(message: &str) -> String {
 /// 1-based line and column of a byte offset. Clamped so a span at or past end of input names
 /// the file's actual last line rather than one past it, and safe against an offset that lands
 /// inside a multi-byte character rather than on a char boundary.
-fn position(text: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn position(text: &str, offset: usize) -> (usize, usize) {
     let mut end = offset.min(text.len());
     let before = loop {
         match text.get(..end) {
@@ -421,7 +421,7 @@ fn position(text: &str, offset: usize) -> (usize, usize) {
 /// The first line whose trimmed text starts with `[key]`, `[key.`, or `key` followed by
 /// (optional whitespace and) `=`. Returns `None` rather than a guess when no line matches -
 /// the caller must render that as an absent position, never as a default line number.
-fn line_of_key(text: &str, key: &str) -> Option<usize> {
+pub(crate) fn line_of_key(text: &str, key: &str) -> Option<usize> {
     text.lines()
         .position(|l| {
             let l = l.trim_start();

@@ -16,3 +16,4 @@ pub mod paths;
 pub mod proto;
 pub mod state_file;
 pub mod text;
+pub mod theme;
