@@ -1,4 +1,4 @@
-# 0040: A hook runs the domux that installed it
+# 0040: A hook runs the binary that installed it
 
 **Date:** 2026-09-13
 **Status:** Accepted. Replaces the half of M3 plan assumption 16 that chose `~/bin/domux`.
@@ -17,14 +17,14 @@ subcommand, prints that error and exits 1, which Claude reports as a non-blockin
 
 The rule came from M3 plan assumption 16: a hook runs an absolute path, because the agent's
 environment decides PATH, and the path is the symlink in `~/bin` because it survives a rebuild
-that moves the executable. The first half stands. The second half assumed that anything at
-`~/bin/domux` was this program. That held on the author's Mac, where the cut-over had pointed the
+that moves the binary. The first half stands. The second half assumed that anything at
+`~/bin/domux` was this binary. That held on the author's Mac, where the cut-over had pointed the
 link at V2, and it does not hold on any machine V1 was installed on, because V1's installer puts
 V1 at `~/bin/domux`. It was never about Linux.
 
 Re-running the 1.0.0 install could not repair it. The plan compares the file's lines before and
 after, the lines already named `~/bin/domux`, and so the install said "Nothing to change". No
-output named the binary, so nothing a reader saw said the hooks ran the wrong program.
+output named the binary, so nothing a reader saw said the hooks ran the wrong binary.
 
 ## The rule
 
@@ -33,7 +33,7 @@ and the results are equal, and `running` otherwise. The CLI passes `~/bin/domux`
 `current_exe()`, and reads the environment; the function only reads the file system, the way
 decision record 0036 keeps the installer a function of the paths it is given.
 
-So `~/bin/domux` is written when it is this binary, through one link or several, which keeps
+So `~/bin/domux` is written when it is the running binary, through one link or several, which keeps
 the development setup the rule was written for. A V1 binary, a script, a link to any other file,
 a copy, a directory, a broken link and a missing path all fall through to the running binary.
 Both sides are resolved because macOS answers `current_exe()` with the path the binary was
@@ -43,12 +43,16 @@ Codex and OpenCode get the same answer, because the CLI resolves one binary for 
 
 ## What an install says
 
-An apply prints `The hooks run <path>.`, including when it changed nothing. A file whose hooks
-run the wrong program looks installed from every other line, so the program is named every time.
+An apply prints `The hooks run <path>.`, including when it changed nothing. OpenCode has no hooks
+file, so an install writes a plugin for it and the line is `The plugin runs <path>.` The manifest
+answers the start of the line, in `HookTarget::runs`. A file whose hooks run the wrong binary
+looks installed from every other line, so the binary is named every time.
+
 When something is at `~/bin/domux` and was not chosen, a preview or an apply that changes the file
-also says `<path> is not this domux, so the hooks do not run it.` A broken link counts, which
-covers the case M3 left open: a `cargo clean` breaks the link into `target/release`, and an
-install then writes whatever path ran it.
+also says `<path> is not this binary, so the install passes over it.` That line names neither hooks
+nor a plugin, so it holds for every kind. A broken link counts, which covers the case M3 left
+open: a `cargo clean` breaks the link into `target/release`, and an install then writes whatever
+path ran it.
 
 ## The repair
 
@@ -65,7 +69,7 @@ it, because its install still sees nothing to change.
   hook.
 - **Write `~/bin/domux` only when it is a symlink.** The author's V1 at `~/bin/domux` is a
   symlink.
-- **Run `~/bin/domux --version` and look for this version.** It runs an unknown program at
+- **Run `~/bin/domux --version` and look for this version.** It runs an unknown binary at
   install time and depends on what V1 prints.
 - **Have the curl installer pass the path.** It fixes the curl path only, and a reader who runs
   `domux install claude --apply` by hand gets the old answer.
@@ -79,7 +83,12 @@ It does not look at PATH. The SessionStart context block and the help name the b
 on a machine where V1's `~/bin` comes before `~/.local/bin`, an agent told to run `domux peek`
 still runs V1. That is a warning for the curl installer to give, and a separate change.
 
+## Consequences
+
 The development case moves slightly. `cargo run -p domux -- install claude` runs
 `target/debug/domux`, which is not the file `~/bin/domux` links to, so the hooks name
 `target/debug/domux` and the install says it passed over `~/bin/domux`. Run the install through
-`~/bin/domux` to write the link.
+`~/bin/domux` to write the link. The same goes for the author's Mac: when the curl installer runs
+while `~/bin/domux` links to `target/release/domux`, the hooks name `~/.local/bin/domux`, the
+release binary the installer put there, and an install run through `~/bin/domux` points them back
+at the link.

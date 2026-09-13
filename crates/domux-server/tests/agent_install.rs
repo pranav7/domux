@@ -542,8 +542,8 @@ fn v1s_lines_are_recognised_and_the_authors_own_lines_are_not() {
     }
 }
 
-/// A temporary directory holding an executable at `domux`, standing in for the binary that runs
-/// the install. Its contents are what make it one program and not another.
+/// A temporary directory holding a script at `release/domux`, standing in for the binary that
+/// runs the install. Its contents are what make it one binary and not another.
 fn running_binary() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let running = dir.path().join("release/domux");
@@ -552,7 +552,7 @@ fn running_binary() -> (tempfile::TempDir, PathBuf) {
     (dir, running)
 }
 
-/// The symlink in `~/bin` survives a rebuild that moves the executable, so an install run
+/// The symlink in `~/bin` survives a rebuild that moves the binary, so an install run
 /// through it writes the symlink (decision record 0040). A chain of two links is the same file.
 #[test]
 fn the_hook_runs_the_bin_path_when_it_links_to_the_running_binary() {
@@ -577,7 +577,7 @@ fn the_hook_runs_the_bin_path_when_it_links_to_the_running_binary() {
 /// V1 installed itself at `~/bin/domux`, and V1 has no `agent` subcommand, so a hook that runs it
 /// fails on every event with `unknown command "agent"` (MUX-36).
 #[test]
-fn the_hook_runs_the_running_binary_when_the_bin_path_is_another_program() {
+fn the_hook_runs_the_running_binary_when_the_bin_path_is_another_binary() {
     let (dir, running) = running_binary();
     let linked = dir.path().join("bin/domux");
     std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
@@ -622,7 +622,7 @@ fn the_hook_runs_the_running_binary_when_the_bin_path_is_missing_dangling_or_a_d
     assert_eq!(hook_binary(&directory, &running), running, "a directory");
 }
 
-/// The repair for a file whose hooks run the wrong program: an install for another binary takes
+/// The repair for a file whose hooks run the wrong binary: an install for another binary takes
 /// every line the previous one wrote and puts one line per event in their place.
 #[test]
 fn a_plan_for_another_binary_replaces_every_line_the_previous_binary_wrote() {

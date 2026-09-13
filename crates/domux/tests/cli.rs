@@ -1801,7 +1801,7 @@ async fn install_codex_writes_a_session_start_hook_with_valid_json_output() {
 }
 
 /// The hook command is the symlink in `~/bin` when it links to this binary, because it survives
-/// a rebuild that moves the executable (decision record 0040). Every other install test falls
+/// a rebuild that moves the binary (decision record 0040). Every other install test falls
 /// through to the running binary, so this is the only place the branch the author's own machine
 /// takes is run.
 #[tokio::test]
@@ -1821,10 +1821,10 @@ async fn install_writes_the_bin_path_when_it_links_to_this_binary() {
         text.contains(&format!("{} agent report --agent claude", linked.display())),
         "the symlink, not the running binary: {text}"
     );
-    assert!(!text.contains("is not this domux"), "{text}");
+    assert!(!text.contains("is not this binary"), "{text}");
 }
 
-/// A home whose `~/bin/domux` is V1: a program with no `agent` subcommand, which says so on
+/// A home whose `~/bin/domux` is V1: a binary with no `agent` subcommand, which says so on
 /// stderr and exits 1, as V1 does. That file is on every machine V1 was installed on.
 fn home_with_v1_in_bin() -> (tempfile::TempDir, std::path::PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -1859,7 +1859,7 @@ fn installed_commands(path: &Path) -> Vec<(String, String)> {
 /// and Claude Code showed `unknown command "agent"` on every event. The hook has to run this
 /// binary, and the proof is that the command it wrote reports.
 #[tokio::test]
-async fn install_writes_this_binary_when_the_bin_path_is_another_program() {
+async fn install_writes_this_binary_when_the_bin_path_is_another_binary() {
     let h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
     let (home, linked) = home_with_v1_in_bin();
@@ -1902,7 +1902,7 @@ async fn install_writes_this_binary_when_the_bin_path_is_another_program() {
 /// The author's machine after installing 1.0.0: every hook runs V1 at `~/bin/domux`. Running the
 /// install again is the repair, so it must see those lines as something to change.
 #[tokio::test]
-async fn install_replaces_hooks_that_run_another_program_at_the_bin_path() {
+async fn install_replaces_hooks_that_run_another_binary_at_the_bin_path() {
     let (home, linked) = home_with_v1_in_bin();
     let stale = format!("{} agent report --agent claude", linked.display());
     let mut hooks = serde_json::Map::new();
@@ -1962,7 +1962,7 @@ async fn install_replaces_hooks_that_run_another_program_at_the_bin_path() {
 
 /// Codex and OpenCode take the same binary Claude does: the choice is made once, for every kind.
 #[tokio::test]
-async fn install_codex_and_opencode_pass_over_a_bin_path_that_is_another_program() {
+async fn install_codex_and_opencode_pass_over_a_bin_path_that_is_another_binary() {
     let (home, linked) = home_with_v1_in_bin();
     for kind in ["codex", "opencode"] {
         let out = install_cmd(home.path())
@@ -1993,7 +1993,7 @@ async fn install_codex_and_opencode_pass_over_a_bin_path_that_is_another_program
     assert_eq!(std::fs::canonicalize(&bin).unwrap(), running, "{first}");
 }
 
-/// Nothing showed which program the hooks run, so a file that ran V1 looked installed. An apply
+/// Nothing showed which binary the hooks run, so a file that ran V1 looked installed. An apply
 /// says it, whether or not it wrote anything, and an install that passed over `~/bin/domux`
 /// says why.
 #[tokio::test]
@@ -2009,7 +2009,7 @@ async fn install_says_which_binary_the_hooks_run() {
 
     let (home, linked) = home_with_v1_in_bin();
     let passed_over = format!(
-        "{} is not this domux, so the hooks do not run it.",
+        "{} is not this binary, so the install passes over it.",
         linked.display()
     );
 
@@ -2040,6 +2040,42 @@ async fn install_says_which_binary_the_hooks_run() {
     assert_eq!(named(&text), running, "{text}");
 }
 
+/// OpenCode has no hooks file, so what an install writes for it is a plugin, and the line that
+/// names the binary says so. Codex writes hooks, like Claude.
+#[tokio::test]
+async fn install_says_the_plugin_runs_the_binary_for_opencode_and_the_hooks_for_codex() {
+    let home = tempfile::tempdir().unwrap();
+    let running = std::fs::canonicalize(env!("CARGO_BIN_EXE_domux")).unwrap();
+    let apply = |kind: &'static str| {
+        let mut c = install_cmd(home.path());
+        c.args(["install", kind, "--apply"]);
+        c
+    };
+    let named = |text: &str, start: &str| {
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix(start))
+            .unwrap_or_else(|| panic!("no line starts {start:?}: {text}"));
+        std::fs::canonicalize(line.trim_end_matches('.')).unwrap()
+    };
+
+    // The second run changes nothing, and still names the binary.
+    for said in ["Created ", "Nothing to change."] {
+        let out = apply("opencode").output().await.unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.starts_with(said), "{text}");
+        assert_eq!(named(&text, "The plugin runs "), running, "{text}");
+        assert!(!text.contains("The hooks run"), "{text}");
+    }
+
+    let out = apply("codex").output().await.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(named(&text, "The hooks run "), running, "{text}");
+    assert!(!text.contains("The plugin runs"), "{text}");
+}
+
 /// The symlink in `~/bin` points into `target/release`, so a `cargo clean` breaks it, and an
 /// install run in that state writes the path of whatever binary ran it. It says so, rather than
 /// leaving a `target/` path in the file for the reader to find later.
@@ -2058,7 +2094,7 @@ async fn install_says_it_passed_over_the_bin_path_when_it_is_a_broken_symlink() 
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
         text.contains(&format!(
-            "{} is not this domux, so the hooks do not run it.",
+            "{} is not this binary, so the install passes over it.",
             linked.display()
         )),
         "{text}"

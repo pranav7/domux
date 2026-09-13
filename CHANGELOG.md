@@ -12,9 +12,9 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 - Hooks no longer run a V1 domux left at `~/bin/domux`, which made Claude Code report
   `unknown command "agent"` on every hook. An install writes `~/bin/domux` only when it is the
-  domux doing the install, and says which binary the hooks run. To repair the hooks, run the curl
-  command again, or run `~/.local/bin/domux install claude --apply` (and `codex` or `opencode`)
-  once this version is installed.
+  binary doing the install, and says which binary the hooks run, or the plugin for OpenCode. To
+  repair the hooks, run the curl command again, or run `~/.local/bin/domux install claude --apply`
+  (and `codex` or `opencode`) once this version is installed.
 
 ## [1.0.0] - 2026-09-11
 
