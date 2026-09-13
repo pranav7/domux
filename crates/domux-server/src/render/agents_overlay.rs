@@ -52,7 +52,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let empty = agents_box::empty_text(&input.view.filter, RowForm::Overlay);
     // `clear` and not `frame_at`: a `ListBox` draws its own border, so the agents overlay and
     // the sidebar share one drawing of the Agents box.
-    overlay::clear(area, buf);
+    overlay::clear(domux_core::theme::Theme::domux(), area, buf);
     ListBox {
         title: TITLE,
         rows: &visible,

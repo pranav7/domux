@@ -1,8 +1,9 @@
 //! The principle 14 box: a single-line border, the title one cell in from the left corner,
 //! an optional flag at the right end, the accent and a bold title when focused.
 
-use crate::render::theme;
+use crate::render::theme::color;
 use domux_core::text::{display_width, sanitize_for_display, truncate_with_ellipsis};
+use domux_core::theme::{Role, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -27,26 +28,26 @@ impl Boxed<'_> {
     }
 
     /// Draws the box and returns the inner area. Areas under 2x2 draw what fits.
-    pub fn render(&self, area: Rect, buf: &mut Buffer) -> Rect {
+    pub fn render(&self, theme: &Theme, area: Rect, buf: &mut Buffer) -> Rect {
         if area.width == 0 || area.height == 0 {
             return Rect::new(area.x, area.y, 0, 0);
         }
         let border = Style::default().fg(if self.focused {
-            theme::ACCENT
+            color(theme, Role::Accent)
         } else {
-            theme::SURFACE2
+            color(theme, Role::Border)
         });
         let title_style = if self.focused {
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(color(theme, Role::Accent))
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme::OVERLAY1)
+            Style::default().fg(color(theme, Role::DimText))
         };
         let flag_style = Style::default().fg(if self.focused {
-            theme::ACCENT
+            color(theme, Role::Accent)
         } else {
-            theme::SURFACE2
+            color(theme, Role::Border)
         });
         let right = area.x + area.width - 1;
         let bottom = area.y + area.height - 1;

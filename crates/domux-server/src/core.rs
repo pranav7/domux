@@ -1204,6 +1204,7 @@ impl Core {
             stay_awake: self.stay_awake.on(),
             toast: self.toast.as_ref(),
             navigator: self.config.config.navigator.enabled,
+            theme: domux_core::theme::Theme::domux(),
         };
         render::hit_at(&input, column, row)
     }
@@ -2652,6 +2653,7 @@ impl Core {
                 stay_awake: self.stay_awake.on(),
                 toast: self.toast.as_ref(),
                 navigator: self.config.config.navigator.enabled,
+                theme: domux_core::theme::Theme::domux(),
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);

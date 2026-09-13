@@ -7,9 +7,11 @@
 //! nothing to say it did (principle 6).
 
 use crate::render::boxed::put_within;
-use crate::render::{theme, RenderInput};
+use crate::render::theme::color;
+use crate::render::RenderInput;
 use domux_core::model::{PromptKind, Tab, TextInput};
 use domux_core::text::{display_width, sanitize_for_display};
+use domux_core::theme::{Role, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -86,6 +88,7 @@ impl TabRow {
     /// `pane_focus` is whether the keys go to a pane rather than to a prompt or an overlay. It
     /// decides whether the current tab's cell carries the accent fill - see `cell_for`.
     pub fn new(
+        theme: &Theme,
         tabs: &[Tab],
         current: usize,
         prompt: Option<&PromptKind>,
@@ -94,7 +97,7 @@ impl TabRow {
         let cells = tabs
             .iter()
             .enumerate()
-            .map(|(i, tab)| cell_for(tab, i, current, prompt, pane_focus))
+            .map(|(i, tab)| cell_for(theme, tab, i, current, prompt, pane_focus))
             .collect();
         let anchor = match prompt {
             Some(PromptKind::TabName { tab: named, .. }) => {
@@ -223,7 +226,15 @@ impl TabRow {
     /// mantle and the row on the panes sits on nothing (`Color::Reset`). It is applied here
     /// rather than baked into the cells so that a cell with a background of its own - the
     /// accent fill on the tab that owns the keys - keeps it either way.
-    pub fn draw(&self, x: u16, y: u16, budget: usize, bg: Color, buf: &mut Buffer) -> u16 {
+    pub fn draw(
+        &self,
+        theme: &Theme,
+        x: u16,
+        y: u16,
+        budget: usize,
+        bg: Color,
+        buf: &mut Buffer,
+    ) -> u16 {
         // Explicit rather than left to `put_within`, which patches: a wide grapheme blanks
         // the cell under its second half, and a style with no background would leave that
         // cell showing through the bar.
@@ -231,8 +242,8 @@ impl TabRow {
             Some(_) => style,
             None => style.bg(bg),
         };
-        let sep = on_row(Style::default().fg(theme::SURFACE0));
-        let plus_style = on_row(Style::default().fg(theme::SURFACE2));
+        let sep = on_row(Style::default().fg(color(theme, Role::Rule)));
+        let plus_style = on_row(Style::default().fg(color(theme, Role::Border)));
         if budget == 0 {
             return x;
         }
@@ -311,6 +322,7 @@ impl TabRow {
 /// Without the fill the current tab is still the bright bold cell against the dim others - the
 /// location's own treatment, not a new mark.
 fn cell_for(
+    theme: &Theme,
     tab: &Tab,
     i: usize,
     current: usize,
@@ -321,7 +333,7 @@ fn cell_for(
     // `tab.rename` with no name can name another tab and still open the prompt in this view.
     if let Some(PromptKind::TabName { tab: named, input }) = prompt {
         if named == &tab.id {
-            return prompt_cell(i + 1, input);
+            return prompt_cell(theme, i + 1, input);
         }
     }
     let label = match &tab.name {
@@ -332,21 +344,23 @@ fn cell_for(
     // row this cell is drawn into turns out to be: see `TabRow::draw`.
     let style = match (i == current, pane_focus) {
         (true, true) => Style::default()
-            .fg(theme::BASE)
-            .bg(theme::ACCENT)
+            .fg(color(theme, Role::OnAccent))
+            .bg(color(theme, Role::Accent))
             .add_modifier(Modifier::BOLD),
         (true, false) => Style::default()
-            .fg(theme::TEXT)
+            .fg(color(theme, Role::Text))
             .add_modifier(Modifier::BOLD),
-        (false, _) => Style::default().fg(theme::OVERLAY1),
+        (false, _) => Style::default().fg(color(theme, Role::DimText)),
     };
     TabCell::new(vec![(label, style)])
 }
 
 /// `Name tab 2 › pr1▮` (interface spec 4.7): the label at reduced weight, the name as typed,
 /// and a block caret, all in the tab's own accent-filled cell.
-fn prompt_cell(number: usize, input: &TextInput) -> TabCell {
-    let fill = Style::default().fg(theme::BASE).bg(theme::ACCENT);
+fn prompt_cell(theme: &Theme, number: usize, input: &TextInput) -> TabCell {
+    let fill = Style::default()
+        .fg(color(theme, Role::OnAccent))
+        .bg(color(theme, Role::Accent));
     let label = fill.add_modifier(Modifier::DIM);
     let before: String = input.text.chars().take(input.cursor).collect();
     let after: String = input.text.chars().skip(input.cursor).collect();

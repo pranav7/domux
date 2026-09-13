@@ -223,7 +223,7 @@ impl ListBox<'_> {
             flag: None,
             focused: self.focused,
         }
-        .render(area, buf);
+        .render(domux_core::theme::Theme::domux(), area, buf);
         if inner.width == 0 || inner.height == 0 {
             return self.scroll;
         }

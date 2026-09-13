@@ -3,7 +3,17 @@
 //! values and not Mocha's, so read the hexes from the spec's table rather than from a
 //! Mocha palette.
 
+use domux_core::theme::{Paint, Role, Theme};
 use ratatui::style::Color;
+
+/// The colour `theme` gives `role`. A role painted in the terminal's default colour is
+/// `Color::Reset`, which is how a cell asks for that colour.
+pub fn color(theme: &Theme, role: Role) -> Color {
+    match theme.get(role) {
+        Paint::Rgb(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
+        Paint::Default => Color::Reset,
+    }
+}
 
 pub const BASE: Color = Color::Rgb(0x1e, 0x1e, 0x2e);
 pub const MANTLE: Color = Color::Rgb(0x18, 0x18, 0x25);
@@ -101,6 +111,20 @@ pub fn agent_shimmer(kind: domux_core::model::agent::AgentKind) -> Shimmer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A role painted in hex is that hex, and one painted in the terminal's default is the
+    /// reset colour, which is how a cell asks the terminal for its own.
+    #[test]
+    fn a_role_converts_to_its_hex_or_to_reset_when_default() {
+        let domux = Theme::domux();
+        assert_eq!(
+            color(domux, Role::OverlayBackground),
+            Color::Rgb(0x1e, 0x1e, 0x2e)
+        );
+        assert_eq!(color(domux, Role::SidebarBackground), Color::Reset);
+        let themed = domux.with(Role::Text, Paint::Default);
+        assert_eq!(color(&themed, Role::Text), Color::Reset);
+    }
 
     #[test]
     fn the_agent_colours_match_the_manifests() {

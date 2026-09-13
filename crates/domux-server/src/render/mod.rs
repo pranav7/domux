@@ -77,6 +77,8 @@ pub struct RenderInput<'a> {
     /// boxes, and goes when that key does. The agents overlay is under `leader a` either way
     /// (decision record 0033).
     pub navigator: bool,
+    /// This client's colours, painted from the chosen theme and this client's terminal.
+    pub theme: &'a domux_core::theme::Theme,
 }
 
 /// The one line a list of notes prints as, or `None` when there is nothing to say.
@@ -163,7 +165,8 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
         // branch - it is 43 cells and the branch is only taken below 40 columns - so a
         // single row would show two thirds of it and drop the size the screen has to reach,
         // which is the one fact the reader is here for (principle 9).
-        let style = ratatui::style::Style::default().fg(theme::TEXT);
+        let style = ratatui::style::Style::default()
+            .fg(theme::color(input.theme, domux_core::theme::Role::Text));
         for (y, line) in domux_core::text::wrap_to_width(&msg, size.cols as usize)
             .iter()
             .zip(0..size.rows)
@@ -395,7 +398,7 @@ pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<Cursor
             flag: flag_text.as_deref(),
             focused,
         }
-        .render(to_rect(rect), buf);
+        .render(input.theme, to_rect(rect), buf);
         if let Some(rt) = runtime {
             let selection = copy.and_then(|c| c.selection_at(history));
             render_grid(&rt.grid, selection.as_ref(), inner, buf);

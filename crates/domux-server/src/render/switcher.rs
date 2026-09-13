@@ -46,7 +46,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let empty = empty_text(input);
     // `clear` and not `frame_at`: a `ListBox` draws its own `Boxed`, so the switcher paints
     // the background and lets the box own the border.
-    overlay::clear(area, buf);
+    overlay::clear(domux_core::theme::Theme::domux(), area, buf);
     ListBox {
         title: crate::render::projects_box::title(input.navigator),
         rows: &rows.rows,
@@ -159,6 +159,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         draw(&input, &mut buf);
@@ -348,6 +349,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);

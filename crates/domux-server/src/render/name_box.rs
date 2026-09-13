@@ -9,9 +9,11 @@
 //! 12.13 sizes the boxes that hold a list, and this one holds a line of text.
 
 use crate::render::boxed::put_within;
-use crate::render::{overlay, theme, RenderInput};
+use crate::render::theme::color;
+use crate::render::{overlay, RenderInput};
 use domux_core::ids::WorkspaceId;
 use domux_core::text::{display_width, sanitize_for_display, truncate_with_ellipsis};
+use domux_core::theme::Role;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
@@ -37,11 +39,13 @@ pub fn draw(input: &RenderInput, workspace: &WorkspaceId, buf: &mut Buffer) {
     }
     // `frame_at` clears the area first, so the switcher this box opens over is covered rather
     // than showing through it (interface spec 12.7).
-    let inner = overlay::frame_at(&format!("Name {}", w.handle), area, buf);
+    let theme = input.theme;
+    let inner = overlay::frame_at(theme, &format!("Name {}", w.handle), area, buf);
     let last_x = inner.x + inner.width.saturating_sub(1);
-    let text = Style::default().fg(theme::TEXT).bg(theme::BASE);
-    let key = Style::default().fg(theme::BLUE).bg(theme::BASE);
-    let quiet = Style::default().fg(theme::OVERLAY0).bg(theme::BASE);
+    let ground = Style::default().bg(color(theme, Role::OverlayBackground));
+    let text = ground.fg(color(theme, Role::Text));
+    let key = ground.fg(color(theme, Role::HintKey));
+    let quiet = ground.fg(color(theme, Role::FaintText));
     // One cell of padding inside the border on each side, the same as a title's.
     let budget = inner.width.saturating_sub(2) as usize;
     if inner.height > 0 {
@@ -88,8 +92,15 @@ pub fn draw(input: &RenderInput, workspace: &WorkspaceId, buf: &mut Buffer) {
                     last_x,
                     &truncate_with_ellipsis(&pill.text, budget),
                     Style::default()
-                        .fg(theme::BASE)
-                        .bg(if pill.ok { theme::GREEN } else { theme::RED })
+                        .fg(color(theme, Role::OnPill))
+                        .bg(color(
+                            theme,
+                            if pill.ok {
+                                Role::PillOk
+                            } else {
+                                Role::PillError
+                            },
+                        ))
                         .add_modifier(Modifier::BOLD),
                 );
             }
@@ -193,6 +204,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         for y in 0..rows {
