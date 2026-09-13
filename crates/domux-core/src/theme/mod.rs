@@ -9,15 +9,18 @@ pub mod chain;
 pub mod choice;
 pub mod color;
 pub mod file;
+#[cfg(test)]
+mod fixture;
+pub mod guard;
 pub mod role;
 pub mod value;
 
 pub use answers::{auto, Desktop, TerminalColors};
 pub use chain::{resolve, Chain, Unused};
 pub use choice::ThemeChoice;
-pub use color::{contrast, luminance, mix};
+pub use color::{contrast, luminance, mix, oklch};
 pub use file::ThemeLayer;
-pub use role::Role;
+pub use role::{Guard, Role};
 pub use value::{ColorValue, ValueError};
 
 use domux_term::Rgb;
@@ -97,11 +100,20 @@ impl Theme {
 
     /// Paints a chain against the terminal's answers. For each role, the first layer that sets
     /// it with a value the answers can evaluate wins; `domux` sets every role in hex or
-    /// `default`, so every role resolves.
+    /// `default`, so every role resolves. A palette slot on a red or green role that is not red
+    /// or green counts as a value the answers cannot evaluate.
     ///
     /// The answers count only when the background and the foreground both arrived and their
     /// contrast is at least 3.0. Otherwise every form but hex and `default` is unanswered.
+    ///
+    /// When some role was read from the answers, the readability guards then move what nobody
+    /// chose for this terminal until it is readable on it (`guard`).
     pub fn paint(chain: &Chain, colors: &TerminalColors) -> Theme {
+        Theme::paint_traced(chain, colors).0
+    }
+
+    /// `paint`, with what the guards did.
+    fn paint_traced(chain: &Chain, colors: &TerminalColors) -> (Theme, guard::Trace) {
         let answers = match (colors.bg, colors.fg) {
             (Some(bg), Some(fg)) if contrast(bg, fg) >= MIN_ANSWER_CONTRAST => Some((bg, fg)),
             _ => None,
@@ -135,17 +147,52 @@ impl Theme {
                 }
             }
         };
-        let paint = |role: Role| {
-            chain
-                .layers()
-                .filter_map(|layer| layer.roles.get(&role))
-                .find_map(evaluate)
-                // Only a chain whose root does not set every role gets here.
-                .unwrap_or_else(|| Theme::domux().get(role))
+        let layers: Vec<&ThemeLayer> = chain.layers().collect();
+        let root = layers.len().saturating_sub(1);
+        // The role's value from the layer at `start` on.
+        let resolve = |role: Role, start: usize| -> guard::Resolved {
+            for (layer, found) in layers.iter().enumerate().skip(start) {
+                let Some(value) = found.roles.get(&role) else {
+                    continue;
+                };
+                let Some(paint) = evaluate(value) else {
+                    continue;
+                };
+                if let (ColorValue::Palette(_), Paint::Rgb(rgb)) = (value, paint) {
+                    if !guard::passes_hue(role.guard(), rgb) {
+                        continue;
+                    }
+                }
+                return guard::Resolved {
+                    paint,
+                    value: *value,
+                    layer,
+                };
+            }
+            // Only a chain whose root does not set every role gets here.
+            let paint = Theme::domux().get(role);
+            let value = match paint {
+                Paint::Rgb(rgb) => ColorValue::Hex(rgb),
+                Paint::Default => ColorValue::Default,
+            };
+            guard::Resolved {
+                paint,
+                value,
+                layer: root,
+            }
         };
-        Theme {
-            paints: std::array::from_fn(|i| paint(Role::ALL[i])),
-        }
+        let mut resolved: [guard::Resolved; Role::COUNT] =
+            std::array::from_fn(|i| resolve(Role::ALL[i], 0));
+        let trace = match answers {
+            Some((bg, _)) if resolved.iter().any(guard::Resolved::read_answers) => {
+                guard::run(&mut resolved, bg, root, resolve)
+            }
+            _ => guard::Trace::default(),
+        };
+        let theme = Theme {
+            paints: resolved.map(|r| r.paint),
+        };
+        (theme, trace)
     }
 
     /// The built-in `domux` theme, the colours domux drew before themes.
@@ -361,8 +408,8 @@ mod tests {
             "text = \"foreground\"\n",
             "accent = \"palette 4\"\n",
             "top_bar_background = \"shade 1/5\"\n",
-            "separator = \"blend 0/9\"\n",
-            "border = \"blend 9/9\"\n",
+            "on_accent = \"blend 0/9\"\n",
+            "on_pill = \"blend 9/9\"\n",
             "tab_row_background = \"default\"\n",
             "question = \"#010203\"\n",
         ));
@@ -370,15 +417,17 @@ mod tests {
         assert_eq!(theme.get(Role::OverlayBackground), hex(0x2c2525));
         assert_eq!(theme.get(Role::Text), hex(0xe6d9db));
         assert_eq!(theme.get(Role::Accent), hex(0xf38d70));
-        assert_eq!(theme.get(Role::Separator), hex(0x2c2525));
-        assert_eq!(theme.get(Role::Border), hex(0xe6d9db));
+        assert_eq!(theme.get(Role::OnAccent), hex(0x2c2525));
+        assert_eq!(theme.get(Role::OnPill), hex(0xe6d9db));
         assert_eq!(theme.get(Role::TabRowBackground), Paint::Default);
         assert_eq!(theme.get(Role::Question), hex(0x010203));
         // A dark background shades toward black.
         assert_eq!(theme.get(Role::TopBarBackground), hex(0x231e1e));
-        // A light one shades toward white.
+        // A light one shades toward white. On a role the guards never move, so the shade itself
+        // shows.
+        let chain = chain_of("[roles]\non_pill = \"shade 1/5\"\n");
         let theme = Theme::paint(&chain, &latte());
-        assert_eq!(theme.get(Role::TopBarBackground), hex(0xf2f4f7));
+        assert_eq!(theme.get(Role::OnPill), hex(0xf2f4f7));
     }
 
     #[test]
@@ -393,19 +442,43 @@ mod tests {
     }
 
     #[test]
-    fn answers_count_only_with_a_background_and_a_foreground_three_apart() {
+    fn a_terminal_that_answered_nothing_gets_the_domux_theme() {
         let terminal = builtin_chain("terminal");
-        let domux = Theme::domux();
+        assert_eq!(
+            &Theme::paint(terminal, &TerminalColors::default()),
+            Theme::domux()
+        );
+    }
+
+    #[test]
+    fn a_background_without_a_foreground_gets_the_domux_theme() {
+        let terminal = builtin_chain("terminal");
         let mut one_sided = ristretto();
         one_sided.fg = None;
-        assert_eq!(&Theme::paint(terminal, &one_sided), domux);
+        assert_eq!(&Theme::paint(terminal, &one_sided), Theme::domux());
         let mut one_sided = ristretto();
         one_sided.bg = None;
-        assert_eq!(&Theme::paint(terminal, &one_sided), domux);
+        assert_eq!(&Theme::paint(terminal, &one_sided), Theme::domux());
+    }
+
+    #[test]
+    fn a_palette_without_a_background_and_foreground_is_not_used() {
+        let terminal = builtin_chain("terminal");
+        let colors = TerminalColors {
+            fg: None,
+            bg: None,
+            palette: [Some(rgb(0xfd6883)); 16],
+        };
+        assert_eq!(&Theme::paint(terminal, &colors), Theme::domux());
+    }
+
+    #[test]
+    fn a_foreground_too_close_to_its_background_counts_as_no_answer() {
+        let terminal = builtin_chain("terminal");
         let mut too_close = ristretto();
         too_close.fg = Some(rgb(0x5a5050));
         assert!(contrast(too_close.fg.unwrap(), too_close.bg.unwrap()) < 3.0);
-        assert_eq!(&Theme::paint(terminal, &too_close), domux);
+        assert_eq!(&Theme::paint(terminal, &too_close), Theme::domux());
         let theme = Theme::paint(terminal, &ristretto());
         assert_eq!(theme.get(Role::Text), hex(0xe6d9db));
     }

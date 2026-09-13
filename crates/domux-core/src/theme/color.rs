@@ -1,4 +1,5 @@
-//! Colour arithmetic: exact integer mixing and WCAG 2 luminance and contrast.
+//! Colour arithmetic: exact integer mixing, WCAG 2 luminance and contrast, and OKLCH, which the
+//! hue test reads.
 
 use domux_term::Rgb;
 
@@ -21,16 +22,18 @@ pub fn mix(a: Rgb, b: Rgb, n: u8, d: u8) -> Rgb {
     }
 }
 
+/// An sRGB channel made linear.
+fn linear(channel: u8) -> f64 {
+    let v = f64::from(channel) / 255.0;
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// WCAG 2 relative luminance, 0 for black and 1 for white.
 pub fn luminance(c: Rgb) -> f64 {
-    fn linear(channel: u8) -> f64 {
-        let v = f64::from(channel) / 255.0;
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    }
     0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
 }
 
@@ -39,6 +42,21 @@ pub fn contrast(a: Rgb, b: Rgb) -> f64 {
     let (la, lb) = (luminance(a), luminance(b));
     let (light, dark) = if la >= lb { (la, lb) } else { (lb, la) };
     (light + 0.05) / (dark + 0.05)
+}
+
+/// OKLCH: lightness, chroma and hue in degrees from 0 to 360. The sRGB channels are made
+/// linear, taken through the OKLab matrices, and the hue is the angle of (a, b).
+pub fn oklch(c: Rgb) -> (f64, f64, f64) {
+    let (r, g, b) = (linear(c.r), linear(c.g), linear(c.b));
+    let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
+    let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;
+    let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b;
+    let (l, m, s) = (l.cbrt(), m.cbrt(), s.cbrt());
+    let lightness = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    let a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    let b = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    let hue = b.atan2(a).to_degrees().rem_euclid(360.0);
+    (lightness, a.hypot(b), hue)
 }
 
 #[cfg(test)]
@@ -93,5 +111,21 @@ mod tests {
         assert!((contrast(white, white) - 1.0).abs() < 1e-9);
         assert!((luminance(white) - 1.0).abs() < 1e-9);
         assert_eq!(luminance(black), 0.0);
+    }
+
+    #[test]
+    fn oklch_hue_of_pure_red_is_29_and_pure_green_is_142() {
+        let (l, c, h) = oklch(hex(0xff0000));
+        assert!((h - 29.2339).abs() < 1e-3, "red hue {h}");
+        assert!((c - 0.2577).abs() < 1e-3, "red chroma {c}");
+        assert!((l - 0.6280).abs() < 1e-3, "red lightness {l}");
+        let (_, c, h) = oklch(hex(0x00ff00));
+        assert!((h - 142.4953).abs() < 1e-3, "green hue {h}");
+        assert!((c - 0.2948).abs() < 1e-3, "green chroma {c}");
+        // Magenta's angle is negative before it is taken mod 360.
+        let (_, _, h) = oklch(hex(0xff00ff));
+        assert!((h - 328.3634).abs() < 1e-3, "magenta hue {h}");
+        let (l, c, _) = oklch(hex(0xffffff));
+        assert!((l - 1.0).abs() < 1e-6 && c < 1e-6, "white {l} {c}");
     }
 }
