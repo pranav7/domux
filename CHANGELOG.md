@@ -8,6 +8,23 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Themes. `[theme] name` in `domux.toml` picks the colours the chrome draws in: `domux`, the colours
+  domux has always drawn; `terminal`, which takes them from the terminal's background, foreground and
+  palette; or a theme file under `~/.config/domux/themes/`. The default is `auto`, which draws
+  `terminal` on an Omarchy desktop and `domux` everywhere else, and always over ssh. Under `terminal` on
+  Omarchy, the chrome follows a theme change while you stay attached.
+  [docs/themes.md](https://github.com/pranav7/domux/blob/main/docs/themes.md) says how to choose one
+  and how to write one.
+
+### Changed
+
+- The attach protocol is version 4, so run `domux server restart` after upgrading: a server and a
+  client from either side of the upgrade refuse each other.
+- At attach the client asks the terminal for its whole palette, not only its background and
+  foreground.
+
 ## [1.0.0] - 2026-09-11
 
 ```sh

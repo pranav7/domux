@@ -3,9 +3,9 @@
 Rust workspace, five crates under `crates/`:
 
 - `domux-term`: the `Emulator` trait and `GhosttyEmulator`, its one implementation. There is no second emulator and no cargo feature to select. Read `docs/decisions/0001-terminal-emulator.md` and `docs/decisions/0002-ghostty-source-acquisition.md` before touching this crate.
-- `domux-core`: pure model, layout, keymap, config, protocol and state types. No IO, no tokio, no ratatui, no process spawning. Every rule here has a unit test.
+- `domux-core`: pure model, layout, keymap, config, protocol and state types, and the theme model: roles, colour values, chains of themes and the readability guards. No IO, no tokio, no ratatui, no process spawning. Every rule here has a unit test.
 - `domux-server`: the core task, panes, rendering, socket, persistence. `src/testing.rs` is the harness every interface test uses.
-- `domux-client`: the thin client: raw mode, capabilities, keys out, frames in, clipboard.
+- `domux-client`: the thin client: raw mode, capabilities, keys out, frames in, clipboard, the attach batch that asks the terminal for its colours, the desktop check and the Omarchy watch.
 - `domux`: the `domux` binary. One file per API namespace under `src/cli/`.
 
 The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-server` and deleted `crates/m0-spike`; `docs/milestones/m1.md` records what M1 shipped.
@@ -37,7 +37,7 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 - An agent nobody reports on is `unknown`, never `idle`. A recap that did not arrive is absent. A session name is absent until the agent sets one. A working word is never shown for a state other than `working`.
 - A record ends when its own process id goes away, or when its pane goes away. Never because the foreground changed: an agent running a tool puts that tool in front, and the tool can itself be an agent.
 - `unseen` turns on when an agent starts waiting or goes from working to idle, which is what `agent::attention` answers. It clears when the agent's pane is focused or when input reaches that pane, and on nothing else. Reading the records does not clear it. All it does now is brighten a recap in the switcher, and whether it earns its keep is an open question 0030 names.
-- **A dot is drawn only while an agent is waiting on you, it is red, it is `◉`, and it sits one cell after the name**, in the column the glyph takes. Working and compacting say themselves with the glyph and the word, or with the glyph alone in the sidebar's two forms (`0038`); idle and unknown draw nothing. The top bar draws no agent count. What turns `waiting` on is a Claude notification that stops for you: `0037` lists the five types, and any other type changes nothing.
+- **A dot is drawn only while an agent is waiting on you, it is red under both built-in themes and any theme that keeps `waiting_dot` red, it is `◉`, and it sits one cell after the name**, in the column the glyph takes (`0042`). Working and compacting say themselves with the glyph and the word, or with the glyph alone in the sidebar's two forms (`0038`); idle and unknown draw nothing. The top bar draws no agent count. What turns `waiting` on is a Claude notification that stops for you: `0037` lists the five types, and any other type changes nothing.
 - The working word wears a **band**, a bright wave that runs along it and back, carried over from V1 (`render::shimmer` and `theme::Shimmer`). One counter drives it and the glyph both: the band moves every tick, 70 ms since `0038`, and the glyph turns every second one. Read `docs/decisions/0032` before changing either rate, and `0019` for why the ticker never stops.
 - The row grammar lives in one place, `render::agents_box`, and the Navigator draws it through `one_row` rather than writing a second one. The sidebar's row is one line; the switcher's adds the tab, pane name and recap. The agents overlay names the pane after the tab too; decision 0035 records why.
 - **Nothing reorders the Navigator.** Projects are alphabetical, workspaces keep their order, and agents sit under their workspace in the order they started, so no row moves while a state changes. `Model::sorted_agents` keeps its attention order for `agent.list` and `peek`.
@@ -58,14 +58,36 @@ not explain on its own. Read it before changing any of them.
 - A child process holds the machine awake and dies with the server. `stay-awake.pid` beside
   the state file is how a server that crashed finds the hold it left; a process id is only
   adopted when it is both alive and still the program that was started.
-- The dot at the right end of the top bar is the state, green for held and grey for not. It
-  is drawn outside the right end's priority chain, so nothing the bar says takes it away.
+- The dot at the right end of the top bar is the state, green for held and grey for not under
+  both built-in themes and any theme that keeps `stay_awake_dot_on` green and
+  `stay_awake_dot_off` grey (`0042`). It is drawn outside the right end's priority chain, so
+  nothing the bar says takes it away.
 - A toast says what changed. It is the surface M4's Notifier draws into, so it lives in
   `toast.rs` and `render/toast.rs` rather than in the stay awake code.
 - Full mode is the lid. On Linux it is one more flag on the same child; on macOS it needs the
   launch daemon and the sudoers line that `stay-awake install --full` writes, and that command
   is the only thing in domux that ever asks for sudo. Never run it with `--apply` without the
   author saying so.
+
+## Themes
+
+MUX-38 draws the chrome from a theme. `docs/decisions/0042` records the choices the code does
+not explain on its own, and `docs/themes.md` is what a theme's author reads. Read both before
+changing any of it.
+
+- Rendering reads roles, never colour constants. A new colour is a new role, with a decision
+  record.
+- Role names are public: a theme file writes them. Renaming or removing one needs a record.
+- Under the `domux` theme every frame is the frame domux drew before themes, and no guard runs.
+- A hex value a theme file writes is never moved. The guards move only colours read from the
+  terminal's answers, and the built-in `domux` values, such as the kind colours, drawn on a
+  ground read from them.
+- The terminal is asked once, at attach, in one batch that a device attributes query ends. The
+  client never reads the terminal's answers while a session runs.
+- Live following is Omarchy's alone. The client reads `current/theme.name`, and `colors.toml` and
+  `ghostty.conf` under `current/theme/`, all under `~/.local/state/omarchy`, and never writes
+  there. Other terminals under `terminal` pick up a change at the next attach.
+- `auto` is decided per client, from that client's desktop, and over ssh it is `domux`.
 
 ## Rules
 
@@ -78,5 +100,5 @@ not explain on its own. Read it before changing any of them.
 - One implementation per operation: a key, a CLI subcommand and an API call reach the same handler in `domux_server::api`.
 - One core task owns all mutable state. Atomic writes: `path.tmp`, then rename.
 - Test names are `behavior_condition` in snake_case.
-- Prose, comments, help and errors: no em dashes, sentence case, plain words, active voice, one term per concept. Use the words of `2026-09-05-domux-v2-domain-model.md` (outside this repository): screen, top bar, tab row, tab, pane, workpanel, sidebar, switcher, agents overlay, overlay, box, accent, focused region, cursor, fill, hint row, footer, prompt. For agents: agent, kind, session id, session name, state, working word, band, glyph, unseen, dot (never any other word for it), recap, reason, hook, observer, manifest, Navigator, agent row, place. `resume`, `dismiss` and `exited` are retired words: decision record 0030 removed what they named. The Agents box is the box inside the agents overlay, and the sidebar's Agents box is the one that goes with `[navigator]`. Never "window" for the screen, "panel" for the sidebar, or "modal", "popup" or "dialog" for an overlay.
+- Prose, comments, help and errors: no em dashes, sentence case, plain words, active voice, one term per concept. Use the words of `2026-09-05-domux-v2-domain-model.md` (outside this repository): screen, top bar, tab row, tab, pane, workpanel, sidebar, switcher, agents overlay, overlay, box, accent, focused region, cursor, fill, hint row, footer, prompt. For themes: theme, role, ground, answers. For agents: agent, kind, session id, session name, state, working word, band, glyph, unseen, dot (never any other word for it), recap, reason, hook, observer, manifest, Navigator, agent row, place. `resume`, `dismiss` and `exited` are retired words: decision record 0030 removed what they named. The Agents box is the box inside the agents overlay, and the sidebar's Agents box is the one that goes with `[navigator]`. Never "window" for the screen, "panel" for the sidebar, or "modal", "popup" or "dialog" for an overlay.
 - Decisions that the specs left open are recorded under `docs/decisions/`; read them before changing the behaviour they describe. Each milestone's protocol and acceptance criteria are under `docs/milestones/`.

@@ -641,4 +641,17 @@ mod tests {
         assert_eq!(bincode::serialize(&mods).unwrap(), vec![0b11]);
         assert_eq!(bincode::deserialize::<Mods>(&[0b11]).unwrap(), mods);
     }
+
+    /// `docs/milestones/m1.md` is where the handshake is written down, and it went on saying 2
+    /// after decision 0014 took the protocol to 3. Hold it to the constant.
+    #[test]
+    fn the_m1_record_names_the_protocol_version_the_code_speaks() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/milestones/m1.md");
+        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let sentence = format!("`PROTOCOL_VERSION` is {PROTOCOL_VERSION}.");
+        assert!(
+            text.contains(&sentence),
+            "docs/milestones/m1.md does not say {sentence:?}"
+        );
+    }
 }
