@@ -4,7 +4,7 @@
 //! Design principle 1: the pane owns its input. Only three things claim a key ahead of it -
 //! an open overlay, a chord, a global binding the foreground command does not pass through -
 //! and everything else reaches the pane's emulator unchanged. The leader pressed twice sends
-//! the leader itself, so a program that wants `C-a` can still have it.
+//! the leader itself, so a program that wants `C-s` can still have it.
 
 use crate::client::Hint;
 use crate::copy_mode::{self, CopyOutcome};

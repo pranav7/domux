@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fake sudo for tests/install/run.sh: records the call in $FAKE_HTTP_DIR/sudo.log and refuses, so
+# no test raises privileges whatever install.sh or the binary it installs goes on to run.
+printf '%s\n' "$*" >> "${FAKE_HTTP_DIR:?}/sudo.log"
+echo "fake sudo: refused" >&2
+exit 1

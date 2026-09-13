@@ -214,7 +214,7 @@ async fn question_mark_opens_the_keys_over_the_switcher_and_esc_comes_back_to_it
         )
         .await;
     assert!(
-        f.contains("C-a d      client.detach"),
+        f.contains("C-s d      client.detach"),
         "the help renders the configured bindings:\n{f}"
     );
     assert_eq!(
@@ -719,7 +719,7 @@ async fn an_empty_list_table_draws_no_heading_in_the_keys_overlay() {
         "no heading with nothing under it:\n{f}"
     );
     assert!(
-        f.contains("C-a s      switcher.open") && f.contains("esc close"),
+        f.contains("C-s s      switcher.open") && f.contains("esc close"),
         "and the rest of the overlay is where it was:\n{f}"
     );
 }
@@ -780,7 +780,7 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
     let first_leader = f
         .lines()
         .filter(|l| l.starts_with('|'))
-        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .position(|l| l.contains("C-s ") && !l.contains("leader"))
         .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
     assert!(
         row_holding(&f, "in a list") < first_leader,
@@ -849,7 +849,7 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
     let first_leader = f
         .lines()
         .filter(|l| l.starts_with('|'))
-        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .position(|l| l.contains("C-s ") && !l.contains("leader"))
         .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
     assert!(
         f.contains("j          list.down") && row_holding(&f, "in a list") < first_leader,
@@ -866,7 +866,7 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
 #[tokio::test]
 async fn the_keys_overlay_lists_the_leader_table_first_from_a_pane() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(
@@ -876,7 +876,7 @@ async fn the_keys_overlay_lists_the_leader_table_first_from_a_pane() {
         )
         .await;
     assert!(
-        f.contains("C-a d      client.detach") && f.contains("C-a s      switcher.open"),
+        f.contains("C-s d      client.detach") && f.contains("C-s s      switcher.open"),
         "the leader table is what a reader on a pane gets:\n{f}"
     );
     assert!(

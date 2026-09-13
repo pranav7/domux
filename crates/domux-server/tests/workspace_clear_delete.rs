@@ -871,7 +871,7 @@ async fn a_key_bound_to_workspace_delete_asks_in_an_overlay_and_y_deletes() {
     let (root, w1, _w2) = h.git_project_with_two_slots().await;
     let slot = slot_of(&root, 1);
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "D").await;
     let f = h
         .wait_for(
@@ -934,7 +934,7 @@ async fn a_key_other_than_y_closes_the_delete_question() {
     let mut h = Harness::start(config, 120, 24).await;
     let (_root, w1, _w2) = h.git_project_with_two_slots().await;
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "D").await;
     h.wait_for(
         h.client.clone(),
@@ -991,7 +991,7 @@ async fn a_key_that_cannot_delete_says_why_on_the_screen() {
     let slot = slot_of(&root, 1);
     std::fs::write(slot.join("scratch.txt"), "work").unwrap();
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "D").await;
     h.wait_for(
         h.client.clone(),
@@ -1032,7 +1032,7 @@ async fn a_key_bound_to_workspace_clear_asks_in_an_overlay_and_y_clears() {
     let slot = slot_of(&root, 1);
     std::fs::write(slot.join("scratch.txt"), "x").unwrap();
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "C").await;
     let f = h
         .wait_for(

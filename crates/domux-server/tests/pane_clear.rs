@@ -49,7 +49,7 @@ async fn leader_k_empties_the_pane_and_its_scrollback() {
         everything_in(&mut h, &pane).await.contains("line 00"),
         "the scrollback holds what scrolled off"
     );
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "k").await;
     h.wait_for(
         h.client.clone(),
@@ -94,7 +94,7 @@ async fn the_api_call_empties_the_pane_too() {
 async fn clearing_sends_the_program_nothing() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     let pane = pane_with_lines(&mut h, 40).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "k").await;
     h.wait_for(
         h.client.clone(),
@@ -146,7 +146,7 @@ async fn a_full_screen_program_is_refused() {
 async fn clearing_ends_copy_mode() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     let pane = pane_with_lines(&mut h, 40).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "[").await;
     h.wait_for(
         h.client.clone(),

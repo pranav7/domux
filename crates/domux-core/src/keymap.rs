@@ -256,7 +256,7 @@ impl Keymap {
         }
     }
 
-    /// The configured key for an action, as hint text: `C-a ,` for a leader binding, `C-h`
+    /// The configured key for an action, as hint text: `C-s ,` for a leader binding, `C-h`
     /// for a global one. Matches the whole action string, so `pane.split right` and
     /// `pane.split down` give different keys.
     pub fn key_for(&self, action: &str) -> Option<String> {
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn defaults_build_and_lookup_finds_bindings_and_globals() {
         let km = Keymap::defaults();
-        assert_eq!(km.leader, KeyName::parse("C-a").unwrap());
+        assert_eq!(km.leader, KeyName::parse("C-s").unwrap());
         assert_eq!(
             km.binding_for(&press(Key::Char('\\'), Mods::empty()))
                 .unwrap()
@@ -449,9 +449,25 @@ mod tests {
             km.key_for("pane.resize down 8"),
             Some("C-S-Down".to_string())
         );
-        assert_eq!(km.key_for("tab.rename"), Some("C-a ,".to_string()));
+        assert_eq!(km.key_for("tab.rename"), Some("C-s ,".to_string()));
         assert_eq!(km.key_for("focus.left"), Some("C-h".to_string()));
-        assert_eq!(km.key_for("pane.split right"), Some("C-a \\".to_string()));
+        assert_eq!(km.key_for("pane.split right"), Some("C-s \\".to_string()));
+    }
+
+    /// The leader claims its key ahead of every other table, so a default key equal to it
+    /// could never be pressed. `C-s` is no binding after the leader, no global key, no key a
+    /// passthrough command keeps, and no key inside a box.
+    #[test]
+    fn the_default_leader_is_no_other_default_key() {
+        let km = Keymap::defaults();
+        let leader = press(km.leader.key, km.leader.mods);
+        assert!(km.binding_for(&leader).is_none(), "after the leader");
+        assert!(km.global_for(&leader, None).is_none(), "global");
+        assert!(
+            !km.passthrough_keys.iter().any(|k| k.matches(&leader)),
+            "passthrough"
+        );
+        assert!(km.list_for(&leader).is_none(), "inside a box");
     }
 
     /// The two keys M3 adds, through the lookups that answer them: `leader a` opens the
