@@ -27,7 +27,7 @@ async fn printable_control_and_modified_keys_reach_the_pane_unchanged() {
 async fn leader_then_binding_runs_the_action_and_nothing_reaches_the_pane() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "\\").await;
     h.wait_for(
         h.client.clone(),
@@ -46,16 +46,16 @@ async fn leader_then_binding_runs_the_action_and_nothing_reaches_the_pane() {
 async fn leader_twice_sends_the_leader_and_an_unbound_key_is_dropped() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
-    h.key(h.client.clone(), "C-a").await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "C-s").await;
     h.frame(h.client.clone()).await;
-    assert_eq!(h.pane_input(&pane), b"\x01".to_vec());
-    h.key(h.client.clone(), "C-a").await;
+    assert_eq!(h.pane_input(&pane), b"\x13".to_vec());
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "x").await;
     h.frame(h.client.clone()).await;
     assert_eq!(
         h.pane_input(&pane),
-        b"\x01".to_vec(),
+        b"\x13".to_vec(),
         "x after the leader went nowhere"
     );
     assert!(h.model().client(&h.client).unwrap().chord.is_none());
@@ -65,7 +65,7 @@ async fn leader_twice_sends_the_leader_and_an_unbound_key_is_dropped() {
 async fn global_focus_keys_move_focus_unless_the_foreground_is_a_passthrough_command() {
     let mut h = Harness::start(Config::default(), 60, 12).await;
     let left = h.focused_pane(h.client.clone());
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "\\").await;
     h.wait_for(
         h.client.clone(),
@@ -111,12 +111,12 @@ async fn a_configured_leader_replaces_the_default() {
     cfg.keys.leader = "C-b".into();
     let mut h = Harness::start(cfg, 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.frame(h.client.clone()).await;
     assert_eq!(
         h.pane_input(&pane),
-        b"\x01".to_vec(),
-        "C-a is an ordinary key now"
+        b"\x13".to_vec(),
+        "C-s is an ordinary key now"
     );
     h.key(h.client.clone(), "C-b").await;
     h.key(h.client.clone(), "t").await;
@@ -144,7 +144,7 @@ async fn the_prompt_takes_every_key_and_enter_names_the_tab() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
     let tab = h.current_tab(h.client.clone());
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), ",").await;
     h.wait_for(
         h.client.clone(),
@@ -176,7 +176,7 @@ async fn the_prompt_takes_every_key_and_enter_names_the_tab() {
 async fn the_help_overlay_swallows_keys_until_it_closes() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let pane = h.focused_pane(h.client.clone());
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "?").await;
     h.frame(h.client.clone()).await;
     assert!(h.model().client(&h.client).unwrap().overlay.is_some());
@@ -191,13 +191,13 @@ async fn the_help_overlay_swallows_keys_until_it_closes() {
     assert_eq!(h.pane_input(&pane), b"y".to_vec());
 }
 
-/// Principle 8: a key that cannot do what it says still answers. `C-a 9` selects the ninth
+/// Principle 8: a key that cannot do what it says still answers. `C-s 9` selects the ninth
 /// tab, and a workspace with one tab has none, so the failure is named where the clock is
 /// and stands until the next key.
 #[tokio::test]
 async fn a_failed_action_names_the_failure_until_the_next_key() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "9").await;
     h.wait_for(
         h.client.clone(),

@@ -35,7 +35,7 @@ async fn leader_n_names_the_workspace_the_client_is_in_and_the_title_shows_its_h
     .await
     .unwrap();
 
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
 
     let f = h
@@ -93,7 +93,7 @@ async fn esc_closes_the_box_and_leaves_the_name_alone() {
     .await
     .unwrap();
 
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
     h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
         .await;
@@ -140,7 +140,7 @@ async fn the_box_opens_on_the_current_name_and_a_blank_field_clears_it() {
     .await
     .unwrap();
 
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
     h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
         .await;
@@ -234,7 +234,7 @@ async fn the_arrow_home_and_end_keys_move_the_caret_in_the_field() {
     )
     .await
     .unwrap();
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
     h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
         .await;
@@ -277,7 +277,7 @@ async fn leader_n_clears_the_name_with_no_prompt() {
     .await
     .unwrap();
 
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "n").await;
 
     // The top bar reads `project › workspace`, so the handle coming back is visible there.
@@ -478,7 +478,7 @@ async fn a_name_that_reads_as_a_handle_keeps_the_box_open_with_what_was_typed() 
     )
     .await
     .unwrap();
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
     h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
         .await;
@@ -518,7 +518,7 @@ async fn a_name_that_reads_as_a_handle_keeps_the_box_open_with_what_was_typed() 
 /// The field takes text and nothing else. An unbound key does not close the box or reach the
 /// pane behind it, and a chorded letter is not typed.
 ///
-/// `C-b` and `M-b`, not `C-a`: the leader is claimed at step 2 of the routing and would never
+/// `C-b` and `M-b`, not `C-s`: the leader is claimed at step 2 of the routing and would never
 /// reach the box, so it would pass for the wrong reason. A bare `b` beside them shows the same
 /// letter is text on its own.
 #[tokio::test]
@@ -533,7 +533,7 @@ async fn an_unbound_key_and_a_chorded_letter_do_not_type_into_the_box() {
     .await
     .unwrap();
     let pane = h.focused_pane(client.clone());
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
     h.wait_for(client.clone(), |f| f.contains("Name workspace-1"), WAIT)
         .await;
@@ -673,7 +673,7 @@ async fn the_cursor_row_is_the_target_only_while_the_keys_are_in_a_box() {
         "closing the switcher leaves the cursor where it was"
     );
 
-    h.key(client.clone(), "C-a").await;
+    h.key(client.clone(), "C-s").await;
     h.key(client.clone(), "N").await;
 
     let f = h

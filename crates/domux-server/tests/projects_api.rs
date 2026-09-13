@@ -787,7 +787,7 @@ async fn a_key_bound_to_project_remove_asks_in_an_overlay_and_y_removes_the_proj
         .await
         .unwrap();
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "X").await;
     let f = h
         .wait_for(
@@ -856,7 +856,7 @@ async fn a_key_other_than_y_closes_the_question_and_keeps_the_project() {
     h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
         .await
         .unwrap();
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "X").await;
     h.wait_for(
         h.client.clone(),
@@ -988,7 +988,7 @@ async fn a_job_a_key_started_reports_its_failure_in_the_hint_row() {
         .bindings
         .insert("A".into(), "project.add /nonexistent/place".into());
     let mut h = Harness::start(config, 120, 24).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "A").await;
     let f = h
         .wait_for(
@@ -1188,7 +1188,7 @@ async fn the_confirmation_names_the_project_s_root_so_two_of_one_name_are_told_a
     .unwrap();
     h.api("config.reload", json!({})).await.unwrap();
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "X").await;
     let f = h
         .wait_for(

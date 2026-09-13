@@ -147,7 +147,13 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 impl Default for KeysConfig {
     fn default() -> Self {
         KeysConfig {
-            leader: "C-a".into(),
+            // `C-s` since MUX-35, and `C-a` before it. The client's raw mode turns off flow
+            // control, so the reader's own terminal never keeps the key to pause output.
+            // Pressed twice, the leader reaches the pane, where a program that reads keys
+            // itself, such as an editor, gets `C-s`. A shell at its prompt usually leaves flow
+            // control on in the pane's terminal, and there `C-s` pauses the pane's output
+            // until `C-q`.
+            leader: "C-s".into(),
             bindings: map(&[
                 // The unshifted half of the key `|` lives on: a split is common enough that
                 // it should not need a shift.
@@ -560,7 +566,8 @@ mod tests {
     #[test]
     fn defaults_match_the_architecture_spec_keymap() {
         let c = Config::default();
-        assert_eq!(c.keys.leader, "C-a");
+        // The spec's keymap put the leader on `C-a`; MUX-35 moved it to `C-s`.
+        assert_eq!(c.keys.leader, "C-s");
         // The spec's keymap put this on `|`; see the M1 deviations.
         assert_eq!(
             c.keys.bindings.get("\\").map(String::as_str),

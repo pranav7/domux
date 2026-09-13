@@ -543,7 +543,7 @@ impl Harness {
         self.clients[&client].follow_colors.clone()
     }
 
-    /// A key by its config name: `C-a`, `s`, `Enter`, `Esc`, `S-Left`.
+    /// A key by its config name: `C-s`, `s`, `Enter`, `Esc`, `S-Left`.
     pub async fn key(&mut self, client: ClientId, key: &str) {
         let name = KeyName::parse(key).unwrap_or_else(|e| panic!("{key}: {e}"));
         let mut mods = name.mods;

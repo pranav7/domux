@@ -66,7 +66,7 @@ fn one_accent_run(frame: &str) -> (u16, u16, u16) {
 #[tokio::test]
 async fn leader_comma_opens_the_prompt_in_the_tab_cell_and_the_clock_gives_way() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), ",").await;
     let f = h
         .wait_for(
@@ -136,7 +136,7 @@ async fn esc_cancels_and_an_empty_name_clears_and_leader_r_clears_without_a_prom
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), ",").await;
     let f = h
         .wait_for(
@@ -158,7 +158,7 @@ async fn esc_cancels_and_an_empty_name_clears_and_leader_r_clears_without_a_prom
         )
         .await;
     assert!(f.contains(" 1 old "), "esc changed nothing:\n{f}");
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), ",").await;
     h.wait_for(
         h.client.clone(),
@@ -190,7 +190,7 @@ async fn esc_cancels_and_an_empty_name_clears_and_leader_r_clears_without_a_prom
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "R").await;
     h.wait_for(
         h.client.clone(),
@@ -203,15 +203,15 @@ async fn esc_cancels_and_an_empty_name_clears_and_leader_r_clears_without_a_prom
 #[tokio::test]
 async fn the_chord_indicator_shows_the_leader_and_the_help_key_in_the_clocks_place() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("C-a"),
+            |f| f.contains("C-s"),
             Duration::from_secs(2),
         )
         .await;
-    assert!(row(&f, 0).ends_with("C-a  ? keys ● |"), "{f}");
+    assert!(row(&f, 0).ends_with("C-s  ? keys ● |"), "{f}");
     assert!(!f.contains("14:32"), "the clock gave way:\n{f}");
     h.key(h.client.clone(), "Esc").await;
     h.wait_for(
@@ -322,7 +322,7 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
 #[tokio::test(flavor = "current_thread")]
 async fn help_keeps_the_footer_when_the_screen_is_too_short_for_every_binding() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(
@@ -479,7 +479,7 @@ async fn an_open_overlay_takes_the_accent_fill_off_the_tab_row() {
         (0, 17, 19),
         "with the keys on a pane the current tab is the accent-filled run:\n{f}"
     );
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(
@@ -584,7 +584,7 @@ async fn the_tab_row_drops_the_plus_before_the_current_tab_on_a_narrow_screen() 
 #[tokio::test]
 async fn a_hint_too_long_for_the_room_beside_the_tabs_elides() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "9").await;
     let f = h
         .wait_for(
@@ -607,7 +607,7 @@ async fn a_hint_too_long_for_the_room_beside_the_tabs_elides() {
 async fn help_closes_on_q_and_on_the_help_key() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     for close in ["q", "?"] {
-        h.key(h.client.clone(), "C-a").await;
+        h.key(h.client.clone(), "C-s").await;
         h.key(h.client.clone(), "?").await;
         h.wait_for(
             h.client.clone(),
@@ -650,7 +650,7 @@ async fn the_prompt_moves_its_cursor_with_home_end_and_the_arrows() {
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), ",").await;
     h.wait_for(
         h.client.clone(),
@@ -707,7 +707,7 @@ async fn an_actionable_right_end_elides_into_a_floor_of_its_own_rather_than_goin
         )
         .await;
     let before = row(&before, 0).to_string();
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "9").await;
     let f = h
         .wait_for(
@@ -761,7 +761,7 @@ async fn the_tab_row_leaves_the_last_column_empty_when_it_wants_the_whole_row() 
 #[tokio::test]
 async fn the_resize_rows_keep_their_step_size_on_a_narrow_screen() {
     let mut h = Harness::start(Config::default(), 60, 54).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(

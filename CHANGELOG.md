@@ -17,9 +17,27 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
   Omarchy, the chrome follows a theme change while you stay attached.
   [docs/themes.md](https://github.com/pranav7/domux/blob/main/docs/themes.md) says how to choose one
   and how to write one.
+- The installer asks you to select your leader, from `C-s`, `C-a`, `C-b` and `C-Space` or any key
+  name you type, and writes it under `[keys]` in the config file. `DOMUX_LEADER` answers without
+  asking, and without a terminal the installer writes `C-s`.
+- The installer asks whether to set up stay awake for a closed lid on Linux as well as macOS. A
+  yes writes `mode = "full"` under `[stay_awake]` in the config file, after the sudo setup on
+  macOS, and the installer says which keys turn stay awake on inside domux.
 
 ### Changed
 
+- The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
+  `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`, or pick `C-a` when the
+  installer asks. Running the installer again on a machine that relied on the old default, and
+  pressing enter or giving it no terminal, writes `C-s`.
+- Pressed twice, the leader sends `C-s` to the pane. A shell at its prompt usually leaves flow
+  control on, and there `C-s` pauses the pane's output until `C-q`.
+- The installer marks each finished step with a check mark and says what it detected and did,
+  with one line per coding agent whose hooks it installed. The release lookup and the download
+  turn a spinner while they wait.
+- The installer never replaces a leader or a stay awake mode the config file already sets, and
+  it writes to the file `DOMUX_CONFIG_FILE` names when that is set. When it replaces a domux
+  binary and writes to the config file, it says to run `domux config reload`.
 - `project.add` in the control API refuses a path that is relative, empty or starts with `~`,
   and says what to send instead. It used to resolve such a path against the server's own
   directory. `domux open` and `domux project add` send full paths, so only `domux api` calls and

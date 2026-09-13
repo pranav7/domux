@@ -330,7 +330,7 @@ async fn server_start_status_and_stop_manage_a_real_server() {
         "a config file that is not there must not read as one that is:\n{text}"
     );
     assert!(
-        text.lines().any(|l| l == "Leader  C-a"),
+        text.lines().any(|l| l == "Leader  C-s"),
         "the report says which key starts a chord:\n{text}"
     );
     let text = String::from_utf8_lossy(&with_config.stdout);
@@ -392,7 +392,7 @@ async fn server_status_reports_the_leader_in_force_not_the_one_on_disk() {
     cli().args(["server", "start"]).output().await.unwrap();
     // Written after the server started, which is the whole point: it is on disk and not yet
     // in force.
-    std::fs::write(&config, "[keys]\nleader = \"C-s\"\n").unwrap();
+    std::fs::write(&config, "[keys]\nleader = \"C-b\"\n").unwrap();
     let before = cli().args(["server", "status"]).output().await.unwrap();
     cli().args(["config", "reload"]).output().await.unwrap();
     let after = cli().args(["server", "status"]).output().await.unwrap();
@@ -400,12 +400,12 @@ async fn server_status_reports_the_leader_in_force_not_the_one_on_disk() {
 
     assert_eq!(
         leader_line(&before),
-        "Leader  C-a",
+        "Leader  C-s",
         "an edit the server has not read is not the leader in force"
     );
     assert_eq!(
         leader_line(&after),
-        "Leader  C-s",
+        "Leader  C-b",
         "the reload put it in force"
     );
     assert!(stopped.status.success());
@@ -561,7 +561,7 @@ async fn drive_then_detach_in_a_pty(
         }
     }
     wait_for_text(&rx, &mut output, wants).await;
-    writer.write_all(b"\x01d").unwrap(); // C-a then d
+    writer.write_all(b"\x13d").unwrap(); // C-s then d
     writer.flush().unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {

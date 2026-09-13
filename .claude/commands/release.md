@@ -61,11 +61,15 @@ gh release view v<version> --json assets --jq '[.assets[].name]'
 ```
 
 Four archives and `SHA256SUMS`. Then install it the way a reader would, into a throwaway
-directory so the check does not touch the real one:
+directory so the check does not touch the real install. The installer writes the leader to the
+config file, so the config file goes in the throwaway directory too, and the hooks and stay awake
+are skipped:
 
 ```sh
-DOMUX_INSTALL_DIR=$(mktemp -d) DOMUX_HOOKS=no DOMUX_STAY_AWAKE=no \
+D=$(mktemp -d)
+DOMUX_INSTALL_DIR=$D DOMUX_CONFIG_FILE=$D/domux.toml DOMUX_HOOKS=no DOMUX_STAY_AWAKE=no \
   sh -c 'curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh'
 ```
 
-It ends with the installed path and the version on stdout.
+It ends with the installed path and the version on stdout, and `$D/domux.toml` holds the leader.
+Nothing under the real home directory changes.

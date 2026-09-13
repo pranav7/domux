@@ -43,7 +43,7 @@ async fn open_switcher(h: &mut Harness) -> String {
 #[tokio::test]
 async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "s").await;
     let f = h
         .wait_for(

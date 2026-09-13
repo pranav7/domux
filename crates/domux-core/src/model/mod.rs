@@ -257,7 +257,7 @@ pub const SIDEBAR_MIN_COLS: u16 = 120;
 /// A leader chord in progress: the leader was pressed and the next key resolves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Chord {
-    /// The leader as configured, for the indicator: `C-a`.
+    /// The leader as configured, for the indicator: `C-s`.
     pub leader: String,
 }
 

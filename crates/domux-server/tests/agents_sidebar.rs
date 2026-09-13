@@ -423,7 +423,7 @@ async fn hiding_the_sidebar_from_either_box_gives_the_keys_back_to_the_pane() {
         h.api("focus.region", json!({ "region": region }))
             .await
             .unwrap();
-        h.key(h.client.clone(), "C-a").await;
+        h.key(h.client.clone(), "C-s").await;
         h.key(h.client.clone(), "b").await;
         h.frame(h.client.clone()).await;
         assert!(
