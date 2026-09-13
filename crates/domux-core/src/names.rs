@@ -27,6 +27,8 @@ pub const OLD_NAME: &str = "domux2";
 pub const V1_STATE_DIR_NAME: &str = "domux";
 /// Where V1 keeps one JSON file per session, under its state directory.
 pub const V1_SESSIONS_DIR_NAME: &str = "sessions";
+/// The directory of theme files, beside the config file.
+pub const THEMES_DIR_NAME: &str = "themes";
 
 #[cfg(test)]
 mod tests {

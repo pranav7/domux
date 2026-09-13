@@ -5,6 +5,7 @@
 
 pub mod answers;
 pub mod builtin;
+pub mod chain;
 pub mod choice;
 pub mod color;
 pub mod file;
@@ -12,6 +13,7 @@ pub mod role;
 pub mod value;
 
 pub use answers::{auto, Desktop, TerminalColors};
+pub use chain::{resolve, Chain, Unused};
 pub use choice::ThemeChoice;
 pub use color::{contrast, luminance, mix};
 pub use file::ThemeLayer;
@@ -21,12 +23,57 @@ pub use value::{ColorValue, ValueError};
 use domux_term::Rgb;
 use std::sync::OnceLock;
 
+/// The contrast the background and the foreground need between them before any form reads
+/// them. A terminal that says its foreground is its background said nothing useful.
+pub const MIN_ANSWER_CONTRAST: f64 = 3.0;
+
 /// What a role is drawn in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Paint {
     Rgb(Rgb),
     /// The terminal's default colour.
     Default,
+}
+
+/// The theme a config chose, with the chain of its file when it names one that loaded. The
+/// server keeps it, and each client paints it against its own terminal and desktop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Themes {
+    pub choice: ThemeChoice,
+    /// The chain of a file choice that loaded. `None` for a built-in choice, for `auto`, and for
+    /// a file that did not load, which paints what `auto` names.
+    pub file: Option<Chain>,
+}
+
+impl Default for Themes {
+    fn default() -> Themes {
+        Themes {
+            choice: ThemeChoice::Auto,
+            file: None,
+        }
+    }
+}
+
+impl Themes {
+    /// The chain this choice paints for a client on `desktop`.
+    fn chain(&self, desktop: Desktop) -> &Chain {
+        let name = match (&self.choice, &self.file) {
+            (ThemeChoice::File(_), Some(chain)) => return chain,
+            (ThemeChoice::Builtin(name), _) => name,
+            (ThemeChoice::Auto | ThemeChoice::File(_), _) => auto(desktop),
+        };
+        builtin::chain(name).expect("a built-in choice names a built-in theme")
+    }
+
+    /// This client's theme: the chosen chain painted against its terminal's answers.
+    pub fn paint(&self, colors: &TerminalColors, desktop: Desktop) -> Theme {
+        Theme::paint(self.chain(desktop), colors)
+    }
+
+    /// True when this client's theme reads its terminal's answers.
+    pub fn reads_terminal(&self, desktop: Desktop) -> bool {
+        self.chain(desktop).reads_terminal()
+    }
 }
 
 /// A complete theme: one paint per role.
@@ -46,6 +93,59 @@ impl Theme {
         let mut theme = self.clone();
         theme.paints[role as usize] = paint;
         theme
+    }
+
+    /// Paints a chain against the terminal's answers. For each role, the first layer that sets
+    /// it with a value the answers can evaluate wins; `domux` sets every role in hex or
+    /// `default`, so every role resolves.
+    ///
+    /// The answers count only when the background and the foreground both arrived and their
+    /// contrast is at least 3.0. Otherwise every form but hex and `default` is unanswered.
+    pub fn paint(chain: &Chain, colors: &TerminalColors) -> Theme {
+        let answers = match (colors.bg, colors.fg) {
+            (Some(bg), Some(fg)) if contrast(bg, fg) >= MIN_ANSWER_CONTRAST => Some((bg, fg)),
+            _ => None,
+        };
+        let evaluate = |value: &ColorValue| -> Option<Paint> {
+            match *value {
+                ColorValue::Hex(rgb) => Some(Paint::Rgb(rgb)),
+                ColorValue::Default => Some(Paint::Default),
+                other => {
+                    let (bg, fg) = answers?;
+                    let rgb = match other {
+                        ColorValue::Background => bg,
+                        ColorValue::Foreground => fg,
+                        ColorValue::Palette(slot) => colors.palette[usize::from(slot)]?,
+                        ColorValue::Blend { n, d } => mix(bg, fg, n, d),
+                        ColorValue::Shade { n, d } => {
+                            let far = if luminance(bg) < luminance(fg) {
+                                Rgb { r: 0, g: 0, b: 0 }
+                            } else {
+                                Rgb {
+                                    r: 255,
+                                    g: 255,
+                                    b: 255,
+                                }
+                            };
+                            mix(bg, far, n, d)
+                        }
+                        ColorValue::Hex(_) | ColorValue::Default => unreachable!(),
+                    };
+                    Some(Paint::Rgb(rgb))
+                }
+            }
+        };
+        let paint = |role: Role| {
+            chain
+                .layers()
+                .filter_map(|layer| layer.roles.get(&role))
+                .find_map(evaluate)
+                // Only a chain whose root does not set every role gets here.
+                .unwrap_or_else(|| Theme::domux().get(role))
+        };
+        Theme {
+            paints: std::array::from_fn(|i| paint(Role::ALL[i])),
+        }
     }
 
     /// The built-in `domux` theme, the colours domux drew before themes.
@@ -173,6 +273,220 @@ mod tests {
             assert!(warnings.is_empty(), "{name}: {warnings:?}");
             assert!(!layer.roles.is_empty(), "{name} sets no role");
         }
+    }
+
+    fn rgb(v: u32) -> Rgb {
+        Rgb {
+            r: (v >> 16) as u8,
+            g: (v >> 8) as u8,
+            b: v as u8,
+        }
+    }
+
+    /// Ristretto's answers: the background, the foreground and slots 1, 2 and 4.
+    fn ristretto() -> TerminalColors {
+        let mut palette = [None; 16];
+        palette[1] = Some(rgb(0xfd6883));
+        palette[2] = Some(rgb(0xadda78));
+        palette[4] = Some(rgb(0xf38d70));
+        TerminalColors {
+            fg: Some(rgb(0xe6d9db)),
+            bg: Some(rgb(0x2c2525)),
+            palette,
+        }
+    }
+
+    fn latte() -> TerminalColors {
+        TerminalColors {
+            fg: Some(rgb(0x4c4f69)),
+            bg: Some(rgb(0xeff1f5)),
+            palette: [None; 16],
+        }
+    }
+
+    /// A chain of one file over `domux`.
+    fn chain_of(text: &str) -> Chain {
+        let (chain, warnings) = resolve(
+            &ThemeChoice::File("mine".to_string()),
+            builtin::BUILTIN,
+            |_| Ok(Some(text.to_string())),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        chain.expect("resolves")
+    }
+
+    fn builtin_chain(name: &str) -> &'static Chain {
+        builtin::chain(name).expect("built in")
+    }
+
+    #[test]
+    fn a_hex_theme_paints_as_written_whatever_the_answers() {
+        let chain = chain_of(
+            "[roles]\naccent = \"#f38d70\"\nfill = \"#413939\"\nsidebar_background = \"#2c2525\"\n",
+        );
+        let mut answers = vec![TerminalColors::default(), ristretto(), latte()];
+        answers.push(TerminalColors {
+            fg: Some(rgb(0x000000)),
+            bg: None,
+            palette: [Some(rgb(0x123456)); 16],
+        });
+        for colors in &answers {
+            let theme = Theme::paint(&chain, colors);
+            let want = Theme::domux()
+                .with(Role::Accent, hex(0xf38d70))
+                .with(Role::Fill, hex(0x413939))
+                .with(Role::SidebarBackground, hex(0x2c2525));
+            assert_eq!(theme, want, "{colors:?}");
+        }
+    }
+
+    #[test]
+    fn a_blend_in_a_theme_file_is_evaluated_from_the_answers_and_unanswered_without_them() {
+        let chain = chain_of("[roles]\nfill = \"blend 1/9\"\n");
+        assert_eq!(
+            Theme::paint(&chain, &ristretto()).get(Role::Fill),
+            hex(0x413939)
+        );
+        assert_eq!(
+            Theme::paint(&chain, &TerminalColors::default()).get(Role::Fill),
+            hex(0x313244)
+        );
+    }
+
+    #[test]
+    fn every_form_is_evaluated_from_the_answers() {
+        let chain = chain_of(concat!(
+            "[roles]\n",
+            "overlay_background = \"background\"\n",
+            "text = \"foreground\"\n",
+            "accent = \"palette 4\"\n",
+            "top_bar_background = \"shade 1/5\"\n",
+            "separator = \"blend 0/9\"\n",
+            "border = \"blend 9/9\"\n",
+            "tab_row_background = \"default\"\n",
+            "question = \"#010203\"\n",
+        ));
+        let theme = Theme::paint(&chain, &ristretto());
+        assert_eq!(theme.get(Role::OverlayBackground), hex(0x2c2525));
+        assert_eq!(theme.get(Role::Text), hex(0xe6d9db));
+        assert_eq!(theme.get(Role::Accent), hex(0xf38d70));
+        assert_eq!(theme.get(Role::Separator), hex(0x2c2525));
+        assert_eq!(theme.get(Role::Border), hex(0xe6d9db));
+        assert_eq!(theme.get(Role::TabRowBackground), Paint::Default);
+        assert_eq!(theme.get(Role::Question), hex(0x010203));
+        // A dark background shades toward black.
+        assert_eq!(theme.get(Role::TopBarBackground), hex(0x231e1e));
+        // A light one shades toward white.
+        let theme = Theme::paint(&chain, &latte());
+        assert_eq!(theme.get(Role::TopBarBackground), hex(0xf2f4f7));
+    }
+
+    #[test]
+    fn a_palette_slot_that_did_not_arrive_comes_from_the_theme_it_extends() {
+        let chain = chain_of("extends = \"terminal\"\n[roles]\naccent = \"palette 12\"\n");
+        let theme = Theme::paint(&chain, &ristretto());
+        // Slot 12 is unanswered, so terminal's slot 4 is next.
+        assert_eq!(theme.get(Role::Accent), hex(0xf38d70));
+        // Slot 5 is unanswered and terminal is the last layer that sets branch before domux.
+        assert_eq!(theme.get(Role::Branch), hex(0xe3b4d8));
+        assert_eq!(theme.get(Role::PrClosed), hex(0xfd6883));
+    }
+
+    #[test]
+    fn answers_count_only_with_a_background_and_a_foreground_three_apart() {
+        let terminal = builtin_chain("terminal");
+        let domux = Theme::domux();
+        let mut one_sided = ristretto();
+        one_sided.fg = None;
+        assert_eq!(&Theme::paint(terminal, &one_sided), domux);
+        let mut one_sided = ristretto();
+        one_sided.bg = None;
+        assert_eq!(&Theme::paint(terminal, &one_sided), domux);
+        let mut too_close = ristretto();
+        too_close.fg = Some(rgb(0x5a5050));
+        assert!(contrast(too_close.fg.unwrap(), too_close.bg.unwrap()) < 3.0);
+        assert_eq!(&Theme::paint(terminal, &too_close), domux);
+        let theme = Theme::paint(terminal, &ristretto());
+        assert_eq!(theme.get(Role::Text), hex(0xe6d9db));
+    }
+
+    #[test]
+    fn the_terminal_theme_with_no_answers_paints_the_domux_theme() {
+        assert_eq!(
+            &Theme::paint(builtin_chain("terminal"), &TerminalColors::default()),
+            Theme::domux()
+        );
+        assert_eq!(
+            &Theme::paint(builtin_chain("domux"), &ristretto()),
+            Theme::domux()
+        );
+    }
+
+    #[test]
+    fn themes_paint_the_file_the_built_in_or_what_auto_names_for_the_desktop() {
+        let terminal_on_ristretto = Theme::paint(builtin_chain("terminal"), &ristretto());
+        assert_ne!(&terminal_on_ristretto, Theme::domux());
+
+        let auto = Themes::default();
+        assert_eq!(auto.choice, ThemeChoice::Auto);
+        assert_eq!(&auto.paint(&ristretto(), Desktop::Unknown), Theme::domux());
+        assert_eq!(
+            auto.paint(&ristretto(), Desktop::Omarchy),
+            terminal_on_ristretto
+        );
+        assert!(!auto.reads_terminal(Desktop::Unknown));
+        assert!(auto.reads_terminal(Desktop::Omarchy));
+
+        let terminal = Themes {
+            choice: ThemeChoice::Builtin("terminal"),
+            file: None,
+        };
+        assert_eq!(
+            terminal.paint(&ristretto(), Desktop::Unknown),
+            terminal_on_ristretto
+        );
+        assert!(terminal.reads_terminal(Desktop::Unknown));
+        let domux = Themes {
+            choice: ThemeChoice::Builtin("domux"),
+            file: None,
+        };
+        assert_eq!(&domux.paint(&ristretto(), Desktop::Omarchy), Theme::domux());
+        assert!(!domux.reads_terminal(Desktop::Omarchy));
+
+        let loaded = Themes {
+            choice: ThemeChoice::File("mine".to_string()),
+            file: Some(chain_of("[roles]\nfill = \"blend 1/9\"\n")),
+        };
+        assert_eq!(
+            loaded.paint(&ristretto(), Desktop::Unknown),
+            Theme::domux().with(Role::Fill, hex(0x413939))
+        );
+        assert!(loaded.reads_terminal(Desktop::Unknown));
+
+        // A file that did not load paints what auto names.
+        let not_loaded = Themes {
+            choice: ThemeChoice::File("mine".to_string()),
+            file: None,
+        };
+        assert_eq!(
+            &not_loaded.paint(&ristretto(), Desktop::Unknown),
+            Theme::domux()
+        );
+        assert_eq!(
+            not_loaded.paint(&ristretto(), Desktop::Omarchy),
+            terminal_on_ristretto
+        );
+        assert!(not_loaded.reads_terminal(Desktop::Omarchy));
+    }
+
+    #[test]
+    fn every_built_in_theme_has_a_chain_that_ends_at_domux() {
+        for (name, _) in builtin::BUILTIN {
+            let chain = builtin::chain(name).expect("built in");
+            assert_eq!(chain.names().first(), Some(name));
+            assert_eq!(chain.names().last(), Some(&"domux"));
+        }
+        assert_eq!(builtin::chain("nord"), None);
     }
 
     #[test]
