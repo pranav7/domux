@@ -72,6 +72,16 @@ impl HookTarget {
         self.path_under(&self.dir_in(home))
     }
 
+    /// The start of the line an apply prints to say which binary runs. An install writes hooks
+    /// for Claude and Codex and a plugin for OpenCode, which has no hooks file, and the two
+    /// nouns do not take the same verb (decision record 0040).
+    pub fn runs(&self) -> &'static str {
+        match self {
+            HookTarget::ClaudeSettings | HookTarget::CodexHooks => "The hooks run",
+            HookTarget::OpencodePlugin => "The plugin runs",
+        }
+    }
+
     /// The events the installer writes one command line for. The OpenCode plugin listens for
     /// its own events inside the file it writes, so it installs none here.
     pub fn events(&self) -> &'static [&'static str] {
@@ -272,6 +282,25 @@ mod tests {
         assert!(
             opencode.hooks.events().is_empty(),
             "the plugin listens for its own events"
+        );
+    }
+
+    /// The line an apply prints to name the binary starts with what the install wrote, and for
+    /// OpenCode that is a plugin, not hooks (decision record 0040).
+    #[test]
+    fn what_runs_the_binary_is_the_plugin_for_opencode_and_the_hooks_otherwise() {
+        let r = Registry::builtin();
+        assert_eq!(
+            r.for_kind(AgentKind::Claude).unwrap().hooks.runs(),
+            "The hooks run"
+        );
+        assert_eq!(
+            r.for_kind(AgentKind::Codex).unwrap().hooks.runs(),
+            "The hooks run"
+        );
+        assert_eq!(
+            r.for_kind(AgentKind::Opencode).unwrap().hooks.runs(),
+            "The plugin runs"
         );
     }
 

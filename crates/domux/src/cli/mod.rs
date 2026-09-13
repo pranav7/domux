@@ -32,6 +32,45 @@ pub fn socket() -> PathBuf {
     domux_core::paths::socket_path()
 }
 
+/// A path typed on the command line, as the full path the server needs.
+///
+/// The server is another process, and its directory is wherever the command that started it
+/// was typed, so a relative path sent as typed would name a folder under that directory rather
+/// than under this one. `.` then meant the server's directory, and `open .` answered for the
+/// wrong folder with a status of 0 (decision record 0041). The path is made full against this
+/// command's directory and not resolved further, because the server resolves links itself,
+/// unless it is not UTF-8 as it stands.
+pub fn full_path(typed: &str) -> anyhow::Result<String> {
+    let full = std::path::absolute(typed).with_context(|| format!("make {typed:?} a full path"))?;
+    as_text(full)
+}
+
+/// A full path as the text the server takes. A path reaches it as a JSON string, so a path that
+/// is not UTF-8 cannot be sent, and `json!` panics on one rather than failing: such a path is
+/// refused here instead, with a status of 1.
+///
+/// A full path keeps a `..` as it was typed, so `open ../x` typed in a directory whose name is
+/// not UTF-8 is not UTF-8 either, although `x` may well be. Such a path is resolved first, and
+/// the directory it resolves to is sent when its path is UTF-8. The server resolves the path it
+/// is given, so the resolved path names the same directory.
+fn as_text(full: PathBuf) -> anyhow::Result<String> {
+    let full = match full.into_os_string().into_string() {
+        Ok(text) => return Ok(text),
+        Err(full) => PathBuf::from(full),
+    };
+    if let Some(text) = full
+        .canonicalize()
+        .ok()
+        .and_then(|resolved| resolved.into_os_string().into_string().ok())
+    {
+        return Ok(text);
+    }
+    Err(anyhow::anyhow!(
+        "{} is not valid UTF-8, which a project's path has to be",
+        full.display()
+    ))
+}
+
 /// The one message for a server that is not listening, so every subcommand names the same
 /// state, object and next action (principle 9).
 pub fn not_running() -> anyhow::Error {
@@ -301,6 +340,56 @@ mod tests {
         }));
         e.code = ErrorCode::NotFound;
         assert_eq!(question(&e), None);
+    }
+
+    /// A path reaches the server as a JSON string, and `json!` panics on a path it cannot
+    /// write as one.
+    #[test]
+    fn a_full_path_that_is_not_utf8_is_refused_rather_than_sent() {
+        use std::os::unix::ffi::OsStringExt;
+        let full = PathBuf::from(std::ffi::OsString::from_vec(b"/home/u/caf\xe9".to_vec()));
+        assert_eq!(
+            as_text(full).unwrap_err().to_string(),
+            "/home/u/caf\u{fffd} is not valid UTF-8, which a project's path has to be"
+        );
+        assert_eq!(
+            as_text(PathBuf::from("/home/u/cafe")).unwrap(),
+            "/home/u/cafe"
+        );
+    }
+
+    /// `std::path::absolute` keeps `..` as it was typed, so `open ../x` typed in a directory
+    /// whose name is not UTF-8 made a full path that is not UTF-8 either, although the
+    /// directory it names is. Such a path is resolved, and sent resolved when it can be.
+    #[test]
+    fn a_full_path_that_is_utf8_once_resolved_is_sent_resolved() {
+        use std::os::unix::ffi::OsStringExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let odd = tmp
+            .path()
+            .join(std::ffi::OsString::from_vec(b"caf\xe9".to_vec()));
+        // A file system that refuses a name that is not UTF-8, as APFS does, cannot be typed
+        // in such a directory.
+        if std::fs::create_dir(&odd).is_err() {
+            return;
+        }
+        let beside = tmp.path().join("x");
+        std::fs::create_dir(&beside).unwrap();
+
+        let resolved = beside.canonicalize().unwrap();
+        assert_eq!(
+            as_text(odd.join("..").join("x")).unwrap(),
+            resolved.to_str().unwrap()
+        );
+        // The directory itself, and a path that is not there, resolve to nothing that can be
+        // sent, and are refused.
+        for refused in [odd.clone(), odd.join("..").join("gone")] {
+            let said = as_text(refused).unwrap_err().to_string();
+            assert!(
+                said.ends_with(" is not valid UTF-8, which a project's path has to be"),
+                "{said}"
+            );
+        }
     }
 
     #[test]

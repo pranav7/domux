@@ -46,6 +46,7 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 - **Nothing but the tick reads a transcript.** The recap lands minutes after the hook that ends the turn, so `agent.report` reads no file and `recap::poll` asks once a second. A read takes only the bytes the agent appended, so the cost does not follow the size of the file.
 - Installers preview by default. `--apply` backs up the file it patches, writes `path.tmp` and renames, and is idempotent. Never run `--apply` against `~/.claude`, `~/.claude-bedrock` or `~/.codex` without the author saying so.
 - **An install follows the agent's configuration directory**: `CLAUDE_CONFIG_DIR` when it names one, `--dir` over that, `~/.claude` otherwise. `docs/decisions/0036` says why. A Bedrock session runs `claude` with that variable set, so it reads no file under `~/.claude`: hooks installed there leave its row on `unknown` for the whole session. `agents::install::plan` takes the directory and reads no environment.
+- **A hook runs the binary that installed it**: `~/bin/domux` only when that path resolves to the running binary, and the running binary's own path otherwise. `docs/decisions/0040` says why. V1 installed itself at `~/bin/domux`, and a hook that runs V1 fails on every event with `unknown command "agent"`. `agents::install::hook_binary` takes both paths and reads no environment.
 
 ## Stay awake
 

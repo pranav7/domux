@@ -7,7 +7,8 @@
 
 use domux_core::config::Config;
 use domux_core::model::agent::AgentKind;
-use domux_server::testing::Harness;
+use domux_core::model::ProjectKind;
+use domux_server::testing::{git, repo_with_origin, Harness, HarnessOptions};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -2171,15 +2172,16 @@ async fn install_codex_writes_a_session_start_hook_with_valid_json_output() {
     );
 }
 
-/// The hook command is the symlink in `~/bin` when there is one, because it survives a rebuild
-/// that moves the executable (M3 plan assumption 16). Every other install test falls through to
-/// the running binary, so this is the only place the branch that runs on a real machine is taken.
+/// The hook command is the symlink in `~/bin` when it links to this binary, because it survives
+/// a rebuild that moves the binary (decision record 0040). Every other install test falls
+/// through to the running binary, so this is the only place the branch the author's own machine
+/// takes is run.
 #[tokio::test]
-async fn install_writes_the_symlink_path_when_one_is_in_bin() {
+async fn install_writes_the_bin_path_when_it_links_to_this_binary() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("bin")).unwrap();
     let linked = home.path().join("bin/domux");
-    std::fs::write(&linked, "#!/bin/sh\n").unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_domux"), &linked).unwrap();
     let out = install_cmd(home.path())
         .args(["install", "claude"])
         .output()
@@ -2190,6 +2192,284 @@ async fn install_writes_the_symlink_path_when_one_is_in_bin() {
     assert!(
         text.contains(&format!("{} agent report --agent claude", linked.display())),
         "the symlink, not the running binary: {text}"
+    );
+    assert!(!text.contains("is not this binary"), "{text}");
+}
+
+/// A home whose `~/bin/domux` is V1: a binary with no `agent` subcommand, which says so on
+/// stderr and exits 1, as V1 does. That file is on every machine V1 was installed on.
+fn home_with_v1_in_bin() -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("bin")).unwrap();
+    let linked = home.path().join("bin/domux");
+    std::fs::write(
+        &linked,
+        "#!/bin/sh\necho 'Error: unknown command \"agent\"' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&linked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (home, linked)
+}
+
+/// Every command a hooks file installs, across every event.
+fn installed_commands(path: &Path) -> Vec<(String, String)> {
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut out = Vec::new();
+    for (event, entries) in file["hooks"].as_object().unwrap() {
+        for entry in entries.as_array().unwrap() {
+            for hook in entry["hooks"].as_array().unwrap() {
+                out.push((event.clone(), hook["command"].as_str().unwrap().to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// MUX-36: an install on a machine that still has V1 at `~/bin/domux` wrote hooks that ran V1,
+/// and Claude Code showed `unknown command "agent"` on every event. The hook has to run this
+/// binary, and the proof is that the command it wrote reports.
+#[tokio::test]
+async fn install_writes_this_binary_when_the_bin_path_is_another_binary() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    let (home, linked) = home_with_v1_in_bin();
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+
+    let installed = installed_commands(&home.path().join(".claude/settings.json"));
+    let session_start = installed
+        .iter()
+        .find(|(event, _)| event == "SessionStart")
+        .map(|(_, command)| command.clone())
+        .unwrap();
+    let out = report_through_the_cli(
+        Command::new("sh")
+            .arg("-c")
+            .arg(&session_start)
+            .env("DOMUX_SOCKET", h.socket_path())
+            .env("DOMUX_PANE", pane.as_str())
+            .env_remove("TMUX"),
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/tmp"}"#,
+    )
+    .await;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("[domux] You are agent a_"), "{text}");
+    assert_eq!(installed.len(), 9, "{installed:?}");
+    for (event, command) in &installed {
+        assert!(
+            !command.contains(&linked.display().to_string()),
+            "{event} runs {command}"
+        );
+    }
+}
+
+/// The author's machine after installing 1.0.0: every hook runs V1 at `~/bin/domux`. Running the
+/// install again is the repair, so it must see those lines as something to change.
+#[tokio::test]
+async fn install_replaces_hooks_that_run_another_binary_at_the_bin_path() {
+    let (home, linked) = home_with_v1_in_bin();
+    let stale = format!("{} agent report --agent claude", linked.display());
+    let mut hooks = serde_json::Map::new();
+    for event in [
+        "Notification",
+        "PostCompact",
+        "PostToolUse",
+        "PreCompact",
+        "PreToolUse",
+        "SessionEnd",
+        "SessionStart",
+        "Stop",
+        "UserPromptSubmit",
+    ] {
+        hooks.insert(
+            event.to_string(),
+            serde_json::json!([{"hooks": [{"type": "command", "command": stale}]}]),
+        );
+    }
+    let settings = home.path().join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks })).unwrap(),
+    )
+    .unwrap();
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Patched "), "{text}");
+
+    let installed = installed_commands(&settings);
+    assert_eq!(installed.len(), 9, "one line per event: {installed:?}");
+    let mut events: Vec<&str> = installed.iter().map(|(e, _)| e.as_str()).collect();
+    events.dedup();
+    assert_eq!(events.len(), 9, "no event holds two lines: {installed:?}");
+    for (event, command) in &installed {
+        assert!(
+            !command.contains(&linked.display().to_string()),
+            "{event} runs {command}"
+        );
+    }
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Nothing to change."), "{text}");
+}
+
+/// Codex and OpenCode take the same binary Claude does: the choice is made once, for every kind.
+#[tokio::test]
+async fn install_codex_and_opencode_pass_over_a_bin_path_that_is_another_binary() {
+    let (home, linked) = home_with_v1_in_bin();
+    for kind in ["codex", "opencode"] {
+        let out = install_cmd(home.path())
+            .args(["install", kind, "--apply"])
+            .output()
+            .await
+            .unwrap();
+        assert!(out.status.success(), "{kind}: {out:?}");
+    }
+    let running = std::fs::canonicalize(env!("CARGO_BIN_EXE_domux")).unwrap();
+
+    let installed = installed_commands(&home.path().join(".codex/hooks.json"));
+    assert!(!installed.is_empty());
+    for (event, command) in &installed {
+        assert!(
+            !command.contains(&linked.display().to_string()),
+            "codex {event} runs {command}"
+        );
+        let bin = command.trim_end_matches(" agent report --agent codex");
+        assert_eq!(std::fs::canonicalize(bin).unwrap(), running, "{command}");
+    }
+
+    let plugin =
+        std::fs::read_to_string(home.path().join(".config/opencode/plugins/domux.js")).unwrap();
+    let first = plugin.lines().next().unwrap();
+    let bin: String = serde_json::from_str(first.trim_start_matches("const domux = ")).unwrap();
+    assert_ne!(Path::new(&bin), linked, "{first}");
+    assert_eq!(std::fs::canonicalize(&bin).unwrap(), running, "{first}");
+}
+
+/// Nothing showed which binary the hooks run, so a file that ran V1 looked installed. An apply
+/// says it, whether or not it wrote anything, and an install that passed over `~/bin/domux`
+/// says why.
+#[tokio::test]
+async fn install_says_which_binary_the_hooks_run() {
+    let running = std::fs::canonicalize(env!("CARGO_BIN_EXE_domux")).unwrap();
+    let named = |text: &str| {
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("The hooks run "))
+            .unwrap_or_else(|| panic!("no line names the binary: {text}"));
+        std::fs::canonicalize(line.trim_end_matches('.')).unwrap()
+    };
+
+    let (home, linked) = home_with_v1_in_bin();
+    let passed_over = format!(
+        "{} is not this binary, so the install passes over it.",
+        linked.display()
+    );
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(&passed_over), "the preview says why: {text}");
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(named(&text), running, "{text}");
+    assert!(text.contains(&passed_over), "the apply says why: {text}");
+
+    let out = install_cmd(home.path())
+        .args(["install", "claude", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Nothing to change."), "{text}");
+    assert_eq!(named(&text), running, "{text}");
+}
+
+/// OpenCode has no hooks file, so what an install writes for it is a plugin, and the line that
+/// names the binary says so. Codex writes hooks, like Claude.
+#[tokio::test]
+async fn install_says_the_plugin_runs_the_binary_for_opencode_and_the_hooks_for_codex() {
+    let home = tempfile::tempdir().unwrap();
+    let running = std::fs::canonicalize(env!("CARGO_BIN_EXE_domux")).unwrap();
+    let apply = |kind: &'static str| {
+        let mut c = install_cmd(home.path());
+        c.args(["install", kind, "--apply"]);
+        c
+    };
+    let named = |text: &str, start: &str| {
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix(start))
+            .unwrap_or_else(|| panic!("no line starts {start:?}: {text}"));
+        std::fs::canonicalize(line.trim_end_matches('.')).unwrap()
+    };
+
+    // The second run changes nothing, and still names the binary.
+    for said in ["Created ", "Nothing to change."] {
+        let out = apply("opencode").output().await.unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.starts_with(said), "{text}");
+        assert_eq!(named(&text, "The plugin runs "), running, "{text}");
+        assert!(!text.contains("The hooks run"), "{text}");
+    }
+
+    let out = apply("codex").output().await.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(named(&text, "The hooks run "), running, "{text}");
+    assert!(!text.contains("The plugin runs"), "{text}");
+}
+
+/// The symlink in `~/bin` points into `target/release`, so a `cargo clean` breaks it, and an
+/// install run in that state writes the path of whatever binary ran it. It says so, rather than
+/// leaving a `target/` path in the file for the reader to find later.
+#[tokio::test]
+async fn install_says_it_passed_over_the_bin_path_when_it_is_a_broken_symlink() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("bin")).unwrap();
+    let linked = home.path().join("bin/domux");
+    std::os::unix::fs::symlink(home.path().join("target/release/domux"), &linked).unwrap();
+    let out = install_cmd(home.path())
+        .args(["install", "claude"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!(
+            "{} is not this binary, so the install passes over it.",
+            linked.display()
+        )),
+        "{text}"
     );
 }
 
@@ -2328,9 +2608,307 @@ async fn declining_the_offer_leaves_the_directory_alone_and_still_attaches() {
         "no project was added:\n{}",
         visible(&output)
     );
+    let way_back = format!(
+        "Left unregistered. Run domux open {} to register it later.",
+        elsewhere.path().canonicalize().unwrap().display()
+    );
     assert!(
-        visible(&output).contains("Left unregistered. Run domux open . to register it later."),
+        visible(&output).contains(&way_back),
         "it names the way to do it later:\n{}",
+        visible(&output)
+    );
+}
+
+/// `attach` typed in `cwd` against this harness's socket.
+fn attach_in(h: &Harness, cwd: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("TMUX");
+    cmd.cwd(cwd);
+    cmd
+}
+
+/// Detaches the harness's own client and waits for it to go, so the client an attach seats
+/// is the one a switch lands on.
+async fn detach_the_harness_client(h: &mut Harness) {
+    let client = h.client.clone();
+    h.detach(client).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !h.model().clients.is_empty() {
+        assert!(Instant::now() < deadline, "a client was still attached");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A harness whose start-up seed registered `home` as a folder project, the way a first
+/// server started in the home directory does.
+async fn harness_seeded_in(home: &Path) -> Harness {
+    let h = Harness::start_with(HarnessOptions {
+        project_root: Some(home.to_path_buf()),
+        ..HarnessOptions::new(Config::default(), 40, 10)
+    })
+    .await;
+    let m = h.model();
+    assert_eq!(m.projects.len(), 1, "the seed registered one project");
+    assert_eq!(
+        m.projects[0].root,
+        home.canonicalize().unwrap(),
+        "and it is the home directory"
+    );
+    assert!(
+        m.projects[0].kind == ProjectKind::Folder,
+        "as a folder project, because home is not a repository"
+    );
+    h
+}
+
+/// MUX-37: a folder project at the home directory swallowed every repository under it.
+///
+/// The seed registered `~` as a folder project, and the offer skipped any directory under a
+/// registered path, so `attach` typed in `~/domux` asked nothing and reconnected to the home
+/// project. The reader saw no question and no project named for the repository, and nothing
+/// on the screen said why. A folder project holds folders; a repository under one is offered.
+#[tokio::test]
+async fn attach_from_a_repository_under_a_folder_project_offers_to_register_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let repo = home.join("domux");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let mut h = harness_seeded_in(&home).await;
+    detach_the_harness_client(&mut h).await;
+
+    let canonical = repo.canonicalize().unwrap();
+    let question = format!(
+        "{} is not a project yet. Register it? [y/N]",
+        canonical.display()
+    );
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &repo),
+        &[(Wants::Text(&question), b"y\n")],
+        "domux \u{203a} main",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let m = h.model();
+    let project = m
+        .projects
+        .iter()
+        .find(|p| p.root == canonical)
+        .unwrap_or_else(|| panic!("the repository became a project:\n{}", visible(&output)));
+    assert!(
+        matches!(project.kind, ProjectKind::Git { .. }),
+        "a git project, beside the home one"
+    );
+    assert_eq!(m.projects.len(), 2, "and the home project is still there");
+}
+
+/// The other half of the rule: a plain folder under a folder project is still that project's,
+/// so nothing is asked there.
+#[tokio::test]
+async fn attach_from_a_plain_folder_under_a_folder_project_asks_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let notes = home.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let h = harness_seeded_in(&home).await;
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &notes), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// Typed in a subdirectory of a repository, the offer is about the repository. Registering
+/// the subdirectory would make a second git project out of one checkout.
+#[tokio::test]
+async fn attach_from_inside_a_repository_offers_its_top_level() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let crates = repo.join("crates");
+    std::fs::create_dir(&crates).unwrap();
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    detach_the_harness_client(&mut h).await;
+
+    let canonical = repo.canonicalize().unwrap();
+    let question = format!(
+        "{} is not a project yet. Register it? [y/N]",
+        canonical.display()
+    );
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &crates),
+        &[(Wants::Text(&question), b"y\n")],
+        "audrey-app \u{203a} main",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let roots: Vec<_> = h.model().projects.iter().map(|p| p.root.clone()).collect();
+    assert!(roots.contains(&canonical), "{roots:?}");
+    assert!(
+        !roots.contains(&crates.canonicalize().unwrap()),
+        "the subdirectory is not a project of its own: {roots:?}"
+    );
+}
+
+/// A linked worktree of a registered git project is that project's, wherever it was made.
+///
+/// `git worktree add ../app-feature` puts the worktree beside the checkout rather than under
+/// it, so no registered path holds it, and the offer asked on every attach there: decision
+/// record 0009 keeps no record of a no. It shares the project's common directory, which is
+/// what says it is the same repository (decision record 0041).
+#[tokio::test]
+async fn attach_from_a_linked_worktree_beside_a_git_project_asks_nothing() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let feature = repo.parent().unwrap().join("app-feature");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            feature.to_str().unwrap(),
+        ],
+    );
+    let crates = feature.join("crates");
+    std::fs::create_dir(&crates).unwrap();
+    let h = Harness::start_with(HarnessOptions {
+        project_root: Some(repo.clone()),
+        ..HarnessOptions::new(Config::default(), 40, 10)
+    })
+    .await;
+    assert!(
+        matches!(h.model().projects[0].kind, ProjectKind::Git { .. }),
+        "the seed registered the checkout as a git project"
+    );
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &crates), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// The offer is best effort: a registration the server refuses is said in one line, and the
+/// attach the reader asked for still happens.
+///
+/// The directory is taken away between the question and the yes, so `project.add` answers
+/// `not_found`. Before, the `?` on that call ended the command with the error and no screen,
+/// for an extra the reader had not asked for.
+#[tokio::test]
+async fn attach_goes_on_when_the_server_refuses_to_register_the_directory() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let gone = tmp.path().join("gone");
+    std::fs::create_dir(&gone).unwrap();
+    let canonical = gone.canonicalize().unwrap();
+    let question = format!(
+        "{} is not a project yet. Register it? [y/N]",
+        canonical.display()
+    );
+
+    // The directory goes once the question shows and before the answer, so the offer meets a
+    // path that was there when it asked and is gone when it registers.
+    let remove = || std::fs::remove_dir(&canonical).unwrap();
+    let asked = Wants::Text(&question);
+    let (output, status) = drive_then_detach_in_a_pty(
+        attach_in(&h, &gone),
+        &[(&asked, Then::Run(&remove)), (&asked, Then::Type(b"y\n"))],
+        "\u{250c} sh",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let said = format!(
+        "Could not register {dir}: not_found: {dir} does not exist. Run domux open {dir} to try again.",
+        dir = canonical.display()
+    );
+    assert!(
+        visible(&output).contains(&said),
+        "it says what failed and what to do:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// A path reaches the server as a JSON string, so a repository whose path is not UTF-8 cannot
+/// be registered, and the offer says so in one line instead of asking.
+///
+/// It asked before. git prints the top level as the directory's own bytes, and reading them as
+/// text turned the path into one that does not exist: the question named it, a no named a
+/// command that could not open it, and a yes was told the directory did not exist.
+#[tokio::test]
+async fn attach_from_a_repository_whose_path_is_not_utf8_says_why_it_does_not_ask() {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    // A file system that refuses a name that is not UTF-8, as APFS does, has no such
+    // repository to attach from.
+    if std::fs::create_dir(&repo).is_err() {
+        return;
+    }
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let h = Harness::start(Config::default(), 40, 10).await;
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &repo), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    let said = format!(
+        "Could not ask whether to register {}: its path is not valid UTF-8, which a project's path has to be.",
+        repo.canonicalize().unwrap().display()
+    );
+    assert!(
+        visible(&output).contains(&said),
+        "it says why:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// The line after a no is for pasting, so a directory a shell would split is quoted in it.
+#[tokio::test]
+async fn declining_quotes_a_directory_the_shell_would_split() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let notes = tmp.path().join("my notes");
+    std::fs::create_dir(&notes).unwrap();
+
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &notes),
+        &[(Wants::Text("is not a project yet. Register it? [y/N]"), b"\n")],
+        "\u{250c} sh",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let way_back = format!(
+        "Left unregistered. Run domux open '{}' to register it later.",
+        notes.canonicalize().unwrap().display()
+    );
+    assert!(
+        visible(&output).contains(&way_back),
+        "it quotes the directory:\n{}",
         visible(&output)
     );
 }
