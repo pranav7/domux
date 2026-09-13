@@ -250,14 +250,17 @@ protocol, forever.
   new ones when that client is the most recent.
 - On an Omarchy theme change the chrome can change a few seconds before the panes, because
   `omarchy-theme-set` reloads the terminal after the shell's background transition.
-- The watch reads Omarchy's files as Omarchy's scripts lay them out today. A theme that ships its own
-  `ghostty.conf` with palette slots that differ from a complete `colors.toml` is followed from
-  `colors.toml`. If Omarchy moves the files, the chrome stops following and the next attach still reads
-  the terminal.
+- The watch reads Omarchy's files as Omarchy's scripts lay them out today. The match check that starts
+  it compares only the background and the foreground, and every change after it takes the palette from
+  the files, so a theme that ships its own `ghostty.conf` with palette slots that differ from a complete
+  `colors.toml`, or a Ghostty config that sets palette slots after Omarchy's theme, is followed from the
+  files. If Omarchy moves the files, the chrome stops following and the next attach still reads the
+  terminal.
 - The attach client installs no log, so the watch's warnings, like the client's other warnings, reach no
   file.
 - A colour answer slower than the attach read is still typed into the pane, as it was before; the read now
-  waits up to 1 s for a terminal that answers device attributes, rather than 100 ms.
+  waits 1 s past the keyboard probe's time for a terminal that answers device attributes, rather than
+  100 ms.
 - On light themes under `terminal` the kind colours and the band are darker than the domux values, and the
   band's moving highlight is faint: its two ends are 1.16 to 1.47 apart.
 - The dot is red, and the stay awake dot green or grey, as far as the theme keeps those roles. Both built-in

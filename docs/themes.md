@@ -436,10 +436,12 @@ fill = "blend 2/9"
 - **On Omarchy the chrome can change a few seconds before the panes.** The chrome follows within about a
   second of the theme's files changing, and Omarchy reloads the terminal only after the background
   transition.
-- **A theme that ships its own `ghostty.conf` with different palette slots is followed from
-  `colors.toml`.** When its `colors.toml` carries all 16 colours with the same background and foreground,
-  the chrome takes the slots `colors.toml` names, even though the terminal draws the ones `ghostty.conf`
-  names. None of Omarchy's shipped themes does this.
+- **On Omarchy the palette slots are followed from the theme's files, not from the terminal.** Following
+  starts when the terminal's background and foreground match the theme's; the palette is not compared.
+  From the first change on, the chrome takes the slots `colors.toml` names, or `ghostty.conf` when
+  `colors.toml` does not carry all 16. So a theme whose own `ghostty.conf` names other slots, or a Ghostty
+  config that sets palette slots after Omarchy's theme, has its chrome drawn in the file's slots while the
+  terminal draws its own. None of Omarchy's shipped themes does this.
 - **Other terminals follow a change only at the next attach.**
 - **Palette slots can be close colours.** The guards keep colours readable and red and green roles red and
   green; they do not keep two roles apart. On some themes the accent and the hint keys, or a branch and a

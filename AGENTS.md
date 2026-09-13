@@ -84,9 +84,9 @@ changing any of it.
   ground read from them.
 - The terminal is asked once, at attach, in one batch that a device attributes query ends. The
   client never reads the terminal's answers while a session runs.
-- Live following is Omarchy's alone. The client reads `current/theme.name`, and `colors.toml` and
-  `ghostty.conf` under `current/theme/`, all under `~/.local/state/omarchy`, and never writes
-  there. Other terminals under `terminal` pick up a change at the next attach.
+- Live following is Omarchy's alone. The client watches `current/theme.name`, `colors.toml` and
+  `ghostty.conf` under `~/.local/state/omarchy` for a change, reads the colours from `colors.toml`
+  or `ghostty.conf` under `current/theme/`, and never writes there. Other terminals under `terminal` pick up a change at the next attach.
 - `auto` is decided per client, from that client's desktop, and over ssh it is `domux`.
 
 ## Rules
