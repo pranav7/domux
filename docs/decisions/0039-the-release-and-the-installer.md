@@ -93,9 +93,10 @@ it proves the binary loads and its control API is intact without starting anythi
 also fails if a socket appears.
 
 **Shell code is tested like the rest.** `tests/lib/assert.sh` is the assertion harness,
-`tests/install/` fakes curl, uname and ldd so every branch of the installer runs without a
-network, and CI runs all of it under dash, bash and macOS's sh, with shellcheck over every
-script. A failure names the state and the next action, the same rule the Rust errors follow.
+`tests/install/` fakes curl, uname, ldd and sudo so every branch of the installer runs without a
+network and nothing it runs can raise privileges, and CI runs all of it under dash, bash and
+macOS's sh, with shellcheck over every script. A failure names the state and the next action, the
+same rule the Rust errors follow.
 
 ## Consequences
 

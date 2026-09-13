@@ -172,7 +172,10 @@ terminal can be opened, so a log file never gets a question nobody can see.
   the installer does not spell the old name, so this is recorded rather than handled: move the old
   file into place and run the installer again.
 - `C-s` is the default in two places, `KeysConfig::default` and `LEADER_DEFAULT` in
-  `install.sh`, and they move together.
+  `install.sh`, and they move together. So is the config file's path: a shell script cannot ask
+  `domux_core::paths`, so `install.sh` spells `DOMUX_CONFIG_FILE` and
+  `~/.config/domux/domux.toml` itself, and a change to `paths::config_file_in` changes the
+  script too.
 - `tests/install/run.sh` runs the spinner, the questions and the signals on a terminal through
   util-linux `script`. BSD `script` takes other flags, so those tests skip on macOS and run on
   the Ubuntu job. A job a script starts in the background begins with SIGINT ignored, and a
