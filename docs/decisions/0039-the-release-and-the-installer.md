@@ -51,12 +51,13 @@ steps that run on the machine and of a download on a fast connection. It is not 
 release lookup and the download on a real connection, where a 3 MB archive takes long enough to
 read a spinner on, and a word that stands still leaves the reader unable to tell a slow network
 from a script that has stopped. So the spinner is back on those two steps and on nothing else.
-The first frame waits 80 ms, so a request that answers at once draws nothing, which is the
-flicker the earlier spinner made. Every other step prints its tick as soon as it is done.
+A frame or two that turns into a check mark before it can be read is the flicker the earlier
+spinner made, so the first frame waits a quarter second and a request that answers sooner draws
+nothing. Every other step prints its check mark as soon as it is done.
 
-The logo is printed once. A finished step is a tick, a step that did not work while the install
-carries on is a cross, and a question wears the red dot, which means the same thing there as it
-does on an agent row. The color is still domux's mauve. Without a terminal, and under
+The logo is printed once. A finished step is a check mark, a step that did not work while the
+install carries on is a cross, and a question wears the red dot, which means the same thing there
+as it does on an agent row. The color is still domux's mauve. Without a terminal, and under
 `NO_COLOR`, nothing moves and the same lines are printed in the same order, so a log file reads
 as well as a terminal does.
 

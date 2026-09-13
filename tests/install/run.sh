@@ -220,7 +220,7 @@ test_prints_the_logo_before_anything_else() {
   assert_contains "$(sed -n 3p "$S/err")" "github.com/pranav7/domux" "repository under the logo"
 }
 
-test_marks_every_finished_step_with_a_tick() {
+test_marks_every_finished_step_with_a_check_mark() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
   mkdir -p "$S/home/.claude"
@@ -237,7 +237,7 @@ test_marks_every_finished_step_with_a_tick() {
   assert_contains "$(err)" "   ✓  stay awake set to full in $CONFIG" "stay awake"
   assert_contains "$(err)" "   ✓  domux is ready" "ready"
   assert_eq 0 "$(grep -c '^   ·' "$S/err")" "no step keeps the faint dot"
-  assert_eq 0 "$(grep -v '^   ✓  ' "$S/err" | grep -c -E 'detected|found|downloaded|installed to|written|set to|ready')" "every step line starts with the tick"
+  assert_eq 0 "$(grep -v '^   ✓  ' "$S/err" | grep -c -E 'detected|found|downloaded|installed to|written|set to|ready')" "every step line starts with the check mark"
 }
 
 test_falls_back_to_a_prerelease_when_no_stable_release_exists() {
@@ -546,7 +546,7 @@ test_says_what_happened_when_a_hook_install_fails() {
   assert_exit 0 "$code" "exit: the installer still installed the binary"
   assert_contains "$(err)" "✗  claude detected, hooks not installed: fake domux ran: install claude --apply" "state"
   assert_contains "$(err)" "install claude --apply to see what happened" "next action"
-  assert_not_contains "$(err)" "✓  claude detected" "no tick on a step that failed"
+  assert_not_contains "$(err)" "✓  claude detected" "no check mark on a step that failed"
 }
 
 test_skips_the_hooks_when_asked() {
@@ -1246,7 +1246,7 @@ mode = "full"' "$(config)" "the y after the arrow"
 run_tests \
   test_installs_the_newest_stable_release_on_macos_arm64 \
   test_prints_the_logo_before_anything_else \
-  test_marks_every_finished_step_with_a_tick \
+  test_marks_every_finished_step_with_a_check_mark \
   test_falls_back_to_a_prerelease_when_no_stable_release_exists \
   test_installs_a_pinned_version_on_linux_amd64 \
   test_maps_aarch64_to_arm64_and_accepts_a_version_without_v \

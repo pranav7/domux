@@ -41,11 +41,11 @@ LEADER_DEFAULT="C-s"
 
 # --- the look ---------------------------------------------------------------------------------
 #
-# The logo, a tick on a step that is done, a cross on a step that did not work while the install
-# carries on, the red dot when domux is waiting on you, and a spinner beside a step that waits
-# on the network. Only the spinner moves, and only there: every other step is over before a
-# frame could be read, so it prints its tick at once. A pipe, a log file and NO_COLOR get the
-# same lines once, in order, with no color and no redrawing.
+# The logo, a check mark on a step that is done, a cross on a step that did not work while the
+# install carries on, the red dot when domux is waiting on you, and a spinner beside a step that
+# waits on the network. Only the spinner moves, and only there: every other step is over before a
+# frame could be read, so it prints its check mark at once. A pipe, a log file and NO_COLOR get
+# the same lines once, in order, with no color and no redrawing.
 
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   MAUVE=$(printf '\033[38;2;203;166;247m')      # the domux mauve
@@ -69,8 +69,8 @@ logo() {
     "$MAUVE" "$OFF" "$FAINT" "github.com/$REPO" "$OFF" >&2
 }
 
-# done_line <text>: a step that is finished, marked with a tick. On a terminal it replaces the
-# spinner's last frame when one is still on the line.
+# done_line <text>: a step that is finished, marked with a check mark. On a terminal it replaces
+# the spinner's last frame when one is still on the line.
 done_line() {
   printf '%s   %s✓%s  %s%s\n' "$CR" "$MAUVE" "$OFF" "$*" "$EOL" >&2
 }

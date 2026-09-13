@@ -7,8 +7,8 @@ moves).
 the answers to the config file: "Select your leader", a pick from `C-s`, `C-a`, `C-b` and
 `C-Space` or a typed key name, and whether to set up stay awake for a closed lid, on macOS and
 Linux both. It never replaces a leader or a stay awake mode the file already sets. A finished
-step wears a tick and says in plain words what was detected and what was done, and the release
-lookup and the download turn a spinner while they wait.
+step wears a check mark and says in plain words what was detected and what was done, and the
+release lookup and the download turn a spinner while they wait.
 
 ## Context
 
@@ -26,12 +26,22 @@ served from `main` and installs whichever release it is given, and 1.0.0's defau
 The leader is the first key a reader of a multiplexer has an opinion about, and a wrong one is
 felt on the first keypress. The people who install domux know what a leader is, so the question
 is three words and a short list: `C-s`, the default; `C-a`, screen's and V1's; `C-b`, tmux's;
-and `C-Space`. A fifth choice takes a typed key name. One keypress picks, and enter takes the
-default.
+and `C-Space`. A fifth choice takes a typed key name. One keypress picks, a number or the key
+itself, and enter takes the default.
+
+A key is read as one byte with the terminal's line editing, echo and flow control off. Flow
+control has to be off because `C-s` is XOFF: with it on, the terminal keeps the key and stops all
+output, so pressing the default leader at its own question froze the install until `C-q`. The
+byte goes through `od`, because `C-Space` sends a zero byte and a shell drops one. Keys typed
+before a question are thrown away, so an enter pressed while the download turned does not answer
+it, and so is the rest of a key that sends several bytes, such as an arrow, which the y or n
+question ignores rather than taking as no. A key that is not on the list is not an answer.
 
 A typed name is checked the way `[keys]` reads one, modifiers and then one character, a named
-key or F1 to F12, and asked again until it is one. The binary treats a bad leader as an error,
-because nothing works without one, so the installer never writes a leader domux would refuse.
+key or F1 to F12, and asked again until it is one. A name with a control character in it is
+refused too, because TOML refuses one inside a string. The binary treats a bad leader as an
+error, because nothing works without one, so the installer never writes a leader domux would
+refuse.
 `DOMUX_LEADER` answers the question without asking and is checked before any request, so a bad
 value fails before anything is downloaded.
 
@@ -61,6 +71,11 @@ says what kind of hold it is. So the step after a yes says how to turn it on, na
 the reader just chose: "press C-s then A inside domux to turn stay awake on or off". A no, or no
 terminal, writes nothing and says how to set it up later. A mode the file already sets is kept.
 
+A domux that is already running read the config file when it started, and keeps that leader until
+it reads the file again. So when the install replaced a domux binary and wrote either line, a note
+says to run `domux config reload`. Whether a server is running is not checked, because asking one
+means connecting to it; a binary already at the install path is the sign that one may be.
+
 ## How the config file is written
 
 Every write in domux goes to `path.tmp` and is renamed over the file, and a file the reader owns
@@ -79,20 +94,33 @@ tools it needs before it starts. The other ways were worse:
   will never have one.
 
 awk is on every machine the script runs on and reads the whole file the same way on each. The
-program knows table headers, keys inside a table, and dotted keys before the first header, and
-follows multi-line arrays and strings so a line inside one that looks like a header is not read
-as one. It is not a TOML parser. A file that sets `keys` or `stay_awake` without a header, as an
+program knows table headers, bare or quoted, keys inside a table and dotted keys before the first
+header, bare or quoted, a byte order mark at the start of the file, and values in one-line and
+multi-line strings. It follows multi-line arrays and strings so a line inside one that looks like
+a header is not read as one. A file that sets `keys` or `stay_awake` without a header, as an
 inline table, with dotted keys, or as an array of tables, is left alone, because a header added
-under it would define the table twice; the step says what to add by hand. The suite passes
-under gawk, under mawk, which is Ubuntu's awk, and under the awk macOS ships. While this was
-built, every file the program wrote, starting from one domux could already read, was checked
-with `Config::parse` and parsed.
+under it would define the table twice; the step says what to add by hand. A leftover `path.tmp`
+is removed before the write, so a link there is never written through.
+
+It is not a TOML parser, and a parser reads forms it does not. A table or key name spelled with
+an escape, such as `"le\u0061der"`, is not recognized, so the installer would add a second one
+and domux would refuse the file. A value with a `\u` escape in it is shown wrongly, which changes
+only the step's line, since a value that is there is never replaced. Reading the file back after
+the write would not catch any of this, because the same program would read it both times, so
+each form the first version missed is handled where the file is read instead.
+
+The suite passes under gawk, under mawk, which is Ubuntu's awk, under the awk macOS ships and
+under busybox awk. A set of config files that covers every form above, plus comments, CRLF line
+ends, brackets and quotes inside strings and a missing last newline, was run through the program
+under all four, with the same bytes out of each, and checked with `Config::parse` before and
+after: every file that parsed before parsed after, with the leader and mode it set or the ones
+written. That is a sample of the forms people write, not a proof.
 
 ## The steps
 
-A tick replaces the faint dot on a finished step. A cross marks a step that did not work while
-the install carries on, such as a hooks install that failed, because a tick there would say it
-worked. The red dot stays on a question, because it means domux is waiting on you.
+A check mark replaces the faint dot on a finished step. A cross marks a step that did not work
+while the install carries on, such as a hooks install that failed, because a check mark there
+would say it worked. The red dot stays on a question, because it means domux is waiting on you.
 
 Each step says what was detected and what was done: the system and architecture detected, the
 release found or pinned, the size downloaded and the checksum verified, where the binary went,
@@ -101,8 +129,9 @@ the leader, stay awake, and then "domux is ready" and "> run domux".
 
 The release lookup and the download turn the braille spinner while they wait, and nothing else
 does; decision 0039 says why it came back. A request runs in the background while the frames
-turn. The first frame waits 80 ms and the last one stays until the step's tick replaces it, so
-the two downloads read as one step. The cursor is hidden while a frame turns. A trap on exit,
+turn. The first frame waits a quarter second, so a request that answers sooner draws nothing,
+then a frame turns every 80 ms, and the last one stays until the step's check mark replaces it,
+so the two downloads read as one step. The cursor is hidden while a frame turns. A trap on exit,
 INT and TERM kills the request the spinner started and nothing else, clears the line, shows the
 cursor, and gives the terminal back the settings a question changed.
 
@@ -113,7 +142,18 @@ terminal can be opened, so a log file never gets a question nobody can see.
 ## Consequences
 
 - The installer writes the config file. A machine installed without a terminal ends up with
-  `leader = "C-s"` in it.
+  `leader = "C-s"` in it. So does a machine that relied on 1.0.0's `C-a` and re-runs the
+  installer without a terminal, or presses enter at the question; the changelog says how to keep
+  `C-a`.
+- Pressed twice, the leader sends `C-s` to the pane. A program that reads keys itself, such as an
+  editor, gets it, but a shell at its prompt usually leaves flow control on, and there it pauses
+  the pane's output until `C-q`.
+- A machine that still keeps its config file under the name used before the cut-over of
+  2026-09-11, and has not started a server since, gets a new config file from the installer. The
+  server moves the old file only when no new one exists, so the old one is then left where it is
+  and ignored. Only machines that ran domux before its first release can be in that state, and
+  the installer does not spell the old name, so this is recorded rather than handled: move the old
+  file into place and run the installer again.
 - `C-s` is the default in two places, `KeysConfig::default` and `LEADER_DEFAULT` in
   `install.sh`, and they move together.
 - `tests/install/run.sh` runs the spinner, the questions and the signals on a terminal through

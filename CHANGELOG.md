@@ -20,14 +20,17 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 ### Changed
 
 - The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
-  `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`.
+  `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`, or pick `C-a` when the
+  installer asks. Running the installer again on a machine that relied on the old default, and
+  pressing enter or giving it no terminal, writes `C-s`.
 - Pressed twice, the leader sends `C-s` to the pane. A shell at its prompt usually leaves flow
   control on, and there `C-s` pauses the pane's output until `C-q`.
-- The installer marks each finished step with a tick and says what it detected and did, with one
-  line per coding agent whose hooks it installed. The release lookup and the download turn a
-  spinner while they wait.
+- The installer marks each finished step with a check mark and says what it detected and did,
+  with one line per coding agent whose hooks it installed. The release lookup and the download
+  turn a spinner while they wait.
 - The installer never replaces a leader or a stay awake mode the config file already sets, and
-  it writes to the file `DOMUX_CONFIG_FILE` names when that is set.
+  it writes to the file `DOMUX_CONFIG_FILE` names when that is set. When it replaces a domux
+  binary and writes to the config file, it says to run `domux config reload`.
 
 ## [1.0.0] - 2026-09-11
 
