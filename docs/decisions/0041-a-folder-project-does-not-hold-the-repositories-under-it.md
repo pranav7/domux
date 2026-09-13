@@ -9,7 +9,8 @@ nothing is asked, when the directory attach was typed in is a registered project
 workspace path or lies under one, with one exception: a folder project does not hold a
 repository whose top level lies below the folder. A git project still holds everything under
 it, and it also holds a linked worktree of its repository wherever the worktree was made: a
-repository whose common git directory is a registered git project's is held. The offer is best
+repository whose common git directory is a registered git project's, or lies inside it, is held.
+The offer is best
 effort, so anything that stops it short is said in one line and the attach goes on.
 Separately, `project.add` takes a full path. The CLI makes `open` and `project add`
 paths full against the directory the command was typed in, and the server refuses a relative
@@ -71,6 +72,14 @@ project's root is asked: a slot shares its project's common directory, and a fol
 not a repository's project (0010). `at_home` takes paths the caller has already resolved and
 asks for common directories through a function the caller passes, so its tests answer for git.
 
+A common directory inside the project's counts as well as the project's own. A submodule checked
+out in a linked worktree keeps its git directory under the checkout's, in
+`.git/worktrees/<name>/modules/<path>`, so it shares no common directory with the project and no
+registered path holds it, and the offer asked there on every attach. It is as much the project's
+as a submodule under the root, which the next paragraph keeps quiet. A git directory inside
+another repository's is only ever a worktree's or a submodule's, so matching on `starts_with`
+takes in nothing else.
+
 The same check could go the other way and offer a submodule or a clone vendored under a git
 project, since each has a common directory of its own. It does not, and a git project still
 holds everything under its root. A submodule is checked out by its superproject and worked on
@@ -106,8 +115,8 @@ offered now.
   `domux project remove` does not stop it; registering the repositories does.
 - Every work tree of a registered git project's repository is held wherever it was made: a
   linked worktree beside the checkout, and the checkout itself when what was registered is a
-  linked worktree. A second clone of the same remote has a common directory of its own and is
-  offered.
+  linked worktree. So is a submodule checked out in any of them. A second clone of the same
+  remote has a common directory of its own and is offered.
 - Before the question, the CLI runs `git rev-parse --show-toplevel`. Only when no registered
   path holds the directory and it is in a repository does it ask for the repository's common
   directory, and then for each registered git project's root until one matches. The CLI waits

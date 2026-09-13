@@ -303,9 +303,12 @@ fn claims(projects: &[ProjectInfo], workspaces: &[WorkspaceInfo]) -> Vec<Claim> 
 /// state file written before decision record 0010 has folder records at repository roots, and
 /// those are the projects their readers are in.
 ///
-/// When no path holds `cwd`, a git project's root still holds a repository that shares its
-/// common directory: a linked worktree is its project's wherever it was made (decision record
-/// 0041). `common_dir` answers the common directory of the worktree at a path, and every
+/// When no path holds `cwd`, a git project's root still holds a repository whose common
+/// directory is its own or lies inside it: a linked worktree shares the project's, and a
+/// submodule checked out in a linked worktree keeps its own under the project's
+/// `.git/worktrees`, so both are the project's wherever they were made (decision record 0041).
+/// A git directory inside another repository's is only ever a worktree's or a submodule's.
+/// `common_dir` answers the common directory of the worktree at a path, and every
 /// answer is a git process, so it is asked only then: first about `top`, then about each git
 /// project's root until one holds.
 ///
@@ -334,7 +337,7 @@ fn at_home(
     claims
         .iter()
         .filter(|claim| claim.git && claim.root)
-        .any(|claim| common_dir(&claim.path).as_ref() == Some(&shared))
+        .any(|claim| common_dir(&claim.path).is_some_and(|root| shared.starts_with(root)))
 }
 
 /// `path` with its links resolved, or as it stands when it will not resolve.
@@ -685,6 +688,30 @@ mod tests {
         assert!(held_by(clone, clone, &[git(APP)], &mut dirs));
     }
 
+    /// A submodule checked out in a linked worktree keeps its git directory inside the
+    /// checkout's, under `.git/worktrees/<name>/modules`. No path holds it and its common
+    /// directory is not the project's, so it was asked about on every attach, although it is
+    /// as much the project's as a submodule under the root. A git directory inside another
+    /// repository's is only ever a worktree's or a submodule's.
+    #[test]
+    fn a_submodule_in_a_linked_worktree_of_a_git_project_is_at_home() {
+        let lib = "/repo/app-f2/vendor/lib";
+        let mut dirs = CommonDirs::of(&[
+            (APP, "/repo/audrey-app/.git"),
+            (
+                lib,
+                "/repo/audrey-app/.git/worktrees/app-f2/modules/vendor/lib",
+            ),
+        ]);
+        assert!(held_by(lib, lib, &[git(APP)], &mut dirs));
+        assert!(held_by(
+            "/repo/app-f2/vendor/lib/src",
+            lib,
+            &[git(APP)],
+            &mut dirs
+        ));
+    }
+
     /// A folder record at a repository's top level is what a state file written before decision
     /// record 0010 holds, and a folder record inside a repository is a folder registered before
     /// the repository around it was made. Neither has a repository below it, so both hold where
@@ -827,6 +854,51 @@ mod tests {
         assert_ne!(common_dir_of(&other), Some(common));
         assert_eq!(common_dir_of(&plain), None);
         assert!(top_level_of(&plain).is_none());
+    }
+
+    /// Against real repositories: a submodule checked out in a linked worktree answers a common
+    /// directory inside the checkout's, and the checkout's project holds it.
+    #[test]
+    fn a_submodule_in_a_linked_worktree_answers_a_common_directory_inside_the_checkouts() {
+        use domux_server::testing::{git, repo_with_origin, repo_with_origin_at};
+        let (tmp, app) = repo_with_origin("main");
+        let lib = tmp.path().join("lib").join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        repo_with_origin_at(&lib, "main");
+        // A submodule from a local path needs the file protocol, and its clone runs no hooks
+        // from the machine the test runs on.
+        let no_hooks = format!("core.hooksPath={}", tmp.path().join("no-hooks").display());
+        let submodule = |dir: &Path, args: &[&str]| {
+            let mut all = vec!["-c", "protocol.file.allow=always", "-c", &no_hooks];
+            all.extend(["submodule", "-q"]);
+            all.extend(args);
+            git(dir, &all);
+        };
+        submodule(&app, &["add", lib.to_str().unwrap(), "vendor/lib"]);
+        git(&app, &["commit", "-q", "-m", "Add lib"]);
+        let f2 = tmp.path().join("app-f2");
+        git(
+            &app,
+            &["worktree", "add", "-q", "-b", "f2", f2.to_str().unwrap()],
+        );
+        submodule(&f2, &["update", "--init"]);
+
+        let checkout = common_dir_of(&app).expect("the checkout has a common directory");
+        let inside = f2.join("vendor").join("lib").canonicalize().unwrap();
+        let top = top_level_of(&inside).expect("the submodule is a repository");
+        let its_own = common_dir_of(&top).expect("the submodule has a common directory");
+        assert!(
+            its_own.starts_with(&checkout) && its_own != checkout,
+            "{} is not inside {}",
+            its_own.display(),
+            checkout.display()
+        );
+        let project = Claim {
+            path: app.canonicalize().unwrap(),
+            git: true,
+            root: true,
+        };
+        assert!(at_home(&inside, Some(&top), &[project], common_dir_of));
     }
 
     /// A directory's name does not have to be UTF-8, and git prints a top level as the
