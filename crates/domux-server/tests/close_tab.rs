@@ -23,7 +23,7 @@ async fn two_tabs() -> Harness {
 #[tokio::test]
 async fn the_key_asks_before_it_closes_and_y_closes() {
     let mut h = two_tabs().await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "x").await;
     let f = h
         .wait_for(
@@ -53,7 +53,7 @@ async fn the_key_asks_before_it_closes_and_y_closes() {
 async fn every_other_key_keeps_the_tab() {
     for answer in ["n", "Esc", "q", "z"] {
         let mut h = two_tabs().await;
-        h.key(h.client.clone(), "C-a").await;
+        h.key(h.client.clone(), "C-s").await;
         h.key(h.client.clone(), "x").await;
         h.wait_for(
             h.client.clone(),
@@ -102,7 +102,7 @@ async fn the_question_carries_the_tabs_name() {
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "x").await;
     h.wait_for(
         h.client.clone(),
@@ -126,7 +126,7 @@ async fn a_binding_with_a_target_asks_about_that_tab() {
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "x").await;
     h.wait_for(
         h.client.clone(),

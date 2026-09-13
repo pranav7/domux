@@ -126,7 +126,7 @@ async fn the_dot_at_the_right_end_is_green_while_the_machine_is_held_awake() {
 async fn the_dot_stays_while_the_right_end_shows_something_else() {
     let mut h = macos().await;
     h.api("stay_awake.enable", json!({})).await.unwrap();
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     let f = h
         .wait_for(
             h.client.clone(),
@@ -193,7 +193,7 @@ async fn the_toast_goes_away_once_its_time_is_up() {
 #[tokio::test]
 async fn the_key_toggles_the_hold() {
     let mut h = macos().await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "A").await;
     h.wait_for(
         h.client.clone(),

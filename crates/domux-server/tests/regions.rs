@@ -1052,7 +1052,7 @@ async fn coming_back_into_the_box_never_lands_in_a_filter_field_nobody_opened() 
 /// A chorded letter is not text. Without the guard `C-b` would put a `b` in the filter, which
 /// is a key the reader pressed to do something else appearing as a search term.
 ///
-/// `C-b` and not `C-a`: `C-a` is the leader, and a chord is claimed at step 2, so it never
+/// `C-b` and not `C-s`: `C-s` is the leader, and a chord is claimed at step 2, so it never
 /// reaches the filter at all. `C-b` is bound in `[keys.bindings]`, which is only read after
 /// the leader, so it arrives here as an ordinary chorded key.
 #[tokio::test]

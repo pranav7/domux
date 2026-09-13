@@ -306,7 +306,7 @@ pub fn centred_area(width: u16, height: u16, buf: &Buffer) -> Rect {
 }
 
 /// `┌ Keys ┐`: the leader in bold blue over the modifier legend, then every `[keys.bindings]`
-/// and `[keys.global]` line as `C-a |    pane.split right`, grouped under `projects`, `agents`
+/// and `[keys.global]` line as `C-s |    pane.split right`, grouped under `projects`, `agents`
 /// and `workpanel` by what the action's own name says it touches, then every `[keys.list]`
 /// line under `in a list`, and `esc close`. Rendered from the loaded keymap, so a rebinding
 /// shows here (principle 3).

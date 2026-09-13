@@ -8,6 +8,11 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
+  `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`.
+
 ## [1.0.0] - 2026-09-11
 
 ```sh

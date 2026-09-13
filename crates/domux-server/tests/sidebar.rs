@@ -30,7 +30,7 @@ fn on_the_panes(f: &str) -> bool {
 #[tokio::test]
 async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_the_panes() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "b").await;
     let f = h
         .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
@@ -275,7 +275,7 @@ async fn the_leader_indicator_reaches_the_end_of_the_tab_row_on_the_panes() {
     h.api("sidebar.show", serde_json::json!({})).await.unwrap();
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     let f = h
         .wait_for(
             h.client.clone(),
@@ -283,10 +283,10 @@ async fn the_leader_indicator_reaches_the_end_of_the_tab_row_on_the_panes() {
             Duration::from_secs(2),
         )
         .await;
-    // 82 = "  1 │ + │" (9) + 61 spaces + "C-a  ? keys " (12)
+    // 82 = "  1 │ + │" (9) + 61 spaces + "C-s  ? keys " (12)
     assert_eq!(
         cols(row(&f, 0), 38, 119),
-        "  1 │ + │                                                           C-a  ? keys ● ",
+        "  1 │ + │                                                           C-s  ? keys ● ",
         "{f}"
     );
     assert!(
@@ -601,7 +601,7 @@ async fn the_current_tab_carries_no_background_while_an_overlay_owns_the_keys() 
     h.api("sidebar.show", serde_json::json!({})).await.unwrap();
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(

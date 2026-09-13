@@ -117,7 +117,7 @@ fn style_at(frame: &str, y: usize, x: usize) -> String {
 async fn leader_a_opens_one_box_with_a_footer_and_the_cursor_on_the_first_row() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
     two_agents(&mut h).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "a").await;
     let f = h
         .wait_for(
@@ -216,7 +216,7 @@ async fn j_and_k_move_the_cursor_and_enter_opens_the_agents_pane_and_clears_unse
     h.api("pane.focus", json!({"pane": first.to_string()}))
         .await
         .unwrap();
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "a").await;
     let f = h
         .wait_for(
@@ -721,7 +721,7 @@ async fn help_inside_the_box_lists_the_box_keys_first_after_the_help_has_been_cl
     let first_leader = f
         .lines()
         .filter(|l| l.starts_with('|'))
-        .position(|l| l.contains("C-a ") && !l.contains("leader"))
+        .position(|l| l.contains("C-s ") && !l.contains("leader"))
         .unwrap_or_else(|| panic!("no leader binding row in:\n{f}"));
     assert!(
         row_holding(&f, "in a list") < first_leader,

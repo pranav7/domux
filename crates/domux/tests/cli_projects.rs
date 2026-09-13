@@ -447,7 +447,7 @@ async fn the_clear_name_key_and_the_clear_name_subcommand_both_clear_the_name() 
         .await;
 
         if clear_it == "key" {
-            h.key(client.clone(), "C-a").await;
+            h.key(client.clone(), "C-s").await;
             h.key(client.clone(), "n").await;
         } else {
             run(domux(&h)
