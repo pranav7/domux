@@ -8,6 +8,13 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- `project.add` in the control API refuses a path that is relative, empty or starts with `~`,
+  and says what to send instead. It used to resolve such a path against the server's own
+  directory. `domux open` and `domux project add` send full paths, so only `domux api` calls and
+  key bindings that pass a path meet the refusal.
+
 ### Fixed
 
 - `domux attach` in a repository under a folder project, such as a home directory the first
