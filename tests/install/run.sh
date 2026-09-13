@@ -1096,9 +1096,20 @@ test_writes_nothing_under_home_when_the_release_command_checks_the_installer() {
   code=$?
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq "./.claude" "$(cd "$S/home" && find . -mindepth 1 | LC_ALL=C sort)" "nothing under HOME but the agent directory the test made"
-  case $(out) in
-    "$S/tmp/"*"/domux 1.0.0") ;;
+  # mktemp -d on macOS makes the directory under the per-user temp folder and not under
+  # TMPDIR, so the path is checked for what the command promises rather than for where
+  # mktemp put it: a binary in a directory mktemp named, outside HOME, that says its version.
+  installed=$(out)
+  installed=${installed% 1.0.0}
+  case $installed in
+    "$S/home/"*) fail "the release check installed under HOME: $(out)" ;;
+    */tmp.*/domux) [ -x "$installed" ] || fail "stdout names no installed binary: $(out)" ;;
     *) fail "stdout is not the installed path and version in a throwaway directory: $(out)" ;;
+  esac
+  # Only a directory mktemp named outside the sandbox is removed; the sandbox goes on exit.
+  case $installed in
+    "$S/"*) ;;
+    */tmp.*/domux) rm -rf "${installed%/domux}" ;;
   esac
   assert_contains "$(requests)" "https://raw.githubusercontent.com/pranav7/domux/main/install.sh" "the published installer"
 }
