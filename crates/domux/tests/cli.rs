@@ -2896,7 +2896,10 @@ async fn declining_quotes_a_directory_the_shell_would_split() {
 
     let (output, status) = answer_then_attach_and_detach_in_a_pty(
         attach_in(&h, &notes),
-        &[(Wants::Text("is not a project yet. Register it? [y/N]"), b"\n")],
+        &[(
+            Wants::Text("is not a project yet. Register it? [y/N]"),
+            b"\n",
+        )],
         "\u{250c} sh",
     )
     .await;
