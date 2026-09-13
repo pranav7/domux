@@ -8,6 +8,16 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-13
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+```
+
+Themes, an installer that asks for your leader and stay awake, and fixes for the hooks and for
+attach that showed up on Linux. After upgrading, run `domux server restart`: the attach protocol
+changed, so a 1.0.0 server and a 1.0.1 client refuse each other. The default leader is now `C-s`.
+
 ### Added
 
 - Themes. `[theme] name` in `domux.toml` picks the colours the chrome draws in: `domux`, the colours
@@ -26,6 +36,8 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- The attach protocol is version 4, so run `domux server restart` after upgrading: a server and a
+  client from either side of the upgrade refuse each other.
 - The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
   `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`, or pick `C-a` when the
   installer asks. Running the installer again on a machine that relied on the old default, and
@@ -38,14 +50,12 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 - The installer never replaces a leader or a stay awake mode the config file already sets, and
   it writes to the file `DOMUX_CONFIG_FILE` names when that is set. When it replaces a domux
   binary and writes to the config file, it says to run `domux config reload`.
+- At attach the client asks the terminal for its whole palette, not only its background and
+  foreground.
 - `project.add` in the control API refuses a path that is relative, empty or starts with `~`,
   and says what to send instead. It used to resolve such a path against the server's own
   directory. `domux open` and `domux project add` send full paths, so only `domux api` calls and
   key bindings that pass a path meet the refusal.
-- The attach protocol is version 4, so run `domux server restart` after upgrading: a server and a
-  client from either side of the upgrade refuse each other.
-- At attach the client asks the terminal for its whole palette, not only its background and
-  foreground.
 
 ### Fixed
 
@@ -93,5 +103,6 @@ The first release of the Rust domux. domux V1, the Go version built on tmux, is 
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/pranav7/domux/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pranav7/domux/releases/tag/v1.0.0
