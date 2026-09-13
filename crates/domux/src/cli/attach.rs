@@ -77,8 +77,8 @@ pub async fn run() -> anyhow::Result<()> {
 /// an extra. Nobody to answer is not a failure: a directory that is gone, or a reader who is
 /// not on a terminal, skips the offer and says nothing. Anything that stops the offer once
 /// there is someone to ask comes back as `Stopped`, which `run` prints as one line before it
-/// attaches: a server that will not answer `project.list`, a `project.add` it refuses, a
-/// switch that fails. A git that will not answer only means the directory is treated as a
+/// attaches: a server that will not answer `project.list`, a terminal that will not take the
+/// question, a `project.add` the server refuses, a switch that fails. A git that will not answer only means the directory is treated as a
 /// plain folder.
 async fn offer_to_register_here() -> Result<(), Stopped> {
     let Ok(cwd) = std::env::current_dir() else {
@@ -96,10 +96,11 @@ async fn offer_to_register_here() -> Result<(), Stopped> {
     let cwd = resolved(&cwd);
     let top = top_level_of(&cwd);
     let dir = top.clone().unwrap_or_else(|| cwd.clone());
-    let asking = |cause: anyhow::Error| Stopped::Asking(dir.clone(), cause);
-    let projects: Vec<ProjectInfo> = call_as("project.list", json!({})).await.map_err(asking)?;
-    let workspaces: Vec<WorkspaceInfo> =
-        call_as("workspace.list", json!({})).await.map_err(asking)?;
+    let reading = |cause: anyhow::Error| Stopped::Reading(dir.clone(), cause);
+    let projects: Vec<ProjectInfo> = call_as("project.list", json!({})).await.map_err(reading)?;
+    let workspaces: Vec<WorkspaceInfo> = call_as("workspace.list", json!({}))
+        .await
+        .map_err(reading)?;
     let claims: Vec<Claim> = claims(&projects, &workspaces)
         .into_iter()
         .map(|claim| Claim {
@@ -115,7 +116,7 @@ async fn offer_to_register_here() -> Result<(), Stopped> {
     let Some(path) = dir.to_str() else {
         return Err(not_utf8(dir));
     };
-    if !answered_yes(&question(&dir)).map_err(|e| asking(e.into()))? {
+    if !answered_yes(&question(&dir)).map_err(|e| Stopped::Asking(dir.clone(), e.into()))? {
         eprintln!("{}", declined(path));
         return Ok(());
     }
@@ -138,7 +139,10 @@ async fn offer_to_register_here() -> Result<(), Stopped> {
 /// happen, why, and the command that does it (principle 9).
 #[derive(Debug)]
 enum Stopped {
-    /// Nothing was asked: the server's records would not read, or the terminal would not.
+    /// Nothing was asked: the server would not give its projects and workspaces.
+    Reading(PathBuf, anyhow::Error),
+    /// Nothing was asked: the terminal would not take the question or give the answer, or the
+    /// path cannot be sent.
     Asking(PathBuf, anyhow::Error),
     /// The answer was yes and `project.add` failed, so nothing was registered.
     Registering(PathBuf, anyhow::Error),
@@ -149,13 +153,14 @@ enum Stopped {
 
 impl fmt::Display for Stopped {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (Stopped::Asking(dir, cause)
+        let (Stopped::Reading(dir, cause)
+        | Stopped::Asking(dir, cause)
         | Stopped::Registering(dir, cause)
         | Stopped::Switching(dir, cause)) = self;
         let shown = dir.display();
         let cause = one_line(cause);
         match self {
-            Stopped::Asking(..) => {
+            Stopped::Reading(..) | Stopped::Asking(..) => {
                 write!(f, "Could not ask whether to register {shown}: {cause}.")?
             }
             Stopped::Registering(..) => write!(f, "Could not register {shown}: {cause}.")?,
@@ -169,6 +174,9 @@ impl fmt::Display for Stopped {
         };
         let open = format!("{BIN_NAME} open {}", shell::word(path));
         match self {
+            // The cause says what to do about the server, and `open` goes through that same
+            // server, so it is not a second thing to try.
+            Stopped::Reading(..) => Ok(()),
             Stopped::Asking(..) => write!(f, " Run {open} to register it."),
             Stopped::Registering(..) => write!(f, " Run {open} to try again."),
             Stopped::Switching(..) => write!(f, " Run {open} to switch to it."),
@@ -186,14 +194,29 @@ fn not_utf8(dir: PathBuf) -> Stopped {
 }
 
 /// An error and its causes as one line with no closing stop, so it can sit inside a sentence.
+///
+/// A cause is joined to the context above it with a colon, as `{:#}` joins them, except under a
+/// context that is already whole sentences, such as the one that names `domux server status`.
+/// That context goes after its causes, so the line ends on the action it names rather than
+/// reading `status.: early eof`.
 fn one_line(error: &anyhow::Error) -> String {
-    let text = format!("{error:#}");
-    let words: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    words.join(" ").trim_end_matches('.').to_string()
+    let mut links = error.chain().rev().map(|link| {
+        let text = link.to_string();
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        lines.join(" ")
+    });
+    let root = links.next().unwrap_or_default();
+    links.fold(root.trim_end_matches('.').to_string(), |line, context| {
+        if context.ends_with('.') {
+            format!("{line}. {}", context.trim_end_matches('.'))
+        } else {
+            format!("{context}: {line}")
+        }
+    })
 }
 
 /// The question, as the state, the object and the next action (principle 9).
@@ -968,11 +991,10 @@ mod tests {
     #[test]
     fn a_failed_offer_says_what_did_not_happen_why_and_what_to_run() {
         let dir = || PathBuf::from("/home/u/my app");
-        let unanswered = anyhow::anyhow!("early eof")
-            .context("The server did not answer project.list on /s. Run domux server status.");
+        let terminal = std::io::Error::other("Input/output error");
         assert_eq!(
-            Stopped::Asking(dir(), unanswered).to_string(),
-            "Could not ask whether to register /home/u/my app: The server did not answer project.list on /s. Run domux server status.: early eof. Run domux open '/home/u/my app' to register it."
+            Stopped::Asking(dir(), terminal.into()).to_string(),
+            "Could not ask whether to register /home/u/my app: Input/output error. Run domux open '/home/u/my app' to register it."
         );
         assert_eq!(
             Stopped::Registering(
@@ -985,6 +1007,45 @@ mod tests {
         assert_eq!(
             Stopped::Switching(dir(), anyhow::anyhow!("not_found: no workspace w_0002.")).to_string(),
             "Registered /home/u/my app but could not switch to it: not_found: no workspace w_0002. Run domux open '/home/u/my app' to switch to it."
+        );
+    }
+
+    /// When the server would not give its records, the cause names what to do about the
+    /// server, and that is the one action on the line: `domux open` goes through the same
+    /// server, so naming it too would send the reader to a second command that fails the same
+    /// way.
+    #[test]
+    fn an_offer_the_server_did_not_answer_names_only_the_servers_next_action() {
+        let dir = || PathBuf::from("/home/u/my app");
+        let unanswered = anyhow::anyhow!("early eof")
+            .context("The server did not answer project.list on /s. Run domux server status.");
+        assert_eq!(
+            Stopped::Reading(dir(), unanswered).to_string(),
+            "Could not ask whether to register /home/u/my app: early eof. The server did not answer project.list on /s. Run domux server status."
+        );
+        let stopped =
+            anyhow::anyhow!("The server is not running. Start it with domux server start.");
+        assert_eq!(
+            Stopped::Reading(dir(), stopped).to_string(),
+            "Could not ask whether to register /home/u/my app: The server is not running. Start it with domux server start."
+        );
+    }
+
+    /// `{:#}` joins a context to its cause with a colon, which after a context that is already
+    /// a sentence reads `status.: early eof`. Such a context goes after its causes instead; one
+    /// that is not a sentence keeps the colon.
+    #[test]
+    fn a_cause_goes_before_a_context_that_is_already_a_sentence() {
+        let under_a_sentence = anyhow::anyhow!("early eof")
+            .context("The server did not answer x on /s. Run domux server status.");
+        assert_eq!(
+            one_line(&under_a_sentence),
+            "early eof. The server did not answer x on /s. Run domux server status"
+        );
+        let under_a_phrase = anyhow::anyhow!("Permission denied (os error 13)").context("read /s");
+        assert_eq!(
+            one_line(&under_a_phrase),
+            "read /s: Permission denied (os error 13)"
         );
     }
 

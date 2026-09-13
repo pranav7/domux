@@ -129,9 +129,11 @@ offered now.
 - A repository under a git project at an ancestor is still held. A home directory that is itself
   a git work tree, seeded as a git project, keeps every repository under it quiet. Nothing
   observed produces one yet.
-- The offer never ends the attach. A server that will not answer `project.list`, a
-  `project.add` it refuses and a switch that fails are each said in one line that names the
-  directory and the `domux open` that does it, and then the client attaches. A directory whose
+- The offer never ends the attach. A terminal that will not take the question, a `project.add`
+  the server refuses and a switch that fails are each said in one line that names the directory
+  and the `domux open` that does it, and then the client attaches. A server that will not answer
+  `project.list` is said in one line too, with the server's own next action and no
+  `domux open`, which goes through that same server. A directory whose
   path is not UTF-8 is not asked about, because a path reaches the server as a JSON string, and
   the line says so. A reader who is not on a terminal is still not asked and told nothing.
 - `project.add` with a relative path answers `invalid_params` and registers nothing. An empty
