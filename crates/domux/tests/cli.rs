@@ -7,7 +7,8 @@
 
 use domux_core::config::Config;
 use domux_core::model::agent::AgentKind;
-use domux_server::testing::Harness;
+use domux_core::model::ProjectKind;
+use domux_server::testing::{git, repo_with_origin, Harness, HarnessOptions};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -447,6 +448,18 @@ async fn answer_then_attach_and_detach_in_a_pty(
     answers: &[(&str, &str)],
     wants: &str,
 ) -> (Vec<u8>, portable_pty::ExitStatus) {
+    change_answer_then_attach_and_detach_in_a_pty(cmd, answers, || {}, wants).await
+}
+
+/// The same, with `change` run once each question shows and before its answer is typed, so a
+/// test can change the disk between what the command saw when it asked and what it meets once
+/// it is answered.
+async fn change_answer_then_attach_and_detach_in_a_pty(
+    cmd: CommandBuilder,
+    answers: &[(&str, &str)],
+    mut change: impl FnMut(),
+    wants: &str,
+) -> (Vec<u8>, portable_pty::ExitStatus) {
     let pty = native_pty_system();
     let pair = pty
         .openpty(PtySize {
@@ -474,6 +487,7 @@ async fn answer_then_attach_and_detach_in_a_pty(
     let mut output = Vec::new();
     for (question, answer) in answers {
         wait_for_text(&rx, &mut output, question).await;
+        change();
         writer.write_all(answer.as_bytes()).unwrap();
         writer.flush().unwrap();
     }
@@ -2227,9 +2241,304 @@ async fn declining_the_offer_leaves_the_directory_alone_and_still_attaches() {
         "no project was added:\n{}",
         visible(&output)
     );
+    let way_back = format!(
+        "Left unregistered. Run domux open {} to register it later.",
+        elsewhere.path().canonicalize().unwrap().display()
+    );
     assert!(
-        visible(&output).contains("Left unregistered. Run domux open . to register it later."),
+        visible(&output).contains(&way_back),
         "it names the way to do it later:\n{}",
+        visible(&output)
+    );
+}
+
+/// `attach` typed in `cwd` against this harness's socket.
+fn attach_in(h: &Harness, cwd: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_domux"));
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("TMUX");
+    cmd.cwd(cwd);
+    cmd
+}
+
+/// Detaches the harness's own client and waits for it to go, so the client an attach seats
+/// is the one a switch lands on.
+async fn detach_the_harness_client(h: &mut Harness) {
+    let client = h.client.clone();
+    h.detach(client).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !h.model().clients.is_empty() {
+        assert!(Instant::now() < deadline, "a client was still attached");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A harness whose start-up seed registered `home` as a folder project, the way a first
+/// server started in the home directory does.
+async fn harness_seeded_in(home: &Path) -> Harness {
+    let h = Harness::start_with(HarnessOptions {
+        project_root: Some(home.to_path_buf()),
+        ..HarnessOptions::new(Config::default(), 40, 10)
+    })
+    .await;
+    let m = h.model();
+    assert_eq!(m.projects.len(), 1, "the seed registered one project");
+    assert_eq!(
+        m.projects[0].root,
+        home.canonicalize().unwrap(),
+        "and it is the home directory"
+    );
+    assert!(
+        m.projects[0].kind == ProjectKind::Folder,
+        "as a folder project, because home is not a repository"
+    );
+    h
+}
+
+/// MUX-37: a folder project at the home directory swallowed every repository under it.
+///
+/// The seed registered `~` as a folder project, and the offer skipped any directory under a
+/// registered path, so `attach` typed in `~/domux` asked nothing and reconnected to the home
+/// project. The reader saw no question and no project named for the repository, and nothing
+/// on the screen said why. A folder project holds folders; a repository under one is offered.
+#[tokio::test]
+async fn attach_from_a_repository_under_a_folder_project_offers_to_register_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let repo = home.join("domux");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let mut h = harness_seeded_in(&home).await;
+    detach_the_harness_client(&mut h).await;
+
+    let canonical = repo.canonicalize().unwrap();
+    let question = format!(
+        "{} is not a project yet. Register it? [y/N]",
+        canonical.display()
+    );
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &repo),
+        &[(&question, "y\n")],
+        "domux \u{203a} main",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let m = h.model();
+    let project = m
+        .projects
+        .iter()
+        .find(|p| p.root == canonical)
+        .unwrap_or_else(|| panic!("the repository became a project:\n{}", visible(&output)));
+    assert!(
+        matches!(project.kind, ProjectKind::Git { .. }),
+        "a git project, beside the home one"
+    );
+    assert_eq!(m.projects.len(), 2, "and the home project is still there");
+}
+
+/// The other half of the rule: a plain folder under a folder project is still that project's,
+/// so nothing is asked there.
+#[tokio::test]
+async fn attach_from_a_plain_folder_under_a_folder_project_asks_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let notes = home.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let h = harness_seeded_in(&home).await;
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &notes), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// Typed in a subdirectory of a repository, the offer is about the repository. Registering
+/// the subdirectory would make a second git project out of one checkout.
+#[tokio::test]
+async fn attach_from_inside_a_repository_offers_its_top_level() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let crates = repo.join("crates");
+    std::fs::create_dir(&crates).unwrap();
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    detach_the_harness_client(&mut h).await;
+
+    let canonical = repo.canonicalize().unwrap();
+    let question = format!(
+        "{} is not a project yet. Register it? [y/N]",
+        canonical.display()
+    );
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &crates),
+        &[(&question, "y\n")],
+        "audrey-app \u{203a} main",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let roots: Vec<_> = h.model().projects.iter().map(|p| p.root.clone()).collect();
+    assert!(roots.contains(&canonical), "{roots:?}");
+    assert!(
+        !roots.contains(&crates.canonicalize().unwrap()),
+        "the subdirectory is not a project of its own: {roots:?}"
+    );
+}
+
+/// A linked worktree of a registered git project is that project's, wherever it was made.
+///
+/// `git worktree add ../app-feature` puts the worktree beside the checkout rather than under
+/// it, so no registered path holds it, and the offer asked on every attach there: decision
+/// record 0009 keeps no record of a no. It shares the project's common directory, which is
+/// what says it is the same repository (decision record 0041).
+#[tokio::test]
+async fn attach_from_a_linked_worktree_beside_a_git_project_asks_nothing() {
+    let (_tmp, repo) = repo_with_origin("main");
+    let feature = repo.parent().unwrap().join("app-feature");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            feature.to_str().unwrap(),
+        ],
+    );
+    let crates = feature.join("crates");
+    std::fs::create_dir(&crates).unwrap();
+    let h = Harness::start_with(HarnessOptions {
+        project_root: Some(repo.clone()),
+        ..HarnessOptions::new(Config::default(), 40, 10)
+    })
+    .await;
+    assert!(
+        matches!(h.model().projects[0].kind, ProjectKind::Git { .. }),
+        "the seed registered the checkout as a git project"
+    );
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &crates), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// The offer is best effort: a registration the server refuses is said in one line, and the
+/// attach the reader asked for still happens.
+///
+/// The directory is taken away between the question and the yes, so `project.add` answers
+/// `not_found`. Before, the `?` on that call ended the command with the error and no screen,
+/// for an extra the reader had not asked for.
+#[tokio::test]
+async fn attach_goes_on_when_the_server_refuses_to_register_the_directory() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let gone = tmp.path().join("gone");
+    std::fs::create_dir(&gone).unwrap();
+    let canonical = gone.canonicalize().unwrap();
+    let question = format!(
+        "{} is not a project yet. Register it? [y/N]",
+        canonical.display()
+    );
+
+    let (output, status) = change_answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &gone),
+        &[(&question, "y\n")],
+        || std::fs::remove_dir(&canonical).unwrap(),
+        "\u{250c} sh",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let said = format!(
+        "Could not register {dir}: not_found: {dir} does not exist. Run domux open {dir} to try again.",
+        dir = canonical.display()
+    );
+    assert!(
+        visible(&output).contains(&said),
+        "it says what failed and what to do:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// A path reaches the server as a JSON string, so a repository whose path is not UTF-8 cannot
+/// be registered, and the offer says so in one line instead of asking.
+///
+/// It asked before. git prints the top level as the directory's own bytes, and reading them as
+/// text turned the path into one that does not exist: the question named it, a no named a
+/// command that could not open it, and a yes was told the directory did not exist.
+#[tokio::test]
+async fn attach_from_a_repository_whose_path_is_not_utf8_says_why_it_does_not_ask() {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+    // A file system that refuses a name that is not UTF-8, as APFS does, has no such
+    // repository to attach from.
+    if std::fs::create_dir(&repo).is_err() {
+        return;
+    }
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let h = Harness::start(Config::default(), 40, 10).await;
+
+    let (output, status) =
+        answer_then_attach_and_detach_in_a_pty(attach_in(&h, &repo), &[], "\u{250c} sh").await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    assert!(
+        !visible(&output).contains("Register it?"),
+        "no question:\n{}",
+        visible(&output)
+    );
+    let said = format!(
+        "Could not ask whether to register {}: its path is not valid UTF-8, which a project's path has to be.",
+        repo.canonicalize().unwrap().display()
+    );
+    assert!(
+        visible(&output).contains(&said),
+        "it says why:\n{}",
+        visible(&output)
+    );
+    assert_eq!(h.model().projects.len(), 1, "and no project was added");
+}
+
+/// The line after a no is for pasting, so a directory a shell would split is quoted in it.
+#[tokio::test]
+async fn declining_quotes_a_directory_the_shell_would_split() {
+    let h = Harness::start(Config::default(), 40, 10).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let notes = tmp.path().join("my notes");
+    std::fs::create_dir(&notes).unwrap();
+
+    let (output, status) = answer_then_attach_and_detach_in_a_pty(
+        attach_in(&h, &notes),
+        &[("is not a project yet. Register it? [y/N]", "\n")],
+        "\u{250c} sh",
+    )
+    .await;
+
+    assert!(status.success(), "{status:?}\n{}", visible(&output));
+    let way_back = format!(
+        "Left unregistered. Run domux open '{}' to register it later.",
+        notes.canonicalize().unwrap().display()
+    );
+    assert!(
+        visible(&output).contains(&way_back),
+        "it quotes the directory:\n{}",
         visible(&output)
     );
 }

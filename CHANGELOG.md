@@ -8,6 +8,13 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- `project.add` in the control API refuses a path that is relative, empty or starts with `~`,
+  and says what to send instead. It used to resolve such a path against the server's own
+  directory. `domux open` and `domux project add` send full paths, so only `domux api` calls and
+  key bindings that pass a path meet the refusal.
+
 ### Fixed
 
 - Hooks no longer run a V1 domux left at `~/bin/domux`, which made Claude Code report
@@ -15,6 +22,13 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
   binary doing the install, and says which binary the hooks run, or the plugin for OpenCode. To
   repair the hooks, run the curl command again, or run `~/.local/bin/domux install claude --apply`
   (and `codex` or `opencode`) once this version is installed.
+- `domux attach` in a repository under a folder project, such as a home directory the first
+  server was started in, now offers to register the repository instead of saying nothing, and
+  `domux open .` registers the directory it was typed in rather than the server's. A home
+  project registered by accident is dropped with `domux project remove`.
+- `domux attach` in a worktree of a registered repository, or in a submodule checked out in
+  one, no longer asks to register it, wherever the worktree was made, and an offer that fails
+  says why in one line and attaches anyway instead of ending the command.
 
 ## [1.0.0] - 2026-09-11
 

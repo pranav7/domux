@@ -11,6 +11,7 @@
 
 use crate::agents::manifests::{HookTarget, Registry};
 use domux_core::model::agent::AgentKind;
+use domux_core::shell;
 use serde_json::{json, Map, Value};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -67,11 +68,14 @@ impl Plan {
 
 /// The command every installed hook runs: the binary's absolute path, so a hook that runs in
 /// the agent's environment finds it whatever that environment's PATH holds (M3 plan assumption
-/// 16). The kind selects both the input adapter and the SessionStart output format.
+/// 16). The kind selects both the input adapter and the SessionStart output format. A path
+/// that needs quoting is quoted and a plain one is written bare, because a person reads and
+/// edits the file it goes into; `a_binary_path_that_needs_quoting_is_quoted_for_the_shell`
+/// pins both halves.
 pub fn hook_command(bin: &Path, kind: AgentKind) -> String {
     format!(
         "{} agent report --agent {kind}",
-        shell_command_path(&bin.to_string_lossy())
+        shell::word(&bin.to_string_lossy())
     )
 }
 
@@ -91,23 +95,6 @@ pub fn hook_binary(linked: &Path, running: &Path) -> PathBuf {
     ) {
         (Ok(a), Ok(b)) if a == b => linked.to_path_buf(),
         _ => running.to_path_buf(),
-    }
-}
-
-/// A path a shell reads as one word is written bare; anything else is single quoted (V1's
-/// `shellCommandPath`, commit 34db116).
-///
-/// Deliberately not `resume::shell_quote`, which quotes every value it is given, and named
-/// apart from it so the two cannot be mistaken for one rule. They are two functions in V1 too,
-/// and the difference is load-bearing here: this path is written into `settings.json` and
-/// `hooks.json`, files a person reads and edits by hand, so a plain path stays plain and only
-/// one that would not survive the shell gains quotes.
-/// `a_binary_path_that_needs_quoting_is_quoted_for_the_shell` pins both halves.
-fn shell_command_path(path: &str) -> String {
-    if path.contains(|c: char| " \t\n'\"\\$`!*?[]{}()<>|&;".contains(c)) {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    } else {
-        path.to_string()
     }
 }
 
