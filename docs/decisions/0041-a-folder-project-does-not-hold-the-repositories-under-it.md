@@ -64,11 +64,12 @@ no way to make it stop short of registering a second git project out of one repo
 Every work tree of a repository shares one common git directory: `.git` in the checkout, which a
 linked worktree's `.git` file points back to. So the CLI asks git for the common directory of
 the repository it was typed in and of each registered git project's root, and a match is held.
-It asks with `git rev-parse --path-format=absolute --git-common-dir` at a top level, and a git
-older than 2.31, which does not know `--path-format`, is asked again without it and its relative
-answer read from that top level. Only a git project's root is asked: a slot shares its project's
-common directory, and a folder project is not a repository's project (0010). `at_home` stays a
-pure function of paths the caller has already resolved.
+It asks with `git rev-parse --path-format=absolute --git-common-dir`. A git older than 2.31 does
+not know `--path-format` and prints the flag back rather than refusing it, so it is asked again
+without the flag and its relative answer is read from the directory it was asked in. Only a git
+project's root is asked: a slot shares its project's common directory, and a folder project is
+not a repository's project (0010). `at_home` takes paths the caller has already resolved and
+asks for common directories through a function the caller passes, so its tests answer for git.
 
 The same check could go the other way and offer a submodule or a clone vendored under a git
 project, since each has a common directory of its own. It does not, and a git project still
@@ -107,11 +108,15 @@ offered now.
   linked worktree beside the checkout, and the checkout itself when what was registered is a
   linked worktree. A second clone of the same remote has a common directory of its own and is
   offered.
-- Before the question, the CLI runs `git rev-parse --show-toplevel` and asks for the common
-  directory of the repository it is in. When it is in one, it asks the same of each registered
-  git project's root, a few milliseconds each. These run in the command a person typed, not on
-  the core task. A git that will not answer treats the directory as a plain folder, and a root
-  git will not answer for matches nothing.
+- Before the question, the CLI runs `git rev-parse --show-toplevel`. Only when no registered
+  path holds the directory and it is in a repository does it ask for the repository's common
+  directory, and then for each registered git project's root until one matches. The CLI waits
+  on each git process in steps of 10 ms, so each costs about 10 ms: attach typed inside a
+  registered project costs one, and a repository no path holds costs one more for itself and
+  one for each root asked, twice that on a git older than 2.31.
+  These run in the command a person typed, not on the core task. A git that will not answer
+  treats the directory as a plain folder, and a root git will not answer for matches nothing
+  and is not asked twice.
 - A repository under a git project at an ancestor is still held. A home directory that is itself
   a git work tree, seeded as a git project, keeps every repository under it quiet. Nothing
   observed produces one yet.

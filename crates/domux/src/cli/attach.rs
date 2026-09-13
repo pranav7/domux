@@ -94,24 +94,20 @@ async fn offer_to_register_here() -> Result<(), Stopped> {
     // is `/private/tmp/x` there, and comparing them as written would offer to register a
     // directory that is already a project.
     let cwd = resolved(&cwd);
-    let repository = repository_of(&cwd);
-    let dir = repository
-        .as_ref()
-        .map_or_else(|| cwd.clone(), |r| r.top.clone());
+    let top = top_level_of(&cwd);
+    let dir = top.clone().unwrap_or_else(|| cwd.clone());
     let asking = |cause: anyhow::Error| Stopped::Asking(dir.clone(), cause);
     let projects: Vec<ProjectInfo> = call_as("project.list", json!({})).await.map_err(asking)?;
     let workspaces: Vec<WorkspaceInfo> =
         call_as("workspace.list", json!({})).await.map_err(asking)?;
-    // Only a repository can share a common directory, so outside one git is not asked.
-    let common_dir = |root: &Path| repository.as_ref().and_then(|_| common_dir_of(root));
-    let claims: Vec<Claim> = claims(&projects, &workspaces, common_dir)
+    let claims: Vec<Claim> = claims(&projects, &workspaces)
         .into_iter()
         .map(|claim| Claim {
             path: resolved(&claim.path),
             ..claim
         })
         .collect();
-    if at_home(&cwd, repository.as_ref(), &claims) {
+    if at_home(&cwd, top.as_deref(), &claims, common_dir_of) {
         return Ok(());
     }
     // Checked before the question rather than after the yes: a question whose only answer
@@ -219,51 +215,53 @@ fn declined(dir: &str) -> String {
     )
 }
 
-/// The repository a directory is in.
-#[derive(Debug)]
-struct Repository {
-    /// Its top level, which is what the offer registers.
-    top: PathBuf,
-    /// The git directory every work tree of the repository shares, when git says. A linked
-    /// worktree has a top level of its own and shares this with its checkout.
-    common_dir: Option<PathBuf>,
-}
-
-/// The repository `dir` is in, or `None` when it is in none or git will not say.
+/// The top level of the repository `dir` is in, resolved, or `None` when it is in none or git
+/// will not say.
 ///
 /// A fork, and it is allowed here because this is the command a person typed, before the
-/// attach and nowhere near the core task. `rev-parse` answers in milliseconds.
-fn repository_of(dir: &Path) -> Option<Repository> {
+/// attach and nowhere near the core task.
+fn top_level_of(dir: &Path) -> Option<PathBuf> {
     // Read as a path and not as text, so a top level whose name is not UTF-8 is still the
     // directory it names, and the offer can say it cannot be registered.
-    let top = domux_server::git::run_for_path(dir, &["rev-parse", "--show-toplevel"])
+    domux_server::git::run_for_path(dir, &["rev-parse", "--show-toplevel"])
         .ok()
         .filter(|top| !top.as_os_str().is_empty())
-        .map(|top| resolved(&top))?;
-    let common_dir = common_dir_of(&top);
-    Some(Repository { top, common_dir })
+        .map(|top| resolved(&top))
 }
 
-/// The common git directory of the work tree at `top`, resolved, or `None` when git will not
-/// say.
+/// The common directory of the worktree at `dir`, resolved, or `None` when git will not say.
 ///
-/// Asked at a top level, where a relative answer means the same thing in every git version.
-/// `--path-format=absolute` is git 2.31 and later; an older git does not know it, so anything
-/// but one full path is asked again without it, and the relative answer is read from `top`.
-fn common_dir_of(top: &Path) -> Option<PathBuf> {
-    let git = |args: &[&str]| domux_server::git::run_for_path(top, args).ok();
-    let common_dir = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .and_then(full_path_answer)
-        .or_else(|| git(&["rev-parse", "--git-common-dir"]).map(|answer| top.join(answer)))?;
-    common_dir.canonicalize().ok()
+/// The common directory is the git directory every worktree of a repository shares: `.git` in
+/// the checkout, which a linked worktree's `.git` file points back to. Asking costs one git
+/// process, or two on a git older than 2.31.
+fn common_dir_of(dir: &Path) -> Option<PathBuf> {
+    let git = |args: &[&str]| domux_server::git::run_for_path(dir, args).ok();
+    let absolute = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    common_dir_from(dir, absolute, || git(&["rev-parse", "--git-common-dir"]))?
+        .canonicalize()
+        .ok()
 }
 
-/// `answer` as a path when it is exactly one full path. An older git echoes the flag it does
-/// not know on a line of its own before its answer, and that is not one.
-fn full_path_answer(answer: PathBuf) -> Option<PathBuf> {
+/// The common directory in git's answers, asked in `dir`. `absolute` is the answer to the
+/// question with `--path-format=absolute`, or `None` when git refused it, and `again` asks
+/// without the flag.
+///
+/// `--path-format` is git 2.31 and later, and an older git does not refuse a flag it does not
+/// know: it prints the flag back on a line of its own before its answer. So anything but one
+/// full path is asked again without the flag, and a relative answer is read from `dir`, the
+/// directory git was asked in. A refusal is not asked again: it means a directory that is gone
+/// or is in no repository, and git would refuse the second question too.
+fn common_dir_from(
+    dir: &Path,
+    absolute: Option<PathBuf>,
+    again: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
-    let one_line = !answer.as_os_str().as_bytes().contains(&b'\n');
-    (answer.is_absolute() && one_line).then_some(answer)
+    let answer = absolute?;
+    if answer.is_absolute() && !answer.as_os_str().as_bytes().contains(&b'\n') {
+        return Some(answer);
+    }
+    again().map(|relative| dir.join(relative))
 }
 
 /// A path the server holds: a project's root or a workspace's path.
@@ -273,70 +271,70 @@ struct Claim {
     /// root, repositories included, so a slot, a worktree made by hand beside the slots and a
     /// submodule are all quiet. A folder project holds only the plain folders under it.
     git: bool,
-    /// The common git directory of a git project's root, when git said. A work tree that
-    /// shares it is the same repository wherever it was made. Only a root carries one: a slot
-    /// shares its project's.
-    common_dir: Option<PathBuf>,
+    /// Whether the path is its project's root. Only a git project's root is asked for its
+    /// common directory: a slot shares its project's.
+    root: bool,
 }
 
-/// Every path the server holds, each with the kind of the project it belongs to. `common_dir`
-/// is asked about each git project's root and nothing else.
-fn claims(
-    projects: &[ProjectInfo],
-    workspaces: &[WorkspaceInfo],
-    common_dir: impl Fn(&Path) -> Option<PathBuf>,
-) -> Vec<Claim> {
+/// Every path the server holds, each with the kind of the project it belongs to.
+fn claims(projects: &[ProjectInfo], workspaces: &[WorkspaceInfo]) -> Vec<Claim> {
     let is_git = |kind: &str| kind == "git";
     let roots = projects.iter().map(|p| Claim {
         path: p.root.clone(),
         git: is_git(&p.kind),
-        common_dir: if is_git(&p.kind) {
-            common_dir(&p.root)
-        } else {
-            None
-        },
+        root: true,
     });
     let paths = workspaces.iter().map(|w| Claim {
         path: w.path.clone(),
         git: projects
             .iter()
             .any(|p| p.id == w.project && is_git(&p.kind)),
-        common_dir: None,
+        root: false,
     });
     roots.chain(paths).collect()
 }
 
 /// Whether `cwd` is already somewhere the server holds, so there is nothing to offer.
 ///
-/// `repository` is the repository `cwd` is in, if it is in one. A git claim holds `cwd` when
-/// `cwd` is the claim's path or lies under it, or when the repository shares the claim's common
-/// git directory: a linked worktree is its project's wherever it was made. A folder claim holds
-/// `cwd` on the path's terms only, and there must be no repository between the two: a
-/// repository whose top level lies below the folder is a project of its own. A folder claim at
-/// the top level or inside the repository still holds: a state file written before decision
-/// record 0010 has folder records at repository roots, and those are the projects their readers
-/// are in.
+/// `top` is the top level of the repository `cwd` is in, if it is in one. A claim holds `cwd`
+/// when `cwd` is the claim's path or lies under it. A folder claim holds it only when there is
+/// no repository between the two: a repository whose top level lies below the folder is a
+/// project of its own. A folder claim at the top level or inside the repository still holds: a
+/// state file written before decision record 0010 has folder records at repository roots, and
+/// those are the projects their readers are in.
+///
+/// When no path holds `cwd`, a git project's root still holds a repository that shares its
+/// common directory: a linked worktree is its project's wherever it was made (decision record
+/// 0041). `common_dir` answers the common directory of the worktree at a path, and every
+/// answer is a git process, so it is asked only then: first about `top`, then about each git
+/// project's root until one holds.
 ///
 /// The common directory only ever adds to what is held. A submodule or a clone under a git
-/// project has a common directory of its own, and the project's root still holds it, as it did
-/// before (decision record 0041).
+/// project has a common directory of its own, and the project's root holds it by its path, as
+/// it did before.
 ///
-/// Pure: the caller resolves every path, `cwd`, the repository's and the claims', so that two
-/// spellings of one directory compare equal.
-fn at_home(cwd: &Path, repository: Option<&Repository>, claims: &[Claim]) -> bool {
-    let common_dir = repository.and_then(|r| r.common_dir.as_ref());
-    claims.iter().any(|claim| {
-        if claim.git && common_dir.is_some() && claim.common_dir.as_ref() == common_dir {
-            return true;
-        }
-        if !cwd.starts_with(&claim.path) {
-            return false;
-        }
-        match repository {
-            Some(r) if !claim.git => claim.path.starts_with(&r.top),
-            _ => true,
-        }
-    })
+/// The caller resolves every path, `cwd`, `top` and the claims', so that two spellings of one
+/// directory compare equal.
+fn at_home(
+    cwd: &Path,
+    top: Option<&Path>,
+    claims: &[Claim],
+    mut common_dir: impl FnMut(&Path) -> Option<PathBuf>,
+) -> bool {
+    let by_path = claims.iter().any(|claim| {
+        cwd.starts_with(&claim.path)
+            && (claim.git || top.is_none_or(|top| claim.path.starts_with(top)))
+    });
+    if by_path {
+        return true;
+    }
+    let Some(shared) = top.and_then(&mut common_dir) else {
+        return false;
+    };
+    claims
+        .iter()
+        .filter(|claim| claim.git && claim.root)
+        .any(|claim| common_dir(&claim.path).as_ref() == Some(&shared))
 }
 
 /// `path` with its links resolved, or as it stands when it will not resolve.
@@ -465,18 +463,19 @@ mod tests {
         assert!(!read_yes(&mut nothing).unwrap());
     }
 
+    /// A git project's root.
     fn git(path: &str) -> Claim {
         Claim {
             path: PathBuf::from(path),
             git: true,
-            common_dir: None,
+            root: true,
         }
     }
 
-    /// A git project's root, with the common git directory git answered for it.
-    fn git_sharing(path: &str, common_dir: &str) -> Claim {
+    /// A workspace of a git project, whose path is not the project's root.
+    fn slot(path: &str) -> Claim {
         Claim {
-            common_dir: Some(PathBuf::from(common_dir)),
+            root: false,
             ..git(path)
         }
     }
@@ -485,23 +484,47 @@ mod tests {
         Claim {
             path: PathBuf::from(path),
             git: false,
-            common_dir: None,
+            root: true,
         }
     }
 
-    /// A repository whose common git directory git did not say.
-    fn repo(top: &str) -> Repository {
-        Repository {
-            top: PathBuf::from(top),
-            common_dir: None,
+    /// What git answers for the common directory of each path, and every path it was asked
+    /// about, in order. A path with no answer is in no repository.
+    struct CommonDirs {
+        answers: Vec<(PathBuf, PathBuf)>,
+        asked: Vec<PathBuf>,
+    }
+
+    impl CommonDirs {
+        fn of(answers: &[(&str, &str)]) -> CommonDirs {
+            CommonDirs {
+                answers: answers
+                    .iter()
+                    .map(|(path, common)| (PathBuf::from(path), PathBuf::from(common)))
+                    .collect(),
+                asked: Vec::new(),
+            }
+        }
+
+        fn ask(&mut self, path: &Path) -> Option<PathBuf> {
+            self.asked.push(path.to_path_buf());
+            self.answers
+                .iter()
+                .find(|(answered, _)| answered == path)
+                .map(|(_, common)| common.clone())
         }
     }
 
-    fn repo_sharing(top: &str, common_dir: &str) -> Repository {
-        Repository {
-            common_dir: Some(PathBuf::from(common_dir)),
-            ..repo(top)
-        }
+    /// `at_home` for the rules that are about paths alone: git knows no common directory.
+    fn held(cwd: &str, top: Option<&str>, claims: &[Claim]) -> bool {
+        at_home(Path::new(cwd), top.map(Path::new), claims, |_| None)
+    }
+
+    /// `at_home` inside the repository at `top`, with git answering from `dirs`.
+    fn held_by(cwd: &str, top: &str, claims: &[Claim], dirs: &mut CommonDirs) -> bool {
+        at_home(Path::new(cwd), Some(Path::new(top)), claims, |path| {
+            dirs.ask(path)
+        })
     }
 
     const APP: &str = "/repo/audrey-app";
@@ -509,13 +532,9 @@ mod tests {
     #[test]
     fn a_directory_under_a_registered_path_is_already_at_home() {
         let claims = [git(APP), folder("/notes")];
-        assert!(at_home(Path::new(APP), Some(&repo(APP)), &claims));
-        assert!(at_home(
-            Path::new("/repo/audrey-app/crates/api"),
-            Some(&repo(APP)),
-            &claims
-        ));
-        assert!(at_home(Path::new("/notes"), None, &claims));
+        assert!(held(APP, Some(APP), &claims));
+        assert!(held("/repo/audrey-app/crates/api", Some(APP), &claims));
+        assert!(held("/notes", None, &claims));
     }
 
     /// MUX-37. The start-up seed registered the home directory as a folder project, and every
@@ -524,125 +543,146 @@ mod tests {
     #[test]
     fn a_repository_under_a_folder_project_is_not_at_home() {
         let claims = [folder("/home/u")];
-        let top = repo("/home/u/domux");
-        assert!(!at_home(Path::new("/home/u/domux"), Some(&top), &claims));
-        assert!(!at_home(
-            Path::new("/home/u/domux/crates"),
-            Some(&top),
-            &claims
-        ));
+        let top = Some("/home/u/domux");
+        assert!(!held("/home/u/domux", top, &claims));
+        assert!(!held("/home/u/domux/crates", top, &claims));
     }
 
     #[test]
     fn a_plain_folder_under_a_folder_project_is_still_at_home() {
         let claims = [folder("/home/u")];
-        assert!(at_home(Path::new("/home/u"), None, &claims));
-        assert!(at_home(Path::new("/home/u/notes"), None, &claims));
+        assert!(held("/home/u", None, &claims));
+        assert!(held("/home/u/notes", None, &claims));
     }
 
     /// A git project holds everything under its root, so a subdirectory, a slot and a linked
     /// worktree made by hand beside the slots are all quiet, although each of the last two is
-    /// a work tree of its own with its own top level.
+    /// a worktree with a top level of its own.
     #[test]
     fn a_directory_under_a_git_project_or_its_slot_is_still_at_home() {
-        let slot = "/repo/audrey-app/.domux/worktrees/workspace-1";
-        let claims = [git(APP), git(slot)];
-        assert!(at_home(
-            Path::new("/repo/audrey-app/crates"),
-            Some(&repo(APP)),
-            &claims
-        ));
-        assert!(at_home(Path::new(slot), Some(&repo(slot)), &claims));
+        let workspace = "/repo/audrey-app/.domux/worktrees/workspace-1";
+        let claims = [git(APP), slot(workspace)];
+        assert!(held("/repo/audrey-app/crates", Some(APP), &claims));
+        assert!(held(workspace, Some(workspace), &claims));
         let by_hand = "/repo/audrey-app/.worktrees/mux-37";
-        assert!(at_home(Path::new(by_hand), Some(&repo(by_hand)), &claims));
+        assert!(held(by_hand, Some(by_hand), &claims));
     }
 
-    /// A linked worktree made outside the project's root shares the project's common git
+    /// A linked worktree made outside the project's root shares the project's common
     /// directory, which is what makes it the same repository. No registered path holds it,
     /// and before this the offer asked about it on every attach.
     #[test]
     fn a_linked_worktree_of_a_git_project_is_at_home_wherever_it_was_made() {
         let common = "/repo/audrey-app/.git";
-        let claims = [git_sharing(APP, common)];
-        let feature = repo_sharing("/repo/app-feature", common);
-        assert!(at_home(
-            Path::new("/repo/app-feature"),
-            Some(&feature),
-            &claims
-        ));
-        assert!(at_home(
-            Path::new("/repo/app-feature/crates"),
-            Some(&feature),
-            &claims
+        let feature = "/repo/app-feature";
+        let mut dirs = CommonDirs::of(&[(APP, common), (feature, common)]);
+        assert!(held_by(feature, feature, &[git(APP)], &mut dirs));
+        assert!(held_by(
+            "/repo/app-feature/crates",
+            feature,
+            &[git(APP)],
+            &mut dirs
         ));
 
         // Under a folder project as well: the home project does not hold a repository, and
         // the git project beside the worktree does.
-        let claims = [
-            folder("/home/u"),
-            git_sharing("/home/u/app", "/home/u/app/.git"),
-        ];
-        let feature = repo_sharing("/home/u/app-feature", "/home/u/app/.git");
-        assert!(at_home(
-            Path::new("/home/u/app-feature"),
-            Some(&feature),
-            &claims
-        ));
+        let common = "/home/u/app/.git";
+        let feature = "/home/u/app-feature";
+        let mut dirs = CommonDirs::of(&[("/home/u/app", common), (feature, common)]);
+        let claims = [folder("/home/u"), git("/home/u/app")];
+        assert!(held_by(feature, feature, &claims, &mut dirs));
     }
 
     /// A second clone of the same remote is a repository of its own, with a common directory
     /// of its own, and is offered like any other.
     #[test]
     fn a_repository_with_a_common_directory_of_its_own_is_not_at_home() {
-        let claims = [
-            folder("/home/u"),
-            git_sharing("/home/u/app", "/home/u/app/.git"),
-        ];
-        let clone = repo_sharing("/home/u/app-2", "/home/u/app-2/.git");
-        assert!(!at_home(Path::new("/home/u/app-2"), Some(&clone), &claims));
+        let mut dirs = CommonDirs::of(&[
+            ("/home/u/app", "/home/u/app/.git"),
+            ("/home/u/app-2", "/home/u/app-2/.git"),
+        ]);
+        let claims = [folder("/home/u"), git("/home/u/app")];
+        assert!(!held_by(
+            "/home/u/app-2",
+            "/home/u/app-2",
+            &claims,
+            &mut dirs
+        ));
     }
 
-    /// Only a git claim matches by common directory. `claims` never gives a folder one, and a
-    /// folder record at a repository's root is not the repository's project either (decision
-    /// record 0010).
+    /// Only a git project's root is asked for its common directory. A folder record at a
+    /// repository's root is not the repository's project (decision record 0010), and a slot
+    /// shares its project's.
     #[test]
-    fn a_folder_claim_never_matches_by_common_directory() {
-        let claims = [Claim {
-            common_dir: Some(PathBuf::from("/repo/audrey-app/.git")),
-            ..folder(APP)
-        }];
-        let feature = repo_sharing("/repo/app-feature", "/repo/audrey-app/.git");
-        assert!(!at_home(
-            Path::new("/repo/app-feature"),
-            Some(&feature),
-            &claims
+    fn only_a_git_projects_root_is_asked_for_its_common_directory() {
+        let common = "/repo/audrey-app/.git";
+        let feature = "/repo/app-feature";
+        let workspace = "/repo/audrey-app-1";
+        let mut dirs = CommonDirs::of(&[(APP, common), (feature, common), (workspace, common)]);
+        let claims = [folder(APP), slot(workspace)];
+        assert!(!held_by(feature, feature, &claims, &mut dirs));
+        assert_eq!(dirs.asked, [PathBuf::from(feature)]);
+    }
+
+    /// Every common directory is a git process, and waiting on one takes about 10 ms. Most
+    /// attaches are typed inside a registered path, so git is asked nothing when a path holds
+    /// the directory or when it is in no repository, and it stops at the first root that
+    /// holds it.
+    #[test]
+    fn git_is_asked_for_common_directories_only_when_no_path_holds_the_directory() {
+        let common = "/repo/audrey-app/.git";
+        let feature = "/repo/app-feature";
+        let answers = [
+            (APP, common),
+            (feature, common),
+            ("/repo/other", "/repo/other/.git"),
+        ];
+        let claims = [git("/repo/other"), git(APP), git("/repo/third")];
+
+        let mut dirs = CommonDirs::of(&answers);
+        assert!(held_by("/repo/audrey-app/crates", APP, &claims, &mut dirs));
+        assert!(dirs.asked.is_empty(), "a path holds it: {:?}", dirs.asked);
+
+        let mut dirs = CommonDirs::of(&answers);
+        assert!(!at_home(Path::new("/notes"), None, &claims, |path| dirs.ask(path)));
+        assert!(dirs.asked.is_empty(), "no repository: {:?}", dirs.asked);
+
+        let mut dirs = CommonDirs::of(&answers);
+        assert!(held_by(feature, feature, &claims, &mut dirs));
+        assert_eq!(
+            dirs.asked,
+            [feature, "/repo/other", APP].map(PathBuf::from),
+            "and not the root after the one that holds it"
+        );
+
+        let mut dirs = CommonDirs::of(&answers);
+        assert!(!held_by(
+            "/repo/unknown",
+            "/repo/unknown",
+            &claims,
+            &mut dirs
         ));
+        assert_eq!(
+            dirs.asked,
+            [PathBuf::from("/repo/unknown")],
+            "no root, when git will not say the repository's own"
+        );
     }
 
     /// The common directory only ever adds to what is at home. A submodule and a clone under a
     /// git project each have a common directory of their own, and they stay quiet as they
-    /// were, because the project's root holds them (decision record 0041).
+    /// were, because the project's root holds them by their paths (decision record 0041).
     #[test]
     fn a_submodule_or_a_clone_under_a_git_project_is_still_at_home() {
-        let claims = [git_sharing(APP, "/repo/audrey-app/.git")];
-        let submodule = repo_sharing(
-            "/repo/audrey-app/vendor/lib",
-            "/repo/audrey-app/.git/modules/lib",
-        );
-        assert!(at_home(
-            Path::new("/repo/audrey-app/vendor/lib"),
-            Some(&submodule),
-            &claims
-        ));
-        let clone = repo_sharing(
-            "/repo/audrey-app/fixtures/other",
-            "/repo/audrey-app/fixtures/other/.git",
-        );
-        assert!(at_home(
-            Path::new("/repo/audrey-app/fixtures/other"),
-            Some(&clone),
-            &claims
-        ));
+        let submodule = "/repo/audrey-app/vendor/lib";
+        let clone = "/repo/audrey-app/fixtures/other";
+        let mut dirs = CommonDirs::of(&[
+            (APP, "/repo/audrey-app/.git"),
+            (submodule, "/repo/audrey-app/.git/modules/lib"),
+            (clone, "/repo/audrey-app/fixtures/other/.git"),
+        ]);
+        assert!(held_by(submodule, submodule, &[git(APP)], &mut dirs));
+        assert!(held_by(clone, clone, &[git(APP)], &mut dirs));
     }
 
     /// A folder record at a repository's top level is what a state file written before decision
@@ -651,14 +691,10 @@ mod tests {
     /// the reader is.
     #[test]
     fn a_folder_project_at_or_inside_the_repository_is_at_home() {
-        assert!(at_home(
-            Path::new("/repo/audrey-app/crates"),
-            Some(&repo(APP)),
-            &[folder(APP)]
-        ));
-        assert!(at_home(
-            Path::new("/repo/audrey-app/docs/notes"),
-            Some(&repo(APP)),
+        assert!(held("/repo/audrey-app/crates", Some(APP), &[folder(APP)]));
+        assert!(held(
+            "/repo/audrey-app/docs/notes",
+            Some(APP),
             &[folder("/repo/audrey-app/docs")]
         ));
     }
@@ -668,21 +704,20 @@ mod tests {
     #[test]
     fn a_directory_whose_name_merely_starts_the_same_is_not_at_home() {
         let claims = [git(APP)];
-        assert!(!at_home(Path::new("/repo/audrey-app-2"), None, &claims));
-        assert!(!at_home(Path::new("/repo"), None, &claims));
-        assert!(!at_home(Path::new("/elsewhere"), None, &claims));
+        assert!(!held("/repo/audrey-app-2", None, &claims));
+        assert!(!held("/repo", None, &claims));
+        assert!(!held("/elsewhere", None, &claims));
     }
 
     #[test]
     fn nothing_registered_means_every_directory_is_offered() {
-        assert!(!at_home(Path::new(APP), Some(&repo(APP)), &[]));
-        assert!(!at_home(Path::new("/notes"), None, &[]));
+        assert!(!held(APP, Some(APP), &[]));
+        assert!(!held("/notes", None, &[]));
     }
 
     /// A workspace is held on its project's terms, so a slot of a git project holds the
-    /// repositories under it and the `main` of a folder project does not. Only a git
-    /// project's root is asked for its common directory: a slot shares its project's, and a
-    /// folder has none that counts.
+    /// repositories under it and the `main` of a folder project does not. Only a project's
+    /// path is its root.
     #[test]
     fn a_workspace_path_takes_the_kind_of_its_project() {
         let project = |id: &str, root: &str, kind: &str| ProjectInfo {
@@ -708,50 +743,60 @@ mod tests {
             project("pr_0001", APP, "git"),
             project("pr_0002", "/home/u", "folder"),
         ];
-        let slot = "/elsewhere/audrey-app-1";
-        let workspaces = [workspace("pr_0001", slot), workspace("pr_0002", "/home/u")];
-        let asked = std::cell::RefCell::new(Vec::new());
-        let said: Vec<(PathBuf, bool, Option<PathBuf>)> = claims(&projects, &workspaces, |root| {
-            asked.borrow_mut().push(root.to_path_buf());
-            Some(root.join(".git"))
-        })
-        .into_iter()
-        .map(|c| (c.path, c.git, c.common_dir))
-        .collect();
+        let elsewhere = "/elsewhere/audrey-app-1";
+        let workspaces = [
+            workspace("pr_0001", elsewhere),
+            workspace("pr_0002", "/home/u"),
+        ];
+        let said: Vec<(PathBuf, bool, bool)> = claims(&projects, &workspaces)
+            .into_iter()
+            .map(|c| (c.path, c.git, c.root))
+            .collect();
         assert_eq!(
             said,
             [
-                (
-                    PathBuf::from(APP),
-                    true,
-                    Some(PathBuf::from("/repo/audrey-app/.git"))
-                ),
-                (PathBuf::from("/home/u"), false, None),
-                (PathBuf::from(slot), true, None),
-                (PathBuf::from("/home/u"), false, None),
+                (PathBuf::from(APP), true, true),
+                (PathBuf::from("/home/u"), false, true),
+                (PathBuf::from(elsewhere), true, false),
+                (PathBuf::from("/home/u"), false, false),
             ]
         );
-        assert_eq!(asked.into_inner(), [PathBuf::from(APP)]);
     }
 
-    /// `--path-format` arrived in git 2.31. An older git echoes a flag it does not know on a
-    /// line of its own, so anything but one full path is asked again without it.
+    /// `--path-format` arrived in git 2.31, and an older git does not refuse a flag it does
+    /// not know: it prints it back on a line of its own before its answer. So one full path is
+    /// taken as it stands, anything else is asked again without the flag and read from the
+    /// directory git was asked in, and a refusal is not asked again.
     #[test]
-    fn only_one_full_path_is_taken_as_the_common_directory() {
-        let answer = |said: &str| full_path_answer(PathBuf::from(said));
+    fn the_common_directory_is_read_from_whichever_answer_git_gave() {
+        let dir = Path::new("/repo/audrey-app/crates");
+        let path = |p: &str| Some(PathBuf::from(p));
+        let never = || -> Option<PathBuf> { panic!("git was asked again") };
         assert_eq!(
-            answer("/repo/audrey-app/.git"),
-            Some(PathBuf::from("/repo/audrey-app/.git"))
+            common_dir_from(dir, path("/repo/audrey-app/.git"), never),
+            path("/repo/audrey-app/.git")
         );
-        assert_eq!(answer("--path-format=absolute\n.git"), None);
-        assert_eq!(answer(".git"), None);
-        assert_eq!(answer(""), None);
+        assert_eq!(common_dir_from(dir, None, never), None);
+
+        let echoed = path("--path-format=absolute\n../.git");
+        assert_eq!(
+            common_dir_from(dir, echoed.clone(), || path("../.git")),
+            path("/repo/audrey-app/crates/../.git")
+        );
+        // A linked worktree's answer is a full path even without the flag.
+        assert_eq!(
+            common_dir_from(dir, echoed.clone(), || path("/repo/audrey-app/.git")),
+            path("/repo/audrey-app/.git")
+        );
+        assert_eq!(common_dir_from(dir, echoed, || None), None);
+        assert_eq!(common_dir_from(dir, path(".git"), || None), None);
     }
 
-    /// Against real repositories: the checkout and a worktree made beside it answer one common
-    /// directory, a repository of its own answers another, and a plain folder answers none.
+    /// Against real repositories: the checkout, a worktree made beside it and a subdirectory
+    /// of either answer one common directory, a repository of its own answers another, and a
+    /// plain folder answers none.
     #[test]
-    fn every_work_tree_of_one_repository_answers_the_same_common_directory() {
+    fn every_worktree_of_one_repository_answers_the_same_common_directory() {
         let (tmp, app) = domux_server::testing::repo_with_origin("main");
         let feature = tmp.path().join("app-feature");
         domux_server::testing::git(
@@ -775,12 +820,13 @@ mod tests {
         assert_eq!(common, app.join(".git").canonicalize().unwrap());
         let inside = feature.join("crates");
         std::fs::create_dir(&inside).unwrap();
-        let found = repository_of(&inside).expect("the worktree is a repository");
-        assert_eq!(found.top, feature.canonicalize().unwrap());
-        assert_eq!(found.common_dir.as_ref(), Some(&common));
+        let top = top_level_of(&inside).expect("the worktree is a repository");
+        assert_eq!(top, feature.canonicalize().unwrap());
+        assert_eq!(common_dir_of(&top).as_ref(), Some(&common));
+        assert_eq!(common_dir_of(&inside).as_ref(), Some(&common));
         assert_ne!(common_dir_of(&other), Some(common));
         assert_eq!(common_dir_of(&plain), None);
-        assert!(repository_of(&plain).is_none());
+        assert!(top_level_of(&plain).is_none());
     }
 
     /// A directory's name does not have to be UTF-8, and git prints a top level as the
@@ -800,10 +846,10 @@ mod tests {
         let inside = repo.join("src");
         std::fs::create_dir(&inside).unwrap();
 
-        let found = repository_of(&inside).expect("the directory is a repository");
-        assert_eq!(found.top, repo.canonicalize().unwrap());
+        let top = top_level_of(&inside).expect("the directory is a repository");
+        assert_eq!(top, repo.canonicalize().unwrap());
         assert_eq!(
-            found.common_dir,
+            common_dir_of(&top),
             Some(repo.join(".git").canonicalize().unwrap())
         );
     }
