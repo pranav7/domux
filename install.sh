@@ -117,9 +117,10 @@ frame() {
 
 # spin <word> <command...>: runs a command that waits on the network and answers its status. On
 # a terminal the command runs in the background while a frame turns beside the word. The first
-# frame waits 80 ms, so a request that answers at once draws nothing, and the last frame stays
-# until the step's own line replaces it, so two requests in a row read as one step. What the
-# command writes on stderr is shown only when it fails.
+# frame waits a quarter second, so a request that answers in less time than a frame can be read
+# draws nothing, and then a frame turns every 80 ms. The last frame stays until the step's own
+# line replaces it, so two requests in a row read as one step. What the command writes on
+# stderr is shown only when it fails.
 spin() {
   s_word=$1
   shift
@@ -130,8 +131,10 @@ spin() {
     "$@" </dev/null >/dev/null 2>"$tmp/spin.err" &
     SPIN_PID=$!
     printf '%s' "$HIDE" >&2
+    s_wait=0.25
     while :; do
-      sleep 0.08 2>/dev/null || sleep 1
+      sleep "$s_wait" 2>/dev/null || sleep 1
+      s_wait=0.08
       kill -0 "$SPIN_PID" 2>/dev/null || break
       frame
       printf '%s   %s%s%s  %s%s' "$CR" "$MAUVE" "$FRAME" "$OFF" "$s_word" "$EOL" >&2

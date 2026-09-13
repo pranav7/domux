@@ -996,6 +996,18 @@ test_turns_a_spinner_while_the_network_steps_run_on_a_terminal() {
   assert_contains "$(tty_text)" "domux is ready" "the steps still end"
 }
 
+test_draws_no_frame_for_a_request_that_answers_within_a_quarter_second() {
+  sandbox
+  on_a_terminal || return 0
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  FAKE_CURL_DELAY=0.1
+  run_install_tty DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
+  assert_exit 0 "$code" "exit: $(tty_text)"
+  if has_frame "$(tty_text)"; then fail "a frame for a request that answered at once: $(tty_text)"; fi
+  assert_contains "$(tty_text)" "domux is ready" "the steps still end"
+}
+
 test_prints_no_frame_for_a_step_that_does_not_wait_on_the_network() {
   sandbox
   on_a_terminal || return 0
@@ -1270,6 +1282,7 @@ run_tests \
   test_prints_no_color_when_stderr_is_not_a_terminal \
   test_prints_no_spinner_frames_when_stderr_is_not_a_terminal \
   test_turns_a_spinner_while_the_network_steps_run_on_a_terminal \
+  test_draws_no_frame_for_a_request_that_answers_within_a_quarter_second \
   test_prints_no_frame_for_a_step_that_does_not_wait_on_the_network \
   test_prints_the_same_lines_under_no_color_on_a_terminal \
   test_clears_the_spinner_when_a_download_fails_on_a_terminal \
