@@ -3,12 +3,16 @@
 //! A theme is a chain of layers that ends at the built-in `domux` theme, which is the colours
 //! domux drew before themes.
 
+pub mod answers;
 pub mod builtin;
+pub mod choice;
 pub mod color;
 pub mod file;
 pub mod role;
 pub mod value;
 
+pub use answers::{auto, Desktop, TerminalColors};
+pub use choice::ThemeChoice;
 pub use color::{contrast, luminance, mix};
 pub use file::ThemeLayer;
 pub use role::Role;
