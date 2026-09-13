@@ -16,24 +16,28 @@ pub struct CapsEnv {
     pub term_program: Option<String>,
     pub ssh_tty: Option<String>,
     pub keyboard_enhancement: bool,
-    /// Whether crossterm's keyboard probe got any answer. It asks for the flags and then for
-    /// device attributes, and gives up after 2 s when neither arrives. A terminal that did not
-    /// answer that will not answer the attach batch either, so this sets the batch's cap.
-    pub probe_answered: bool,
+    /// How long crossterm's keyboard probe took to be answered, or `None` when it got no
+    /// answer. It asks for the flags and then for device attributes, and gives up after 2 s when
+    /// neither arrives. A terminal answers the attach batch about as fast as it answered the
+    /// probe, and one that did not answer it will not answer the batch either, so this sets the
+    /// batch's cap.
+    pub probe_took: Option<Duration>,
 }
 
 impl CapsEnv {
     pub fn from_process() -> CapsEnv {
         let var = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
         // `Err` when neither the flags nor the device attributes answer came back in 2 s.
+        let asked = Instant::now();
         let probe = crossterm::terminal::supports_keyboard_enhancement();
+        let took = asked.elapsed();
         CapsEnv {
             colorterm: var("COLORTERM"),
             term: var("TERM"),
             term_program: var("TERM_PROGRAM"),
             ssh_tty: var("SSH_TTY"),
             keyboard_enhancement: probe.as_ref().is_ok_and(|supported| *supported),
-            probe_answered: probe.is_ok(),
+            probe_took: probe.is_ok().then_some(took),
         }
     }
 }
@@ -61,11 +65,11 @@ pub fn detect(env: &CapsEnv) -> Capabilities {
     }
 }
 
-/// How long attach waits for the batch's answers when the terminal answered the keyboard
-/// probe. A terminal that answers ends the wait sooner, at its device attributes answer, so
-/// the cap is only felt by one that answers slowly. An answer that arrives after the wait is
-/// read by the event stream as keys and typed into the focused pane, which is what a longer
-/// cap keeps out.
+/// How much longer than the keyboard probe took attach waits for the batch's answers. A terminal
+/// that answers ends the wait sooner, at its device attributes answer, so the cap is only felt
+/// by one that answers slowly. An answer that arrives after the wait is read by the event stream
+/// as keys and typed into the focused pane, which is what a longer cap keeps out. A terminal
+/// that took 2 s over the probe takes about that over the batch, so its cap is 3 s.
 pub const ATTACH_ANSWER_CAP: Duration = Duration::from_secs(1);
 
 /// How long attach waits when the keyboard probe got no answer: a terminal that did not answer
@@ -73,12 +77,11 @@ pub const ATTACH_ANSWER_CAP: Duration = Duration::from_secs(1);
 /// more than a short wait (principle 8).
 pub const SILENT_TERMINAL_CAP: Duration = Duration::from_millis(100);
 
-/// The cap on the attach read, from whether the keyboard probe was answered.
-pub fn attach_cap(probe_answered: bool) -> Duration {
-    if probe_answered {
-        ATTACH_ANSWER_CAP
-    } else {
-        SILENT_TERMINAL_CAP
+/// The cap on the attach read, from how long the keyboard probe took to be answered.
+pub fn attach_cap(probe_took: Option<Duration>) -> Duration {
+    match probe_took {
+        Some(took) => took + ATTACH_ANSWER_CAP,
+        None => SILENT_TERMINAL_CAP,
     }
 }
 
@@ -299,7 +302,7 @@ mod tests {
             term_program: Some("ghostty".into()),
             ssh_tty: None,
             keyboard_enhancement: true,
-            probe_answered: true,
+            probe_took: Some(Duration::from_millis(3)),
         };
         let c = detect(&env);
         assert!(c.truecolor && c.kitty_keyboard && c.hyperlinks && c.osc52);
@@ -309,7 +312,7 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: false,
-            probe_answered: false,
+            probe_took: None,
         };
         let c = detect(&plain);
         assert!(!c.truecolor && !c.kitty_keyboard && !c.hyperlinks && !c.osc52);
@@ -334,7 +337,7 @@ mod tests {
             term_program: None,
             ssh_tty: Some("/dev/pts/3".into()),
             keyboard_enhancement: false,
-            probe_answered: false,
+            probe_took: None,
         };
         for term in ["xterm-ghostty", "xterm-kitty"] {
             let c = detect(&over_ssh(term));
@@ -361,7 +364,7 @@ mod tests {
             term_program: Some(program.into()),
             ssh_tty: None,
             keyboard_enhancement: false,
-            probe_answered: false,
+            probe_took: None,
         };
         for program in ["ghostty", "WezTerm", "iTerm.app", "kitty"] {
             let c = detect(&local(program, None));
@@ -388,7 +391,7 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: false,
-            probe_answered: false,
+            probe_took: None,
         };
         assert_eq!(detect(&silent), Capabilities::default());
         assert_eq!(detect(&silent).colors, TerminalColors::default());
@@ -396,9 +399,17 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_is_a_second_when_the_keyboard_probe_was_answered_and_100_ms_when_it_was_not() {
-        assert_eq!(attach_cap(true), Duration::from_secs(1));
-        assert_eq!(attach_cap(false), Duration::from_millis(100));
+    fn the_cap_is_a_second_past_the_keyboard_probes_answer_and_100_ms_when_it_had_none() {
+        assert_eq!(
+            attach_cap(Some(Duration::from_millis(3))),
+            Duration::from_millis(1003)
+        );
+        // A terminal that took 1.9 s over the probe takes about as long over the batch.
+        assert_eq!(
+            attach_cap(Some(Duration::from_millis(1900))),
+            Duration::from_millis(2900)
+        );
+        assert_eq!(attach_cap(None), Duration::from_millis(100));
         assert_eq!(ATTACH_ANSWER_CAP, Duration::from_secs(1));
         assert_eq!(SILENT_TERMINAL_CAP, Duration::from_millis(100));
     }

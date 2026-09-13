@@ -512,7 +512,7 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     // In raw mode and before the event stream reads stdin: the answers are on stdin, and
     // whichever reader gets there first keeps them. Focus reports are already on, so the one
     // a terminal sends when they are turned on is read and dropped here.
-    let colors = caps::ask_terminal_colors(caps::attach_cap(env.probe_answered));
+    let colors = caps::ask_terminal_colors(caps::attach_cap(env.probe_took));
     let capabilities = client_capabilities(&env, colors);
     let (cols, rows) = crossterm::terminal::size()?;
     let desktop = desktop::detect(&desktop::DesktopEnv::from_process());
@@ -961,7 +961,7 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: true,
-            probe_answered: true,
+            probe_took: Some(Duration::from_millis(3)),
         };
         let fg = Rgb {
             r: 0xcd,
@@ -1013,7 +1013,7 @@ mod tests {
             term_program: None,
             ssh_tty: None,
             keyboard_enhancement: false,
-            probe_answered: false,
+            probe_took: None,
         };
         let caps = client_capabilities(&env, TerminalColors::default());
         assert_eq!(caps, Capabilities::default());

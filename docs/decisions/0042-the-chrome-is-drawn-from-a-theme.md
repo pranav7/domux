@@ -150,11 +150,15 @@ a name is a warning too, not a config error, so it never costs the reader their 
 Once, at attach, where the two colours were asked before. The client writes one batch: OSC 10, OSC 11,
 OSC 4 for slots 0 to 15, and a device attributes query that ends it. It reads the answers until the device
 attributes answer arrives or a cap passes, and the answers go in the hello, so the first frame is already
-in the right colours. The cap is 1 s, which a terminal that answers never waits for, because its device
-attributes answer ends the read; it is 100 ms, the old deadline, when crossterm's keyboard probe a moment
-before got no device attributes answer in 2 s. The longer cap is what keeps colour answers out of the
-pane: an answer that arrives after the read has ended is read by crossterm as `Alt+]` and characters and
-typed into the focused pane, and before this record that happened to any answer slower than 100 ms.
+in the right colours. The cap is 1 s past the time crossterm's keyboard probe took to be answered a moment
+before, which a terminal that answers never waits for, because its device attributes answer ends the read;
+it is 100 ms, the old deadline, when the probe got no device attributes answer in 2 s. The longer cap is
+what keeps colour answers out of the pane: an answer that arrives after the read has ended is read by
+crossterm as `Alt+]` and characters and typed into the focused pane, and before this record that happened
+to any answer slower than 100 ms. A flat 1 s was tried first, and a terminal that took 2 s over each answer
+had all eighteen colour answers typed into the pane; one that is that slow over the probe is as slow over
+the batch, so the cap follows the probe, to at most 3 s. A terminal that gives no device attributes answer
+and answers colours after 100 ms still has them typed into the pane, as it did before.
 
 After attach the client asks nothing and reads no answer. Key, mouse and paste input stay crossterm's.
 

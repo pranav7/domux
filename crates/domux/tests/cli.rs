@@ -508,6 +508,8 @@ enum Then<'a> {
     Type(&'a [u8]),
     /// Runs this, for a change outside the terminal that the client should see.
     Run(&'a dyn Fn()),
+    /// Waits this long, as a slow terminal does before it answers.
+    Wait(Duration),
 }
 
 /// Runs the client on a real pty and takes each step once what it waits for is there, then waits
@@ -554,6 +556,7 @@ async fn drive_then_detach_in_a_pty(
                 writer.flush().unwrap();
             }
             Then::Run(run) => run(),
+            Then::Wait(wait) => tokio::time::sleep(*wait).await,
         }
     }
     wait_for_text(&rx, &mut output, wants).await;
@@ -673,6 +676,49 @@ async fn attach_answers_the_colour_batch_and_draws_the_terminal_theme() {
     assert!(
         !visible(&output).contains("rgb:"),
         "a colour answer was typed into the pane:\n{}",
+        visible(&output)
+    );
+}
+
+/// A terminal that answers slowly answers the batch as slowly as it answered the keyboard
+/// probe. This one takes 1.5 s over each, longer than the one second a prompt terminal is
+/// given, and attach still waits for its answers: the chrome is drawn in Ristretto's shade and
+/// no answer is typed into the pane.
+#[tokio::test]
+async fn attach_waits_for_a_slow_terminal_as_long_as_its_keyboard_probe_took() {
+    let mut config = Config::default();
+    config.theme.name = "terminal".into();
+    let h = Harness::start(config, 40, 10).await;
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = domux_in_a_pty(home.path());
+    cmd.arg("attach");
+    cmd.env("DOMUX_SOCKET", h.socket_path());
+    cmd.env("TERM", "xterm-256color");
+    cmd.cwd(h.project_root());
+    let answers = ristretto_answers();
+    let slow = Duration::from_millis(1500);
+    let probe = Wants::Bytes(b"\x1b[?u\x1b[c");
+    let batch = Wants::Bytes(b"\x1b]4;15;?\x07\x1b[c");
+    let (output, status) = drive_then_detach_in_a_pty(
+        cmd,
+        &[
+            (&probe, Then::Wait(slow)),
+            (&probe, Then::Type(b"\x1b[?62;22c")),
+            (&batch, Then::Wait(slow)),
+            (&batch, Then::Type(&answers)),
+        ],
+        "\u{250c} sh",
+    )
+    .await;
+    assert!(status.success(), "{status:?}");
+    assert!(
+        !visible(&output).contains("rgb:"),
+        "a colour answer was typed into the pane:\n{}",
+        visible(&output)
+    );
+    assert!(
+        String::from_utf8_lossy(&output).contains("48;2;35;30;30"),
+        "the chrome was not drawn in Ristretto's shade:\n{}",
         visible(&output)
     );
 }
