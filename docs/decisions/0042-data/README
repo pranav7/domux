@@ -1,0 +1,32 @@
+The data behind decision record 0042, the chrome is drawn from a theme.
+
+The Rust fixture tests in crates/domux-core/src/theme are the reference: fixture.rs holds the
+same 22 answers, and the tests in guard.rs pin the values these files produced. The files here
+record where those values came from. Nothing in the build or the test suite reads them.
+
+omarchy-themes.json
+    The 22 themes Omarchy ships, as of 2026-09-13: each theme's background, foreground and
+    palette slots 0 to 15, which a Ghostty drawing that theme answers at attach. They were
+    rendered from /usr/share/omarchy/themes/<name>/colors.toml through Omarchy's Ghostty
+    template. Each theme also carries its mode, accent, cursor and selection colours and a few
+    figures derived from the rest.
+
+lib.py
+    The colour arithmetic the models share: WCAG contrast, OKLCH, and the loaded json.
+
+terminal_theme3.py
+    The model of the terminal theme with the guards for grounds, text tiers and colours, and
+    the hue test.
+
+terminal_theme4.py
+    The model the record's numbers came from. It extends terminal_theme3.py with the floors for
+    the kind colours, the band ends, the lines and the stay awake dot for "not held".
+
+Run it with Python 3 from any directory:
+
+    python3 docs/decisions/0042-data/terminal_theme4.py all
+        One line per theme: ok when every guard holds, and what moved.
+    python3 docs/decisions/0042-data/terminal_theme4.py five [theme ...]
+        The value and contrast of every role on the five themes the brief named.
+    python3 docs/decisions/0042-data/terminal_theme4.py summary
+        The lines, kinds and band ends moved on all 22 themes.
