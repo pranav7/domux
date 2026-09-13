@@ -1,7 +1,9 @@
 #!/bin/sh
 # Fake curl for tests/install/run.sh. Serves files from $FAKE_HTTP_DIR keyed by URL and logs
 # every URL to $FAKE_HTTP_DIR/requests.log. Understands the flags install.sh uses: -fsSL and
-# -o <file>. FAKE_CURL_FAIL is a substring: a URL containing it fails with curl's exit code 22.
+# -o <file>. FAKE_CURL_FAIL is a substring: a URL containing it fails with curl's exit code 22
+# and curl's message. FAKE_CURL_DELAY is a number of seconds every request takes; while it is
+# set, each request also writes its own process id and its parent's to $FAKE_HTTP_DIR/curl.pids.
 #   https://api.github.com/repos/<repo>/releases...          -> $FAKE_HTTP_DIR/releases.json
 #   https://github.com/<repo>/releases/download/<tag>/<file> -> $FAKE_HTTP_DIR/<tag>/<file>
 set -u
@@ -17,13 +19,23 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$url" ] || { echo "fake curl: no url" >&2; exit 2; }
 printf '%s\n' "$url" >> "$FAKE_HTTP_DIR/requests.log"
+if [ -n "${FAKE_CURL_DELAY:-}" ]; then
+  printf '%s %s\n' "$$" "$PPID" >> "$FAKE_HTTP_DIR/curl.pids"
+  # The sleep takes no output with it, so a request that is killed leaves nothing holding a
+  # terminal open.
+  sleep "$FAKE_CURL_DELAY" >/dev/null 2>&1
+fi
+not_found() {
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+}
 if [ -n "${FAKE_CURL_FAIL:-}" ]; then
-  case $url in *"$FAKE_CURL_FAIL"*) exit 22 ;; esac
+  case $url in *"$FAKE_CURL_FAIL"*) not_found ;; esac
 fi
 case $url in
   https://api.github.com/repos/*/releases*) src="$FAKE_HTTP_DIR/releases.json" ;;
   https://github.com/*/releases/download/*) src="$FAKE_HTTP_DIR/${url#*/releases/download/}" ;;
-  *) exit 22 ;;
+  *) not_found ;;
 esac
-[ -f "$src" ] || exit 22
+[ -f "$src" ] || not_found
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
