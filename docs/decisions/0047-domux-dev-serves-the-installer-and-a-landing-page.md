@@ -39,8 +39,16 @@ the installer it names change together in one pull request.
 **The page says what domux is and where to get it.** The name, the tagline, the install command
 with a copy button, the agents and platforms it works with, a link to the repository and a
 screenshot. The background is the logo's glyph repeated at a quarter of the accent, with one
-glyph lit, in the Catppuccin Mocha ground and mauve the built-in theme draws. The text is
+glyph lit, in the Catppuccin Mocha ground and mauve the built-in theme draws. The name is the
+block logo the installer prints, drawn as an SVG with each half of a cell as one square, so it
+matches the terminal without depending on how a font draws block characters. The text is
 JetBrains Mono from Google Fonts, falling back to the system's monospace font.
+
+**The star count is read in the reader's browser.** The link to the repository shows the count
+from GitHub's API, fetched on each visit. A count written into the page at deploy time would be
+out of date until the next push. GitHub allows each address 60 unauthenticated requests an hour,
+which one reader never reaches by opening a page, and a request that fails shows no count
+rather than a wrong one.
 
 **No CNAME file.** A site deployed by a workflow takes its custom domain from the repository's
 Pages settings and ignores a CNAME file.
