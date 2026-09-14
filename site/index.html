@@ -3,15 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>domux</title>
-<meta name="description" content="terminal runtime for working with multiple coding agents">
+<title>domux: terminal multiplexer for Claude Code, Codex and OpenCode</title>
+<meta name="description" content="Open-source terminal multiplexer that runs Claude Code, Codex and OpenCode in parallel on macOS and Linux, a git worktree each, with tmux keys.">
 <meta name="theme-color" content="#1e1e2e">
 <meta name="color-scheme" content="dark">
-<meta property="og:title" content="domux">
-<meta property="og:description" content="terminal runtime for working with multiple coding agents">
+<link rel="canonical" href="https://domux.dev/">
+<meta property="og:site_name" content="domux">
+<meta property="og:title" content="domux: terminal multiplexer for Claude Code, Codex and OpenCode">
+<meta property="og:description" content="Run Claude Code, Codex and OpenCode in parallel, see which agent is waiting on you, and keep them all running after you close the lid.">
 <meta property="og:url" content="https://domux.dev/">
 <meta property="og:type" content="website">
+<meta property="og:image" content="https://domux.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Run Claude Code, Codex and OpenCode in parallel, over a screenshot of domux">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<!-- Every fact here is also on the page as text, which is what an assistant that fetches the page
+     reads. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "domux",
+  "description": "domux is an open-source terminal multiplexer for AI coding agents. It runs Claude Code, Codex and OpenCode in parallel, each in its own git worktree, shows which agent is waiting on you, and keeps them running after you close the lid.",
+  "url": "https://domux.dev/",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "downloadUrl": "https://domux.dev/install.sh",
+  "image": "https://domux.dev/og.png",
+  "screenshot": "https://domux.dev/screenshot.webp",
+  "sameAs": ["https://github.com/pranav7/domux"]
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
@@ -171,7 +197,8 @@
 
   h1 {
     margin: 0;
-    max-width: 22ch;
+    /* Narrow enough that no line of the heading reaches the glyphs beside it. */
+    max-width: 19ch;
     font-size: clamp(2.125rem, 1rem + 4.6vw, 3.75rem);
     font-weight: 700;
     line-height: 1.05;
@@ -252,6 +279,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.625rem;
+    max-width: 100%;
     margin-top: 1.75rem;
     padding: 0.375rem 0.875rem 0.375rem 0.375rem;
     border: 1.5px solid var(--line);
@@ -266,6 +294,7 @@
   }
 
   .version {
+    flex: none;
     padding: 0.0625rem 0.5rem;
     background: var(--accent-wash);
     color: var(--accent);
@@ -274,9 +303,58 @@
 
   .version:empty { display: none; }
 
+  .summary { min-width: 0; }
+
+  .arrow { flex: none; }
+
   .shot {
     margin-block: 4.5rem 0;
-    padding-bottom: 6rem;
+  }
+
+  .why {
+    padding-block: 6rem;
+  }
+
+  h2 {
+    margin: 0 0 2rem;
+    font-size: clamp(1.5rem, 1rem + 1.6vw, 2rem);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+  }
+
+  .points {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    gap: 1.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .points li {
+    padding: 1.25rem 1.375rem;
+    border: 1.5px solid var(--line);
+    background: var(--box);
+  }
+
+  h3 {
+    margin: 0 0 0.625rem;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  .points p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+  }
+
+  .points code {
+    font: inherit;
+    color: var(--accent);
   }
 
   .frame {
@@ -358,7 +436,11 @@
 
     .install code { font-size: 0.8125rem; }
 
-    .shot { margin-top: 3.5rem; padding-bottom: 4rem; }
+    .shot { margin-top: 3.5rem; }
+
+    .why { padding-block: 4rem; }
+
+    .points li { padding: 1rem 1.125rem; }
   }
 </style>
 </head>
@@ -397,10 +479,10 @@
   </div>
 
   <section class="hero column">
-    <h1>Terminal runtime for multiple coding <span class="focused">agents</span></h1>
-    <p class="lede">domux runs Claude Code, Codex and OpenCode side by side, shows you which agent is
-      waiting on you, and keeps every pane running after you detach. Built on Ghostty, with your tmux
-      keys, for macOS and Linux.</p>
+    <h1>Run Claude Code, Codex and OpenCode in <span class="focused">parallel</span></h1>
+    <p class="lede">domux is an open-source terminal multiplexer for AI coding agents. Put each agent
+      in its own git worktree, see which one is waiting on you, and keep them all running after you
+      close the lid. Built on Ghostty, with your tmux keys, for macOS and Linux.</p>
 
     <div class="install">
       <code><span class="prompt">$ </span><span id="command">curl -fsSL https://domux.dev/install.sh | sh</span></code>
@@ -413,7 +495,8 @@
 
     <a class="release" href="https://github.com/pranav7/domux/releases/latest">
       <span class="version" id="version"></span>
-      Read the release notes
+      <span class="summary" id="summary">Read the release notes</span>
+      <span class="arrow" aria-hidden="true">→</span>
     </a>
   </section>
 
@@ -427,6 +510,45 @@
         alt="domux with the Navigator on the left, Claude Code in the focused pane and a shell beside it">
     </div>
   </figure>
+
+  <section class="why column" aria-labelledby="why">
+    <h2 id="why">Why domux</h2>
+    <ul class="points">
+      <li>
+        <h3>Agents in parallel, a worktree each</h3>
+        <p>A project is a git repository and each workspace is a long running git worktree in it, so
+          agents working side by side never share a checkout.</p>
+      </li>
+      <li>
+        <h3>See which agent is waiting on you</h3>
+        <p>The Navigator lists every project, workspace and agent with what it is doing, as the
+          agent's own hooks report it. A red dot marks the one that needs you, and
+          <code>leader a</code> lists agents by who needs you first.</p>
+      </li>
+      <li>
+        <h3>Close the lid, keep the work</h3>
+        <p>A background server holds every pane, so detaching or closing the terminal stops
+          nothing. Turn on stay awake and the machine stays up while domux runs, lid closed
+          included.</p>
+      </li>
+      <li>
+        <h3>Your tmux keys, on Ghostty</h3>
+        <p>Panes run on Ghostty's terminal library, not on tmux. Splits, tabs, zoom and scrollback
+          answer the tmux keys you already know, behind the leader you pick at install.</p>
+      </li>
+      <li>
+        <h3>Recaps and session names</h3>
+        <p>A Claude Code agent row shows the session name and the latest recap the agent wrote.
+          <code>domux peek</code> prints every agent with its place, state and recap from any
+          shell.</p>
+      </li>
+      <li>
+        <h3>Hooks set up for you</h3>
+        <p>The installer finds Claude Code, Codex and OpenCode and sets up the hooks each one reports
+          through. Run the same command again to upgrade.</p>
+      </li>
+    </ul>
+  </section>
 </main>
 
 <script>
@@ -454,7 +576,7 @@
     }, 2000);
   });
 
-  // The star count and the latest version, read on every visit. GitHub allows each address 60
+  // The star count and the latest release, read on every visit. GitHub allows each address 60
   // unauthenticated requests an hour; when a request fails the page shows no count and no version
   // rather than a stale or made up one.
   const github = (path) =>
@@ -470,9 +592,22 @@
     })
     .catch(() => {});
 
+  // A release's notes open with a one-line summary, as CHANGELOG.md asks. Notes that open with
+  // anything else, such as a code block, a heading or a wrapped paragraph, keep the link's own
+  // words.
+  const summaryOf = (body) => {
+    const lines = (typeof body === "string" ? body : "").split(/\r?\n/).map((line) => line.trim());
+    const at = lines.findIndex(Boolean);
+    if (at < 0 || lines[at + 1] || /^(```|#|[-*>|<[])/.test(lines[at])) return "";
+    return lines[at].replaceAll("`", "");
+  };
+
   github("/releases/latest")
-    .then(({ tag_name: tag }) => {
-      if (typeof tag === "string") document.getElementById("version").textContent = tag;
+    .then(({ tag_name: tag, body }) => {
+      if (typeof tag !== "string") return;
+      document.getElementById("version").textContent = tag;
+      const summary = summaryOf(body);
+      if (summary) document.getElementById("summary").textContent = summary;
     })
     .catch(() => {});
 </script>
