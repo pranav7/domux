@@ -36,19 +36,30 @@ its `install.sh` in the main repository and serves the script from its domain, w
 here. `site/` is one HTML file, a favicon and a screenshot, with no build step, and the page and
 the installer it names change together in one pull request.
 
-**The page says what domux is and where to get it.** The name, the tagline, the install command
-with a copy button, the agents and platforms it works with, a link to the repository and a
-screenshot. The background is the logo's glyph repeated at an eighth of the accent, with one
-glyph lit, in the Catppuccin Mocha ground and mauve the built-in theme draws. The name is the
-block logo the installer prints, drawn as an SVG with each half of a cell as one square, so it
-matches the terminal without depending on how a font draws block characters. The text is
-JetBrains Mono from Google Fonts, falling back to the system's monospace font.
+**The page says what domux is and where to get it.** A top row with the name, a link to the
+changelog and a link to the repository with its star count; a heading and a paragraph that name
+the agents and platforms domux works with; the install command with a copy button; the latest
+version, linked to its release notes; and a screenshot. The layout follows hunk.dev's first
+screen: a left-aligned heading in a large bold monospace face, boxes with square corners and a
+hard offset shadow, and the screenshot inside a window frame. The colours are the Catppuccin
+Mocha ground and mauve the built-in theme draws, and two things on the page are drawn the way
+domux draws them: the last word of the heading is a focused tab, the accent as its ground, and
+the install command sits in a focused box, the accent as its border. The shadows are the accent
+at 30 percent.
 
-**The star count is read in the reader's browser.** The link to the repository shows the count
-from GitHub's API, fetched on each visit. A count written into the page at deploy time would be
-out of date until the next push. GitHub allows each address 60 unauthenticated requests an hour,
-which one reader never reaches by opening a page, and a request that fails shows no count
-rather than a wrong one.
+The logo's glyph is repeated at an eighth of the accent, with one glyph lit, and the pattern
+shows only around the lit glyph, so no text sits on it. The lit glyph is beside the heading on a
+screen wider than 64rem and above it on a narrower one. The name is the block logo the installer
+prints, drawn as an SVG with each half of a cell as one square, so it matches the terminal
+without depending on how a font draws block characters. The text is JetBrains Mono from Google
+Fonts, falling back to the system's monospace font.
+
+**The star count and the version are read in the reader's browser.** The link to the repository
+shows the count and the release link shows the latest release's tag, both from GitHub's API and
+fetched on each visit. A value written into the page at deploy time would be out of date until
+the next push, and a release does not deploy the page. GitHub allows each address 60
+unauthenticated requests an hour, which one reader opening the page twice a visit never reaches,
+and a request that fails shows no count or version rather than a wrong one.
 
 **No CNAME file.** A site deployed by a workflow takes its custom domain from the repository's
 Pages settings and ignores a CNAME file.
