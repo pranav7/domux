@@ -395,7 +395,7 @@ fn line_one(
     let room = width.saturating_sub(lead + activity_width);
     let mut spans = vec![Span::styled(
         truncate_with_ellipsis(&label, room),
-        label_style(theme, a),
+        label_style(theme, a, form),
     )];
     if !activity.is_empty() {
         spans.push(Span::raw(GAP));
@@ -404,12 +404,16 @@ fn line_one(
     spans
 }
 
-/// The name in `text` bold, a kind standing in for one in the agent's colour, and both in
+/// The name in `text` bold, a kind standing in for one in the agent's colour, and both
 /// `faint_text` on an unknown row (interface spec 6.2).
-fn label_style(theme: &Theme, a: &AgentEntry) -> Style {
+///
+/// The Navigator's plain `Nested` row is the exception: it has no second line to say the kind
+/// on the way `line_two` and the switcher's tail do, so there a name keeps the kind's colour
+/// too, and a rename never erases which kind is running (MUX-42).
+fn label_style(theme: &Theme, a: &AgentEntry, form: RowForm) -> Style {
     match a.state {
         AgentState::Unknown => Style::default().fg(color(theme, Role::FaintText)),
-        _ if a.name.is_some() => Style::default()
+        _ if a.name.is_some() && form != RowForm::Nested => Style::default()
             .fg(color(theme, Role::Text))
             .add_modifier(Modifier::BOLD),
         _ => Style::default()
@@ -742,7 +746,7 @@ mod tests {
         assert_eq!(
             name.style.fg,
             Some(Color::Rgb(0xcd, 0xd6, 0xf4)),
-            "a name reads in text"
+            "a name reads in text; the overlay says the kind on line 2 instead (MUX-42)"
         );
         assert!(name.style.add_modifier.contains(Modifier::BOLD), "and bold");
         let two = &rows[0].lines[1].spans;
@@ -760,6 +764,26 @@ mod tests {
             two[2].style.fg,
             Some(Color::Rgb(0x7f, 0x84, 0x9c)),
             "the place in the agents overlay"
+        );
+    }
+
+    /// MUX-42: the default Navigator sidebar row (`RowForm::Nested`) has no second line and no
+    /// tail, so it was the one surface with nothing left once a renamed agent went idle: no
+    /// glyph, no colour, nothing to say which kind it was.
+    #[test]
+    fn a_renamed_idle_agent_keeps_its_kind_colour_in_the_nested_row() {
+        let v = view(vec![entry(
+            AgentState::Idle,
+            Some("auth-cleanup"),
+            AgentKind::Codex,
+        )]);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 72);
+        let label = &row.lines[0].spans[1];
+        assert_eq!(label.content, "auth-cleanup");
+        assert_eq!(
+            label.style.fg,
+            Some(Color::Rgb(0x89, 0xb4, 0xfa)),
+            "the kind's colour survives the rename, even idle in the default Navigator row"
         );
     }
 
