@@ -2,7 +2,8 @@
 
 Date: 2026-09-11
 Status: accepted; amended by 0043, which adds the leader and stay awake questions and brings the
-spinner back for the steps that wait on the network
+spinner back for the steps that wait on the network, and by 0047, which serves `install.sh` from
+domux.dev
 
 ## Context
 

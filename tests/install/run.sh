@@ -1111,7 +1111,16 @@ test_writes_nothing_under_home_when_the_release_command_checks_the_installer() {
     "$S/"*) ;;
     */tmp.*/domux) rm -rf "${installed%/domux}" ;;
   esac
-  assert_contains "$(requests)" "https://raw.githubusercontent.com/pranav7/domux/main/install.sh" "the published installer"
+  assert_contains "$(requests)" "https://domux.dev/install.sh" "the published installer"
+}
+
+# Every place a reader copies the install command from names the URL pages.yml publishes, and
+# none still names the raw GitHub URL it replaced.
+test_names_domux_dev_wherever_the_install_command_is_given() {
+  for file in README.md site/index.html install.sh .claude/commands/release.md; do
+    assert_contains "$(cat "$ROOT/$file")" "curl -fsSL https://domux.dev/install.sh | sh" "$file"
+    assert_not_contains "$(cat "$ROOT/$file")" "raw.githubusercontent.com" "$file"
+  done
 }
 
 test_prints_no_color_when_stderr_is_not_a_terminal() {
@@ -1515,6 +1524,7 @@ run_tests \
   test_says_how_to_set_up_stay_awake_later_on_linux_without_a_terminal \
   test_writes_only_the_data_line_to_stdout \
   test_writes_nothing_under_home_when_the_release_command_checks_the_installer \
+  test_names_domux_dev_wherever_the_install_command_is_given \
   test_prints_no_color_when_stderr_is_not_a_terminal \
   test_prints_no_spinner_frames_when_stderr_is_not_a_terminal \
   test_turns_a_spinner_while_the_network_steps_run_on_a_terminal \

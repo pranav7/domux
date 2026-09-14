@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>domux</title>
+<meta name="description" content="terminal runtime for working with multiple coding agents">
+<meta name="theme-color" content="#1e1e2e">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="domux">
+<meta property="og:description" content="terminal runtime for working with multiple coding agents">
+<meta property="og:url" content="https://domux.dev/">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+  :root {
+    --ground: #1e1e2e;
+    --box: #181825;
+    --line: #45475a;
+    --frame: #313244;
+    --text: #cdd6f4;
+    --muted: #a6adc8;
+    --accent: #cba6f7;
+    --accent-hover: #d9bffa;
+    /* One tile of the field: a glyph 3 cells wide and 4 tall, with 0.7 of a cell around it. */
+    --tile-w: 74px;
+    --tile-h: 94px;
+    --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 74 94'%3E%3Cpath fill='%23cba6f7' fill-opacity='.25' d='M7 7h20v20H7zM47 7h20v20H47zM27 27h20v20H27zM7 47h20v40H7zM47 47h20v40H47z'/%3E%3C/svg%3E");
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { background: var(--ground); }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font: 400 1rem/1.5 "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .field {
+    position: relative;
+    height: calc(var(--tile-h) * 4);
+  }
+
+  .field::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--glyph) 50% 0 / var(--tile-w) var(--tile-h) repeat;
+    -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent);
+    mask-image: linear-gradient(to bottom, #000 40%, transparent);
+  }
+
+  /* The one lit glyph sits on the tile at the centre of the second row, over its own ground so
+     the dim glyph under it does not show at the edges. */
+  .lit {
+    position: absolute;
+    top: var(--tile-h);
+    left: calc(50% - var(--tile-w) / 2);
+    width: var(--tile-w);
+    height: var(--tile-h);
+  }
+
+  .intro {
+    margin-top: calc(var(--tile-h) * -0.5);
+    padding-inline: 20px;
+    position: relative;
+    text-align: center;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 3.75rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.04em;
+  }
+
+  .tagline {
+    margin: 0.5rem auto 0;
+    max-width: 60ch;
+    color: var(--muted);
+    font-size: 1.3125rem;
+    line-height: 1.45;
+  }
+
+  .install {
+    display: flex;
+    margin: 2.5rem auto 0;
+    max-width: 36rem;
+    border: 1px solid var(--line);
+    background: var(--box);
+    text-align: left;
+  }
+
+  .install code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 0.875rem 1rem;
+    font: inherit;
+    font-size: 0.9375rem;
+    white-space: nowrap;
+  }
+
+  .prompt {
+    color: var(--accent);
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .copy {
+    flex: none;
+    padding: 0 1rem;
+    border: 0;
+    border-left: 1px solid var(--line);
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.875rem;
+    cursor: pointer;
+  }
+
+  .copy:hover { color: var(--text); }
+
+  .platforms {
+    margin: 0.875rem 0 0;
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+
+  .github {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-top: 2rem;
+    padding: 0.75rem 1.25rem;
+    background: var(--accent);
+    color: var(--ground);
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .github:hover { background: var(--accent-hover); }
+
+  .github svg { width: 1.125rem; height: 1.125rem; }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  .shot {
+    margin: 6rem auto 0;
+    padding: 0 20px 6rem;
+    max-width: 72rem;
+  }
+
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--frame);
+  }
+
+  @media (max-width: 40rem) {
+    :root {
+      --tile-w: 51.8px;
+      --tile-h: 65.8px;
+    }
+
+    h1 { font-size: 2.75rem; }
+
+    .tagline { font-size: 1.125rem; }
+
+    .install code { font-size: 0.8125rem; }
+
+    .shot { margin-top: 4rem; padding-bottom: 4rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="field" aria-hidden="true">
+    <svg class="lit" viewBox="0 0 74 94">
+      <rect width="74" height="94" fill="#1e1e2e"/>
+      <path fill="#cba6f7" fill-opacity=".75" d="M7 7h20v20H7zM47 7h20v20H47zM27 27h20v20H27zM7 47h20v40H7zM47 47h20v40H47z"/>
+    </svg>
+  </div>
+
+  <section class="intro">
+    <h1>domux</h1>
+    <p class="tagline">terminal runtime for working with multiple coding agents</p>
+
+    <div class="install">
+      <code><span class="prompt">$ </span><span id="command">curl -fsSL https://domux.dev/install.sh | sh</span></code>
+      <button type="button" class="copy" aria-live="polite">Copy</button>
+    </div>
+    <p class="platforms">For Claude Code, Codex and OpenCode, on macOS and Linux.</p>
+
+    <a class="github" href="https://github.com/pranav7/domux">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      View on GitHub
+    </a>
+  </section>
+
+  <figure class="shot">
+    <img src="screenshot.webp" width="2200" height="1431" loading="lazy"
+      alt="domux with the Navigator on the left, Claude Code in the focused pane and a shell beside it">
+  </figure>
+</main>
+
+<script>
+  const copy = document.querySelector(".copy");
+  const command = document.getElementById("command");
+  let reset;
+
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(command.textContent);
+      copy.textContent = "Copied";
+    } catch {
+      // Without clipboard access, select the command so the reader can copy it themselves.
+      const range = document.createRange();
+      range.selectNodeContents(command);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    }
+    clearTimeout(reset);
+    reset = setTimeout(() => { copy.textContent = "Copy"; }, 2000);
+  });
+</script>
+</body>
+</html>

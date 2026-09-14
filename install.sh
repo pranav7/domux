@@ -3,7 +3,7 @@
 # installs the domux binary and the agent hooks, and asks for the leader and for stay awake. No
 # shell startup file is edited.
 #
-#   curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+#   curl -fsSL https://domux.dev/install.sh | sh
 #
 # Environment:
 #   DOMUX_VERSION      release tag to install, for example v1.0.0; default: the newest release
