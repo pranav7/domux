@@ -8,7 +8,9 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [1.0.1] - 2026-09-13
+## [0.1.1] - 2026-09-13
+
+Themes, a leader you pick, Linux fixes
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
@@ -16,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
 
 Themes, an installer that asks for your leader and stay awake, and fixes for the hooks and for
 attach that showed up on Linux. After upgrading, run `domux server restart`: the attach protocol
-changed, so a 1.0.0 server and a 1.0.1 client refuse each other. The default leader is now `C-s`.
+changed, so a 0.1.0 server and a 0.1.1 client refuse each other. The default leader is now `C-s`.
 
 ### Added
 
@@ -72,14 +74,16 @@ changed, so a 1.0.0 server and a 1.0.1 client refuse each other. The default lea
   one, no longer asks to register it, wherever the worktree was made, and an offer that fails
   says why in one line and attaches anyway instead of ending the command.
 
-## [1.0.0] - 2026-09-11
+## [0.1.0] - 2026-09-11
+
+First release: panes, the Navigator, agent records
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
 ```
 
-The first release of the Rust domux. domux V1, the Go version built on tmux, is the v0.x tags;
-`domux import v1` reads what it saved.
+The first release of the Rust domux. domux V1, the Go version built on tmux, lives on the `v1`
+branch; `domux import v1` reads what it saved.
 
 ### Added
 
@@ -103,6 +107,6 @@ The first release of the Rust domux. domux V1, the Go version built on tmux, is 
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.1...HEAD
-[1.0.1]: https://github.com/pranav7/domux/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/pranav7/domux/releases/tag/v1.0.0
+[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pranav7/domux/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/pranav7/domux/releases/tag/v0.1.0
