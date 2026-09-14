@@ -1,4 +1,4 @@
-# 0048: A compacting row draws an arrow that breathes
+# 0050: A compacting row draws an arrow that breathes
 
 **Date:** 2026-09-14
 **Status:** Accepted. Amends decision record 0038, under which a compacting row in the sidebar

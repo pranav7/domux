@@ -6069,9 +6069,9 @@ mod tests {
     }
 
     /// A compacting agent animates too: its arrow breathes on the same tick the star turns on,
-    /// because compacting is something happening (decision record 0048). It carries no working word, which is the other half of the same
-    /// rule (a word is shown for `working` and for nothing else), and the two are asserted
-    /// together so neither is mistaken for the other.
+    /// because compacting is something happening (decision record 0050). It carries no working
+    /// word, which is the other half of the same rule (a word is shown for `working` and for
+    /// nothing else), and the two are asserted together so neither is mistaken for the other.
     #[test]
     fn a_compacting_agent_keeps_the_tick_counting_and_carries_no_word() {
         let dir = tempfile::tempdir().unwrap();

@@ -1009,7 +1009,7 @@ mod tests {
     /// The two sidebar forms draw a working or compacting row's glyph without its word, so
     /// the row stays short where the box is narrow; the overlays keep the word (decision
     /// record 0038). The glyph is the same in every form: the star's frame while working, the
-    /// arrow while compacting (decision record 0048).
+    /// arrow while compacting (decision record 0050).
     #[test]
     fn the_sidebar_forms_draw_the_glyph_alone_and_the_overlays_keep_the_word() {
         for (state, glyph, word) in [
