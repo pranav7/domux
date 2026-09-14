@@ -56,7 +56,8 @@ Pages settings and ignores a CNAME file.
 ## Consequences
 
 - Pages has to be turned on with GitHub Actions as its source before the deploy job can run, and
-  the custom domain is set there after the first deploy. Neither is in the repository.
+  the custom domain is set there before the DNS records point at GitHub, the order GitHub's
+  documentation gives. Neither is in the repository.
 - The domain is verified on the author's GitHub account, so no other account can point a Pages
   site at it.
 - `tests/install/run.sh` checks that the README, the page, the installer's header and the release
