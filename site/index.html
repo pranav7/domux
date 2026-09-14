@@ -20,16 +20,24 @@
     --ground: #1e1e2e;
     --box: #181825;
     --line: #45475a;
-    --frame: #313244;
+    --edge: #6c7086;
     --text: #cdd6f4;
     --muted: #a6adc8;
     --accent: #cba6f7;
     --accent-hover: #d9bffa;
+    --accent-wash: rgb(203 166 247 / 0.14);
+    --accent-shadow: rgb(203 166 247 / 0.3);
+    --column: 64rem;
+    --gutter: 20px;
     /* One tile of the field: a glyph 3 cells wide and 4 tall, with 0.7 of a cell around it. */
     --tile-w: 74px;
     --tile-h: 94px;
     /* One square of the wordmark: half of a terminal cell. */
-    --pixel: 14px;
+    --pixel: 6px;
+    /* The lit glyph's tile, counted from the tile at the centre of the first row. */
+    --lit-col: 5;
+    --lit-row: 1;
+    --lit-reach: 4.5;
     --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 74 94'%3E%3Cpath fill='%23cba6f7' fill-opacity='.125' d='M7 7h20v20H7zM47 7h20v20H47zM27 27h20v20H27zM7 47h20v40H7zM47 47h20v40H47z'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
@@ -46,9 +54,30 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  .field {
+  a { color: inherit; }
+
+  main {
     position: relative;
-    height: calc(var(--tile-h) * 4);
+    isolation: isolate;
+  }
+
+  .column {
+    margin-inline: auto;
+    padding-inline: var(--gutter);
+    max-width: calc(var(--column) + 2 * var(--gutter));
+  }
+
+  /* The field shows only around the lit glyph, beside the heading, so the text sits on the plain
+     ground. */
+  .field {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: -1;
+    height: calc(var(--tile-h) * 6);
+    overflow: hidden;
+    pointer-events: none;
+    --lit-x: calc(50% + var(--lit-col) * var(--tile-w));
+    --lit-y: calc((var(--lit-row) + 0.5) * var(--tile-h));
   }
 
   .field::before {
@@ -56,61 +85,134 @@
     position: absolute;
     inset: 0;
     background: var(--glyph) 50% 0 / var(--tile-w) var(--tile-h) repeat;
-    -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent);
-    mask-image: linear-gradient(to bottom, #000 40%, transparent);
+    -webkit-mask-image: radial-gradient(circle calc(var(--lit-reach) * var(--tile-w)) at var(--lit-x) var(--lit-y), #000 15%, transparent);
+    mask-image: radial-gradient(circle calc(var(--lit-reach) * var(--tile-w)) at var(--lit-x) var(--lit-y), #000 15%, transparent);
   }
 
-  /* The one lit glyph sits on the tile at the centre of the second row, over its own ground so
-     the dim glyph under it does not show at the edges. */
+  /* The one lit glyph sits on its tile over its own ground, so the dim glyph under it does not
+     show at the edges. */
   .lit {
     position: absolute;
-    top: var(--tile-h);
-    left: calc(50% - var(--tile-w) / 2);
+    top: calc(var(--lit-row) * var(--tile-h));
+    left: calc(var(--lit-x) - var(--tile-w) / 2);
     width: var(--tile-w);
     height: var(--tile-h);
   }
 
-  .intro {
-    margin-top: calc(var(--tile-h) * -0.5);
-    padding-inline: 20px;
-    position: relative;
-    text-align: center;
+  header .column {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
   }
 
-  h1 { margin: 0; }
+  .bar {
+    padding-block: 1.125rem;
+    border-bottom: 1.5px solid var(--line);
+  }
+
+  .home { display: block; line-height: 0; }
 
   .wordmark {
     display: block;
-    margin: 0 auto;
     width: calc(21 * var(--pixel));
     height: calc(4 * var(--pixel));
     fill: var(--accent);
   }
 
-  .tagline {
-    margin: 1.5rem auto 0;
-    max-width: 60ch;
+  nav {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    font-size: 0.9375rem;
+  }
+
+  nav > a:not(.github) {
+    text-decoration: none;
+  }
+
+  nav > a:not(.github):hover {
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+
+  .github {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1.5px solid var(--edge);
+    background: var(--box);
+    font-size: 0.875rem;
+    text-decoration: none;
+  }
+
+  .github:hover { border-color: var(--muted); }
+
+  .github > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3125rem 0.75rem;
+  }
+
+  .github svg { width: 1rem; height: 1rem; }
+
+  .stars[hidden] { display: none; }
+
+  .stars {
+    border-left: 1.5px solid var(--edge);
     color: var(--muted);
-    font-size: 1.3125rem;
-    line-height: 1.45;
+  }
+
+  .stars svg { width: 0.875rem; height: 0.875rem; }
+
+  .hero {
+    padding-top: 6rem;
+  }
+
+  h1 {
+    margin: 0;
+    max-width: 22ch;
+    font-size: clamp(2.125rem, 1rem + 4.6vw, 3.75rem);
+    font-weight: 700;
+    line-height: 1.05;
+    letter-spacing: -0.04em;
+  }
+
+  /* The focused tab in domux's tab row: the accent as the ground, the page's ground as the text. */
+  .focused {
+    padding-inline: 0.12em;
+    background: var(--accent);
+    color: var(--ground);
+  }
+
+  .lede {
+    margin: 1.75rem 0 0;
+    max-width: 34rem;
+    color: var(--muted);
+    font-size: 1.0625rem;
+    line-height: 1.65;
   }
 
   .install {
     display: flex;
-    margin: 2.5rem auto 0;
-    max-width: 36rem;
-    border: 1px solid var(--line);
+    align-items: center;
+    gap: 1rem;
+    margin-top: 2.5rem;
+    padding: 0.75rem 0.75rem 0.75rem 1.25rem;
+    max-width: 44rem;
+    /* The focused box: domux draws the box that has the keys in the accent. */
+    border: 1.5px solid var(--accent);
     background: var(--box);
-    text-align: left;
+    box-shadow: 5px 5px 0 var(--accent-shadow);
   }
 
   .install code {
     flex: 1;
     min-width: 0;
     overflow-x: auto;
-    padding: 0.875rem 1rem;
+    padding-block: 0.375rem;
     font: inherit;
-    font-size: 0.9375rem;
+    font-size: 1rem;
     white-space: nowrap;
   }
 
@@ -121,53 +223,96 @@
   }
 
   .copy {
+    display: grid;
+    place-items: center;
     flex: none;
-    padding: 0 1rem;
-    border: 0;
-    border-left: 1px solid var(--line);
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    border: 1.5px solid var(--line);
     background: none;
     color: var(--muted);
-    font: inherit;
-    font-size: 0.875rem;
     cursor: pointer;
   }
 
-  .copy:hover { color: var(--text); }
-
-  .platforms {
-    margin: 0.875rem 0 0;
-    color: var(--muted);
-    font-size: 0.875rem;
+  .copy:hover {
+    border-color: var(--edge);
+    color: var(--text);
   }
 
-  .github {
+  .copy svg { width: 1rem; height: 1rem; }
+
+  .copy .done { display: none; color: var(--accent); }
+
+  .copy.copied .ready { display: none; }
+
+  .copy.copied .done { display: block; }
+
+  .release {
     display: inline-flex;
     align-items: center;
     gap: 0.625rem;
-    margin-top: 2rem;
-    padding: 0.75rem 1.25rem;
-    background: var(--accent);
-    color: var(--ground);
-    font-weight: 700;
+    margin-top: 1.75rem;
+    padding: 0.375rem 0.875rem 0.375rem 0.375rem;
+    border: 1.5px solid var(--line);
+    color: var(--muted);
+    font-size: 0.8125rem;
     text-decoration: none;
   }
 
-  .github:hover { background: var(--accent-hover); }
-
-  .github svg { width: 1.125rem; height: 1.125rem; }
-
-  .stars {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.375rem;
-    margin-left: 0.25rem;
-    padding-left: 0.875rem;
-    border-left: 1px solid rgb(30 30 46 / 0.35);
+  .release:hover {
+    border-color: var(--edge);
+    color: var(--text);
   }
 
-  .stars[hidden] { display: none; }
+  .version {
+    padding: 0.0625rem 0.5rem;
+    background: var(--accent-wash);
+    color: var(--accent);
+    font-weight: 700;
+  }
 
-  .stars svg { width: 1rem; height: 1rem; }
+  .version:empty { display: none; }
+
+  .shot {
+    margin-block: 4.5rem 0;
+    padding-bottom: 6rem;
+  }
+
+  .frame {
+    border: 1.5px solid var(--edge);
+    background: var(--ground);
+    box-shadow: 8px 8px 0 var(--accent-shadow);
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 0.875rem;
+    padding: 0.5rem 0.875rem;
+    border-bottom: 1.5px solid var(--edge);
+    background: var(--box);
+    color: var(--muted);
+    font-size: 0.8125rem;
+  }
+
+  .lights {
+    display: flex;
+    gap: 0.375rem;
+  }
+
+  .lights i {
+    width: 0.6875rem;
+    height: 0.6875rem;
+    border: 1.5px solid var(--edge);
+    border-radius: 50%;
+  }
+
+  .frame img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
 
   .unseen {
     position: absolute;
@@ -184,35 +329,63 @@
     outline-offset: 3px;
   }
 
-  .shot {
-    margin: 6rem auto 0;
-    padding: 0 20px 6rem;
-    max-width: 72rem;
+  /* Below the width that leaves room beside the heading, the lit glyph moves above it. */
+  @media (max-width: 64rem) {
+    :root {
+      --lit-col: 2;
+      --lit-row: 0;
+      --lit-reach: 2.5;
+    }
+
+    .hero { padding-top: calc(var(--tile-h) * 2); }
   }
 
-  .shot img {
-    display: block;
-    width: 100%;
-    height: auto;
-    border: 1px solid var(--frame);
-  }
-
-  @media (max-width: 40rem) {
+  @media (max-width: 30rem) {
     :root {
       --tile-w: 51.8px;
       --tile-h: 65.8px;
-      --pixel: 10px;
+      --pixel: 5px;
+      --gutter: 16px;
     }
 
-    .tagline { font-size: 1.125rem; }
+    .changelog { display: none; }
+
+    .lede { font-size: 1rem; }
+
+    .install { padding-left: 1rem; }
 
     .install code { font-size: 0.8125rem; }
 
-    .shot { margin-top: 4rem; padding-bottom: 4rem; }
+    .shot { margin-top: 3.5rem; padding-bottom: 4rem; }
   }
 </style>
 </head>
 <body>
+<header class="bar">
+  <div class="column">
+    <a class="home" href="/">
+      <!-- The logo the installer prints, █▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀ over █▄▀ █▄█ █ ▀ █ █▄█ █ █, with each
+           half of a cell drawn as one square. -->
+      <svg class="wordmark" viewBox="0 0 21 4" role="img" aria-label="domux" shape-rendering="crispEdges">
+        <path d="M1 0h1v1h-1zM5 0h1v1h-1zM9 0h1v1h-1zM11 0h1v1h-1zM18 0h1v1h-1zM20 0h1v1h-1zM0 0h1v4h-1zM4 0h1v4h-1zM6 0h1v4h-1zM8 0h1v4h-1zM12 0h1v4h-1zM14 0h1v4h-1zM16 0h1v4h-1zM19 1h1v1h-1zM2 1h1v2h-1zM10 1h1v2h-1zM18 2h1v2h-1zM20 2h1v2h-1zM1 3h1v1h-1zM5 3h1v1h-1zM15 3h1v1h-1z"/>
+      </svg>
+    </a>
+    <nav>
+      <a class="changelog" href="https://github.com/pranav7/domux/blob/main/CHANGELOG.md">Changelog</a>
+      <a class="github" href="https://github.com/pranav7/domux">
+        <span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </span>
+        <span class="stars" hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>
+          <span id="stars"></span><span class="unseen"> stars</span>
+        </span>
+      </a>
+    </nav>
+  </div>
+</header>
+
 <main>
   <div class="field" aria-hidden="true">
     <svg class="lit" viewBox="0 0 74 94">
@@ -221,47 +394,50 @@
     </svg>
   </div>
 
-  <section class="intro">
-    <h1>
-      <!-- The logo the installer prints, █▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀ over █▄▀ █▄█ █ ▀ █ █▄█ █ █, with each
-           half of a cell drawn as one square. -->
-      <svg class="wordmark" viewBox="0 0 21 4" role="img" aria-label="domux" shape-rendering="crispEdges">
-        <path d="M1 0h1v1h-1zM5 0h1v1h-1zM9 0h1v1h-1zM11 0h1v1h-1zM18 0h1v1h-1zM20 0h1v1h-1zM0 0h1v4h-1zM4 0h1v4h-1zM6 0h1v4h-1zM8 0h1v4h-1zM12 0h1v4h-1zM14 0h1v4h-1zM16 0h1v4h-1zM19 1h1v1h-1zM2 1h1v2h-1zM10 1h1v2h-1zM18 2h1v2h-1zM20 2h1v2h-1zM1 3h1v1h-1zM5 3h1v1h-1zM15 3h1v1h-1z"/>
-      </svg>
-    </h1>
-    <p class="tagline">terminal runtime for working with multiple coding agents</p>
+  <section class="hero column">
+    <h1>Terminal runtime for multiple coding <span class="focused">agents</span></h1>
+    <p class="lede">domux runs Claude Code, Codex and OpenCode side by side, shows you which agent is
+      waiting on you, and keeps every pane running after you detach. Built on Ghostty, with your tmux
+      keys, for macOS and Linux.</p>
 
     <div class="install">
       <code><span class="prompt">$ </span><span id="command">curl -fsSL https://domux.dev/install.sh | sh</span></code>
-      <button type="button" class="copy" aria-live="polite">Copy</button>
+      <button type="button" class="copy" aria-label="Copy the install command">
+        <svg class="ready" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path fill="currentColor" d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>
+        <svg class="done" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>
+      </button>
+      <span class="unseen" id="copied" aria-live="polite"></span>
     </div>
-    <p class="platforms">For Claude Code, Codex and OpenCode, on macOS and Linux.</p>
 
-    <a class="github" href="https://github.com/pranav7/domux">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      View on GitHub
-      <span class="stars" hidden>
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/></svg>
-        <span id="stars"></span><span class="unseen"> stars</span>
-      </span>
+    <a class="release" href="https://github.com/pranav7/domux/releases/latest">
+      <span class="version" id="version"></span>
+      Read the release notes
     </a>
   </section>
 
-  <figure class="shot">
-    <img src="screenshot.webp" width="2200" height="1448" loading="lazy"
-      alt="domux with the Navigator on the left, Claude Code in the focused pane and a shell beside it">
+  <figure class="shot column">
+    <div class="frame">
+      <div class="titlebar" aria-hidden="true">
+        <span class="lights"><i></i><i></i><i></i></span>
+        domux
+      </div>
+      <img src="screenshot.webp" width="2200" height="1449" loading="lazy"
+        alt="domux with the Navigator on the left, Claude Code in the focused pane and a shell beside it">
+    </div>
   </figure>
 </main>
 
 <script>
   const copy = document.querySelector(".copy");
+  const copied = document.getElementById("copied");
   const command = document.getElementById("command");
   let reset;
 
   copy.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(command.textContent);
-      copy.textContent = "Copied";
+      copy.classList.add("copied");
+      copied.textContent = "Copied";
     } catch {
       // Without clipboard access, select the command so the reader can copy it themselves.
       const range = document.createRange();
@@ -270,18 +446,31 @@
       getSelection().addRange(range);
     }
     clearTimeout(reset);
-    reset = setTimeout(() => { copy.textContent = "Copy"; }, 2000);
+    reset = setTimeout(() => {
+      copy.classList.remove("copied");
+      copied.textContent = "";
+    }, 2000);
   });
 
-  // The star count, read on every visit. GitHub allows each address 60 unauthenticated requests an
-  // hour; when a request fails the button shows no count rather than a stale or made up one.
-  fetch("https://api.github.com/repos/pranav7/domux")
-    .then((response) => (response.ok ? response.json() : Promise.reject(response.status)))
+  // The star count and the latest version, read on every visit. GitHub allows each address 60
+  // unauthenticated requests an hour; when a request fails the page shows no count and no version
+  // rather than a stale or made up one.
+  const github = (path) =>
+    fetch(`https://api.github.com/repos/pranav7/domux${path}`)
+      .then((response) => (response.ok ? response.json() : Promise.reject(response.status)));
+
+  github("")
     .then(({ stargazers_count: count }) => {
       if (typeof count !== "number") return;
       const stars = document.getElementById("stars");
       stars.textContent = new Intl.NumberFormat("en", { notation: "compact" }).format(count);
       stars.parentElement.hidden = false;
+    })
+    .catch(() => {});
+
+  github("/releases/latest")
+    .then(({ tag_name: tag }) => {
+      if (typeof tag === "string") document.getElementById("version").textContent = tag;
     })
     .catch(() => {});
 </script>
