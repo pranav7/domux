@@ -15,7 +15,7 @@ domux will keep your terminal running in a background server so when you close y
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+curl -fsSL https://domux.dev/install.sh | sh
 ```
 
 ## First run

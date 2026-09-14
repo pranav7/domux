@@ -1,0 +1,53 @@
+name: pages
+
+# domux.dev: the landing page in site/, with install.sh at /install.sh so that
+# `curl -fsSL https://domux.dev/install.sh | sh` fetches the installer on main. The custom
+# domain is set in the repository's Pages settings, so the site needs no CNAME file.
+# docs/decisions/0047 records why.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - site/**
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A deploy that starts while another is running waits for it rather than cancelling it, so the
+# last push is always the one that ends up live.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Put the installer beside the page
+        run: |
+          mkdir _site
+          cp -R site/. _site/
+          cp install.sh _site/install.sh
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5

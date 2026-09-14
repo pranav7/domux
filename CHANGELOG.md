@@ -18,6 +18,11 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 - `scripts/dev/deploy.sh` pulls, builds and upgrades the server in one step, for running a build
   of your own checkout.
 
+### Changed
+
+- The install command is `curl -fsSL https://domux.dev/install.sh | sh`. The GitHub URL it
+  replaces still works.
+
 ### Fixed
 
 - A click in a pane whose program asked for the mouse reaches that program, so Claude Code's own

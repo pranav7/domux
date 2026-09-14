@@ -68,7 +68,7 @@ are skipped:
 ```sh
 D=$(mktemp -d)
 DOMUX_INSTALL_DIR=$D DOMUX_CONFIG_FILE=$D/domux.toml DOMUX_HOOKS=no DOMUX_STAY_AWAKE=no \
-  sh -c 'curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh'
+  sh -c 'curl -fsSL https://domux.dev/install.sh | sh'
 ```
 
 It ends with the installed path and the version on stdout, and `$D/domux.toml` holds the leader.
