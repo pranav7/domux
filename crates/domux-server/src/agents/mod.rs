@@ -9,6 +9,8 @@ pub mod manifests;
 pub mod nested;
 pub mod observer;
 pub mod recap;
+pub mod session_index;
+pub mod tail;
 
 /// `agents::report` is the roadmap's name for the handler that turns one hook payload into
 /// one record change. It is a re-export rather than a second function: a keybinding, a CLI
@@ -22,6 +24,7 @@ use domux_core::model::agent::AgentState;
 use labels::WorkingWords;
 use manifests::Registry;
 use recap::RecapReader;
+use session_index::SessionIndexReader;
 use std::path::Path;
 
 /// Everything about agents the core holds that is not in the Model: the caches and the
@@ -29,6 +32,9 @@ use std::path::Path;
 pub struct AgentsState {
     pub words: WorkingWords,
     pub recaps: RecapReader,
+    /// Codex's session names. One index serves every session under a Codex home, so its
+    /// cursors go when no record reads them rather than with any one record.
+    pub session_names: SessionIndexReader,
     pub manifests: Registry,
     /// Counts up once every `labels::ANIMATION_INTERVAL` while an agent works. The glyph's
     /// frame and the place of the band along a working word are both read off it, so every
@@ -79,6 +85,7 @@ impl Default for AgentsState {
         AgentsState {
             words: WorkingWords::default(),
             recaps: RecapReader::default(),
+            session_names: SessionIndexReader::default(),
             manifests: Registry::builtin(),
             tick: 0,
         }

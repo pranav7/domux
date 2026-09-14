@@ -1,7 +1,7 @@
 //! The transcript reader: the recap and the session name, read forward from a byte cursor per
-//! file. Carried over from V1's `scanRecap`, in `recap.go` at commit e2fe7eb in this
-//! repository's V1 history, minus the directory-name encoding V2 does not need because the
-//! hooks give `transcript_path`.
+//! file (`agents::tail`). Carried over from V1's `scanRecap`, in `recap.go` at commit e2fe7eb
+//! in this repository's V1 history, minus the directory-name encoding V2 does not need because
+//! the hooks give `transcript_path`.
 //!
 //! **A recap is an entry the agent wrote as a recap, and nothing else** (MUX-28). Claude Code
 //! writes one as an `away_summary`, and `/recap` writes one as the output of a local command.
@@ -16,19 +16,14 @@
 //! filled it. This is how the session name already behaves, and decision record 0034 records
 //! the choice.
 
-use crate::agents::manifests::{RecapSource, Registry};
+use crate::agents::manifests::{NameSource, RecapSource, Registry};
+use crate::agents::tail::{Entries, Tail};
 use domux_core::api::Event;
 use domux_core::ids::AgentId;
 use domux_core::model::Model;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-
-/// How much of a transcript domux has never seen before is read: enough to reach the last
-/// recap and the last checkpoint, both of which sit at the end. Everything after the first
-/// read is the bytes the agent appended, however large the file has grown.
-pub const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 
 /// What one transcript says. Both fields are absent until the agent produces them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,39 +37,22 @@ pub struct Transcript {
 /// One per core. Holds a cursor per transcript: how far it has read and what it found there.
 #[derive(Default)]
 pub struct RecapReader {
-    open: HashMap<PathBuf, Reading>,
+    open: HashMap<PathBuf, Tail<Reading>>,
 }
 
 impl RecapReader {
-    /// Reads whatever the agent has appended since last time.
+    /// Reads whatever the agent has appended since last time (`agents::tail`).
     ///
-    /// A transcript is appended to and never rewritten, so the bytes behind the cursor cannot
-    /// change and re-reading them would answer what it answered before. This is what lets the
-    /// core ask once a second: the question costs one `stat` while the file sits still, and a
-    /// few kilobytes while the agent writes, rather than the whole file either way. M3 read
-    /// the file whole on six hook events, and decision record 0027 kept the tool events out
-    /// because at that price an 8 MB transcript would have been read dozens of times a turn.
-    ///
-    /// A file shorter than the cursor is not the file the cursor was counting, so the reading
-    /// starts again from nothing.
+    /// M3 read the file whole on six hook events, and decision record 0027 kept the tool
+    /// events out because at that price an 8 MB transcript would have been read dozens of
+    /// times a turn. Reading only what was appended is what lets the tick ask once a second.
     pub fn read(&mut self, path: &Path) -> Transcript {
-        let Ok(meta) = std::fs::metadata(path) else {
-            return Transcript::default();
-        };
-        let len = meta.len();
-        let reading = self.open.entry(path.to_path_buf()).or_default();
-        if len < reading.read_to {
-            *reading = Reading::default();
-        }
-        if len == reading.read_to {
-            return reading.transcript();
-        }
-        if !take(reading, path, len) {
-            // Longer than the cursor, and still not the file the cursor was counting.
-            *reading = Reading::default();
-            take(reading, path, len);
-        }
-        reading.transcript()
+        self.open
+            .entry(path.to_path_buf())
+            .or_default()
+            .read(path)
+            .map(Reading::transcript)
+            .unwrap_or_default()
     }
 
     /// The record went away; stop holding its cursor.
@@ -87,63 +65,6 @@ impl RecapReader {
     }
 }
 
-/// Reads what the agent has written past the cursor, and answers whether it was reading the
-/// file it thought it was.
-///
-/// The byte before the cursor is the newline the last read stopped on, so a file that does not
-/// have one there was replaced rather than appended to. A shorter file gives itself away by its
-/// length; one replaced by something longer would otherwise be read from the middle of a line
-/// for the rest of its life.
-fn take(reading: &mut Reading, path: &Path, len: u64) -> bool {
-    // A transcript domux has never seen may already be hours long, and the recap and the
-    // checkpoint it wants are both at the end of it.
-    let first = reading.read_to == 0;
-    let from = if first && len > TAIL_BYTES {
-        len - TAIL_BYTES
-    } else {
-        reading.read_to
-    };
-    let base = if first { from } else { from - 1 };
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return true;
-    };
-    if file.seek(SeekFrom::Start(base)).is_err() {
-        return true;
-    }
-    let mut bytes = Vec::new();
-    if file.read_to_end(&mut bytes).is_err() {
-        return true;
-    }
-    // Where the entries this read has not seen begin.
-    let start = if !first {
-        if bytes.first() != Some(&b'\n') {
-            return false;
-        }
-        1
-    } else if from > 0 {
-        // Starting partway into the file lands partway into a line, and half an entry is not
-        // one. Only the first read of a long transcript starts anywhere but a line boundary.
-        match bytes.iter().position(|b| *b == b'\n') {
-            Some(i) => i + 1,
-            None => return true,
-        }
-    } else {
-        0
-    };
-    // The agent may be midway through writing the last line. Consuming to the last newline
-    // leaves that line for the next read, which is when it will be whole.
-    let Some(rel) = bytes[start..].iter().rposition(|b| *b == b'\n') else {
-        return true;
-    };
-    let consumed = start + rel + 1;
-    // Lossily, because a transcript half-written by a crashed process can carry one invalid
-    // byte, and a good recap in an earlier line must survive it. Cutting on newlines never
-    // splits a character: no byte of a multi-byte character is a newline.
-    reading.feed(&String::from_utf8_lossy(&bytes[start..consumed]));
-    reading.read_to = base + consumed as u64;
-    true
-}
-
 /// Every record that reads a transcript, asked once. The core calls this from its once-a-second
 /// tick, and it is the only thing that reads a transcript.
 ///
@@ -153,24 +74,30 @@ fn take(reading: &mut Reading, path: &Path, len: u64) -> bool {
 /// half of MUX-28. A poll answers whenever the entry lands, and one rule in one place replaces
 /// the six events M3 re-read on.
 pub fn poll(model: &mut Model, reader: &mut RecapReader, manifests: &Registry) -> Vec<Event> {
-    let reading: Vec<(AgentId, PathBuf)> = model
+    // (agent, transcript, whether its kind's recap is here, whether its kind's name is here)
+    let reading: Vec<(AgentId, PathBuf, bool, bool)> = model
         .agents
         .iter()
-        .filter(|a| {
-            manifests.for_kind(a.kind).map(|m| m.recap) == Some(RecapSource::ClaudeTranscript)
+        .filter_map(|a| {
+            let m = manifests.for_kind(a.kind)?;
+            let recap = m.recap == RecapSource::ClaudeTranscript;
+            let name = m.name == NameSource::ClaudeTranscript;
+            let path = a.transcript_path.clone()?;
+            (recap || name).then(|| (a.id.clone(), path, recap, name))
         })
-        .filter_map(|a| a.transcript_path.clone().map(|p| (a.id.clone(), p)))
         .collect();
     let mut events = Vec::new();
-    for (agent, path) in reading {
+    for (agent, path, recap, name) in reading {
         let t = reader.read(&path);
-        events.extend(model.set_agent_recap(&agent, t.recap));
+        if recap {
+            events.extend(model.set_agent_recap(&agent, t.recap));
+        }
         // The name is not read the same way. The agent set it once and it stands until the
         // agent sets another, so an absent one is not evidence that it was cleared: the reader
         // answers `None` for a transcript it could not read, and starts a long one `TAIL_BYTES`
         // from its end, which can leave an early `/rename` outside the window. Never fabricate
         // cuts both ways, so a name is written only when one was found.
-        if t.name.is_some() {
+        if name && t.name.is_some() {
             model.set_agent_name(&agent, t.name);
         }
     }
@@ -188,8 +115,6 @@ const STDOUT_CLOSE: &str = "</local-command-stdout>";
 /// and with the words gone there is nothing left for it to arbitrate.
 #[derive(Default)]
 struct Reading {
-    /// The byte the next read starts at, always on a line boundary.
-    read_to: u64,
     recap: Option<String>,
     custom_title: Option<String>,
     agent_name: Option<String>,
@@ -207,12 +132,6 @@ impl Reading {
                 .clone()
                 .or_else(|| self.agent_name.clone())
                 .or_else(|| self.renamed.clone()),
-        }
-    }
-
-    fn feed(&mut self, text: &str) {
-        for line in text.lines() {
-            self.entry(line);
         }
     }
 
@@ -289,6 +208,14 @@ impl Reading {
     }
 }
 
+impl Entries for Reading {
+    fn feed(&mut self, text: &str) {
+        for line in text.lines() {
+            self.entry(line);
+        }
+    }
+}
+
 /// Reads a whole transcript at once, which is what a test has and what the first read of a
 /// short file does.
 pub fn scan(text: &str) -> Transcript {
@@ -300,7 +227,7 @@ pub fn scan(text: &str) -> Transcript {
 /// One JSON string field, absent when it is missing, not a string, or only spaces. Every name
 /// source reads its field this way, so a checkpoint written with an empty title cannot blank a
 /// name the reader already has (principle 4).
-fn string_field(v: &Value, field: &str) -> Option<String> {
+pub(crate) fn string_field(v: &Value, field: &str) -> Option<String> {
     v.get(field)
         .and_then(Value::as_str)
         .map(str::trim)
@@ -360,6 +287,7 @@ pub fn recap_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::tail::TAIL_BYTES;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};

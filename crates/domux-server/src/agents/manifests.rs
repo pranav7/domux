@@ -17,6 +17,7 @@ pub struct AgentManifest {
     pub color_hex: String,
     pub hooks: HookTarget,
     pub recap: RecapSource,
+    pub name: NameSource,
     pub session: SessionSource,
 }
 
@@ -102,6 +103,19 @@ pub enum RecapSource {
     None,
 }
 
+/// Where the session name comes from. A name is the agent's own, set with its `/rename`, and a
+/// kind that declares no source shows its kind on the row rather than a name domux made up
+/// (principle 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameSource {
+    /// The JSONL transcript the hook names, read with the recap by `agents::recap`.
+    ClaudeTranscript,
+    /// `session_index.jsonl` in the Codex home the rollout sits under, read by
+    /// `agents::session_index` (decision record 0049).
+    CodexSessionIndex,
+    None,
+}
+
 /// Where the session id comes from when a record has no hook payload yet. V2.0 uses the hook
 /// payload for every kind; the other two are declared because the manifest is the place that
 /// answers where to find the session id (architecture spec section 8).
@@ -139,6 +153,7 @@ impl Registry {
                 // V1's `resumeAgentLaunchLine`, claude arm.
                 hooks: HookTarget::ClaudeSettings,
                 recap: RecapSource::ClaudeTranscript,
+                name: NameSource::ClaudeTranscript,
                 session: SessionSource::HookPayload,
             },
             AgentManifest {
@@ -148,6 +163,7 @@ impl Registry {
                 // V2.x: "codex resume {session_id}" (V1's codex arm).
                 hooks: HookTarget::CodexHooks,
                 recap: RecapSource::None,
+                name: NameSource::CodexSessionIndex,
                 session: SessionSource::CodexRollout,
             },
             AgentManifest {
@@ -157,6 +173,7 @@ impl Registry {
                 // V2.x: "opencode --session {session_id}" (V1's opencode arm).
                 hooks: HookTarget::OpencodePlugin,
                 recap: RecapSource::None,
+                name: NameSource::None,
                 session: SessionSource::OpencodeCli,
             },
         ] {
@@ -318,6 +335,26 @@ mod tests {
         assert_eq!(
             r.for_kind(AgentKind::Opencode).unwrap().recap,
             RecapSource::None
+        );
+    }
+
+    /// Claude's name is in its transcript and Codex's in its session index, and OpenCode
+    /// declares none, so its row shows the kind. Codex has a name source and still no recap:
+    /// the two are declared apart because they come from different files.
+    #[test]
+    fn claude_and_codex_each_declare_where_the_session_name_comes_from() {
+        let r = Registry::builtin();
+        assert_eq!(
+            r.for_kind(AgentKind::Claude).unwrap().name,
+            NameSource::ClaudeTranscript
+        );
+        assert_eq!(
+            r.for_kind(AgentKind::Codex).unwrap().name,
+            NameSource::CodexSessionIndex
+        );
+        assert_eq!(
+            r.for_kind(AgentKind::Opencode).unwrap().name,
+            NameSource::None
         );
     }
 

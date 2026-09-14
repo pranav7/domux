@@ -2838,6 +2838,13 @@ impl Core {
             &self.agents.manifests,
         );
         changed |= self.agents_changed(read);
+        // A Codex session's name is in its home's session index rather than its transcript,
+        // and a `/rename` sends no hook, so it is read off the same tick (decision record 0049).
+        changed |= crate::agents::session_index::poll(
+            &mut self.model,
+            &mut self.agents.session_names,
+            &self.agents.manifests,
+        );
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
             self.last_minute = Some(minute);
@@ -6453,6 +6460,64 @@ mod tests {
             core.agents.words.in_use(),
             0,
             "and its word is back in the pool"
+        );
+    }
+
+    /// A Codex session's name comes off the tick, from the session index in the home its
+    /// rollout sits under, and the index's cursor goes at the first tick after the last record
+    /// that read it. One index serves every session under a home, so no one record's end is
+    /// what lets it go (decision record 0049).
+    #[test]
+    fn a_codex_session_index_is_read_off_the_tick_and_let_go_after_its_last_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut core, pane) = core_with_a_pane(dir.path());
+        let home = dir.path().join("codex-home");
+        let rollout = home.join("sessions/2026/09/14/rollout-2026-09-14T10-38-51-t-1.jsonl");
+        std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        std::fs::write(&rollout, "{}\n").unwrap();
+        std::fs::write(
+            home.join("session_index.jsonl"),
+            "{\"id\":\"t-1\",\"thread_name\":\"babysit-1244\",\"updated_at\":\"2026-09-14T10:38:51Z\"}\n",
+        )
+        .unwrap();
+        let codex = |core: &mut Core, event: &str| {
+            let payload = serde_json::json!({
+                "hook_event_name": event,
+                "session_id": "t-1",
+                "transcript_path": rollout,
+            });
+            let method = Method::from_request(
+                "agent.report",
+                serde_json::json!({"pane": pane, "kind": "codex", "payload": payload}),
+            )
+            .expect("agent.report takes these params");
+            core.dispatch(method, None).expect("agent.report");
+        };
+        let read_names = |core: &mut Core| {
+            crate::agents::session_index::poll(
+                &mut core.model,
+                &mut core.agents.session_names,
+                &core.agents.manifests,
+            )
+        };
+
+        codex(&mut core, "SessionStart");
+        assert_eq!(core.model.agents[0].name, None, "a hook reads no index");
+        assert!(read_names(&mut core), "the tick finds the name");
+        assert_eq!(core.model.agents[0].name.as_deref(), Some("babysit-1244"));
+        assert_eq!(core.agents.session_names.cached(), 1, "the index is cached");
+        assert!(
+            !read_names(&mut core),
+            "and finding the same name again is no change"
+        );
+
+        codex(&mut core, "SessionEnd");
+        assert!(core.model.agents.is_empty(), "the record is gone");
+        read_names(&mut core);
+        assert_eq!(
+            core.agents.session_names.cached(),
+            0,
+            "and the next tick lets its index go"
         );
     }
 }

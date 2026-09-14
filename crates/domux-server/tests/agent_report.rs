@@ -288,6 +288,66 @@ async fn a_codex_payload_reaches_the_same_record_path_and_reads_no_transcript() 
     assert_eq!(a.recap, None, "codex has no transcript recap in V2.0");
 }
 
+/// MUX-44. A Codex session renamed with `/rename` shows that name on its row, where it used to
+/// say `codex` for the whole session. Codex writes the name to `session_index.jsonl` in its
+/// home, not to the rollout its hooks name, and a rename sends no hook, so the tick is what
+/// finds it: nothing is reported here after `SessionStart` (decision record 0049).
+#[tokio::test]
+async fn a_codex_session_renamed_with_rename_shows_the_name_on_its_row() {
+    let home = tempfile::tempdir().unwrap();
+    let rollout = home
+        .path()
+        .join("sessions/2026/09/14/rollout-2026-09-14T10-38-51-t-1.jsonl");
+    std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    std::fs::write(
+        &rollout,
+        "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"t-1\",\"id\":\"t-1\"}}\n",
+    )
+    .unwrap();
+    let index = home.path().join("session_index.jsonl");
+    let named = |thread: &str, name: &str| {
+        format!("{{\"id\":\"{thread}\",\"thread_name\":\"{name}\",\"updated_at\":\"2026-09-14T10:38:51Z\"}}\n")
+    };
+    // Another session under the same home was renamed before this one started.
+    std::fs::write(&index, named("t-0", "agent-harness")).unwrap();
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let start = json!({
+        "hook_event_name": "SessionStart",
+        "session_id": "t-1",
+        "transcript_path": rollout,
+    });
+    h.report(pane.clone(), AgentKind::Codex, &start.to_string())
+        .await;
+    h.api("sidebar.show", json!({})).await.unwrap();
+    let f = h
+        .wait_for(h.client.clone(), |f| f.contains("└ codex"), TICK)
+        .await;
+    assert!(
+        !f.contains("agent-harness"),
+        "another session's name is not this one's:\n{f}"
+    );
+
+    let mut appended = std::fs::read_to_string(&index).unwrap();
+    appended.push_str(&named("t-1", "babysit-1244"));
+    std::fs::write(&index, &appended).unwrap();
+    let a = h.wait_for_agent(|a| a.name.is_some(), TICK).await;
+    assert_eq!(a.name.as_deref(), Some("babysit-1244"));
+    let f = h
+        .wait_for(h.client.clone(), |f| f.contains("└ babysit-1244"), TICK)
+        .await;
+    assert!(
+        !f.contains("└ codex"),
+        "the name stands in for the kind:\n{f}"
+    );
+
+    // Renamed again, and the newest line is the name.
+    appended.push_str(&named("t-1", "babysit-1250"));
+    std::fs::write(&index, &appended).unwrap();
+    h.wait_for(h.client.clone(), |f| f.contains("└ babysit-1250"), TICK)
+        .await;
+}
+
 /// The Codex manifest's `RecapSource::None` on its own. The event is one the recap is re-read
 /// on, and the payload names a transcript that is really there and really holds a recap, so
 /// the manifest is the only thing left that can keep the recap absent.
@@ -396,7 +456,7 @@ async fn a_hook_that_arrives_after_the_session_ended_writes_to_nothing() {
 
 /// Never fabricate cuts both ways: a session name is durable, and a read that did not find
 /// one is not evidence that the agent cleared it. A transcript domux meets for the first time
-/// is read from `recap::TAIL_BYTES` before its end, so an early `/rename` can fall outside the
+/// is read from `tail::TAIL_BYTES` before its end, so an early `/rename` can fall outside the
 /// window.
 #[tokio::test]
 async fn a_session_name_survives_a_transcript_read_that_does_not_name_it() {
