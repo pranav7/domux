@@ -4,11 +4,16 @@
 
 # domux
 
-**terminal runtime for scaling coding agents.**
+**Run Claude Code, Codex and OpenCode in parallel.**
 
-domux (_/ˈduː.mʌks/_) allows you to scale running multiple coding agents. Parallel work comes from Projects and Workspaces. A Project is a git repo, and Workspaces are long running git worktrees in that repo. Long running means you don't have to manage their lifecycle, and gives you the ability to deploy as many parallel agents as you want. domux currently natively works with Claude Code, Codex and OpenCode. Agent sessions are automatically organised within projects and workspaces, so you can easily peek at which agent is blocked on you.
+domux (_/ˈduː.mʌks/_) is an open-source terminal multiplexer for AI coding agents, for macOS and Linux. Put each agent in its own git worktree, see which one is waiting on you, and keep them all running after you close the lid.
 
-domux will keep your terminal running in a background server so when you close your laptop you don't lose your work. The multiplexing works similarly to tmux (that's where the name comes from), but is natively built on top of Ghostty. All your tmux shortcuts should work out the box as well.
+- **Agents in parallel, a worktree each.** A project is a git repo, and each workspace is a long running git worktree in it. Long running means you don't manage their lifecycle, and you can run as many agents side by side as you want without them sharing a checkout.
+- **See which agent is waiting on you.** Agents are organised under their project and workspace in the Navigator, which shows what each one is doing, as its own hooks report it, and jumps you to any of them. A red dot marks the one that needs you, and `leader a` lists agents by who needs you first.
+- **Close the lid, keep the work.** A background server holds every pane, so closing the terminal or the laptop doesn't lose your work. Turn on stay awake and the agents keep working with the lid closed.
+- **Your tmux keys, on Ghostty.** domux ships its own multiplexer, built natively on Ghostty's terminal library rather than on tmux (that's where the name comes from). Your tmux shortcuts work out of the box.
+- **Recaps and session names.** For Claude Code, an agent's row shows its session name and the last recap it wrote.
+- **Hooks set up for you.** The installer finds Claude Code, Codex and OpenCode and sets up the hooks each one reports through.
 
 <img width="1375" height="905" alt="image" src="https://github.com/user-attachments/assets/b3833f16-1c04-407f-9e46-d591122ba043" />
 
