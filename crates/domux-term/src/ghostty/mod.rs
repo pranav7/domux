@@ -135,14 +135,14 @@ fn rgb(c: Rgb) -> ffi::GhosttyColorRgb {
     }
 }
 
+/// How much of a sequence the program has not finished writing the terminal keeps, so a
+/// snapshot taken between two reads can carry it (decision 0045). A sequence longer than this
+/// when a snapshot is taken costs that pane its screen, and tracking picks up again once the
+/// stream reaches ground.
+const CONTINUATION_LIMIT: usize = 1 << 20;
+
 impl GhosttyEmulator {
     pub fn new(config: EmulatorConfig) -> Result<Self, String> {
-        let mut callbacks = Box::new(Callbacks {
-            responses: Vec::new(),
-            bell: false,
-        });
-        let userdata = &mut *callbacks as *mut Callbacks as *mut c_void;
-
         let mut raw_terminal: ffi::GhosttyTerminal = ptr::null_mut();
         if unsafe {
             ffi::ghostty_terminal_new(
@@ -159,13 +159,136 @@ impl GhosttyEmulator {
             raw: raw_terminal,
             free: ffi::ghostty_terminal_free,
         };
-
-        let scrollback = config.scrollback_lines;
         let fg = rgb(config.default_fg);
         let bg = rgb(config.default_bg);
-        // Userdata first: every callback below receives it. The default colors are what OSC
-        // 10 and OSC 11 queries answer with.
-        let options: [(ffi::GhosttyTerminalOption, *const c_void); 7] = [
+        let limit = CONTINUATION_LIMIT;
+        // The default colors are what OSC 10 and OSC 11 queries answer with. A decoded
+        // terminal keeps the ones its snapshot carries, so these are set here and not in
+        // `around`.
+        let options: [(ffi::GhosttyTerminalOption, *const c_void); 3] = [
+            (
+                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
+                &fg as *const _ as *const c_void,
+            ),
+            (
+                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND,
+                &bg as *const _ as *const c_void,
+            ),
+            (
+                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES,
+                &limit as *const usize as *const c_void,
+            ),
+        ];
+        for (option, value) in options {
+            unsafe { ffi::ghostty_terminal_set(terminal.raw, option, value) };
+        }
+        Self::around(terminal, config.scrollback_lines, config.size)
+    }
+
+    /// The terminal's whole state as a Ghostty snapshot: both screens, the scrollback, the
+    /// modes, the title, the working directory, and whatever sequence the program was half way
+    /// through writing. `decode_snapshot` turns it back into an emulator.
+    pub fn encode_snapshot(&self) -> Result<Vec<u8>, String> {
+        let mut data: *mut u8 = ptr::null_mut();
+        let mut len: usize = 0;
+        let rc = unsafe {
+            ffi::ghostty_snapshot_encode_alloc(self.terminal.raw, ptr::null(), &mut data, &mut len)
+        };
+        if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS {
+            return Err(format!("ghostty_snapshot_encode_alloc failed ({rc})"));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+        unsafe { ffi::ghostty_free(ptr::null(), data, len) };
+        Ok(bytes)
+    }
+
+    /// An emulator in the state `encode_snapshot` recorded. The size and the default colors
+    /// are the snapshot's, and `scrollback_lines` is the limit from here on. Bytes that are
+    /// not a whole snapshot are refused. The format has no compatibility guarantee across
+    /// Ghostty commits yet, so a snapshot from another pin may be refused too.
+    pub fn decode_snapshot(bytes: &[u8], scrollback_lines: usize) -> Result<Self, String> {
+        let decoder = {
+            let mut raw: ffi::GhosttySnapshotDecoder = ptr::null_mut();
+            let rc = unsafe {
+                ffi::ghostty_snapshot_decoder_new_buf(
+                    ptr::null(),
+                    &mut raw,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                )
+            };
+            if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS {
+                return Err(format!("ghostty_snapshot_decoder_new_buf failed ({rc})"));
+            }
+            Handle {
+                raw,
+                free: ffi::ghostty_snapshot_decoder_free,
+            }
+        };
+        // The decoded terminal goes on tracking what the program has not finished, so its
+        // screen can be carried across the next upgrade too.
+        let limit = CONTINUATION_LIMIT;
+        let retain = true;
+        let options: [(ffi::GhosttySnapshotDecoderOption, *const c_void); 2] = [
+            (
+                ffi::GhosttySnapshotDecoderOption_GHOSTTY_SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES,
+                &limit as *const usize as *const c_void,
+            ),
+            (
+                ffi::GhosttySnapshotDecoderOption_GHOSTTY_SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION,
+                &retain as *const bool as *const c_void,
+            ),
+        ];
+        for (option, value) in options {
+            let rc = unsafe { ffi::ghostty_snapshot_decoder_set(decoder.raw, option, value) };
+            if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS {
+                return Err(format!("ghostty_snapshot_decoder_set failed ({rc})"));
+            }
+        }
+        let mut raw_terminal: ffi::GhosttyTerminal = ptr::null_mut();
+        let rc = unsafe { ffi::ghostty_snapshot_decoder_decode(decoder.raw, &mut raw_terminal) };
+        if rc != ffi::GhosttyResult_GHOSTTY_SUCCESS || raw_terminal.is_null() {
+            return Err(format!("the snapshot could not be decoded ({rc})"));
+        }
+        // The decoder is freed at the end of this function and the terminal is not: the
+        // decoder does not own what it returned.
+        let terminal = Handle {
+            raw: raw_terminal,
+            free: ffi::ghostty_terminal_free,
+        };
+        let dimension = |data: ffi::GhosttyTerminalData| {
+            let mut value: u16 = 0;
+            let rc = unsafe {
+                ffi::ghostty_terminal_get(terminal.raw, data, &mut value as *mut u16 as *mut c_void)
+            };
+            (rc == ffi::GhosttyResult_GHOSTTY_SUCCESS).then_some(value)
+        };
+        let size = match (
+            dimension(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_COLS),
+            dimension(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_ROWS),
+        ) {
+            (Some(cols), Some(rows)) => Size { cols, rows },
+            _ => return Err("the decoded terminal did not say its size".into()),
+        };
+        Self::around(terminal, scrollback_lines, size)
+    }
+
+    /// Registers the callbacks on `terminal` and builds the handles that read it. A new
+    /// terminal and a decoded one both come through here, so both answer the program the same
+    /// way.
+    fn around(
+        terminal: Handle<ffi::GhosttyTerminal>,
+        scrollback_lines: usize,
+        size: Size,
+    ) -> Result<Self, String> {
+        let mut callbacks = Box::new(Callbacks {
+            responses: Vec::new(),
+            bell: false,
+        });
+        let userdata = &mut *callbacks as *mut Callbacks as *mut c_void;
+        let scrollback = scrollback_lines;
+        // Userdata first: every callback below receives it.
+        let options: [(ffi::GhosttyTerminalOption, *const c_void); 5] = [
             (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_USERDATA,
                 userdata,
@@ -185,14 +308,6 @@ impl GhosttyEmulator {
             (
                 ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
                 &scrollback as *const usize as *const c_void,
-            ),
-            (
-                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND,
-                &fg as *const _ as *const c_void,
-            ),
-            (
-                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND,
-                &bg as *const _ as *const c_void,
             ),
         ];
         for (option, value) in options {
@@ -228,7 +343,7 @@ impl GhosttyEmulator {
             )?,
             terminal,
             callbacks,
-            size: config.size,
+            size,
         })
     }
 
