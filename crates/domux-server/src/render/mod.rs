@@ -267,24 +267,48 @@ fn tab_hit(input: &RenderInput, target: Option<tab_row::TabTarget>) -> Option<Hi
 
 /// The pane whose box holds the cell, and the cell of its own grid under it.
 fn pane_hit(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
+    let (pane, rect) = pane_boxes(input)?.into_iter().find(|(_, rect)| {
+        column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
+    })?;
+    let (row, col) = grid_cell(rect, column, row)?;
+    Some(Hit::Pane { pane, row, col })
+}
+
+/// The cell of `pane`'s own grid nearest the screen cell, or `None` when this client draws no
+/// box for that pane. A cell outside the box clamps to the box's nearest edge, as a cell on its
+/// rule does, which is where a drag that has left the pane is reported to its program
+/// (decision 0044).
+pub fn cell_in_pane(
+    input: &RenderInput,
+    pane: &PaneId,
+    column: u16,
+    row: u16,
+) -> Option<(u16, u16)> {
+    if !draws_panes(input.view) {
+        return None;
+    }
+    let (_, rect) = pane_boxes(input)?.into_iter().find(|(p, _)| p == pane)?;
+    grid_cell(rect, column, row)
+}
+
+/// Every pane box on this client's tab, on the rectangle `draw_panes` lays the boxes out on.
+fn pane_boxes(input: &RenderInput) -> Option<Vec<(PaneId, domux_core::model::Rect)>> {
     let tab = input.model.tab(&input.view.tab)?;
-    // The rectangle `draw_panes` lays the boxes out on, and the inner area it draws each grid
-    // in.
     let area = smallest_workpanel(input.model, &tab.id, input.view);
-    let (pane, rect) = solve(&tab.layout, area, tab.zoomed.as_ref())
-        .into_iter()
-        .find(|(_, rect)| {
-            column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
-        })?;
+    Some(solve(&tab.layout, area, tab.zoomed.as_ref()))
+}
+
+/// The cell of a box's grid nearest a screen cell, in the inner area `draw_panes` draws the grid
+/// in, or `None` for a box too small to hold one.
+fn grid_cell(rect: domux_core::model::Rect, column: u16, row: u16) -> Option<(u16, u16)> {
     let inner = boxed::Boxed::inner_of(to_rect(rect));
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
-    Some(Hit::Pane {
-        pane,
-        row: row.clamp(inner.y, inner.bottom() - 1) - inner.y,
-        col: column.clamp(inner.x, inner.right() - 1) - inner.x,
-    })
+    Some((
+        row.clamp(inner.y, inner.bottom() - 1) - inner.y,
+        column.clamp(inner.x, inner.right() - 1) - inner.x,
+    ))
 }
 
 /// Whether this client draws pane boxes at all. A screen under the minimum shows only the
