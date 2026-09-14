@@ -16,6 +16,10 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
   release all go to the program, and the press still focuses the pane. domux's own drag, double
   click, triple click and link click still work in every other pane. Over such a program, shift and
   a drag reach the terminal's own selection, and `leader [` then a drag uses domux's.
+- An agent that another agent starts in its pane, such as a worker run from Claude Code's Bash
+  tool, no longer takes over that pane's agent row. The row keeps its session name and its state,
+  and the worker gets no row of its own. Restart the server with `domux server restart` for this to
+  apply.
 
 ## [1.0.1] - 2026-09-13
 

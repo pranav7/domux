@@ -1618,7 +1618,8 @@ impl Model {
     ///
     /// Finds the record by session id, else the record of that kind on the pane (the
     /// observer's placeholder), else creates one. A second session id on a pane ends the first
-    /// record, because one pane hosts at most one agent.
+    /// record, because one pane hosts at most one agent. A nested agent's hooks never arrive
+    /// here: `agent.report` answers them before they reach the model (decision record 0045).
     pub fn report_agent(
         &mut self,
         pane: &PaneId,

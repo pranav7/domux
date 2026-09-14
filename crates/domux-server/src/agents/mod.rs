@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod install;
 pub mod labels;
 pub mod manifests;
+pub mod nested;
 pub mod observer;
 pub mod recap;
 

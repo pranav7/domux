@@ -1048,6 +1048,25 @@ impl Harness {
         pid
     }
 
+    /// The processes above every control API call this harness makes from now on, nearest
+    /// first: `["claude"]` is a hook its agent ran, and `["claude", "zsh", "claude"]` is a hook
+    /// run by an agent that another agent started from its shell.
+    ///
+    /// The server reads the caller's process id from the socket. Every call this harness makes
+    /// comes from the test process, so the chain starts at the test process.
+    pub fn hooks_run_under(&mut self, names: &[&str]) {
+        let mut child = std::process::id();
+        self.inspector.set_process(child, "domux", None);
+        for name in names {
+            let pid = self.next_pid;
+            self.next_pid += 1;
+            let child_name = self.inspector.name_of(child).unwrap_or_default();
+            self.inspector.set_process(child, &child_name, Some(pid));
+            self.inspector.set_process(pid, name, None);
+            child = pid;
+        }
+    }
+
     /// The process is gone; the inspector says so from the next tick on.
     pub async fn kill_process(&mut self, pid: u32) {
         self.inspector.set_dead(pid);
