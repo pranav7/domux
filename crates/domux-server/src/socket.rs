@@ -10,12 +10,16 @@ use domux_core::proto::{
     PROTOCOL_VERSION,
 };
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-pub async fn listen(path: &Path, core_tx: mpsc::Sender<CoreMsg>) -> anyhow::Result<JoinHandle<()>> {
+/// Binds the socket at `path`, private to this user. A stale file from a server that died is
+/// removed; a live server's is refused.
+pub fn bind(path: &Path) -> anyhow::Result<std::os::unix::net::UnixListener> {
     if let Some(dir) = path.parent() {
         // Only a directory this server creates is made private. The socket's parent is
         // whatever `DOMUX_SOCKET` points at, and narrowing a directory domux does not own is
@@ -38,7 +42,8 @@ pub async fn listen(path: &Path, core_tx: mpsc::Sender<CoreMsg>) -> anyhow::Resu
         }
         std::fs::remove_file(path)?;
     }
-    let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+    let listener = std::os::unix::net::UnixListener::bind(path)
+        .with_context(|| format!("bind {}", path.display()))?;
     // The socket is what access control rests on, not the directory around it: anyone who can
     // connect can spawn processes in this user's panes. `bind` takes its mode from the umask,
     // which is 022 on a stock shell, so without this the socket is srwxr-xr-x and any user on
@@ -49,35 +54,148 @@ pub async fn listen(path: &Path, core_tx: mpsc::Sender<CoreMsg>) -> anyhow::Resu
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("make {} private", path.display()))?;
     }
-    Ok(tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    let tx = core_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = handle(stream, tx).await {
-                            tracing::debug!("connection ended: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!("accept failed: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-            }
-        }
-    }))
+    Ok(listener)
 }
 
-async fn handle(mut stream: UnixStream, core_tx: mpsc::Sender<CoreMsg>) -> anyhow::Result<()> {
+enum Command {
+    Pause,
+    Resume,
+    GiveBack(oneshot::Sender<std::os::unix::net::UnixListener>),
+}
+
+/// The task that accepts connections, and what an upgrade needs from it (decision 0046): to
+/// stop accepting while connections already open finish, to start again when the upgrade does
+/// not happen, and to give the listener back for the new server. A connection made while it is
+/// not accepting waits in the kernel's backlog.
+pub struct Acceptor {
+    commands: mpsc::UnboundedSender<Command>,
+    task: JoinHandle<()>,
+    /// Control API connections open now, not counting event streams.
+    pub open_control: Arc<AtomicUsize>,
+    /// Attached clients whose writer has not yet ended, so whose last message may not yet be
+    /// on the socket.
+    pub open_writers: Arc<AtomicUsize>,
+}
+
+impl Acceptor {
+    pub fn pause(&self) {
+        let _ = self.commands.send(Command::Pause);
+    }
+
+    pub fn resume(&self) {
+        let _ = self.commands.send(Command::Resume);
+    }
+
+    /// Stops accepting for good and answers the listener, still bound. `None` when the task
+    /// has already ended.
+    pub async fn give_back(&self) -> Option<std::os::unix::net::UnixListener> {
+        let (tx, rx) = oneshot::channel();
+        self.commands.send(Command::GiveBack(tx)).ok()?;
+        rx.await.ok()
+    }
+}
+
+impl Drop for Acceptor {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Counts one open thing for as long as it lives.
+struct Open(Arc<AtomicUsize>);
+
+impl Open {
+    fn new(gauge: &Arc<AtomicUsize>) -> Open {
+        gauge.fetch_add(1, Ordering::SeqCst);
+        Open(gauge.clone())
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Accepts connections on `listener` and serves each on its own task.
+pub fn serve(
+    listener: std::os::unix::net::UnixListener,
+    core_tx: mpsc::Sender<CoreMsg>,
+) -> anyhow::Result<Acceptor> {
+    listener
+        .set_nonblocking(true)
+        .context("make the listening socket non-blocking")?;
+    let listener = UnixListener::from_std(listener).context("serve the listening socket")?;
+    let (commands, mut rx) = mpsc::unbounded_channel();
+    let open_control = Arc::new(AtomicUsize::new(0));
+    let open_writers = Arc::new(AtomicUsize::new(0));
+    let gauges = Gauges {
+        control: open_control.clone(),
+        writers: open_writers.clone(),
+    };
+    let task = tokio::spawn(async move {
+        let mut paused = false;
+        loop {
+            tokio::select! {
+                command = rx.recv() => match command {
+                    None => return,
+                    Some(Command::Pause) => paused = true,
+                    Some(Command::Resume) => paused = false,
+                    Some(Command::GiveBack(tx)) => {
+                        match listener.into_std() {
+                            Ok(listener) => {
+                                let _ = tx.send(listener);
+                            }
+                            Err(e) => tracing::error!("the listening socket could not be given back: {e}"),
+                        }
+                        return;
+                    }
+                },
+                accepted = listener.accept(), if !paused => match accepted {
+                    Ok((stream, _)) => {
+                        let tx = core_tx.clone();
+                        let gauges = gauges.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle(stream, tx, gauges).await {
+                                tracing::debug!("connection ended: {e}");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!("accept failed: {e}");
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                },
+            }
+        }
+    });
+    Ok(Acceptor {
+        commands,
+        task,
+        open_control,
+        open_writers,
+    })
+}
+
+#[derive(Clone)]
+struct Gauges {
+    control: Arc<AtomicUsize>,
+    writers: Arc<AtomicUsize>,
+}
+
+async fn handle(
+    mut stream: UnixStream,
+    core_tx: mpsc::Sender<CoreMsg>,
+    gauges: Gauges,
+) -> anyhow::Result<()> {
     let mut first = [0u8; 1];
     if stream.read_exact(&mut first).await.is_err() {
         return Ok(());
     }
     if is_control_api_first_byte(first[0]) {
-        control(stream, first[0], core_tx).await
+        control(stream, first[0], core_tx, Open::new(&gauges.control)).await
     } else {
-        attach(stream, first[0], core_tx).await
+        attach(stream, first[0], core_tx, gauges.writers).await
     }
 }
 
@@ -85,6 +203,7 @@ async fn control(
     stream: UnixStream,
     first: u8,
     core_tx: mpsc::Sender<CoreMsg>,
+    open: Open,
 ) -> anyhow::Result<()> {
     // Read once, while the socket is whole: every request on this connection comes from the
     // same process.
@@ -131,6 +250,9 @@ async fn control(
                     continue;
                 }
             };
+            // A stream stays open for as long as its reader wants it, so it is not a call an
+            // upgrade waits for.
+            drop(open);
             let (tx, mut rx) = mpsc::channel(256);
             core_tx.send(CoreMsg::Subscribe { filter, tx }).await?;
             w.write_all(
@@ -206,6 +328,7 @@ async fn attach(
     stream: UnixStream,
     first: u8,
     core_tx: mpsc::Sender<CoreMsg>,
+    writers: Arc<AtomicUsize>,
 ) -> anyhow::Result<()> {
     let (mut r, mut w) = stream.into_split();
     let mut dec = Decoder::default();
@@ -244,7 +367,9 @@ async fn attach(
         }
     };
     let writer_client = client.clone();
+    let open = Open::new(&writers);
     let writer = tokio::spawn(async move {
+        let _open = open;
         while let Some(msg) = rx.recv().await {
             let done = matches!(msg, ServerMsg::Detached { .. });
             // A message that cannot be framed cannot be delivered, and skipping it would

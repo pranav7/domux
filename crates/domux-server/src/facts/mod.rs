@@ -236,6 +236,12 @@ impl FactRegistry {
         stale
     }
 
+    /// How many fetches have started and not yet answered. An upgrade waits for none, so no
+    /// provider's process is left behind for a server that does not know it (decision 0046).
+    pub fn in_flight(&self) -> usize {
+        self.inflight.len()
+    }
+
     /// Which provider and target pairs to start now. A target already in flight is skipped,
     /// so a slow `gh` never queues behind itself.
     pub fn due(

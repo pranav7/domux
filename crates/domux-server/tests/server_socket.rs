@@ -39,12 +39,14 @@ async fn start_with_config(config: &str) -> (domux_server::ServerHandle, tempfil
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -365,12 +367,14 @@ async fn a_broken_config_is_reported_and_the_server_still_starts() {
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -429,12 +433,14 @@ async fn a_shell_that_exits_immediately_has_bounded_respawns_and_keeps_the_serve
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -526,12 +532,14 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -613,12 +621,14 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -708,12 +718,14 @@ async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded()
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -863,12 +875,14 @@ async fn a_pane_that_is_not_the_workspaces_last_does_not_spend_the_respawn_allow
         project_root: project,
         providers: Vec::new(),
         theme: None,
+        handoff: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
             clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
             opener: Arc::new(RecordingOpener::default()),
             runner: Arc::new(domux_server::command::FakeRunner::default()),
+            exec: Arc::new(domux_server::testing::FakeExec::default()),
             id_seed: 7,
             platform: "macos".into(),
         },
@@ -970,8 +984,8 @@ async fn a_method_that_arrives_in_a_later_milestone_returns_unavailable() {
 /// stock shell, so the socket arrived as `srwxr-xr-x` and any user on the machine could drive
 /// the server. The directory around it was standing in for this, and only by accident: it is
 /// whatever `DOMUX_SOCKET` points at.
-#[tokio::test]
-async fn the_socket_is_private_to_the_user_who_started_the_server() {
+#[test]
+fn the_socket_is_private_to_the_user_who_started_the_server() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     // A world-writable parent, so nothing but the socket's own mode can be protecting it.
@@ -979,8 +993,7 @@ async fn the_socket_is_private_to_the_user_who_started_the_server() {
     std::fs::create_dir(&open).unwrap();
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
     let path = open.join("domux.sock");
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    let handle = domux_server::socket::listen(&path, tx).await.unwrap();
+    let listener = domux_server::socket::bind(&path).unwrap();
 
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "socket mode is {mode:o}, not 0600");
@@ -990,22 +1003,21 @@ async fn the_socket_is_private_to_the_user_who_started_the_server() {
         dir_mode, 0o777,
         "the server narrowed a directory it does not own"
     );
-    handle.abort();
+    drop(listener);
 }
 
 /// The directory the server does create is its own, and is private from the moment it exists.
-#[tokio::test]
-async fn a_socket_directory_the_server_creates_is_private() {
+#[test]
+fn a_socket_directory_the_server_creates_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("made-by-domux").join("domux.sock");
-    let (tx, _rx) = tokio::sync::mpsc::channel(8);
-    let handle = domux_server::socket::listen(&path, tx).await.unwrap();
+    let listener = domux_server::socket::bind(&path).unwrap();
     let mode = std::fs::metadata(path.parent().unwrap())
         .unwrap()
         .permissions()
         .mode()
         & 0o777;
     assert_eq!(mode, 0o700, "directory mode is {mode:o}, not 0700");
-    handle.abort();
+    drop(listener);
 }

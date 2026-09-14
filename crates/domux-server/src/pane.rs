@@ -8,10 +8,10 @@ use crate::core::CoreMsg;
 use anyhow::{Context, Result};
 use domux_core::ids::PaneId;
 use domux_term::{Emulator, EmulatorConfig, GhosttyEmulator, Grid, Rgb, Size};
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::RawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -107,6 +107,77 @@ pub trait PtyHandle: Send {
     fn raw_fd(&self) -> Option<RawFd>;
     /// The child's exit code once it has exited, else `None`.
     fn exit_status(&mut self) -> Option<i32>;
+    /// Stops the reader between two reads. It sends `CoreMsg::ReaderPaused` once every byte
+    /// it read has been sent, and reads nothing more until `resume_reader`: what the program
+    /// prints meanwhile waits in the PTY (decision 0046).
+    fn pause_reader(&mut self);
+    fn resume_reader(&mut self);
+    /// Gives the PTY up without closing it or signalling its program, for an upgrade to carry
+    /// (decision 0046). The reader stops for good. `None` when there is nothing to carry: the
+    /// child has already exited.
+    fn hand_over(self: Box<Self>) -> Option<HandedPty>;
+}
+
+/// What crosses an upgrade of one pane's PTY: the master descriptor, still open, and the
+/// process id of the program on the other side, still the server's child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandedPty {
+    pub fd: RawFd,
+    pub pid: Option<u32>,
+}
+
+/// What a pane holds in place of a PTY an upgrade has handed over (decision 0046). It is there
+/// between the handover and the exec, and after a handover a test made: the PTY belongs to the
+/// new server by then, so nothing here reaches it.
+pub struct HandedOver;
+
+impl PtyHandle for HandedOver {
+    fn write(&mut self, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "the PTY has been handed over",
+        ))
+    }
+
+    fn resize(&mut self, _size: Size) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn kill(&mut self) {}
+
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    fn raw_fd(&self) -> Option<RawFd> {
+        None
+    }
+
+    fn exit_status(&mut self) -> Option<i32> {
+        None
+    }
+
+    fn pause_reader(&mut self) {}
+
+    fn resume_reader(&mut self) {}
+
+    fn hand_over(self: Box<Self>) -> Option<HandedPty> {
+        None
+    }
+}
+
+/// Hangs up a handed over PTY nothing could adopt: the program gets the hangup a closed
+/// terminal sends, and the descriptor is closed. A PTY without a process id is a test's, whose
+/// descriptor is only a number, so nothing is done with it.
+pub fn hang_up(pty: HandedPty) {
+    let Some(pid) = pty.pid else {
+        return;
+    };
+    // Safe: the descriptor was handed over open and nothing in this process owns it.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGHUP);
+        libc::close(pty.fd);
+    }
 }
 
 /// Refuses a shell the pane could not run, naming it and the setting that names it
@@ -129,15 +200,22 @@ fn executable(shell: &Path) -> Result<()> {
 
 pub trait PtySpawner: Send + Sync {
     fn spawn(&self, req: SpawnRequest, tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>>;
+
+    /// Wraps a PTY an earlier server handed over (decision 0046) in the handle `spawn` would
+    /// have given it, and starts its reader. A spawner that never hands a PTY over cannot take
+    /// one back, which is every spawner a test writes for itself.
+    fn adopt(
+        &self,
+        pane: PaneId,
+        pty: HandedPty,
+        tx: Sender<CoreMsg>,
+    ) -> Result<Box<dyn PtyHandle>> {
+        let _ = (pane, pty, tx);
+        anyhow::bail!("this spawner cannot adopt a PTY")
+    }
 }
 
 pub struct RealSpawner;
-
-struct RealPty {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
-    child: Box<dyn Child + Send + Sync>,
-}
 
 impl PtySpawner for RealSpawner {
     fn spawn(&self, req: SpawnRequest, tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>> {
@@ -193,83 +271,347 @@ impl PtySpawner for RealSpawner {
         cmd.cwd(cwd);
         let child = pair.slave.spawn_command(cmd).context("spawn child")?;
         drop(pair.slave);
-        let mut reader = pair.master.try_clone_reader().context("clone reader")?;
-        let writer = pair.master.take_writer().context("take writer")?;
-        let id = req.pane.clone();
-        thread::Builder::new()
-            .name(format!("pty-reader-{id}"))
-            .spawn(move || {
-                let mut buf = vec![0u8; READ_CHUNK];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if tx
-                                .blocking_send(CoreMsg::PaneOutput {
-                                    pane: id.clone(),
-                                    bytes: buf[..n].to_vec(),
-                                })
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                        // Linux returns EIO once the child closes its side.
-                        Err(_) => break,
-                    }
-                }
-                let _ = tx.blocking_send(CoreMsg::PaneExited {
-                    pane: id,
-                    status: None,
-                });
-            })?;
-        Ok(Box::new(RealPty {
-            master: pair.master,
-            writer,
-            child,
-        }))
+        let pid = child
+            .process_id()
+            .context("the spawned child has no process id")?;
+        let fd = pair
+            .master
+            .as_raw_fd()
+            .context("the PTY has no master descriptor")?;
+        // The handle keeps its own copy of the master, so portable-pty's can close with it.
+        // Dropping `child` neither kills nor waits for the program: the handle waits for it
+        // by its process id from here on, which is also all an adopted pane has.
+        let master = dup_cloexec(fd).context("copy the PTY's master descriptor")?;
+        drop(pair.master);
+        drop(child);
+        Ok(Box::new(UnixPty::start(req.pane, master, pid, tx)?))
+    }
+
+    fn adopt(
+        &self,
+        pane: PaneId,
+        pty: HandedPty,
+        tx: Sender<CoreMsg>,
+    ) -> Result<Box<dyn PtyHandle>> {
+        let pid = pty
+            .pid
+            .context("a handed over PTY without a process id cannot be adopted")?;
+        // Safe: the descriptor was handed over open and nothing else in this process owns it.
+        let master = unsafe { std::fs::File::from_raw_fd(pty.fd) };
+        set_cloexec(pty.fd, true).context("mark the adopted descriptor close-on-exec")?;
+        Ok(Box::new(UnixPty::start(pane, master, pid, tx)?))
     }
 }
 
-impl PtyHandle for RealPty {
+/// A pane's PTY as a descriptor and a process id, which is what a spawned pane and an adopted
+/// one have in common. Everything is a system call on those two, so the handle an upgrade
+/// hands over is the handle it takes back.
+struct UnixPty {
+    master: std::fs::File,
+    pid: u32,
+    /// Set once the child has been reaped. Its process id can by then belong to an unrelated
+    /// process, so nothing signals or waits for it after that.
+    status: Option<i32>,
+    reader: Arc<ReaderGate>,
+}
+
+impl UnixPty {
+    fn start(
+        pane: PaneId,
+        master: std::fs::File,
+        pid: u32,
+        tx: Sender<CoreMsg>,
+    ) -> Result<UnixPty> {
+        let reader = master
+            .try_clone()
+            .context("copy the PTY's master descriptor for its reader")?;
+        let gate = Arc::new(ReaderGate::new().context("make the reader's wake pipe")?);
+        let thread_gate = gate.clone();
+        thread::Builder::new()
+            .name(format!("pty-reader-{pane}"))
+            .spawn(move || read_pane(pane, reader, &thread_gate, &tx))?;
+        Ok(UnixPty {
+            master,
+            pid,
+            status: None,
+            reader: gate,
+        })
+    }
+}
+
+impl PtyHandle for UnixPty {
     fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()
+        self.master.write_all(bytes)?;
+        self.master.flush()
     }
 
     fn resize(&mut self, size: Size) -> io::Result<()> {
-        self.master
-            .resize(pty_size(size))
-            .map_err(|e| io::Error::other(e.to_string()))
+        let ws = libc::winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        // Safe: `ws` is a valid winsize for the duration of the call.
+        if unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
+    /// What portable-pty's kill did: a hangup, a quarter of a second for the program to take
+    /// it, then a kill, and a wait either way so nothing is left a zombie.
     fn kill(&mut self) {
-        // A child that has already exited has been reaped, and its pid can by then belong to
-        // an unrelated process: portable-pty signals the pid without checking, so the check
-        // is here. Killing twice is a no-op rather than a signal to a stranger.
         if self.exit_status().is_some() {
             return;
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let pid = self.pid as libc::pid_t;
+        unsafe { libc::kill(pid, libc::SIGHUP) };
+        for attempt in 0..5 {
+            if attempt > 0 {
+                thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if self.exit_status().is_some() {
+                return;
+            }
+        }
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        let mut raw = 0;
+        if unsafe { libc::waitpid(pid, &mut raw, 0) } == pid {
+            self.status = Some(exit_code(raw));
+        }
     }
 
     fn pid(&self) -> Option<u32> {
-        self.child.process_id()
+        Some(self.pid)
     }
 
     fn raw_fd(&self) -> Option<RawFd> {
-        self.master.as_raw_fd()
+        Some(self.master.as_raw_fd())
     }
 
     fn exit_status(&mut self) -> Option<i32> {
-        self.child
-            .try_wait()
-            .ok()
-            .flatten()
-            .map(|s| s.exit_code() as i32)
+        if self.status.is_none() {
+            let pid = self.pid as libc::pid_t;
+            let mut raw = 0;
+            if unsafe { libc::waitpid(pid, &mut raw, libc::WNOHANG) } == pid {
+                self.status = Some(exit_code(raw));
+            }
+        }
+        self.status
     }
+
+    fn pause_reader(&mut self) {
+        self.reader.set(ReaderState::Pausing);
+    }
+
+    fn resume_reader(&mut self) {
+        self.reader.set(ReaderState::Running);
+    }
+
+    fn hand_over(mut self: Box<Self>) -> Option<HandedPty> {
+        self.reader.set(ReaderState::Stopped);
+        if self.exit_status().is_some() {
+            return None;
+        }
+        let UnixPty { master, pid, .. } = *self;
+        let fd = master.into_raw_fd();
+        // Open across the exec that follows. `adopt` sets it again on whichever side takes the
+        // descriptor, so a program that server starts later does not inherit it.
+        if let Err(e) = set_cloexec(fd, false) {
+            tracing::warn!("the PTY of process {pid} may not survive the upgrade: {e}");
+        }
+        Some(HandedPty { fd, pid: Some(pid) })
+    }
+}
+
+/// The exit code `waitpid` reported, the way portable-pty reported it: the code a program
+/// exited with, and 1 for one a signal ended.
+fn exit_code(raw: libc::c_int) -> i32 {
+    if libc::WIFEXITED(raw) {
+        libc::WEXITSTATUS(raw)
+    } else {
+        1
+    }
+}
+
+/// A copy of `fd` that closes on exec, so no program the server starts inherits a pane's PTY.
+fn dup_cloexec(fd: RawFd) -> io::Result<std::fs::File> {
+    // Safe: F_DUPFD_CLOEXEC returns a new descriptor this process owns, or -1.
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(copy) })
+}
+
+/// Sets or clears close-on-exec on `fd`. An upgrade clears it on what it carries just before
+/// the exec, and sets it again on whatever the exec did not take (decision 0046).
+pub fn set_cloexec(fd: RawFd, on: bool) -> io::Result<()> {
+    // Safe: F_GETFD and F_SETFD read and write one flag on a descriptor and touch no memory.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let flags = if on {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReaderState {
+    Running,
+    /// Asked to stop between two reads, and not yet stopped.
+    Pausing,
+    /// Stopped between two reads, and said so.
+    Paused,
+    /// Gone for good, without a word to the core: the PTY has been handed over.
+    Stopped,
+}
+
+/// Where a reader thread and the core meet. The thread blocks in `poll` on the PTY and on a
+/// pipe; the core writes a byte to the pipe whenever it changes the state, so a thread waiting
+/// for output wakes at once rather than on a timer, and an idle pane costs nothing.
+struct ReaderGate {
+    state: Mutex<ReaderState>,
+    changed: std::sync::Condvar,
+    wake_read: std::fs::File,
+    wake_write: std::fs::File,
+}
+
+impl ReaderGate {
+    fn new() -> io::Result<ReaderGate> {
+        let mut fds = [0; 2];
+        // Safe: `fds` has room for the two descriptors `pipe` writes.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // Safe: `pipe` returned two descriptors this process now owns.
+        let (wake_read, wake_write) = unsafe {
+            (
+                std::fs::File::from_raw_fd(fds[0]),
+                std::fs::File::from_raw_fd(fds[1]),
+            )
+        };
+        for fd in fds {
+            set_cloexec(fd, true)?;
+            // Safe: F_SETFL on a descriptor this process owns.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(ReaderGate {
+            state: Mutex::new(ReaderState::Running),
+            changed: std::sync::Condvar::new(),
+            wake_read,
+            wake_write,
+        })
+    }
+
+    fn set(&self, to: ReaderState) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // A stopped reader stays stopped, and one that has already said it paused is not
+        // asked again: the core would wait for a second message that never comes.
+        match (*state, to) {
+            (ReaderState::Stopped, _) => return,
+            (ReaderState::Paused, ReaderState::Pausing) => return,
+            _ => *state = to,
+        }
+        drop(state);
+        self.changed.notify_all();
+        // A full pipe already holds a wake-up, so a failed write loses nothing.
+        let _ = (&self.wake_write).write(&[1]);
+    }
+
+    /// Called by the reader between two reads. Answers false when the reader should end.
+    fn proceed(&self, pane: &PaneId, tx: &Sender<CoreMsg>) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if *state == ReaderState::Pausing {
+            *state = ReaderState::Paused;
+            drop(state);
+            if tx
+                .blocking_send(CoreMsg::ReaderPaused { pane: pane.clone() })
+                .is_err()
+            {
+                return false;
+            }
+            state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        }
+        while *state == ReaderState::Paused {
+            state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        *state != ReaderState::Stopped
+    }
+
+    fn drain_wakes(&self) {
+        let mut buf = [0u8; 64];
+        while matches!((&self.wake_read).read(&mut buf), Ok(n) if n > 0) {}
+    }
+}
+
+/// One pane's reader: output to the core as `PaneOutput`, then `PaneExited` once the program
+/// has closed its side. It stops only between two reads (`ReaderGate::proceed`), so a byte is
+/// either sent to the core or still in the PTY, never held here.
+fn read_pane(pane: PaneId, mut reader: std::fs::File, gate: &ReaderGate, tx: &Sender<CoreMsg>) {
+    let mut buf = vec![0u8; READ_CHUNK];
+    loop {
+        if !gate.proceed(&pane, tx) {
+            return;
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: reader.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: gate.wake_read.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // Safe: `fds` is a valid array of two pollfd for the duration of the call.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+        if ready < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if fds[1].revents != 0 {
+            gate.drain_wakes();
+            continue;
+        }
+        if fds[0].revents == 0 {
+            continue;
+        }
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if tx
+                    .blocking_send(CoreMsg::PaneOutput {
+                        pane: pane.clone(),
+                        bytes: buf[..n].to_vec(),
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            // Linux returns EIO once the child closes its side.
+            Err(_) => break,
+        }
+    }
+    let _ = tx.blocking_send(CoreMsg::PaneExited { pane, status: None });
 }
 
 fn pty_size(size: Size) -> PtySize {
@@ -297,11 +639,18 @@ pub struct FakeSpawner {
     written: WriteLog,
     /// Every spawn from now on fails, for a test that needs a pane with no process behind it.
     refusing: std::sync::atomic::AtomicBool,
+    /// Every PTY an upgrade handed back, in the order they were adopted.
+    adopted: Mutex<Vec<(PaneId, HandedPty)>>,
 }
 
 impl FakeSpawner {
     pub fn requests(&self) -> Vec<SpawnRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// Every PTY this spawner adopted from an upgrade's handover, in order.
+    pub fn adopted(&self) -> Vec<(PaneId, HandedPty)> {
+        self.adopted.lock().unwrap().clone()
     }
 
     /// Makes every later spawn fail, which is the state a `terminal.shell` that cannot start
@@ -337,10 +686,13 @@ struct FakePty {
     pane: PaneId,
     written: WriteLog,
     fd: RawFd,
+    /// Where a pause is acknowledged. A fake pane has no reader thread, so it has read
+    /// everything the moment it is asked to stop.
+    tx: Sender<CoreMsg>,
 }
 
 impl PtySpawner for FakeSpawner {
-    fn spawn(&self, req: SpawnRequest, _tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>> {
+    fn spawn(&self, req: SpawnRequest, tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>> {
         let pane = req.pane.clone();
         let index = {
             let mut requests = self.requests.lock().unwrap();
@@ -354,6 +706,22 @@ impl PtySpawner for FakeSpawner {
             pane,
             written: self.written.clone(),
             fd: FAKE_PTY_FD_BASE + index as RawFd,
+            tx,
+        }))
+    }
+
+    fn adopt(
+        &self,
+        pane: PaneId,
+        pty: HandedPty,
+        tx: Sender<CoreMsg>,
+    ) -> Result<Box<dyn PtyHandle>> {
+        self.adopted.lock().unwrap().push((pane.clone(), pty));
+        Ok(Box::new(FakePty {
+            pane,
+            written: self.written.clone(),
+            fd: pty.fd,
+            tx,
         }))
     }
 }
@@ -385,6 +753,21 @@ impl PtyHandle for FakePty {
 
     fn exit_status(&mut self) -> Option<i32> {
         None
+    }
+
+    fn pause_reader(&mut self) {
+        let _ = self.tx.try_send(CoreMsg::ReaderPaused {
+            pane: self.pane.clone(),
+        });
+    }
+
+    fn resume_reader(&mut self) {}
+
+    fn hand_over(self: Box<Self>) -> Option<HandedPty> {
+        Some(HandedPty {
+            fd: self.fd,
+            pid: None,
+        })
     }
 }
 

@@ -20,10 +20,30 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 - `UPDATE_GOLDEN=1 cargo test -p domux-term --test golden` rewrites the golden files. Read the diff against the fixture's intent before committing it: a golden that changed because the emulator changed is the point, and one that changed because a test was loosened is a defect being recorded as correct.
 - `crates/domux-term/scripts/ghostty-src.sh` prints the Ghostty tree the build resolved. `build.rs` exports the same path as `DOMUX_GHOSTTY_SRC`, and `tests/header_fingerprint.rs` and `tests/zig_pin.rs` read it, so the bindings are always checked against the headers that were actually compiled.
 - `cargo run -p domux -- api schema` prints the control API schema.
-- The shell half has its own suites, all POSIX sh: `sh tests/license/run.sh`, `sh tests/release/run.sh` and `sh tests/install/run.sh` (and the same under `TEST_SHELL=bash`). `shellcheck -s sh install.sh scripts/release/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*` must pass too, the same list `.github/workflows/ci.yml` gives it: leave out `tests/lib/assert.sh` and shellcheck exits 1 on the files that source it. CI runs all of it on macOS and Ubuntu.
+- The shell half has its own suites, all POSIX sh: `sh tests/license/run.sh`, `sh tests/release/run.sh` and `sh tests/install/run.sh` (and the same under `TEST_SHELL=bash`). `shellcheck -s sh install.sh scripts/release/*.sh scripts/dev/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*` must pass too, the same list `.github/workflows/ci.yml` gives it: leave out `tests/lib/assert.sh` and shellcheck exits 1 on the files that source it. CI runs all of it on macOS and Ubuntu.
 - `cargo about generate --fail -o /dev/null about.hbs` checks that every compiled crate's license is in `about.toml`. Install it with `cargo install cargo-about --version 0.9.2 --locked --features cli`; without `--features cli` nothing is installed.
 - Releases: a `v*` tag runs `.github/workflows/release.yml`, which builds four archives with `scripts/release/build-archive.sh`, smoke-tests each on its own platform, verifies `SHA256SUMS`, and publishes the GitHub release with the `CHANGELOG.md` section for that version. The tag must equal `[workspace.package].version`. `gh workflow run release.yml -f version=<x.y.z>` runs everything except the publish. Read `docs/decisions/0039` and `docs/milestones/m5.md` before changing any of it.
 - Run `domux` only in its own Ghostty tab, never inside tmux. `~/bin/domux` points at `target/release/domux`. V1, the Go version, is the `v1` branch and is never built or run from here.
+- `scripts/dev/deploy.sh` runs the latest build without ending a pane: it fast-forwards the checkout (`--no-pull` builds it as it is), builds release, links `~/.local/bin/domux` and `~/bin/domux` to the build, and runs `domux server upgrade`. It is safe to run from inside a pane.
+
+## Upgrades
+
+`domux server upgrade` replaces the running server with the binary that ran it, by `exec` in the
+same process, and every pane keeps running. `docs/decisions/0046` records the design; read it
+before changing any of this.
+
+- What crosses is the handover in `handoff/` under the state directory: each pane's master
+  descriptor and process id, each pane's screen as a Ghostty snapshot, the agent records with
+  their process ids, and the listening socket. `state.json` carries the structure, as at any start.
+- `upgrade::HANDOFF_FORMAT` names the handover's shape. A change an older build cannot read bumps
+  it, and a server refuses to hand over to a binary that reads another format.
+- A pane's PTY is `pane::UnixPty` whether it was spawned or adopted. Its reader stops only between
+  two reads, so a byte is either sent to the core or still in the PTY.
+- An upgrade never ends a pane for want of something it could do without: a screen that cannot be
+  restored gives an empty screen and a resize, and records that cannot be read are dropped.
+- A client detached with `SERVER_UPGRADING` replaces itself with `<argv[0]> attach --after-upgrade`.
+- `Harness::upgrade` runs the whole handover in the test process with `FakeExec`; only the exec is
+  left out. `crates/domux/tests/upgrade.rs` runs the real one.
 
 ## Agents
 

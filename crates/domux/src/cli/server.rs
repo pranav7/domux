@@ -36,13 +36,22 @@ pub enum ServerAction {
     Stop,
     /// Stop, then start
     Restart,
+    /// Replace the running server with this binary; every pane keeps running
+    Upgrade,
     /// Show version, socket, state directory, config and clients
     Status,
     /// Print the path of the server log
     Log,
     /// Run the server in the foreground (used by start)
     #[command(hide = true)]
-    Run,
+    Run(RunArgs),
+}
+
+#[derive(Args)]
+pub struct RunArgs {
+    /// Take over from the server that wrote this handover (decision 0046)
+    #[arg(long)]
+    pub handoff: Option<PathBuf>,
 }
 
 pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
@@ -50,9 +59,10 @@ pub async fn run(cmd: ServerCmd) -> anyhow::Result<()> {
         ServerAction::Start => start(Announce::Yes).await,
         ServerAction::Stop => stop().await,
         ServerAction::Restart => restart().await,
+        ServerAction::Upgrade => upgrade().await,
         ServerAction::Status => status().await,
         ServerAction::Log => super::print_line(&paths::log_file().display().to_string()),
-        ServerAction::Run => run_server().await,
+        ServerAction::Run(args) => run_server(args.handoff).await,
     }
 }
 
@@ -131,6 +141,74 @@ async fn restart() -> anyhow::Result<()> {
     start(Announce::Yes).await
 }
 
+/// How long `upgrade` waits for the new server to answer. The old one waits up to ten seconds
+/// for work in flight before it hands over, and a new one restores every pane's screen before
+/// it answers, so this is longer than `SETTLE`.
+const UPGRADE_SETTLE: Duration = Duration::from_secs(60);
+
+/// Replaces the running server with this binary, keeping every pane (decision 0046). With no
+/// server running there is nothing to keep, so this starts one.
+async fn upgrade() -> anyhow::Result<()> {
+    let socket = socket();
+    if !control::is_live(&socket).await {
+        start(Announce::No).await?;
+        eprintln!("No server was running, so this started one. Attach with {BIN_NAME}.");
+        return Ok(());
+    }
+    let binary = std::env::current_exe().context("find this binary")?;
+    let before: ServerInfo = call_as("server.info", serde_json::json!({})).await?;
+    let log = paths::log_file();
+    let written_before = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+    let params = serde_json::json!({
+        "binary": binary,
+        "handoff": domux_server::upgrade::HANDOFF_FORMAT,
+    });
+    // A server that hands over answers nothing: the connection closes as the process becomes
+    // the new server. An answer is a refusal, or an upgrade that did not happen.
+    if let Ok(Err(e)) = control::call(&socket, "server.upgrade", params).await {
+        if e.code == domux_core::api::ErrorCode::NotFound && e.message.contains("server.upgrade") {
+            anyhow::bail!(
+                "This server was started before {BIN_NAME} could upgrade in place, so it cannot hand its panes over. Run {BIN_NAME} server restart once, which ends every pane; from then on {BIN_NAME} server upgrade keeps them."
+            );
+        }
+        anyhow::bail!("{}", e.message);
+    }
+    let deadline = Instant::now() + UPGRADE_SETTLE;
+    loop {
+        let answer = tokio::time::timeout(
+            SETTLE,
+            control::call(&socket, "server.info", serde_json::json!({})),
+        )
+        .await;
+        if let Ok(Ok(Ok(value))) = answer {
+            if let Ok(info) = serde_json::from_value::<ServerInfo>(value) {
+                if info.upgraded_at.is_some() && info.upgraded_at != before.upgraded_at {
+                    eprintln!(
+                        "Upgraded the server to {PRODUCT_NAME} {} (pid {}). Every pane kept running.",
+                        crate::version::long_version(),
+                        info.pid
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        if !control::is_live(&socket).await {
+            anyhow::bail!(
+                "The server stopped during the upgrade. {}",
+                reason(&log, written_before)
+            );
+        }
+        if Instant::now() > deadline {
+            anyhow::bail!(
+                "The server did not finish upgrading within {} seconds. Read {}.",
+                UPGRADE_SETTLE.as_secs(),
+                log.display()
+            );
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
 /// The log, opened for appending, so the child's stderr and the server's own tracing land in
 /// one file in the order they happened. The directory is made here rather than left to the
 /// child, since a directory that cannot be made is the failure this call is about to report.
@@ -206,8 +284,13 @@ async fn stop_if_running() -> anyhow::Result<bool> {
 /// rather than printing a line of question marks.
 async fn status() -> anyhow::Result<()> {
     let info: ServerInfo = call_as("server.info", serde_json::json!({})).await?;
+    let upgraded = info
+        .upgraded_at
+        .as_deref()
+        .map(|at| format!(", upgraded {}", human_time(at)))
+        .unwrap_or_default();
     print_line(&format!(
-        "Server {PRODUCT_NAME} {} (pid {}), started {}",
+        "Server {PRODUCT_NAME} {} (pid {}), started {}{upgraded}",
         info.version,
         info.pid,
         human_time(&info.started_at)
@@ -278,7 +361,7 @@ fn id_seed_from(source: &Path) -> anyhow::Result<u64> {
 
 /// The server process. Logs to the state directory, serves until SIGTERM or SIGINT or a
 /// `server.stop`, then persists and exits.
-async fn run_server() -> anyhow::Result<()> {
+async fn run_server(handoff: Option<PathBuf>) -> anyhow::Result<()> {
     let state_dir = paths::state_dir();
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("create {}", state_dir.display()))?;
@@ -286,7 +369,7 @@ async fn run_server() -> anyhow::Result<()> {
     // The log exists from here on, so a failure is written there as well as returned. That
     // covers `server run` typed by hand, where stderr is a terminal and not the log.
     carry_over_from_the_old_name().inspect_err(|e| tracing::error!("the server stopped: {e:#}"))?;
-    serve(state_dir)
+    serve(state_dir, handoff)
         .await
         .inspect_err(|e| tracing::error!("the server stopped: {e:#}"))
 }
@@ -315,7 +398,7 @@ fn carry_over_from_the_old_name() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
+async fn serve(state_dir: PathBuf, handoff: Option<PathBuf>) -> anyhow::Result<()> {
     let opts = ServerOptions {
         socket_path: socket(),
         state_dir,
@@ -323,6 +406,7 @@ async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
         project_root: std::env::current_dir()?,
         providers: domux_server::facts::default_providers(),
         theme: None,
+        handoff,
         deps: CoreDeps {
             spawner: Arc::new(RealSpawner),
             inspector: Arc::new(RealInspector),
@@ -330,6 +414,7 @@ async fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
             id_seed: id_seed()?,
             opener: Arc::new(domux_server::SystemOpener),
             runner: Arc::new(domux_server::command::RealRunner::default()),
+            exec: Arc::new(domux_server::upgrade::RealExec),
             platform: std::env::consts::OS.into(),
         },
     };

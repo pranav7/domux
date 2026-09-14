@@ -55,6 +55,13 @@ pub struct Ctx<'a> {
     pub socket_path: &'a PathBuf,
     pub state_dir: &'a PathBuf,
     pub started_at: &'a str,
+    /// When this server took over from an upgrade, if it did (decision 0046).
+    pub upgraded_at: Option<&'a str>,
+    /// Whether an upgrade is under way, which refuses a second.
+    pub upgrading: bool,
+    /// Set by `server.upgrade` to the binary it accepted. The core starts the upgrade, and
+    /// the upgrade answers the caller.
+    pub upgrade: Option<std::path::PathBuf>,
     /// The view the call acts on: the pressing client for a keybinding, the `client` param
     /// or the most recent client for an API call.
     pub client: Option<ClientId>,
@@ -242,6 +249,7 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
     match method {
         ServerInfo(_) => server::info(ctx),
         ServerStop(_) => server::stop(ctx),
+        ServerUpgrade(p) => server::upgrade(ctx, p),
         EventsSubscribe(_) => Err(ApiError::invalid_params(
             "events.subscribe only works on a control API connection, where it turns the connection into a stream",
         )),

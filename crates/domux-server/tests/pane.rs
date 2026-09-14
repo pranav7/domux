@@ -368,3 +368,133 @@ async fn a_pane_does_not_inherit_the_servers_own_environment() {
     let row: String = pane.0.grid.row(0).iter().map(|c| c.text.as_str()).collect();
     assert_eq!(row.trim_end(), "[][p_0005][PATH]");
 }
+
+/// Reads core messages until `want` says it has seen enough, feeding output into `pane`.
+/// Answers everything that arrived, so a test can also say what did not.
+async fn read_until(
+    rx: &mut tokio::sync::mpsc::Receiver<CoreMsg>,
+    pane: &mut PaneRuntime,
+    deadline: tokio::time::Instant,
+    mut want: impl FnMut(&CoreMsg, &mut PaneRuntime) -> bool,
+) {
+    loop {
+        let msg = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("message before deadline")
+            .expect("open");
+        if let CoreMsg::PaneOutput { bytes, .. } = &msg {
+            pane.feed(bytes);
+        }
+        if want(&msg, pane) {
+            return;
+        }
+    }
+}
+
+fn screen_text(pane: &mut PaneRuntime) -> String {
+    pane.snapshot();
+    (0..pane.grid.size().rows)
+        .map(|r| {
+            pane.grid
+                .row(r)
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// An upgrade pauses every reader before it takes a pane's screen (decision 0046). What the
+/// program prints after that must still be in the PTY for whoever reads next, not lost in a
+/// reader that was stopped with it in hand.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_paused_reader_leaves_the_programs_output_in_the_pty() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let dir = tempfile::tempdir().unwrap();
+    let req = request("p_0006", &["cat"], dir.path().to_str().unwrap());
+    let pty = RealSpawner.spawn(req, tx).unwrap();
+    let mut pane = Reaped(PaneRuntime::new(
+        PaneId("p_0006".into()),
+        emulator(Size { cols: 200, rows: 5 }),
+        pty,
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    pane.0.pty.pause_reader();
+    read_until(&mut rx, &mut pane.0, deadline, |msg, _| {
+        matches!(msg, CoreMsg::ReaderPaused { .. })
+    })
+    .await;
+    pane.0.write(b"held\n");
+    let quiet = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await;
+    assert!(
+        quiet.is_err(),
+        "a paused reader sent {:?}",
+        quiet.map(|m| m.is_some())
+    );
+    pane.0.pty.resume_reader();
+    read_until(&mut rx, &mut pane.0, deadline, |_, pane| {
+        screen_text(pane).matches("held").count() == 2
+    })
+    .await;
+}
+
+/// The handle an upgrade hands over is the one it takes back: the same program, still
+/// running, still answering, and still this process's child to wait for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_handed_over_pty_is_adopted_with_its_program_still_running() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let dir = tempfile::tempdir().unwrap();
+    let req = request(
+        "p_0007",
+        &[
+            "sh",
+            "-c",
+            "printf ready; read line; printf \"got %s\" \"$line\"; exit 7",
+        ],
+        dir.path().to_str().unwrap(),
+    );
+    let pty = RealSpawner.spawn(req, tx.clone()).unwrap();
+    let pid = pty.pid();
+    let mut first = PaneRuntime::new(
+        PaneId("p_0007".into()),
+        emulator(Size { cols: 200, rows: 5 }),
+        pty,
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    read_until(&mut rx, &mut first, deadline, |_, pane| {
+        screen_text(pane).contains("ready")
+    })
+    .await;
+    let handed = first
+        .pty
+        .hand_over()
+        .expect("a running program is handed over");
+    assert_eq!(handed.pid, pid);
+    let adopted = RealSpawner
+        .adopt(PaneId("p_0007".into()), handed, tx)
+        .expect("the handed over PTY is adopted");
+    assert_eq!(adopted.pid(), pid, "the same program");
+    let mut second = Reaped(PaneRuntime::new(
+        PaneId("p_0007".into()),
+        emulator(Size { cols: 200, rows: 5 }),
+        adopted,
+    ));
+    second.0.write(b"after\n");
+    let mut exited = false;
+    read_until(&mut rx, &mut second.0, deadline, |msg, _| {
+        exited |= matches!(msg, CoreMsg::PaneExited { .. });
+        exited
+    })
+    .await;
+    assert!(
+        screen_text(&mut second.0).contains("got after"),
+        "{}",
+        screen_text(&mut second.0)
+    );
+    assert_eq!(
+        exit_code_by(&mut second.0, deadline).await,
+        Some(7),
+        "the adopted handle waits for the program it did not start"
+    );
+}
