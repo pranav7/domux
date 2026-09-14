@@ -86,6 +86,13 @@ async fn control(
     first: u8,
     core_tx: mpsc::Sender<CoreMsg>,
 ) -> anyhow::Result<()> {
+    // Read once, while the socket is whole: every request on this connection comes from the
+    // same process.
+    let caller = stream
+        .peer_cred()
+        .ok()
+        .and_then(|c| c.pid())
+        .and_then(|pid| u32::try_from(pid).ok());
     let (r, mut w) = stream.into_split();
     let mut lines = BufReader::new(r).lines();
     let mut carry = Some(first);
@@ -148,6 +155,7 @@ async fn control(
             .send(CoreMsg::Api {
                 request,
                 reply: reply_tx,
+                caller,
             })
             .await?;
         let response = reply_rx.await?;

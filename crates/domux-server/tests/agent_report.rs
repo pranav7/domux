@@ -209,6 +209,61 @@ async fn a_resumed_session_shows_the_recap_and_the_name_it_already_has() {
     assert_eq!(a.name.as_deref(), Some("auth-cleanup"));
 }
 
+/// MUX-43. An agent can start another agent from its own shell, as a worker it hands a task
+/// to, and the worker inherits the pane and sends its hooks from it. The worker is not the
+/// pane's agent, so its hooks change nothing: the pane's record keeps its id, its session, its
+/// state and its name, no row is made for the worker, and the pane's own agent goes on
+/// reporting to its record (decision record 0045).
+#[tokio::test]
+async fn an_agent_another_agent_started_leaves_the_panes_record_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = dir.path().join("s.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"custom-title\",\"customTitle\":\"agent-harness\",\"sessionId\":\"c1\"}\n",
+    )
+    .unwrap();
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let own = |event: &str| {
+        payload(
+            event,
+            json!({"transcript_path": transcript.to_str().unwrap()}),
+        )
+    };
+    h.hooks_run_under(&["claude"]);
+    h.report(pane.clone(), AgentKind::Claude, &own("SessionStart"))
+        .await;
+    h.report(pane.clone(), AgentKind::Claude, &own("UserPromptSubmit"))
+        .await;
+    let before = h.wait_for_agent(|a| a.name.is_some(), TICK).await;
+    assert_eq!(before.name.as_deref(), Some("agent-harness"));
+    assert_eq!(before.state, AgentState::Working);
+
+    h.hooks_run_under(&["claude", "zsh", "claude"]);
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "Notification",
+        "Stop",
+        "SessionEnd",
+    ] {
+        let worker = json!({"hook_event_name": event, "session_id": "worker"}).to_string();
+        let out = h.report_raw(pane.clone(), AgentKind::Claude, &worker).await;
+        assert_eq!(out.agent, None, "{event} landed on no record");
+        assert_eq!(out.context, None, "{event} answered with no context block");
+        assert_eq!(only_agent(&h), before, "{event} left the record as it was");
+    }
+
+    h.hooks_run_under(&["claude"]);
+    let out = h
+        .report(pane.clone(), AgentKind::Claude, &own("Stop"))
+        .await;
+    assert_eq!(out.agent, Some(before.id.clone()));
+    assert_eq!(only_agent(&h).state, AgentState::Idle);
+}
+
 #[tokio::test]
 async fn a_codex_payload_reaches_the_same_record_path_and_reads_no_transcript() {
     let mut h = Harness::start(Config::default(), 80, 24).await;

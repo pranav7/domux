@@ -52,6 +52,8 @@ pub enum CoreMsg {
     Api {
         request: Request,
         reply: oneshot::Sender<Response>,
+        /// The process id at the other end of the socket, when the OS says.
+        caller: Option<u32>,
     },
     Subscribe {
         filter: Vec<String>,
@@ -924,7 +926,11 @@ impl Core {
             }
             CoreMsg::ClientInput { client, msg } => self.client_input(client, msg),
             CoreMsg::ClientGone { client } => self.detach(&client, None),
-            CoreMsg::Api { request, reply } => self.api(request, reply),
+            CoreMsg::Api {
+                request,
+                reply,
+                caller,
+            } => self.api(request, reply, caller),
             CoreMsg::FactFetched { key, fact } => {
                 // A workspace removed while its provider was still running: the answer is
                 // about nothing the model holds, so it is dropped rather than put back.
@@ -1370,7 +1376,7 @@ impl Core {
     /// One API request. The answer goes to `reply` here, unless the handler deferred it:
     /// a handler that has to shell out queues a job and the job carries the answer, so the
     /// caller waits and the core does not (decision record 0006).
-    fn api(&mut self, request: Request, reply: oneshot::Sender<Response>) {
+    fn api(&mut self, request: Request, reply: oneshot::Sender<Response>, caller: Option<u32>) {
         let id = request.id.clone();
         let method = match Method::from_request(&request.method, request.params) {
             Ok(m) => m,
@@ -1380,7 +1386,7 @@ impl Core {
             }
         };
         let client = param_client(&method).or_else(|| self.model.most_recent_client());
-        let done = self.dispatch_inner(method, client.clone(), false);
+        let done = self.dispatch_inner(method, client.clone(), false, caller);
         let mut reply = Some(reply);
         if !done.deferred {
             if let Some(tx) = reply.take() {
@@ -1440,7 +1446,7 @@ impl Core {
         client: Option<ClientId>,
         from_key: bool,
     ) -> Result<serde_json::Value, ApiError> {
-        let done = self.dispatch_inner(method, client.clone(), from_key);
+        let done = self.dispatch_inner(method, client.clone(), from_key, None);
         // No reply travels with a key's job: nobody is waiting on a keystroke, and a
         // failure reaches that client's hint row instead (`Core::answer`).
         for job in done.jobs {
@@ -1457,6 +1463,7 @@ impl Core {
         method: Method,
         client: Option<ClientId>,
         from_key: bool,
+        caller: Option<u32>,
     ) -> Dispatched {
         let mut ctx = Ctx {
             model: &mut self.model,
@@ -1473,6 +1480,7 @@ impl Core {
             started_at: &self.started_at,
             client,
             from_key,
+            caller,
             events: Vec::new(),
             toasts: Vec::new(),
             stop_requested: false,

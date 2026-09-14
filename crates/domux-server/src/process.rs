@@ -1,5 +1,6 @@
 //! Who is in the foreground of a pane, and where. `tcgetpgrp` on the PTY master gives the
-//! foreground process group; its leader's name and working directory come from the OS.
+//! foreground process group; its leader's name and working directory come from the OS. So do
+//! any process's name and parent, which is what a walk up from a hook reads.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -10,8 +11,9 @@ use std::sync::Mutex;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!(
-    "the process inspector has no `process_name` or `process_cwd` for this platform: domux \
-     supports macOS and Linux, so add an arm for this target or build on one of those"
+    "the process inspector has no `process_name`, `process_parent` or `process_cwd` for this \
+     platform: domux supports macOS and Linux, so add an arm for this target or build on one of \
+     those"
 );
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +30,13 @@ pub trait ProcessInspector: Send + Sync {
     /// number that belongs to something else.
     fn foreground(&self, pty_fd: Option<RawFd>) -> Option<ForegroundProcess>;
     fn cwd_of(&self, pid: u32) -> Option<PathBuf>;
+
+    /// The process that started this one, while both are there. `agents::nested` walks it
+    /// to tell a pane's agent from an agent that agent started.
+    fn parent_of(&self, pid: u32) -> Option<u32>;
+
+    /// The name a process is known by, as `foreground` names the one in front of a pane.
+    fn name_of(&self, pid: u32) -> Option<String>;
 
     /// Is this process still there? The default asks the OS for its working directory, which
     /// fails for a dead process on macOS and on Linux, so one question answers both platforms
@@ -57,6 +66,14 @@ impl ProcessInspector for RealInspector {
 
     fn cwd_of(&self, pid: u32) -> Option<PathBuf> {
         process_cwd(pid)
+    }
+
+    fn parent_of(&self, pid: u32) -> Option<u32> {
+        process_parent(pid)
+    }
+
+    fn name_of(&self, pid: u32) -> Option<String> {
+        process_name(pid)
     }
 }
 
@@ -159,6 +176,27 @@ fn argv0_from_procargs2(buf: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(target_os = "macos")]
+fn process_parent(pid: u32) -> Option<u32> {
+    // Safe: proc_pidinfo fills a zeroed struct of the size we pass.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    // A partial fill is not the fact we asked for, as in `process_cwd`.
+    if n != size {
+        return None;
+    }
+    Some(info.pbi_ppid)
+}
+
+#[cfg(target_os = "macos")]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
     // Safe: proc_pidinfo fills a zeroed struct of the size we pass.
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
@@ -223,6 +261,20 @@ fn linux_process_name_from_reads(
 }
 
 #[cfg(target_os = "linux")]
+fn process_parent(pid: u32) -> Option<u32> {
+    parent_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// The parent's process id out of a `/proc/<pid>/stat` line: `pid (comm) state ppid ...`. The
+/// name sits in parentheses and may hold spaces and parentheses of its own, so the fields are
+/// counted from the last closing one.
+#[cfg(any(target_os = "linux", test))]
+fn parent_from_stat(stat: &str) -> Option<u32> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+#[cfg(target_os = "linux")]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
     let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
     // The kernel renders a removed directory as `/path (deleted)`, which is a plausible looking
@@ -240,11 +292,14 @@ type Entry = (Option<ForegroundProcess>, Option<PathBuf>);
 
 /// The test double: a process table. `set` answers for every pane; `set_for` answers for one
 /// pane's PTY file descriptor and wins over `set`, so two panes can hold two agents.
+/// `set_process` gives a process a name and a parent, which is what a walk up from a hook
+/// reads.
 #[derive(Default)]
 pub struct FakeInspector {
     all: Mutex<Entry>,
     per_fd: Mutex<HashMap<RawFd, Entry>>,
     dead: Mutex<HashSet<u32>>,
+    processes: Mutex<HashMap<u32, (String, Option<u32>)>>,
 }
 
 impl FakeInspector {
@@ -260,6 +315,15 @@ impl FakeInspector {
     /// The process is gone; `is_alive` says so from now on, and it has no working directory.
     pub fn set_dead(&self, pid: u32) {
         self.dead.lock().unwrap().insert(pid);
+    }
+
+    /// What `pid` is called and which process started it. `None` for the parent is a process
+    /// whose parent the table does not hold, where a walk up ends.
+    pub fn set_process(&self, pid: u32, name: &str, parent: Option<u32>) {
+        self.processes
+            .lock()
+            .unwrap()
+            .insert(pid, (name.to_string(), parent));
     }
 }
 
@@ -295,6 +359,14 @@ impl ProcessInspector for FakeInspector {
     /// read as dead.
     fn is_alive(&self, pid: u32) -> bool {
         !self.dead.lock().unwrap().contains(&pid)
+    }
+
+    fn parent_of(&self, pid: u32) -> Option<u32> {
+        self.processes.lock().unwrap().get(&pid)?.1
+    }
+
+    fn name_of(&self, pid: u32) -> Option<String> {
+        Some(self.processes.lock().unwrap().get(&pid)?.0.clone())
     }
 }
 
@@ -616,9 +688,75 @@ mod tests {
             fn cwd_of(&self, _pid: u32) -> Option<PathBuf> {
                 self.0.clone()
             }
+            fn parent_of(&self, _pid: u32) -> Option<u32> {
+                None
+            }
+            fn name_of(&self, _pid: u32) -> Option<String> {
+                None
+            }
         }
         assert!(OnlyCwd(Some(PathBuf::from("/tmp"))).is_alive(7));
         assert!(!OnlyCwd(None).is_alive(7));
+    }
+
+    #[test]
+    fn a_stat_line_gives_the_parent_after_a_name_with_spaces_and_parentheses() {
+        assert_eq!(
+            parent_from_stat("4242 (claude) S 4100 4242 4100 0"),
+            Some(4100)
+        );
+        assert_eq!(parent_from_stat("4242 (a (b) c) S 7 4242"), Some(7));
+        assert_eq!(parent_from_stat("4242 (claude"), None, "a truncated line");
+    }
+
+    #[test]
+    fn real_inspector_names_the_process_that_started_this_one() {
+        // Safe: getppid only reads.
+        let parent = unsafe { libc::getppid() } as u32;
+        assert_eq!(RealInspector.parent_of(std::process::id()), Some(parent));
+    }
+
+    /// The name `name_of` reads is the one `foreground` reads, argv[0], so a walk up from a hook
+    /// recognises an agent by the name the observer does.
+    #[test]
+    fn real_inspector_names_a_child_by_argv0_and_this_process_as_its_parent() {
+        use std::os::unix::process::CommandExt;
+        /// Kills and reaps the child however the test ends, as `ChildGuard` does for a PTY's.
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = Reaped(
+            std::process::Command::new("/bin/sleep")
+                .arg0("claude")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // Between the fork and the exec the child still carries this process's name.
+        while RealInspector.name_of(pid).as_deref() != Some("claude") {
+            assert!(
+                Instant::now() <= deadline,
+                "the child was never named claude, last {:?}",
+                RealInspector.name_of(pid)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(RealInspector.parent_of(pid), Some(std::process::id()));
+    }
+
+    #[test]
+    fn real_inspector_has_no_parent_and_no_name_for_a_reaped_child() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert_eq!(RealInspector.parent_of(pid), None);
+        assert_eq!(RealInspector.name_of(pid), None);
     }
 
     #[test]
