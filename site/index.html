@@ -3,15 +3,41 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>domux</title>
-<meta name="description" content="terminal runtime for working with multiple coding agents">
+<title>domux: terminal multiplexer for Claude Code, Codex and OpenCode</title>
+<meta name="description" content="Open-source terminal multiplexer that runs Claude Code, Codex and OpenCode in parallel on macOS and Linux, a git worktree each, with tmux keys.">
 <meta name="theme-color" content="#1e1e2e">
 <meta name="color-scheme" content="dark">
-<meta property="og:title" content="domux">
-<meta property="og:description" content="terminal runtime for working with multiple coding agents">
+<link rel="canonical" href="https://domux.dev/">
+<meta property="og:site_name" content="domux">
+<meta property="og:title" content="domux: terminal multiplexer for Claude Code, Codex and OpenCode">
+<meta property="og:description" content="Run all your coding agents from one terminal. Give each agent its own git worktree, see which one is waiting on you, and close the lid while the rest keep working.">
 <meta property="og:url" content="https://domux.dev/">
 <meta property="og:type" content="website">
+<meta property="og:image" content="https://domux.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Run all your coding agents from one terminal, over a screenshot of domux">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
+<!-- Every fact here is also on the page as text, which is what an assistant that fetches the page
+     reads. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "domux",
+  "description": "domux is an open-source terminal multiplexer for AI coding agents. It runs Claude Code, Codex and OpenCode in parallel, each in its own git worktree, shows which agent is waiting on you, and keeps them running after you close the lid.",
+  "url": "https://domux.dev/",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "downloadUrl": "https://domux.dev/install.sh",
+  "image": "https://domux.dev/og.png",
+  "screenshot": "https://domux.dev/screenshot.webp",
+  "sameAs": ["https://github.com/pranav7/domux"]
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
@@ -27,6 +53,19 @@
     --accent-hover: #d9bffa;
     --accent-wash: rgb(203 166 247 / 0.14);
     --accent-shadow: rgb(203 166 247 / 0.3);
+    /* The built-in theme's roles, so a mock draws what domux draws. */
+    --fill: #313244;
+    --dim: #7f849c;
+    --faint: #6c7086;
+    --workspace: #93e2d5;
+    --branch: #e3b4d8;
+    --pr: #a6e3a1;
+    --dot: #f38ba8;
+    --recap: #ddcaf7;
+    --key: #89b4fa;
+    --claude: #de7356;
+    --codex: #89b4fa;
+    --opencode: #c678b8;
     --column: 64rem;
     --gutter: 20px;
     /* One tile of the field: a glyph 3 cells wide and 4 tall, with 0.7 of a cell around it. */
@@ -171,16 +210,25 @@
 
   h1 {
     margin: 0;
-    max-width: 22ch;
+    /* Three lines, the last of them "from one terminal", and none of them reaching the glyphs
+       beside the heading. */
+    max-width: 17.5ch;
     font-size: clamp(2.125rem, 1rem + 4.6vw, 3.75rem);
     font-weight: 700;
     line-height: 1.05;
     letter-spacing: -0.04em;
   }
 
-  /* The focused tab in domux's tab row: the accent as the ground, the page's ground as the text. */
+  /* The heading's last three words stay on one line, so the focused tab ends the heading. */
+  .nowrap { white-space: nowrap; }
+
+  /* The focused tab in domux's tab row: the accent as the ground, the page's ground as the text.
+     An inline block one line-height tall, so the ground stops short of the line above rather
+     than filling the font's whole content box. */
   .focused {
-    padding-inline: 0.12em;
+    display: inline-block;
+    padding: 0.02em 0.12em 0.05em;
+    line-height: 1;
     background: var(--accent);
     color: var(--ground);
   }
@@ -252,6 +300,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.625rem;
+    max-width: 100%;
     margin-top: 1.75rem;
     padding: 0.375rem 0.875rem 0.375rem 0.375rem;
     border: 1.5px solid var(--line);
@@ -266,6 +315,7 @@
   }
 
   .version {
+    flex: none;
     padding: 0.0625rem 0.5rem;
     background: var(--accent-wash);
     color: var(--accent);
@@ -274,9 +324,12 @@
 
   .version:empty { display: none; }
 
+  .summary { min-width: 0; }
+
+  .arrow { flex: none; }
+
   .shot {
     margin-block: 4.5rem 0;
-    padding-bottom: 6rem;
   }
 
   .frame {
@@ -314,6 +367,130 @@
     height: auto;
   }
 
+  .what {
+    padding-block: 6rem 1rem;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: clamp(1.5rem, 1rem + 1.6vw, 2rem);
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.03em;
+  }
+
+  .kicker {
+    margin: 0 0 0.5rem;
+    color: var(--accent);
+    font-size: 0.8125rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* One feature is a row: the words in a fixed column, the mock taking the rest. */
+  .feature {
+    display: grid;
+    grid-template-columns: minmax(0, 21rem) minmax(0, 1fr);
+    gap: 2.5rem 3rem;
+    align-items: start;
+    padding-block: 2.75rem;
+    border-top: 1.5px solid var(--line);
+  }
+
+  .feature:first-of-type {
+    margin-top: 2.5rem;
+  }
+
+  .num {
+    display: block;
+    margin-bottom: 0.75rem;
+    color: var(--accent);
+    font-size: 0.8125rem;
+  }
+
+  h3 {
+    margin: 0 0 0.75rem;
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: -0.02em;
+  }
+
+  .feature p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.9375rem;
+    line-height: 1.65;
+  }
+
+  .feature p code,
+  .rest code {
+    font: inherit;
+    color: var(--accent);
+  }
+
+  /* A mock is a few rows of domux, drawn in its own colours. */
+  .term {
+    margin: 0;
+    padding: 1rem 1.125rem;
+    border: 1.5px solid var(--edge);
+    background: var(--ground);
+    box-shadow: 5px 5px 0 var(--accent-shadow);
+    font: inherit;
+    font-size: 0.8125rem;
+    line-height: 1.55;
+    overflow-x: auto;
+    white-space: pre;
+    tab-size: 4;
+  }
+
+  .term .title { color: var(--faint); }
+  .term .head { color: var(--faint); font-weight: 700; }
+  .term .ws { color: var(--workspace); }
+  .term .branch { color: var(--branch); }
+  .term .pr { color: var(--pr); }
+  .term .dim { color: var(--dim); }
+  .term .faint { color: var(--faint); }
+  .term .soft { color: var(--muted); }
+  .term .dot { color: var(--dot); }
+  .term .recap { color: var(--recap); }
+  .term .key { color: var(--key); }
+  .term .claude { color: var(--claude); }
+  .term .codex { color: var(--codex); }
+  .term .opencode { color: var(--opencode); }
+  .term .accent { color: var(--accent); }
+  .term .on { color: var(--pr); }
+  .term .fill { background: var(--fill); }
+  .term .tab { background: var(--accent); color: var(--ground); font-weight: 700; }
+  .term .band { color: #ffc9b0; }
+  .term .band-codex { color: #c8daff; }
+
+  .rest {
+    padding-block: 4rem 6rem;
+  }
+
+  .rest ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+    gap: 1.25rem;
+    margin: 2rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .rest li {
+    padding: 1.125rem 1.25rem;
+    border: 1.5px solid var(--line);
+    background: var(--box);
+    color: var(--muted);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+  }
+
+  .rest b {
+    color: var(--text);
+  }
+
   .unseen {
     position: absolute;
     width: 1px;
@@ -340,6 +517,15 @@
     .hero { padding-top: calc(var(--tile-h) * 2); }
   }
 
+  /* Below the width that fits the words beside a mock, the mock goes under them. */
+  @media (max-width: 48rem) {
+    .feature {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 1.5rem;
+      padding-block: 2.25rem;
+    }
+  }
+
   @media (max-width: 30rem) {
     :root {
       --tile-w: 51.8px;
@@ -358,7 +544,13 @@
 
     .install code { font-size: 0.8125rem; }
 
-    .shot { margin-top: 3.5rem; padding-bottom: 4rem; }
+    .shot { margin-top: 3.5rem; }
+
+    .what { padding-top: 4rem; }
+
+    .term { padding: 0.875rem 1rem; font-size: 0.75rem; }
+
+    .rest { padding-block: 3rem 4rem; }
   }
 </style>
 </head>
@@ -397,10 +589,10 @@
   </div>
 
   <section class="hero column">
-    <h1>Terminal runtime for multiple coding <span class="focused">agents</span></h1>
-    <p class="lede">domux runs Claude Code, Codex and OpenCode side by side, shows you which agent is
-      waiting on you, and keeps every pane running after you detach. Built on Ghostty, with your tmux
-      keys, for macOS and Linux.</p>
+    <h1>Run all your coding agents <span class="nowrap">from one <span class="focused">terminal</span></span></h1>
+    <p class="lede">domux is a terminal multiplexer for AI coding agents, with a map of every one you
+      run. Give each agent its own git worktree, see which one is waiting on you, and close the lid
+      while the rest keep working. Your tmux keys, on macOS and Linux.</p>
 
     <div class="install">
       <code><span class="prompt">$ </span><span id="command">curl -fsSL https://domux.dev/install.sh | sh</span></code>
@@ -413,7 +605,8 @@
 
     <a class="release" href="https://github.com/pranav7/domux/releases/latest">
       <span class="version" id="version"></span>
-      Read the release notes
+      <span class="summary" id="summary">Read the release notes</span>
+      <span class="arrow" aria-hidden="true">→</span>
     </a>
   </section>
 
@@ -427,6 +620,162 @@
         alt="domux with the Navigator on the left, Claude Code in the focused pane and a shell beside it">
     </div>
   </figure>
+
+  <section class="what column" aria-labelledby="what">
+    <p class="kicker">What you get</p>
+    <h2 id="what">Ten agents, and you still know where each one is.</h2>
+
+    <article class="feature">
+      <div>
+        <span class="num">01</span>
+        <h3>A worktree for every agent.</h3>
+        <p>A project is a git repository, and a workspace is a worktree in it on its own branch.
+          <code>.domux/worktree.conf</code> links in what a fresh checkout lacks, such as
+          <code>.env</code> and <code>node_modules</code>, and runs your setup. Start an agent in
+          each workspace and no two share a checkout.</p>
+      </div>
+      <pre class="term" aria-hidden="true"><span class="accent">$</span> cat .domux/worktree.conf
+<span class="key">link</span> .env
+<span class="key">link</span> node_modules
+<span class="key">run</span>  pnpm install
+
+<span class="title">─ Navigator ────────────────────────</span>
+<span class="head">DOMUX</span>
+  <span class="dim">main</span>
+<span class="fill">  <span class="ws">auth-cleanup</span>                      </span>
+<span class="fill">  <span class="branch">prnv/auth-cleanup</span> · <span class="pr">PR#48</span>         </span>
+  └ <span class="claude">claude</span> <span class="claude">✶</span> <span class="band">Baking…</span>
+  <span class="ws">billing-export</span>
+  <span class="branch">prnv/billing-export</span> · <span class="pr">PR#51</span>
+  └ <span class="codex">codex</span> <span class="codex">✻</span> <span class="band-codex">Percolating…</span>
+<span class="dim">◌ workspace-3</span></pre>
+    </article>
+
+    <article class="feature">
+      <div>
+        <span class="num">02</span>
+        <h3>The one that's waiting on you.</h3>
+        <p>Each agent reports its own state through its hooks, so a row says working, waiting or
+          idle without guessing from the screen. A red dot marks the agent that stopped for you,
+          and <code>leader a</code> lists agents by who needs you first.</p>
+      </div>
+      <pre class="term" aria-hidden="true"><span class="title">─ Agents ───────────────────────────────</span>
+<span class="head">DOMUX</span>
+<span class="fill"><span class="claude">auth-cleanup</span> <span class="dot">◉</span>                          </span>
+<span class="fill">  <span class="dim">claude · auth-cleanup › 1</span>             </span>
+<span class="fill">  <span class="recap">※ Replaced the session check in</span>       </span>
+<span class="fill">  <span class="recap">  auth/middleware.ts. Keep the legacy</span>  </span>
+<span class="fill">  <span class="recap">  cookie path?</span>                        </span>
+<span class="codex">codex</span> <span class="codex">✶</span> <span class="band-codex">Baking…</span>
+  <span class="dim">codex · billing-export › 1</span>
+<span class="opencode">opencode</span>
+  <span class="dim">opencode · workspace-3 › 1</span>
+
+<span class="key">enter</span> <span class="faint">open</span> · <span class="key">/</span> <span class="faint">filter</span> · <span class="key">esc</span> <span class="faint">close</span></pre>
+    </article>
+
+    <article class="feature">
+      <div>
+        <span class="num">03</span>
+        <h3>Read the recap before you switch.</h3>
+        <p>A Claude Code row carries the session's name and the last recap the agent wrote. The
+          switcher and <code>domux peek</code> show both, so you know what an agent did before
+          you go and look.</p>
+      </div>
+      <pre class="term" aria-hidden="true"><span class="accent">$</span> domux peek
+<span class="claude">•</span> auth-cleanup  <span class="dot">waiting</span>
+  <span class="dim">claude · domux › auth-cleanup › 1  (a_3f2e)</span>
+  <span class="recap">※ Replaced the session check in auth/middleware.ts;</span>
+  <span class="recap">  41 tests pass. Keep the legacy cookie path?</span>
+<span class="claude">•</span> release-notes  <span class="soft">idle</span>
+  <span class="dim">claude · domux › main › 2  (a_8d10)</span>
+  <span class="recap">※ Drafted the 0.1.2 section from the merged PRs;</span>
+  <span class="recap">  the upgrade step needs a sentence from you.</span>
+<span class="codex">•</span> codex  <span class="soft">working</span>
+  <span class="dim">codex · domux › billing-export › 1  (a_9c04)</span></pre>
+    </article>
+
+    <article class="feature">
+      <div>
+        <span class="num">04</span>
+        <h3>Close the lid. Nothing stops.</h3>
+        <p>A server owns every pane, so detaching or closing the terminal stops no agent, and you
+          attach again from any terminal, over ssh included. Stay awake keeps the machine up with
+          the lid shut; the installer offers to set it up.</p>
+      </div>
+      <pre class="term" aria-hidden="true"> <span class="dim">1</span> auth-cleanup  <span class="tab"> 2 billing-export </span> <span class="dim">3</span>  <span class="dim">+</span>            <span class="soft">18:57  Sun 14 Sep</span> <span class="on">●</span>
+
+                            <span class="faint">┌────────────────────────┐</span>
+                            <span class="faint">│</span> Stay awake turned on   <span class="faint">│</span>
+                            <span class="faint">└────────────────────────┘</span>
+
+<span class="faint"># the next morning, from another machine</span>
+<span class="accent">$</span> ssh studio
+<span class="accent">$</span> domux
+<span class="faint">attached: 3 agents, 2 of them still working</span></pre>
+    </article>
+
+    <article class="feature">
+      <div>
+        <span class="num">05</span>
+        <h3>Your tmux keys, and your mouse.</h3>
+        <p>Tabs, splits, zoom, scrollback and copy mode answer the keys you already know, behind
+          a leader you pick at install. The wheel scrolls, a drag selects, a click opens the link
+          under it, and a program that asked for the mouse gets it.</p>
+      </div>
+      <pre class="term" aria-hidden="true"><span class="key">leader \</span>   split right      <span class="key">leader z</span>   zoom
+<span class="key">leader -</span>   split down       <span class="key">leader [</span>   copy mode
+<span class="key">leader t</span>   new tab          <span class="key">leader d</span>   detach
+<span class="key">leader a</span>   agents           <span class="key">leader s</span>   search
+<span class="key">leader b</span>   hide the sidebar <span class="key">leader ?</span>   every key
+
+<span class="key">C-h C-j C-k C-l</span>   move between panes
+
+<span class="faint">wheel</span> scrolls · <span class="faint">drag</span> selects · <span class="faint">click</span> opens the link under it</pre>
+    </article>
+
+    <article class="feature">
+      <div>
+        <span class="num">06</span>
+        <h3>Scriptable by you, and by your agents.</h3>
+        <p>Every key, subcommand and API call reaches the same handler, so anything you can press
+          you can script: <code>domux events</code> streams what happens as JSON, and
+          <code>domux pane send-text</code> types into a pane. Every agent starts with a note
+          saying where it is and how to ask domux who else is running.</p>
+      </div>
+      <pre class="term" aria-hidden="true"><span class="accent">$</span> domux events 'agent.*'
+<span class="dim">{"event":"agent.state_changed","agent":"a_3f2e","from":"working","to":"waiting"}</span>
+<span class="dim">{"event":"agent.recap_changed","agent":"a_3f2e","recap":"Replaced the session…"}</span>
+
+<span class="faint"># what every agent reads when it starts</span>
+<span class="soft">[domux] You are agent a_9c04 (codex) in domux › billing-export › 1,</span>
+<span class="soft">working directory ~/domux/.worktrees/workspace-2.</span>
+
+<span class="soft">2 other agents are running right now. domux is the multiplexer</span>
+<span class="soft">around all of you. These commands talk to it:</span>
+
+<span class="soft">  domux peek      every agent: kind, place, state, recap</span>
+<span class="soft">  domux whoami    this agent's project, workspace, tab and pane</span></pre>
+    </article>
+  </section>
+
+  <section class="rest column" aria-labelledby="rest">
+    <h2 id="rest">And the rest</h2>
+    <ul>
+      <li><b>Themes.</b> Your terminal's colours, a theme file of your own, or the built-in look.
+        On Omarchy the chrome follows a theme change while you stay attached.</li>
+      <li><b>Pull requests.</b> Each workspace row shows its branch and the number of its open pull
+        request.</li>
+      <li><b>Hooks, set up for you.</b> The command that installs domux finds Claude Code, Codex
+        and OpenCode and installs the hooks each one reports through. Run it again to upgrade.</li>
+      <li><b><code>domux open &lt;path&gt;</code></b> registers a repository as a project and
+        switches to it.</li>
+      <li><b>No tmux to install.</b> domux is its own multiplexer, so a fresh machine needs the one
+        binary.</li>
+      <li><b>Open source.</b> Apache-2.0, on
+        <a href="https://github.com/pranav7/domux">GitHub</a>.</li>
+    </ul>
+  </section>
 </main>
 
 <script>
@@ -454,7 +803,7 @@
     }, 2000);
   });
 
-  // The star count and the latest version, read on every visit. GitHub allows each address 60
+  // The star count and the latest release, read on every visit. GitHub allows each address 60
   // unauthenticated requests an hour; when a request fails the page shows no count and no version
   // rather than a stale or made up one.
   const github = (path) =>
@@ -470,9 +819,22 @@
     })
     .catch(() => {});
 
+  // A release's notes open with a one-line summary, as CHANGELOG.md asks. Notes that open with
+  // anything else, such as a code block, a heading or a wrapped paragraph, keep the link's own
+  // words.
+  const summaryOf = (body) => {
+    const lines = (typeof body === "string" ? body : "").split(/\r?\n/).map((line) => line.trim());
+    const at = lines.findIndex(Boolean);
+    if (at < 0 || lines[at + 1] || /^(```|#|[-*>|<[])/.test(lines[at])) return "";
+    return lines[at].replaceAll("`", "");
+  };
+
   github("/releases/latest")
-    .then(({ tag_name: tag }) => {
-      if (typeof tag === "string") document.getElementById("version").textContent = tag;
+    .then(({ tag_name: tag, body }) => {
+      if (typeof tag !== "string") return;
+      document.getElementById("version").textContent = tag;
+      const summary = summaryOf(body);
+      if (summary) document.getElementById("summary").textContent = summary;
     })
     .catch(() => {});
 </script>
