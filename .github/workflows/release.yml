@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to build and smoke-test without publishing, for example 1.0.0. It must equal Cargo.toml's [workspace.package].version and have a CHANGELOG.md section.
+        description: Version to build and smoke-test without publishing, for example 0.1.2. It must equal Cargo.toml's [workspace.package].version and have a CHANGELOG.md section.
         required: true
         type: string
 

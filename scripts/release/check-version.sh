@@ -3,9 +3,6 @@
 # Usage: scripts/release/check-version.sh <tag> [Cargo.toml]
 # Prints the version body (the tag without its leading v) on stdout and exits 0 when they match.
 # Otherwise prints the state and the next action on stderr and exits 1.
-#
-# domux releases are v1 and later. The v0.x tags are V1, the Go version on the v1 branch, and
-# this script refuses them so a V1 tag can never publish a V2 archive.
 set -eu
 
 fail() { printf 'check-version: %s\n  next: %s\n' "$1" "$2" >&2; exit 1; }
@@ -14,9 +11,8 @@ tag=${1:?usage: check-version.sh <tag> [Cargo.toml]}
 manifest=${2:-Cargo.toml}
 
 case $tag in
-  v0.*) fail "$tag is a domux V1 tag; this pipeline releases the Rust version" "tag as v1.<minor>.<patch> or later" ;;
-  v[1-9]*) ;;
-  *) fail "$tag is not a release tag" "tag as v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-<prerelease>, with major 1 or greater" ;;
+  v[0-9]*.[0-9]*.[0-9]*) ;;
+  *) fail "$tag is not a release tag" "tag as v<major>.<minor>.<patch> or v<major>.<minor>.<patch>-<prerelease>" ;;
 esac
 body=${tag#v}
 

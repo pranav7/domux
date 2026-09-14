@@ -204,30 +204,30 @@ mode_of() {
 
 test_installs_the_newest_stable_release_on_macos_arm64() {
   sandbox
-  releases v1.1.0-beta.1 v1.0.5 v1.0.4 v0.3.0
-  release v1.0.5 darwin arm64
-  release v1.1.0-beta.1 darwin arm64
+  releases v0.2.0-beta.1 v0.1.5 v0.1.4
+  release v0.1.5 darwin arm64
+  release v0.2.0-beta.1 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
-  assert_eq "$S/bin/domux 1.0.5" "$(out)" "stdout data line"
+  assert_eq "$S/bin/domux 0.1.5" "$(out)" "stdout data line"
   assert_file "$S/bin/domux" "installed binary"
-  assert_eq "domux 1.0.5" "$("$S/bin/domux" --version)" "installed binary runs"
-  assert_contains "$(err)" "domux 1.0.5 installed to $S/bin/domux" "summary"
-  assert_contains "$(err)" "release v1.0.5 found" "release line"
+  assert_eq "domux 0.1.5" "$("$S/bin/domux" --version)" "installed binary runs"
+  assert_contains "$(err)" "domux 0.1.5 installed to $S/bin/domux" "summary"
+  assert_contains "$(err)" "release v0.1.5 found" "release line"
   assert_contains "$(err)" "domux is ready" "ready line"
   assert_contains "$(err)" "> run domux" "what to run"
   assert_contains "$(err)" "domux install claude --apply" "next steps"
   assert_contains "$(err)" "macos on arm64 detected" "platform line"
-  assert_contains "$(requests)" "releases/download/v1.0.5/domux_1.0.5_darwin_arm64.tar.gz" "archive request"
-  assert_contains "$(requests)" "releases/download/v1.0.5/SHA256SUMS" "checksums request"
+  assert_contains "$(requests)" "releases/download/v0.1.5/domux_0.1.5_darwin_arm64.tar.gz" "archive request"
+  assert_contains "$(requests)" "releases/download/v0.1.5/SHA256SUMS" "checksums request"
   assert_eq 3 "$(wc -l < "$FAKE_HTTP_DIR/requests.log" | tr -d ' ')" "exactly three requests"
   assert_eq "" "$(ls "$S/tmp")" "temp dir removed"
 }
 
 test_prints_the_logo_before_anything_else() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_eq "" "$(sed -n 1p "$S/err")" "first line is blank"
   assert_contains "$(sed -n 2p "$S/err")" "█▀▄ █▀█ █▀▄▀█ █ █ ▀▄▀" "logo line 1"
@@ -239,14 +239,14 @@ test_marks_every_finished_step_with_a_check_mark() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
   mkdir -p "$S/home/.claude"
-  releases v1.0.0
-  release v1.0.0 linux amd64
+  releases v0.1.0
+  release v0.1.0 linux amd64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(err)" "   ✓  linux on amd64 detected" "platform"
-  assert_contains "$(err)" "   ✓  release v1.0.0 found" "release"
+  assert_contains "$(err)" "   ✓  release v0.1.0 found" "release"
   assert_contains "$(err)" " downloaded, checksum verified" "download"
-  assert_contains "$(err)" "   ✓  domux 1.0.0 installed to $S/bin/domux" "install"
+  assert_contains "$(err)" "   ✓  domux 0.1.0 installed to $S/bin/domux" "install"
   assert_contains "$(err)" "   ✓  claude detected, hooks installed" "hooks"
   assert_contains "$(err)" "   ✓  leader C-a written to $CONFIG" "leader"
   assert_contains "$(err)" "   ✓  stay awake set to full in $CONFIG" "stay awake"
@@ -257,56 +257,56 @@ test_marks_every_finished_step_with_a_check_mark() {
 
 test_falls_back_to_a_prerelease_when_no_stable_release_exists() {
   sandbox
-  releases v1.0.0-alpha.2 v1.0.0-alpha.1 v0.3.0
-  release v1.0.0-alpha.2 darwin arm64
+  releases v0.1.0-alpha.2 v0.1.0-alpha.1
+  release v0.1.0-alpha.2 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
-  assert_eq "$S/bin/domux 1.0.0-alpha.2" "$(out)" "stdout"
+  assert_eq "$S/bin/domux 0.1.0-alpha.2" "$(out)" "stdout"
 }
 
 test_installs_a_pinned_version_on_linux_amd64() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
-  release v1.0.1 linux amd64
-  run_install DOMUX_VERSION=v1.0.1
+  release v0.1.1 linux amd64
+  run_install DOMUX_VERSION=v0.1.1
   assert_exit 0 "$code" "exit: $(err)"
-  assert_eq "$S/bin/domux 1.0.1" "$(out)" "stdout"
+  assert_eq "$S/bin/domux 0.1.1" "$(out)" "stdout"
   assert_not_contains "$(requests)" "api.github.com" "no release lookup when pinned"
-  assert_contains "$(err)" "✓  release v1.0.1 pinned by DOMUX_VERSION" "release line"
+  assert_contains "$(err)" "✓  release v0.1.1 pinned by DOMUX_VERSION" "release line"
 }
 
 test_maps_aarch64_to_arm64_and_accepts_a_version_without_v() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=aarch64
-  release v1.0.1 linux arm64
-  run_install DOMUX_VERSION=1.0.1
+  release v0.1.1 linux arm64
+  run_install DOMUX_VERSION=0.1.1
   assert_exit 0 "$code" "exit: $(err)"
-  assert_contains "$(requests)" "domux_1.0.1_linux_arm64.tar.gz" "aarch64 maps to arm64"
+  assert_contains "$(requests)" "domux_0.1.1_linux_arm64.tar.gz" "aarch64 maps to arm64"
 }
 
 test_maps_amd64_to_amd64_on_macos() {
   sandbox
   FAKE_UNAME_M=x86_64
-  release v1.0.1 darwin amd64
-  run_install DOMUX_VERSION=v1.0.1
+  release v0.1.1 darwin amd64
+  run_install DOMUX_VERSION=v0.1.1
   assert_exit 0 "$code" "exit: $(err)"
-  assert_contains "$(requests)" "domux_1.0.1_darwin_amd64.tar.gz" "x86_64 maps to amd64"
+  assert_contains "$(requests)" "domux_0.1.1_darwin_amd64.tar.gz" "x86_64 maps to amd64"
 }
 
 test_installs_into_domux_install_dir() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_INSTALL_DIR="$S/elsewhere/bin"
   assert_exit 0 "$code" "exit: $(err)"
   assert_file "$S/elsewhere/bin/domux" "binary in DOMUX_INSTALL_DIR"
-  assert_eq "$S/elsewhere/bin/domux 1.0.0" "$(out)" "stdout"
+  assert_eq "$S/elsewhere/bin/domux 0.1.0" "$(out)" "stdout"
 }
 
 test_prints_the_path_line_when_the_install_dir_is_not_on_path() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_contains "$(err)" "$S/bin is not on your PATH" "state"
   assert_contains "$(err)" "export PATH=\"$S/bin:\$PATH\"" "the line to add"
@@ -316,8 +316,8 @@ test_prints_the_path_line_when_the_install_dir_is_not_on_path() {
 
 test_prints_no_path_line_when_the_install_dir_is_on_path() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install PATH="$S/bin:$FAKEBIN:$PATH"
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(err)" "not on your PATH" "no hint"
@@ -327,8 +327,8 @@ test_never_edits_shell_startup_files() {
   sandbox
   printf '# untouched\n' > "$S/home/.zshrc"
   printf '# untouched\n' > "$S/home/.bashrc"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_eq "# untouched" "$(cat "$S/home/.zshrc")" ".zshrc"
   assert_eq "# untouched" "$(cat "$S/home/.bashrc")" ".bashrc"
@@ -343,11 +343,11 @@ test_replaces_an_existing_binary() {
   sandbox
   printf '#!/bin/sh\nprintf "domux 0.9.9\\n"\n' > "$S/bin/domux"
   chmod 0755 "$S/bin/domux"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
-  assert_eq "domux 1.0.0" "$("$S/bin/domux" --version)" "new binary"
+  assert_eq "domux 0.1.0" "$("$S/bin/domux" --version)" "new binary"
   assert_no_file "$S/bin/domux.tmp" "no temp file left"
 }
 
@@ -398,35 +398,45 @@ test_fails_when_the_release_list_cannot_be_fetched() {
   assert_exit 1 "$code" "exit"
   assert_contains "$(err)" "curl: (22) The requested URL returned error: 404" "what curl said"
   assert_contains "$(err)" "domux install: could not list releases at https://api.github.com/repos/pranav7/domux/releases" "state"
-  assert_contains "$(err)" "set DOMUX_VERSION=v1.x.y to skip the lookup" "next action"
+  assert_contains "$(err)" "set DOMUX_VERSION=v0.x.y to skip the lookup" "next action"
 }
 
 test_fails_when_no_release_exists() {
   sandbox
-  releases v0.3.0 v0.2.0
+  releases
   run_install
   assert_exit 1 "$code" "exit"
   assert_contains "$(err)" "domux install: no domux release exists yet" "state"
 }
 
-test_fails_when_domux_version_is_a_v1_go_tag() {
+test_fails_when_no_release_tag_is_a_version() {
   sandbox
-  run_install DOMUX_VERSION=v0.3.0
+  releases nightly latest
+  run_install
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" "release v0.3.0 is domux V1, the Go version" "state"
+  assert_contains "$(err)" "domux install: no domux release exists yet" "state"
+  assert_eq 1 "$(wc -l < "$FAKE_HTTP_DIR/requests.log" | tr -d ' ')" "no download after the lookup"
+}
+
+test_installs_a_v0_release_pinned_by_domux_version() {
+  sandbox
+  release v0.3.0 darwin arm64
+  run_install DOMUX_VERSION=v0.3.0
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_eq "$S/bin/domux 0.3.0" "$(out)" "stdout"
 }
 
 test_fails_when_domux_version_is_not_a_tag() {
   sandbox
   run_install DOMUX_VERSION=latest
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" 'DOMUX_VERSION must be a release tag such as v1.0.0; got "latest"' "state"
+  assert_contains "$(err)" 'DOMUX_VERSION must be a release tag such as v0.1.1; got "latest"' "state"
 }
 
 test_fails_before_any_request_when_domux_leader_is_not_a_key_name() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=ctrl-s
   assert_exit 1 "$code" "exit"
   assert_contains "$(err)" 'DOMUX_LEADER must be a key name such as C-s, M-a or C-Space; got "ctrl-s"' "state"
@@ -439,8 +449,8 @@ test_fails_before_any_request_when_domux_leader_is_not_a_key_name() {
 # installer no locale, so a shell that matches ? against one byte would take each of these.
 test_fails_before_any_request_when_domux_leader_is_not_utf8() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   # Not UTF-8: a byte no character starts with, a character cut short, a character spelled with
   # more bytes than it takes, half of a UTF-16 pair, one past the last character, and DEL.
   for bad in '\377' '\303' '\300\200' '\355\240\200' '\364\220\200\200' '\177'; do
@@ -455,44 +465,44 @@ test_fails_before_any_request_when_domux_leader_is_not_utf8() {
 
 test_fails_when_the_archive_is_missing_from_the_release() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 linux amd64
+  releases v0.1.0
+  release v0.1.0 linux amd64
   run_install
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" "could not download https://github.com/pranav7/domux/releases/download/v1.0.0/domux_1.0.0_darwin_arm64.tar.gz" "state"
+  assert_contains "$(err)" "could not download https://github.com/pranav7/domux/releases/download/v0.1.0/domux_0.1.0_darwin_arm64.tar.gz" "state"
   assert_no_file "$S/bin/domux" "nothing installed"
 }
 
 test_fails_when_checksums_are_missing() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
-  rm "$FAKE_HTTP_DIR/v1.0.0/SHA256SUMS"
+  releases v0.1.0
+  release v0.1.0 darwin arm64
+  rm "$FAKE_HTTP_DIR/v0.1.0/SHA256SUMS"
   run_install
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" "could not download https://github.com/pranav7/domux/releases/download/v1.0.0/SHA256SUMS" "state"
+  assert_contains "$(err)" "could not download https://github.com/pranav7/domux/releases/download/v0.1.0/SHA256SUMS" "state"
   assert_no_file "$S/bin/domux" "nothing installed"
 }
 
 test_fails_when_checksums_have_no_entry_for_the_archive() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
-  release v1.0.0 linux amd64
-  grep -v darwin_arm64 "$FAKE_HTTP_DIR/v1.0.0/SHA256SUMS" > "$S/sums"
-  mv "$S/sums" "$FAKE_HTTP_DIR/v1.0.0/SHA256SUMS"
+  releases v0.1.0
+  release v0.1.0 darwin arm64
+  release v0.1.0 linux amd64
+  grep -v darwin_arm64 "$FAKE_HTTP_DIR/v0.1.0/SHA256SUMS" > "$S/sums"
+  mv "$S/sums" "$FAKE_HTTP_DIR/v0.1.0/SHA256SUMS"
   run_install
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" "SHA256SUMS for v1.0.0 has no entry for domux_1.0.0_darwin_arm64.tar.gz" "state"
+  assert_contains "$(err)" "SHA256SUMS for v0.1.0 has no entry for domux_0.1.0_darwin_arm64.tar.gz" "state"
 }
 
 test_fails_when_the_checksum_mismatches() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64 badsum
+  releases v0.1.0
+  release v0.1.0 darwin arm64 badsum
   run_install
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" "checksum mismatch for domux_1.0.0_darwin_arm64.tar.gz" "state"
+  assert_contains "$(err)" "checksum mismatch for domux_0.1.0_darwin_arm64.tar.gz" "state"
   assert_contains "$(err)" "do not run the downloaded file" "next action"
   assert_no_file "$S/bin/domux" "nothing installed"
   assert_eq "" "$(ls "$S/tmp")" "download removed"
@@ -500,11 +510,11 @@ test_fails_when_the_checksum_mismatches() {
 
 test_fails_when_the_archive_has_no_binary() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64 empty
+  releases v0.1.0
+  release v0.1.0 darwin arm64 empty
   run_install
   assert_exit 1 "$code" "exit"
-  assert_contains "$(err)" "domux_1.0.0_darwin_arm64.tar.gz has no domux binary inside" "state"
+  assert_contains "$(err)" "domux_0.1.0_darwin_arm64.tar.gz has no domux binary inside" "state"
 }
 
 test_fails_when_the_install_dir_is_not_writable() {
@@ -514,8 +524,8 @@ test_fails_when_the_install_dir_is_not_writable() {
     return
   fi
   mkdir "$S/ro" && chmod 0555 "$S/ro"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_INSTALL_DIR="$S/ro"
   chmod 0755 "$S/ro"
   assert_exit 1 "$code" "exit"
@@ -525,8 +535,8 @@ test_fails_when_the_install_dir_is_not_writable() {
 
 test_fails_when_the_installed_binary_does_not_run() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64 broken
+  releases v0.1.0
+  release v0.1.0 darwin arm64 broken
   run_install
   assert_exit 1 "$code" "exit"
   assert_contains "$(err)" "cannot execute binary file" "the binary's own message is shown"
@@ -537,8 +547,8 @@ test_fails_when_the_installed_binary_does_not_run() {
 test_says_each_agent_it_detected_and_installs_its_hooks() {
   sandbox
   mkdir -p "$S/home/.claude" "$S/home/.config/opencode"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(calls)" "install claude --apply" "claude hooks"
@@ -551,8 +561,8 @@ test_says_each_agent_it_detected_and_installs_its_hooks() {
 
 test_says_no_agent_was_detected_when_none_is_configured() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "install " "no hooks installed"
@@ -563,8 +573,8 @@ test_says_no_agent_was_detected_when_none_is_configured() {
 test_follows_claude_config_dir_for_the_claude_hooks() {
   sandbox
   mkdir -p "$S/elsewhere/claude"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install CLAUDE_CONFIG_DIR="$S/elsewhere/claude"
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(calls)" "install claude --apply" "claude hooks follow the variable"
@@ -573,8 +583,8 @@ test_follows_claude_config_dir_for_the_claude_hooks() {
 test_says_what_happened_when_a_hook_install_fails() {
   sandbox
   mkdir -p "$S/home/.claude"
-  releases v1.0.0
-  release v1.0.0 darwin arm64 ok 1
+  releases v0.1.0
+  release v0.1.0 darwin arm64 ok 1
   run_install
   assert_exit 0 "$code" "exit: the installer still installed the binary"
   assert_contains "$(err)" "✗  claude detected, hooks not installed: fake domux ran: install claude --apply" "state"
@@ -585,8 +595,8 @@ test_says_what_happened_when_a_hook_install_fails() {
 test_skips_the_hooks_when_asked() {
   sandbox
   mkdir -p "$S/home/.claude"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_HOOKS=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "--apply" "nothing applied"
@@ -595,8 +605,8 @@ test_skips_the_hooks_when_asked() {
 
 test_writes_the_leader_into_a_config_file_that_does_not_exist_yet() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
@@ -610,8 +620,8 @@ test_adds_the_leader_to_a_config_file_with_other_tables() {
   mkdir -p "$S/home/.config/domux"
   printf '# mine\n[terminal]\nscrollback = 5000\n\n[keys.bindings]\nx = "pane.zoom"\n' > "$CONFIG"
   chmod 0600 "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-b DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '# mine
@@ -630,8 +640,8 @@ test_adds_the_leader_under_keys_when_keys_has_no_leader() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf '[terminal]\nshell = "zsh"\n\n[keys]  # my keys\n\n[keys.global]\n"C-g" = "pane.zoom"\n\n[navigator]\nenabled = false\n' > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=M-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[terminal]
@@ -652,8 +662,8 @@ test_leaves_a_leader_that_is_already_set_and_says_which() {
   mkdir -p "$S/home/.config/domux"
   printf '[keys]\nleader = "C-b" # tmux hands\n' > "$CONFIG"
   cp "$CONFIG" "$S/before"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq "$(cat "$S/before")" "$(config)" "the config file is unchanged"
@@ -663,8 +673,8 @@ test_leaves_a_leader_that_is_already_set_and_says_which() {
 
 test_writes_to_domux_config_file() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_CONFIG_FILE="$S/elsewhere/domux.toml" DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
@@ -675,8 +685,8 @@ leader = "C-a"' "$(cat "$S/elsewhere/domux.toml" 2>/dev/null)" "the file DOMUX_C
 
 test_writes_the_default_leader_when_there_is_no_terminal_to_ask_on() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
@@ -688,8 +698,8 @@ leader = "C-s"' "$(config)" "the default"
 
 test_escapes_a_leader_that_toml_would_misread() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install "DOMUX_LEADER=C-\\" DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
@@ -700,8 +710,8 @@ leader = "C-\\"' "$(config)" "a backslash is escaped"
 # matches one byte.
 test_writes_a_leader_that_is_a_character_of_two_bytes() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-é DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
@@ -710,8 +720,8 @@ leader = "C-é"' "$(config)" "config"
 
 test_writes_a_leader_that_is_a_character_of_four_bytes() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   face=$(printf '\360\237\230\200')
   run_install "DOMUX_LEADER=M-$face" DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
@@ -724,8 +734,8 @@ test_writes_through_a_linked_config_file_and_keeps_the_link() {
   mkdir -p "$S/home/.config/domux" "$S/dotfiles"
   printf '[terminal]\nscrollback = 100\n' > "$S/dotfiles/domux.toml"
   ln -s "$S/dotfiles/domux.toml" "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   if [ -L "$CONFIG" ]; then :; else fail "the link was replaced by a file"; fi
@@ -742,8 +752,8 @@ test_leaves_a_config_file_that_sets_keys_without_a_table_alone() {
   mkdir -p "$S/home/.config/domux"
   printf 'keys = { passthrough = { commands = ["vim"] } }\n' > "$CONFIG"
   cp "$CONFIG" "$S/before"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: the binary is still installed"
   assert_eq "$(cat "$S/before")" "$(config)" "the config file is unchanged"
@@ -755,8 +765,8 @@ test_reads_a_header_inside_a_multi_line_array_or_string_as_part_of_it() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf '[terminal]\nshell = """\n[keys]\nleader = "C-b"\n"""\n\n[x]\narr = [\n  ["keys"]\n]\n' > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[terminal]
@@ -778,8 +788,8 @@ test_adds_the_leader_under_a_keys_header_written_with_quotes() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf "['keys']\n\n[ \"stay_awake\" ]\nmode = \"full\"\n" > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq "['keys']
@@ -797,8 +807,8 @@ test_reads_a_header_whose_quoted_name_holds_any_character_as_its_own_table() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf '[keys]\n\n["\303\251"]\nleader = "C-b"\n\n["a]b" ] # a comment\nleader = "C-x"\n' > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq "$(printf '[keys]\nleader = "C-a"\n\n["\303\251"]\nleader = "C-b"\n\n["a]b" ] # a comment\nleader = "C-x"')" "$(config)" "the leader under [keys], and the other tables left as they were"
@@ -809,8 +819,8 @@ test_adds_a_keys_table_when_a_quoted_name_only_spells_keys_with_a_blank() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf '["ke ys"]\nother = 1\n' > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '["ke ys"]
@@ -824,8 +834,8 @@ test_adds_the_leader_under_a_header_after_a_byte_order_mark() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf '\357\273\277[keys]\n\n[terminal]\nscrollback = 10\n' > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq "$(printf '\357\273\277[keys]\nleader = "C-a"\n\n[terminal]\nscrollback = 10')" "$(config)" "the leader under the one keys table"
@@ -834,8 +844,8 @@ test_adds_the_leader_under_a_header_after_a_byte_order_mark() {
 test_reads_a_leader_under_a_quoted_key_as_set() {
   sandbox
   mkdir -p "$S/home/.config/domux"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   printf '[keys]\n"leader" = "C-b"\n' > "$CONFIG"
   cp "$CONFIG" "$S/before"
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
@@ -853,8 +863,8 @@ test_reads_a_leader_under_a_quoted_key_as_set() {
 test_reads_a_leader_in_a_multi_line_string_as_set() {
   sandbox
   mkdir -p "$S/home/.config/domux"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   printf '[keys]\nleader = """C-b"""\n' > "$CONFIG"
   cp "$CONFIG" "$S/before"
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
@@ -872,8 +882,8 @@ test_reads_a_leader_in_a_multi_line_string_as_set() {
 test_reads_a_leader_that_is_a_question_mark_or_an_exclamation_mark_as_set() {
   sandbox
   mkdir -p "$S/home/.config/domux"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   for mark in '?' '!'; do
     printf '[keys]\nleader = "%s"\n\n[stay_awake]\nmode = "%s"\n' "$mark" "$mark" > "$CONFIG"
     run_install DOMUX_STAY_AWAKE=no
@@ -893,8 +903,8 @@ test_leaves_a_read_only_config_file_alone_without_a_shell_error() {
   mkdir -p "$S/home/.config/domux"
   printf '[terminal]\nscrollback = 1\n' > "$CONFIG"
   chmod 0444 "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   chmod 0644 "$CONFIG"
   assert_exit 0 "$code" "exit: $(err)"
@@ -912,8 +922,8 @@ test_replaces_a_leftover_temp_file_link_rather_than_writing_through_it() {
   printf '[terminal]\nscrollback = 1\n' > "$CONFIG"
   printf 'keep me\n' > "$S/victim"
   ln -s "$S/victim" "$CONFIG.tmp"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq "keep me" "$(cat "$S/victim")" "the file the link points at is untouched"
@@ -930,8 +940,8 @@ test_says_to_reload_a_running_domux_when_a_reinstall_writes_the_config() {
   sandbox
   printf '#!/bin/sh\nprintf "domux 0.9.9\\n"\n' > "$S/bin/domux"
   chmod 0755 "$S/bin/domux"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(err)" "if domux is already running, run $S/bin/domux config reload so it reads the new config" "the reload"
@@ -939,8 +949,8 @@ test_says_to_reload_a_running_domux_when_a_reinstall_writes_the_config() {
 
 test_says_nothing_about_reloading_on_a_first_install_or_when_nothing_is_written() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(err)" "config reload" "a first install"
@@ -953,8 +963,8 @@ test_says_nothing_about_reloading_on_a_first_install_or_when_nothing_is_written(
 test_turns_on_full_stay_awake_on_linux_without_sudo() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
-  releases v1.0.0
-  release v1.0.0 linux amd64
+  releases v0.1.0
+  release v0.1.0 linux amd64
   run_install DOMUX_LEADER=C-b DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_eq '[keys]
@@ -973,8 +983,8 @@ test_names_the_leader_already_set_for_turning_stay_awake_on() {
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
   mkdir -p "$S/home/.config/domux"
   printf "[keys]\nleader = 'M-Space'\n" > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 linux amd64
+  releases v0.1.0
+  release v0.1.0 linux amd64
   run_install DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(err)" "✓  leader M-Space already set in $CONFIG" "a literal string is read too"
@@ -983,8 +993,8 @@ test_names_the_leader_already_set_for_turning_stay_awake_on() {
 
 test_sets_up_the_lid_and_writes_full_mode_on_macos_when_the_answer_is_yes() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(calls)" "stay-awake install --full --apply" "the command it runs"
@@ -1000,8 +1010,8 @@ mode = "full"' "$(config)" "the line written rather than printed"
 
 test_writes_no_stay_awake_mode_when_the_macos_lid_setup_fails() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64 ok 1
+  releases v0.1.0
+  release v0.1.0 darwin arm64 ok 1
   run_install DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(err)" "✗  stay awake could not be set up for a closed lid: fake domux ran: stay-awake install --full --apply" "state"
@@ -1011,8 +1021,8 @@ test_writes_no_stay_awake_mode_when_the_macos_lid_setup_fails() {
 
 test_writes_no_stay_awake_mode_when_the_answer_is_no() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "stay-awake" "nothing run"
@@ -1025,8 +1035,8 @@ test_leaves_a_stay_awake_mode_that_is_already_set() {
   sandbox
   mkdir -p "$S/home/.config/domux"
   printf '[stay_awake]\nmode = "partial"\n' > "$CONFIG"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=yes
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "stay-awake" "nothing run"
@@ -1040,8 +1050,8 @@ leader = "C-s"' "$(config)" "the mode is kept"
 
 test_prints_the_lid_command_when_there_is_no_terminal_to_ask_on() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_exit 0 "$code" "exit: $(err)"
   assert_not_contains "$(calls)" "stay-awake" "asks nothing and runs nothing"
@@ -1051,8 +1061,8 @@ test_prints_the_lid_command_when_there_is_no_terminal_to_ask_on() {
 test_says_how_to_set_up_stay_awake_later_on_linux_without_a_terminal() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
-  release v1.0.1 linux amd64
-  run_install DOMUX_VERSION=v1.0.1
+  release v0.1.1 linux amd64
+  run_install DOMUX_VERSION=v0.1.1
   assert_exit 0 "$code" "exit: $(err)"
   assert_contains "$(err)" "✓  stay awake not set up" "state"
   assert_contains "$(err)" "add mode = \"full\" under [stay_awake] in $CONFIG to set it up later" "next action"
@@ -1062,8 +1072,8 @@ test_says_how_to_set_up_stay_awake_later_on_linux_without_a_terminal() {
 
 test_writes_only_the_data_line_to_stdout() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_eq 1 "$(wc -l < "$S/out" | tr -d ' ')" "one stdout line"
 }
@@ -1082,8 +1092,8 @@ test_writes_nothing_under_home_when_the_release_command_checks_the_installer() {
   sandbox
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
   mkdir -p "$S/home/.claude"
-  releases v1.0.0
-  release v1.0.0 linux amd64
+  releases v0.1.0
+  release v0.1.0 linux amd64
   cp "$ROOT/install.sh" "$FAKE_HTTP_DIR/install.sh"
   check=$(release_check)
   if [ -z "$check" ]; then
@@ -1100,7 +1110,7 @@ test_writes_nothing_under_home_when_the_release_command_checks_the_installer() {
   # TMPDIR, so the path is checked for what the command promises rather than for where
   # mktemp put it: a binary in a directory mktemp named, outside HOME, that says its version.
   installed=$(out)
-  installed=${installed% 1.0.0}
+  installed=${installed% 0.1.0}
   case $installed in
     "$S/home/"*) fail "the release check installed under HOME: $(out)" ;;
     */tmp.*/domux) [ -x "$installed" ] || fail "stdout names no installed binary: $(out)" ;;
@@ -1125,8 +1135,8 @@ test_names_domux_dev_wherever_the_install_command_is_given() {
 
 test_prints_no_color_when_stderr_is_not_a_terminal() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install
   assert_not_contains "$(err)" "$ESC" "no escape sequences in a redirected stream"
   assert_not_contains "$(err)" "$CR" "no carriage returns in a redirected stream"
@@ -1134,8 +1144,8 @@ test_prints_no_color_when_stderr_is_not_a_terminal() {
 
 test_prints_no_spinner_frames_when_stderr_is_not_a_terminal() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_CURL_DELAY=0.3
   run_install
   assert_exit 0 "$code" "exit: $(err)"
@@ -1146,14 +1156,14 @@ test_prints_no_spinner_frames_when_stderr_is_not_a_terminal() {
 test_turns_a_spinner_while_the_network_steps_run_on_a_terminal() {
   sandbox
   on_a_terminal || return 0
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_CURL_DELAY=0.5
   run_install_tty DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(tty_text)"
   if has_frame "$(tty_text)"; then :; else fail "no spinner frame: $(tty_text)"; fi
   assert_contains "$(tty_text)" "looking up the newest release" "the lookup turns"
-  assert_contains "$(tty_text)" "downloading domux 1.0.0" "the download turns"
+  assert_contains "$(tty_text)" "downloading domux 0.1.0" "the download turns"
   assert_contains "$(tty_text)" "$HIDE" "the cursor is hidden while it turns"
   last_hide=$(tty_text)
   last_hide=${last_hide##*"$HIDE"}
@@ -1164,8 +1174,8 @@ test_turns_a_spinner_while_the_network_steps_run_on_a_terminal() {
 test_draws_no_frame_for_a_request_that_answers_within_a_quarter_second() {
   sandbox
   on_a_terminal || return 0
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_CURL_DELAY=0.1
   run_install_tty DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(tty_text)"
@@ -1179,8 +1189,8 @@ test_starts_the_next_request_as_soon_as_one_answers_on_a_terminal() {
   case $(date +%N) in
     ""|*[!0-9]*) printf 'skip %s: needs a date that prints nanoseconds\n' "$CURRENT" >&2; return 0 ;;
   esac
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   run_install_tty FAKE_CURL_TIMES=yes DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(tty_text)"
   # Nothing runs between the archive request and the SHA256SUMS request but the wait for the
@@ -1195,8 +1205,8 @@ test_prints_no_frame_for_a_step_that_does_not_wait_on_the_network() {
   sandbox
   on_a_terminal || return 0
   mkdir -p "$S/home/.claude" "$S/home/.codex"
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_DOMUX_DELAY=0.5
   run_install_tty DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
   assert_exit 0 "$code" "exit: $(tty_text)"
@@ -1209,8 +1219,8 @@ test_prints_no_frame_for_a_step_that_does_not_wait_on_the_network() {
 test_prints_the_same_lines_under_no_color_on_a_terminal() {
   sandbox
   on_a_terminal || return 0
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_CURL_DELAY=0.3
   run_install DOMUX_LEADER=C-a DOMUX_STAY_AWAKE=no
   cp "$S/err" "$S/plain"
@@ -1225,21 +1235,21 @@ test_prints_the_same_lines_under_no_color_on_a_terminal() {
 test_clears_the_spinner_when_a_download_fails_on_a_terminal() {
   sandbox
   on_a_terminal || return 0
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_CURL_DELAY=0.5
   FAKE_CURL_FAIL="SHA256SUMS"
   run_install_tty DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
   assert_exit 1 "$code" "exit"
   after=$(tty_text)
-  after=${after##*"downloading domux 1.0.0$EOL"}
+  after=${after##*"downloading domux 0.1.0$EOL"}
   case $after in
     "$CR$EOL"*) ;;
     *) fail "the spinner line is not cleared after its last frame: $after" ;;
   esac
   assert_contains "$after" "$SHOW" "the cursor is shown again"
   assert_contains "$after" "curl: (22) The requested URL returned error: 404" "what curl said"
-  assert_contains "$after" "could not download https://github.com/pranav7/domux/releases/download/v1.0.0/SHA256SUMS" "state"
+  assert_contains "$after" "could not download https://github.com/pranav7/domux/releases/download/v0.1.0/SHA256SUMS" "state"
   assert_contains "$after" "  next: the release is incomplete" "next action"
   if has_frame "$after"; then fail "a frame after the failure: $after"; fi
   assert_no_file "$S/bin/domux" "nothing installed"
@@ -1250,8 +1260,8 @@ test_clears_the_spinner_when_a_download_fails_on_a_terminal() {
 stops_on_signal() {
   sandbox
   on_a_terminal || return 0
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   FAKE_CURL_DELAY=5
   : > "$S/keys"
   start_install_tty DOMUX_LEADER=C-s DOMUX_STAY_AWAKE=no
@@ -1298,8 +1308,8 @@ test_stops_the_request_and_restores_the_cursor_on_int() {
 # reader types going in on descriptor 3.
 start_answering() {
   FAKE_UNAME_S=Linux; FAKE_UNAME_M=x86_64
-  releases v1.0.0
-  release v1.0.0 linux amd64
+  releases v0.1.0
+  release v0.1.0 linux amd64
   rm -f "$S/keys"
   mkfifo "$S/keys"
   start_install_tty
@@ -1434,7 +1444,7 @@ test_ignores_keys_typed_before_a_question_is_asked() {
   sandbox
   on_a_terminal || return 0
   FAKE_CURL_DELAY=1
-  answer_on_a_terminal "downloading domux 1.0.0" '\r\r' "or enter for C-s  " 2 "put this machine to sleep?" y
+  answer_on_a_terminal "downloading domux 0.1.0" '\r\r' "or enter for C-s  " 2 "put this machine to sleep?" y
   assert_exit 0 "$code" "exit: $(tty_text)"
   assert_eq '[keys]
 leader = "C-a"
@@ -1475,7 +1485,8 @@ run_tests \
   test_fails_when_curl_is_missing \
   test_fails_when_the_release_list_cannot_be_fetched \
   test_fails_when_no_release_exists \
-  test_fails_when_domux_version_is_a_v1_go_tag \
+  test_fails_when_no_release_tag_is_a_version \
+  test_installs_a_v0_release_pinned_by_domux_version \
   test_fails_when_domux_version_is_not_a_tag \
   test_fails_before_any_request_when_domux_leader_is_not_a_key_name \
   test_fails_before_any_request_when_domux_leader_is_not_utf8 \

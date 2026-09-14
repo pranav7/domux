@@ -2,9 +2,12 @@
 
 Every release has a section here, newest first, in the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 shape: a heading `## [<version>] - <date>` and, under it, `### Added`, `### Changed`, `### Fixed`
-or `### Removed` as the release needs. The release pipeline reads this file: the section for the
-version being released becomes the release notes, and a missing or empty section stops the
-release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
+or `### Removed` as the release needs. The section opens with one line that says what the
+release brings, a short list separated by commas in 50 characters or fewer, with no markdown and
+no full stop, and a blank line after it; domux.dev shows that line beside the newest version. The
+release pipeline reads this file: the section for the version being released becomes the release
+notes, and a missing or empty section stops the release. Versions follow
+[semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -36,7 +39,9 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
   and the worker gets no row of its own. Restart the server with `domux server restart` for this to
   apply.
 
-## [1.0.1] - 2026-09-13
+## [0.1.1] - 2026-09-13
+
+Themes, a leader you pick, Linux fixes
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
@@ -44,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
 
 Themes, an installer that asks for your leader and stay awake, and fixes for the hooks and for
 attach that showed up on Linux. After upgrading, run `domux server restart`: the attach protocol
-changed, so a 1.0.0 server and a 1.0.1 client refuse each other. The default leader is now `C-s`.
+changed, so a 0.1.0 server and a 0.1.1 client refuse each other. The default leader is now `C-s`.
 
 ### Added
 
@@ -100,14 +105,16 @@ changed, so a 1.0.0 server and a 1.0.1 client refuse each other. The default lea
   one, no longer asks to register it, wherever the worktree was made, and an offer that fails
   says why in one line and attaches anyway instead of ending the command.
 
-## [1.0.0] - 2026-09-11
+## [0.1.0] - 2026-09-11
+
+First release: panes, the Navigator, agent records
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
 ```
 
-The first release of the Rust domux. domux V1, the Go version built on tmux, is the v0.x tags;
-`domux import v1` reads what it saved.
+The first release of the Rust domux. domux V1, the Go version built on tmux, lives on the `v1`
+branch; `domux import v1` reads what it saved.
 
 ### Added
 
@@ -131,6 +138,6 @@ The first release of the Rust domux. domux V1, the Go version built on tmux, is 
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.1...HEAD
-[1.0.1]: https://github.com/pranav7/domux/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/pranav7/domux/releases/tag/v1.0.0
+[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/pranav7/domux/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/pranav7/domux/releases/tag/v0.1.0
