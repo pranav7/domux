@@ -1,8 +1,9 @@
 //! Where the bright band sits along a working agent's word, carried over from V1's
-//! `shimmer.go` unchanged.
+//! `shimmer.go` unchanged, and how lit the compacting arrow is as it breathes.
 //!
 //! This module answers how lit one character is, and nothing about which colours it is lit
-//! between: `theme::Shimmer` holds the two ends and turns a lit fraction into a colour.
+//! between: `theme::Shimmer` holds the two ends of a band and `theme::Breath` the three
+//! colours of a breath, and each turns a lit fraction into a colour.
 //!
 //! The band runs from before the first character to past the last and back. It moves on the
 //! same 70 ms tick the glyph counts (`agents::labels::ANIMATION_INTERVAL`), which is why the glyph
@@ -46,6 +47,23 @@ fn peak(len: usize, tick: u64) -> f64 {
 pub fn lit(len: usize, index: usize, tick: u64) -> f64 {
     let d = index as f64 - peak(len, tick);
     (-(d * d) / (2.0 * SIGMA * SIGMA)).exp().max(FLOOR)
+}
+
+/// Ticks in one breath of the compacting arrow, dim to bright and back: twenty-eight 70 ms
+/// ticks, just under two seconds. Four to a quarter, so a quarter of a breath lands on a
+/// tick, and that is where the arrow rests in the `compacting` colour on its way up and down.
+pub const BREATH_TICKS: u64 = 28;
+
+/// How lit the compacting arrow is at `tick`: 0 at the dim end and 1 at the bright end
+/// (MUX-48).
+///
+/// A cosine rather than a straight rise and fall, so the colour lingers at each end and
+/// hurries through the middle, which is what reads as breathing rather than as a colour
+/// sliding back and forth. The arrow is one cell and holds still, so this is the whole of its
+/// animation.
+pub fn breath(tick: u64) -> f64 {
+    let phase = (tick % BREATH_TICKS) as f64 / BREATH_TICKS as f64;
+    (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0
 }
 
 #[cfg(test)]
@@ -115,6 +133,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The compacting arrow's breath starts at the dim end, reaches the bright end half way
+    /// through and comes back, and one breath later it is where it began (MUX-48).
+    #[test]
+    fn a_breath_runs_dim_to_bright_and_back_once_per_breath() {
+        let quarter = BREATH_TICKS / 4;
+        assert_eq!(breath(0), 0.0, "it starts at the dim end");
+        assert!(
+            (breath(quarter) - 0.5).abs() < 1e-9,
+            "half lit a quarter in"
+        );
+        assert_eq!(breath(quarter * 2), 1.0, "the bright end half way");
+        assert!(
+            (breath(quarter * 3) - 0.5).abs() < 1e-9,
+            "half lit on the way back"
+        );
+        for tick in 0..BREATH_TICKS * 3 {
+            assert_eq!(breath(tick), breath(tick % BREATH_TICKS), "tick {tick}");
+        }
+        let rise: Vec<f64> = (0..=quarter * 2).map(breath).collect();
+        assert!(
+            rise.windows(2).all(|w| w[1] > w[0]),
+            "brighter on every tick up to the top: {rise:?}"
+        );
+        let fall: Vec<f64> = (quarter * 2..=BREATH_TICKS).map(breath).collect();
+        assert!(
+            fall.windows(2).all(|w| w[1] < w[0]),
+            "and dimmer on every tick back down: {fall:?}"
+        );
     }
 
     /// A longer word takes longer to cross, so the band moves at one speed whatever it is

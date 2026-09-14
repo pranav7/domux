@@ -6068,12 +6068,12 @@ mod tests {
         assert!(core.view_dirty);
     }
 
-    /// A compacting agent animates too: the glyph says something is happening, and compacting
-    /// is something happening. It carries no working word, which is the other half of the same
-    /// rule (a word is shown for `working` and for nothing else), and the two are asserted
-    /// together so neither is mistaken for the other.
+    /// A compacting agent animates too: its arrow breathes on the same tick the star turns on,
+    /// because compacting is something happening (decision record 0050). It carries no working
+    /// word, which is the other half of the same rule (a word is shown for `working` and for
+    /// nothing else), and the two are asserted together so neither is mistaken for the other.
     #[test]
-    fn a_compacting_agent_turns_the_glyph_and_carries_no_word() {
+    fn a_compacting_agent_keeps_the_tick_counting_and_carries_no_word() {
         let dir = tempfile::tempdir().unwrap();
         let (mut core, pane) = core_with_a_pane(dir.path());
         hook(&mut core, &pane, "UserPromptSubmit");
@@ -6083,7 +6083,7 @@ mod tests {
         core.view_dirty = false;
         core.handle(CoreMsg::AnimationTick);
 
-        assert_eq!(core.agents.tick, 1, "compacting keeps the glyph turning");
+        assert_eq!(core.agents.tick, 1, "compacting keeps the arrow breathing");
         assert!(core.view_dirty);
         assert_eq!(
             drawn(&mut core).agents[0].word,
