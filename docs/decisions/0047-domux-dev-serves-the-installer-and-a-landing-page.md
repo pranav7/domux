@@ -38,7 +38,7 @@ the installer it names change together in one pull request.
 
 **The page says what domux is and where to get it.** The name, the tagline, the install command
 with a copy button, the agents and platforms it works with, a link to the repository and a
-screenshot. The background is the logo's glyph repeated at a quarter of the accent, with one
+screenshot. The background is the logo's glyph repeated at an eighth of the accent, with one
 glyph lit, in the Catppuccin Mocha ground and mauve the built-in theme draws. The name is the
 block logo the installer prints, drawn as an SVG with each half of a cell as one square, so it
 matches the terminal without depending on how a font draws block characters. The text is
