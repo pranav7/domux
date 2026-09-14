@@ -227,7 +227,7 @@ pub struct CoreDeps {
     /// through this, so a test records those calls rather than making them.
     pub runner: Arc<dyn crate::command::CommandRunner>,
     pub id_seed: u64,
-    /// What `server.upgrade` replaces the process with (decision 0045). A test records the call
+    /// What `server.upgrade` replaces the process with (decision 0046). A test records the call
     /// rather than making it.
     pub exec: Arc<dyn crate::upgrade::Exec>,
     /// The operating system, as `std::env::consts::OS` spells it. Given rather than read, so
@@ -250,7 +250,7 @@ pub struct ServerOptions {
     /// `None`.
     pub theme: Option<domux_core::theme::Theme>,
     /// The `handoff.json` an upgrade wrote, when this server is the one it hands over to
-    /// (decision 0045). Its panes are adopted rather than spawned, and its listener is served
+    /// (decision 0046). Its panes are adopted rather than spawned, and its listener is served
     /// rather than a new one bound.
     pub handoff: Option<PathBuf>,
 }
@@ -291,7 +291,7 @@ impl ServerHandle {
         drop(acceptor);
     }
 
-    /// Waits for a server that has handed itself over to finish (decision 0045). Its panes,
+    /// Waits for a server that has handed itself over to finish (decision 0046). Its panes,
     /// its listener and its socket file belong to the new server, so nothing is closed or
     /// removed here. Only a test sees this: a real handover replaces the process.
     pub async fn handed_over(self) {

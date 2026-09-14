@@ -405,7 +405,7 @@ fn screen_text(pane: &mut PaneRuntime) -> String {
         .join("\n")
 }
 
-/// An upgrade pauses every reader before it takes a pane's screen (decision 0045). What the
+/// An upgrade pauses every reader before it takes a pane's screen (decision 0046). What the
 /// program prints after that must still be in the PTY for whoever reads next, not lost in a
 /// reader that was stopped with it in hand.
 #[tokio::test(flavor = "multi_thread")]

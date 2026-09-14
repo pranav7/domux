@@ -29,7 +29,7 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 ## Upgrades
 
 `domux server upgrade` replaces the running server with the binary that ran it, by `exec` in the
-same process, and every pane keeps running. `docs/decisions/0045` records the design; read it
+same process, and every pane keeps running. `docs/decisions/0046` records the design; read it
 before changing any of this.
 
 - What crosses is the handover in `handoff/` under the state directory: each pane's master
@@ -54,6 +54,7 @@ M3 added the agent records. `docs/milestones/m3.md` says what shipped and what i
 - **A record ends when its session ends, and there is no exited state.** `transition` answers `Option`, where `None` is the record ending, which is what `SessionEnd` and `ProcessGone` mean from every state. Nothing resumes an agent and nothing dismisses one.
 - Only `SessionStart` makes a record from a hook. Every other hook that finds none is a message from a session domux is not tracking, and inventing a record for one leaves a row nothing can take away.
 - So a record exists whether or not the hooks are installed, and the end is seen either way, but **a lost hook is not made good later**. A `Stop` that never arrives leaves the row `working` with a turning glyph until the process dies. A row stuck on `working` is what hook loss looks like; go and look rather than waiting.
+- **A nested agent is not the pane's agent.** An agent that another agent started, such as a worker run from a Bash tool, inherits the pane and reports from it. `agent.report` walks up from the process on the other end of the socket, and a hook with two agents above it, counted below the server, changes no record (`0045`, `agents::nested`). Without that check, the two sessions trade the row on every hook.
 - An agent nobody reports on is `unknown`, never `idle`. A recap that did not arrive is absent. A session name is absent until the agent sets one. A working word is never shown for a state other than `working`.
 - A record ends when its own process id goes away, or when its pane goes away. Never because the foreground changed: an agent running a tool puts that tool in front, and the tool can itself be an agent.
 - `unseen` turns on when an agent starts waiting or goes from working to idle, which is what `agent::attention` answers. It clears when the agent's pane is focused or when input reaches that pane, and on nothing else. Reading the records does not clear it. All it does now is brighten a recap in the switcher, and whether it earns its keep is an open question 0030 names.

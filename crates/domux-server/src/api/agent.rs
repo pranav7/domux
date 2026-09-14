@@ -1,7 +1,7 @@
 //! `agent.*`: the records namespace. `agents.*` (Task 14) opens the overlay that lists them.
 
 use super::{ok, Ctx};
-use crate::agents::{context, hooks};
+use crate::agents::{context, hooks, nested};
 use domux_core::api::{
     AgentInfo, AgentListParams, AgentListResult, AgentReportParams, AgentReportResult,
     AgentSelfParams, AgentTargetParams, ApiError, FocusResult,
@@ -30,12 +30,19 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     let Some(event) = parsed.event else {
         // A hook event domux does not track. Nothing changes and nothing fails, so a new
         // event in a future release of an agent never breaks the hook.
-        return ok(AgentReportResult {
-            agent: None,
-            state: None,
-            context: None,
-        });
+        return ok(untracked());
     };
+    // A nested agent: one that another agent started, such as a worker a session hands a task
+    // to from its shell. It inherits the pane and reports from it, but it is not the pane's
+    // agent, so its hooks get the answer a session domux does not track gets. If one reached
+    // the model, its session id would end the pane's record and start a record of its own, and
+    // the two sessions would trade the row on every hook (decision record 0045).
+    if let Some(caller) = ctx.caller {
+        let inspector = ctx.deps.inspector.as_ref();
+        if nested::is_nested(inspector, &ctx.agents.manifests, caller, std::process::id()) {
+            return ok(untracked());
+        }
+    }
     let now = ctx.deps.clock.now().to_rfc3339();
     // `None` is a hook from a session domux is not tracking: no record on the pane, no record
     // with that session id, and not a `SessionStart` to make one. Nothing changed, and nothing
@@ -44,11 +51,7 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
         agent, to, events, ..
     }) = ctx.model.report_agent(&pane, p.kind, parsed, &now)?
     else {
-        return ok(AgentReportResult {
-            agent: None,
-            state: None,
-            context: None,
-        });
+        return ok(untracked());
     };
     // `to` is `None` when the report ended the session, in which case `Model::report_agent`
     // has already removed the record. Nothing below may run: there is no row left to write a
@@ -93,6 +96,15 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
         state: Some(to),
         context,
     })
+}
+
+/// The answer to a hook that changes no record: no agent, no state and no context block.
+fn untracked() -> AgentReportResult {
+    AgentReportResult {
+        agent: None,
+        state: None,
+        context: None,
+    }
 }
 
 /// One record's facts, as the peek subcommand, `agent.get` and any Layer A subscriber see

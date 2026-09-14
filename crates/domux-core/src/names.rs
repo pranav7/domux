@@ -30,7 +30,7 @@ pub const V1_SESSIONS_DIR_NAME: &str = "sessions";
 /// The directory of theme files, beside the config file.
 pub const THEMES_DIR_NAME: &str = "themes";
 /// What `server upgrade` hands the new server, under the state directory: the handover file
-/// and one screen file per pane (decision 0045).
+/// and one screen file per pane (decision 0046).
 pub const HANDOFF_DIR_NAME: &str = "handoff";
 pub const HANDOFF_FILE_NAME: &str = "handoff.json";
 

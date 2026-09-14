@@ -1,4 +1,4 @@
-//! A pane's screen crosses an upgrade as a Ghostty snapshot (decision 0045). What comes back
+//! A pane's screen crosses an upgrade as a Ghostty snapshot (decision 0046). What comes back
 //! must be the screen that went in: the cells, the cursor, the scrollback, the title, the
 //! working directory, the modes, and a sequence the program was half way through writing.
 

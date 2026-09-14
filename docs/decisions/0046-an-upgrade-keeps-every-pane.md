@@ -1,4 +1,4 @@
-# 0045: An upgrade keeps every pane
+# 0046: An upgrade keeps every pane
 
 **Date:** 2026-09-14
 **Status:** Accepted.

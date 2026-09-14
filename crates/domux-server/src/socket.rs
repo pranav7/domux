@@ -63,7 +63,7 @@ enum Command {
     GiveBack(oneshot::Sender<std::os::unix::net::UnixListener>),
 }
 
-/// The task that accepts connections, and what an upgrade needs from it (decision 0045): to
+/// The task that accepts connections, and what an upgrade needs from it (decision 0046): to
 /// stop accepting while connections already open finish, to start again when the upgrade does
 /// not happen, and to give the listener back for the new server. A connection made while it is
 /// not accepting waits in the kernel's backlog.
@@ -205,6 +205,13 @@ async fn control(
     core_tx: mpsc::Sender<CoreMsg>,
     open: Open,
 ) -> anyhow::Result<()> {
+    // Read once, while the socket is whole: every request on this connection comes from the
+    // same process.
+    let caller = stream
+        .peer_cred()
+        .ok()
+        .and_then(|c| c.pid())
+        .and_then(|pid| u32::try_from(pid).ok());
     let (r, mut w) = stream.into_split();
     let mut lines = BufReader::new(r).lines();
     let mut carry = Some(first);
@@ -270,6 +277,7 @@ async fn control(
             .send(CoreMsg::Api {
                 request,
                 reply: reply_tx,
+                caller,
             })
             .await?;
         let response = reply_rx.await?;

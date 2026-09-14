@@ -33,7 +33,7 @@ pub async fn run_bare() -> anyhow::Result<()> {
 
 #[derive(clap::Args)]
 pub struct AttachArgs {
-    /// Attach again after `server upgrade`: ask nothing, and start no server (decision 0045)
+    /// Attach again after `server upgrade`: ask nothing, and start no server (decision 0046)
     #[arg(long, hide = true)]
     pub after_upgrade: bool,
 }
@@ -92,7 +92,7 @@ fn finish(outcome: AttachOutcome) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Replaces this client with `<argv[0]> attach --after-upgrade` (decision 0045). The command
+/// Replaces this client with `<argv[0]> attach --after-upgrade` (decision 0046). The command
 /// line it was started with is the one the reader typed, so it names the binary they meant:
 /// the symlink they run, and so the build the server has just become. The attach waits in the
 /// socket's backlog until the new server is up. Returns only when the exec failed.

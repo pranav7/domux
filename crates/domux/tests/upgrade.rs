@@ -1,5 +1,5 @@
 //! `domux server upgrade` end to end: a real server in its own session, a real shell in its
-//! pane, and a real exec (decision 0045). Nothing here touches a real server's state directory.
+//! pane, and a real exec (decision 0046). Nothing here touches a real server's state directory.
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -213,7 +213,7 @@ async fn wait_for_one_client(s: &Scratch) {
 }
 
 /// An attached client leaves when the server upgrades and comes back by itself, from the
-/// binary it was started as, without asking anything (decision 0045). The same process is still
+/// binary it was started as, without asking anything (decision 0046). The same process is still
 /// on the terminal at the end, and a detach still ends it cleanly.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_attached_client_comes_back_by_itself_after_an_upgrade() {

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds this checkout and hands the running server over to the build, keeping every pane
-# (docs/decisions/0045-an-upgrade-keeps-every-pane.md).
+# (docs/decisions/0046-an-upgrade-keeps-every-pane.md).
 #
 # Usage: scripts/dev/deploy.sh [--no-pull]
 #

@@ -89,7 +89,7 @@ pub fn themes_dir_in(env: &Env) -> PathBuf {
 }
 
 /// Where `server upgrade` writes what it hands over, under the state directory `state_dir`
-/// (decision 0045).
+/// (decision 0046).
 pub fn handoff_dir_under(state_dir: &Path) -> PathBuf {
     state_dir.join(HANDOFF_DIR_NAME)
 }

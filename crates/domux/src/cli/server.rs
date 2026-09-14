@@ -49,7 +49,7 @@ pub enum ServerAction {
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// Take over from the server that wrote this handover (decision 0045)
+    /// Take over from the server that wrote this handover (decision 0046)
     #[arg(long)]
     pub handoff: Option<PathBuf>,
 }
@@ -146,7 +146,7 @@ async fn restart() -> anyhow::Result<()> {
 /// it answers, so this is longer than `SETTLE`.
 const UPGRADE_SETTLE: Duration = Duration::from_secs(60);
 
-/// Replaces the running server with this binary, keeping every pane (decision 0045). With no
+/// Replaces the running server with this binary, keeping every pane (decision 0046). With no
 /// server running there is nothing to keep, so this starts one.
 async fn upgrade() -> anyhow::Result<()> {
     let socket = socket();

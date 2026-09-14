@@ -39,7 +39,7 @@ pub enum AttachOutcome {
     Detached(String),
     ServerStopped,
     /// The server is handing over to a new build of itself, which the caller attaches to once
-    /// it is up (decision 0045).
+    /// it is up (decision 0046).
     ServerUpgrading,
     ConnectionLost,
     Refused(String),

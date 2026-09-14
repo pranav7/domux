@@ -55,7 +55,7 @@ pub struct Ctx<'a> {
     pub socket_path: &'a PathBuf,
     pub state_dir: &'a PathBuf,
     pub started_at: &'a str,
-    /// When this server took over from an upgrade, if it did (decision 0045).
+    /// When this server took over from an upgrade, if it did (decision 0046).
     pub upgraded_at: Option<&'a str>,
     /// Whether an upgrade is under way, which refuses a second.
     pub upgrading: bool,
@@ -69,6 +69,10 @@ pub struct Ctx<'a> {
     /// destructive operation asks its question on the screen for a key and answers
     /// "Answer with --yes" for a caller that has a command line (interface spec 7.3).
     pub from_key: bool,
+    /// The process that made an API call, read from the socket it called on. `None` for a key
+    /// press. `agent.report` walks up from it to tell a nested agent from the pane's own
+    /// (decision record 0045).
+    pub caller: Option<u32>,
     pub events: Vec<Event>,
     /// The lines a handler wants said in the corner of the screen. The core keeps the newest
     /// and draws it for its six seconds; see `crate::toast`.

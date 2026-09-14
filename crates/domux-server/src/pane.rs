@@ -109,11 +109,11 @@ pub trait PtyHandle: Send {
     fn exit_status(&mut self) -> Option<i32>;
     /// Stops the reader between two reads. It sends `CoreMsg::ReaderPaused` once every byte
     /// it read has been sent, and reads nothing more until `resume_reader`: what the program
-    /// prints meanwhile waits in the PTY (decision 0045).
+    /// prints meanwhile waits in the PTY (decision 0046).
     fn pause_reader(&mut self);
     fn resume_reader(&mut self);
     /// Gives the PTY up without closing it or signalling its program, for an upgrade to carry
-    /// (decision 0045). The reader stops for good. `None` when there is nothing to carry: the
+    /// (decision 0046). The reader stops for good. `None` when there is nothing to carry: the
     /// child has already exited.
     fn hand_over(self: Box<Self>) -> Option<HandedPty>;
 }
@@ -126,7 +126,7 @@ pub struct HandedPty {
     pub pid: Option<u32>,
 }
 
-/// What a pane holds in place of a PTY an upgrade has handed over (decision 0045). It is there
+/// What a pane holds in place of a PTY an upgrade has handed over (decision 0046). It is there
 /// between the handover and the exec, and after a handover a test made: the PTY belongs to the
 /// new server by then, so nothing here reaches it.
 pub struct HandedOver;
@@ -201,7 +201,7 @@ fn executable(shell: &Path) -> Result<()> {
 pub trait PtySpawner: Send + Sync {
     fn spawn(&self, req: SpawnRequest, tx: Sender<CoreMsg>) -> Result<Box<dyn PtyHandle>>;
 
-    /// Wraps a PTY an earlier server handed over (decision 0045) in the handle `spawn` would
+    /// Wraps a PTY an earlier server handed over (decision 0046) in the handle `spawn` would
     /// have given it, and starts its reader. A spawner that never hands a PTY over cannot take
     /// one back, which is every spawner a test writes for itself.
     fn adopt(
@@ -446,7 +446,7 @@ fn dup_cloexec(fd: RawFd) -> io::Result<std::fs::File> {
 }
 
 /// Sets or clears close-on-exec on `fd`. An upgrade clears it on what it carries just before
-/// the exec, and sets it again on whatever the exec did not take (decision 0045).
+/// the exec, and sets it again on whatever the exec did not take (decision 0046).
 pub fn set_cloexec(fd: RawFd, on: bool) -> io::Result<()> {
     // Safe: F_GETFD and F_SETFD read and write one flag on a descriptor and touch no memory.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };

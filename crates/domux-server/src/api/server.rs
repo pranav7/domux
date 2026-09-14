@@ -43,7 +43,7 @@ pub fn stop(ctx: &mut Ctx) -> Result<Value, ApiError> {
     ok(Ack { ok: true })
 }
 
-/// Replaces this server with `binary`, keeping every pane (decision 0045). Everything that
+/// Replaces this server with `binary`, keeping every pane (decision 0046). Everything that
 /// would stop the upgrade before it had changed anything is refused here, and the core does
 /// the rest, which is also what answers the caller.
 pub fn upgrade(ctx: &mut Ctx, p: ServerUpgradeParams) -> Result<Value, ApiError> {

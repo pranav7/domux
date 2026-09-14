@@ -1,4 +1,4 @@
-//! What `server upgrade` hands the new server, and the exec that hands it over (decision 0045).
+//! What `server upgrade` hands the new server, and the exec that hands it over (decision 0046).
 //!
 //! The handover is a directory under the state directory: `handoff.json`, and one screen file
 //! per pane that had a screen to carry. The descriptors it names are open in this process and

@@ -136,7 +136,7 @@ fn rgb(c: Rgb) -> ffi::GhosttyColorRgb {
 }
 
 /// How much of a sequence the program has not finished writing the terminal keeps, so a
-/// snapshot taken between two reads can carry it (decision 0045). A sequence longer than this
+/// snapshot taken between two reads can carry it (decision 0046). A sequence longer than this
 /// when a snapshot is taken costs that pane its screen, and tracking picks up again once the
 /// stream reaches ground.
 const CONTINUATION_LIMIT: usize = 1 << 20;

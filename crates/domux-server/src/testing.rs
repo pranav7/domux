@@ -178,7 +178,7 @@ impl crate::Opener for RecordingOpener {
 }
 
 /// What `server.upgrade` would have replaced the process with, recorded rather than run
-/// (decision 0045). Each call answers `Ok`, which the core reads as "this process is the new
+/// (decision 0046). Each call answers `Ok`, which the core reads as "this process is the new
 /// server now", unless the test told it to fail.
 #[derive(Default)]
 pub struct FakeExec {
@@ -1091,6 +1091,25 @@ impl Harness {
         pid
     }
 
+    /// The processes above every control API call this harness makes from now on, nearest
+    /// first: `["claude"]` is a hook its agent ran, and `["claude", "zsh", "claude"]` is a hook
+    /// run by an agent that another agent started from its shell.
+    ///
+    /// The server reads the caller's process id from the socket. Every call this harness makes
+    /// comes from the test process, so the chain starts at the test process.
+    pub fn hooks_run_under(&mut self, names: &[&str]) {
+        let mut child = std::process::id();
+        self.inspector.set_process(child, "domux", None);
+        for name in names {
+            let pid = self.next_pid;
+            self.next_pid += 1;
+            let child_name = self.inspector.name_of(child).unwrap_or_default();
+            self.inspector.set_process(child, &child_name, Some(pid));
+            self.inspector.set_process(pid, name, None);
+            child = pid;
+        }
+    }
+
     /// The process is gone; the inspector says so from the next tick on.
     pub async fn kill_process(&mut self, pid: u32) {
         self.inspector.set_dead(pid);
@@ -1211,7 +1230,7 @@ impl Harness {
 
     /// Asks the server to upgrade to `binary` over a fresh control connection, and answers the
     /// refusal when there is one. `None` is the connection closing unanswered, which is what a
-    /// server that handed over does (decision 0045).
+    /// server that handed over does (decision 0046).
     pub async fn request_upgrade(&mut self, binary: &Path) -> Option<ApiError> {
         let s = UnixStream::connect(&self.socket).await.expect("connect");
         let (r, mut w) = s.into_split();

@@ -39,7 +39,7 @@ pub enum CoreMsg {
         status: Option<i32>,
     },
     /// A pane's reader has stopped between two reads, as `PtyHandle::pause_reader` asked,
-    /// and every byte it read came before this (decision 0045).
+    /// and every byte it read came before this (decision 0046).
     ReaderPaused {
         pane: PaneId,
     },
@@ -58,6 +58,8 @@ pub enum CoreMsg {
     Api {
         request: Request,
         reply: oneshot::Sender<Response>,
+        /// The process id at the other end of the socket, when the OS says.
+        caller: Option<u32>,
     },
     Subscribe {
         filter: Vec<String>,
@@ -274,7 +276,7 @@ struct Dispatched {
     upgrade: Option<PathBuf>,
 }
 
-/// An upgrade under way (decision 0045). It moves through its stages between batches, on the
+/// An upgrade under way (decision 0046). It moves through its stages between batches, on the
 /// core task, and hands over from `run`, the one place that can wait.
 struct Upgrade {
     binary: PathBuf,
@@ -485,7 +487,7 @@ pub struct Core {
     /// The task accepting connections, once `Server::start` has one.
     acceptor: Option<crate::socket::Acceptor>,
     upgrade: Option<Upgrade>,
-    /// When this server took over from an upgrade (decision 0045).
+    /// When this server took over from an upgrade (decision 0046).
     upgraded_at: Option<String>,
     /// Jobs started and not yet finished. An upgrade waits for none.
     jobs_in_flight: usize,
@@ -942,7 +944,7 @@ impl Core {
     }
 
     /// Takes over the panes, records and start time of the server that handed over to this
-    /// one (decision 0045). A pane the handover names is adopted, with its screen when that can
+    /// one (decision 0046). A pane the handover names is adopted, with its screen when that can
     /// be restored; a pane the state file holds and the handover does not is spawned, as at
     /// any start.
     fn take_over(&mut self, handoff: Handoff, dir: &Path) {
@@ -1100,7 +1102,7 @@ impl Core {
         kept
     }
 
-    /// Starts an upgrade to `binary` (decision 0045): no new connection is accepted from here
+    /// Starts an upgrade to `binary` (decision 0046): no new connection is accepted from here
     /// on, and `advance_upgrade` takes it through its stages between batches.
     fn begin_upgrade(&mut self, binary: PathBuf, reply: Option<JobReply>) {
         tracing::info!("upgrading the server to {}", binary.display());
@@ -1191,7 +1193,7 @@ impl Core {
     }
 
     /// Hands the panes, the socket and the records to the upgrade's binary and replaces this
-    /// process with it (decision 0045). Answers true when this process is no longer the server.
+    /// process with it (decision 0046). Answers true when this process is no longer the server.
     /// On false everything handed over has been taken back and the server goes on.
     async fn hand_over(&mut self) -> bool {
         let Some(mut upgrade) = self.upgrade.take() else {
@@ -1457,7 +1459,11 @@ impl Core {
             }
             CoreMsg::ClientInput { client, msg } => self.client_input(client, msg),
             CoreMsg::ClientGone { client } => self.detach(&client, None),
-            CoreMsg::Api { request, reply } => self.api(request, reply),
+            CoreMsg::Api {
+                request,
+                reply,
+                caller,
+            } => self.api(request, reply, caller),
             CoreMsg::FactFetched { key, fact } => {
                 // A workspace removed while its provider was still running: the answer is
                 // about nothing the model holds, so it is dropped rather than put back.
@@ -1903,7 +1909,7 @@ impl Core {
     /// One API request. The answer goes to `reply` here, unless the handler deferred it:
     /// a handler that has to shell out queues a job and the job carries the answer, so the
     /// caller waits and the core does not (decision record 0006).
-    fn api(&mut self, request: Request, reply: oneshot::Sender<Response>) {
+    fn api(&mut self, request: Request, reply: oneshot::Sender<Response>, caller: Option<u32>) {
         let id = request.id.clone();
         let method = match Method::from_request(&request.method, request.params) {
             Ok(m) => m,
@@ -1913,7 +1919,7 @@ impl Core {
             }
         };
         let client = param_client(&method).or_else(|| self.model.most_recent_client());
-        let done = self.dispatch_inner(method, client.clone(), false);
+        let done = self.dispatch_inner(method, client.clone(), false, caller);
         let mut reply = Some(reply);
         if let Some(binary) = done.upgrade {
             let carried = reply.take().map(|tx| JobReply { id: id.clone(), tx });
@@ -1977,7 +1983,7 @@ impl Core {
         client: Option<ClientId>,
         from_key: bool,
     ) -> Result<serde_json::Value, ApiError> {
-        let done = self.dispatch_inner(method, client.clone(), from_key);
+        let done = self.dispatch_inner(method, client.clone(), from_key, None);
         if let Some(binary) = done.upgrade {
             self.begin_upgrade(binary, None);
         }
@@ -1997,6 +2003,7 @@ impl Core {
         method: Method,
         client: Option<ClientId>,
         from_key: bool,
+        caller: Option<u32>,
     ) -> Dispatched {
         let mut ctx = Ctx {
             model: &mut self.model,
@@ -2016,6 +2023,7 @@ impl Core {
             upgrade: None,
             client,
             from_key,
+            caller,
             events: Vec::new(),
             toasts: Vec::new(),
             stop_requested: false,

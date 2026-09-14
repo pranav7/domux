@@ -1,5 +1,5 @@
 //! `server.upgrade`: the server hands its panes, their screens, the agent records and the
-//! socket to a new build of itself, and nothing a pane was running ends (decision 0045).
+//! socket to a new build of itself, and nothing a pane was running ends (decision 0046).
 //!
 //! The exec is the one step a test cannot take, so `Harness::upgrade` takes the rest: the old
 //! server writes its handover and asks to exec, and the harness starts the new server from that

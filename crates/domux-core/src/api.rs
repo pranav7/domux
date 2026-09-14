@@ -629,7 +629,7 @@ pub struct ServerInfo {
     pub pid: u32,
     /// When this process started serving. An upgrade keeps the process, so this does not move.
     pub started_at: String,
-    /// When the server was last upgraded in place (decision 0045), and absent until it has been.
+    /// When the server was last upgraded in place (decision 0046), and absent until it has been.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgraded_at: Option<String>,
     /// The leader the running server is using, as a key name. The config file can disagree
@@ -826,7 +826,7 @@ methods! {
     StayAwakeToggle = "stay_awake.toggle": NoParams => StayAwakeResult,
 }
 
-/// Replace the running server with `binary`, keeping every pane (decision 0045). A server that
+/// Replace the running server with `binary`, keeping every pane (decision 0046). A server that
 /// hands over answers nothing: the connection closes when the process becomes the new server,
 /// and `server.info` then answers with a new `upgraded_at`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
