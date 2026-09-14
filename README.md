@@ -4,16 +4,18 @@
 
 # domux
 
-**Run Claude Code, Codex and OpenCode in parallel.**
+**Run all your coding agents from one terminal.**
 
-domux (_/ˈduː.mʌks/_) is an open-source terminal multiplexer for AI coding agents, for macOS and Linux. Put each agent in its own git worktree, see which one is waiting on you, and keep them all running after you close the lid.
+domux (_/ˈduː.mʌks/_) is a terminal multiplexer for AI coding agents, with a map of every one you run. Give each agent its own git worktree, see which one is waiting on you, and close the lid while the rest keep working. Your tmux keys, on macOS and Linux.
 
-- **Agents in parallel, a worktree each.** A project is a git repo, and each workspace is a long running git worktree in it. Long running means you don't manage their lifecycle, and you can run as many agents side by side as you want without them sharing a checkout.
-- **See which agent is waiting on you.** Agents are organised under their project and workspace in the Navigator, which shows what each one is doing, as its own hooks report it, and jumps you to any of them. A red dot marks the one that needs you, and `leader a` lists agents by who needs you first.
-- **Close the lid, keep the work.** A background server holds every pane, so closing the terminal or the laptop doesn't lose your work. Turn on stay awake and the agents keep working with the lid closed.
-- **Your tmux keys, on Ghostty.** domux ships its own multiplexer, built natively on Ghostty's terminal library rather than on tmux (that's where the name comes from). Your tmux shortcuts work out of the box.
-- **Recaps and session names.** For Claude Code, an agent's row shows its session name and the last recap it wrote.
-- **Hooks set up for you.** The installer finds Claude Code, Codex and OpenCode and sets up the hooks each one reports through.
+- **A worktree for every agent.** A project is a git repository, and a workspace is a worktree in it on its own branch. `.domux/worktree.conf` links in what a fresh checkout lacks, such as `.env` and `node_modules`, and runs your setup. Start an agent in each workspace and no two share a checkout.
+- **The one that's waiting on you.** Each agent reports its own state through its hooks, so a row says working, waiting or idle without guessing from the screen. A red dot marks the agent that stopped for you, and `leader a` lists agents by who needs you first.
+- **Read the recap before you switch.** A Claude Code row carries the session's name and the last recap the agent wrote. The switcher and `domux peek` show both, so you know what an agent did before you go and look.
+- **Close the lid. Nothing stops.** A server owns every pane, so detaching or closing the terminal stops no agent, and you attach again from any terminal, over ssh included. Stay awake keeps the machine up with the lid shut; the installer offers to set it up.
+- **Your tmux keys, and your mouse.** Tabs, splits, zoom, scrollback and copy mode answer the keys you already know, behind a leader you pick at install. The wheel scrolls, a drag selects, a click opens the link under it, and a program that asked for the mouse gets it.
+- **Scriptable by you, and by your agents.** Every key, subcommand and API call reaches the same handler, so anything you can press you can script: `domux events` streams what happens as JSON, and `domux pane send-text` types into a pane. Every agent starts with a note saying where it is and how to ask domux who else is running.
+
+domux is its own multiplexer, so there is no tmux to install; the name is a nod to where its keys come from.
 
 <img width="1375" height="905" alt="image" src="https://github.com/user-attachments/assets/b3833f16-1c04-407f-9e46-d591122ba043" />
 

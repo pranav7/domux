@@ -37,10 +37,10 @@ here. `site/` is one HTML file, a favicon and a screenshot, with no build step, 
 the installer it names change together in one pull request.
 
 **The page says what domux is and where to get it.** A top row with the name, a link to the
-changelog and a link to the repository with its star count; a heading that names the agents, and
-a paragraph that says what domux is and why to use it; the install command with a copy button;
-the latest version and its one-line summary, linked to its release notes; a screenshot; and six
-short reasons to use domux under it. The layout follows hunk.dev's first
+changelog and a link to the repository with its star count; a heading and a paragraph that say
+what domux is and why to use it; the install command with a copy button; the latest version and
+its one-line summary, linked to its release notes; a screenshot; six features under it, each with
+a mock of the rows domux draws; and a short list of the rest. The layout follows hunk.dev's first
 screen: a left-aligned heading in a large bold monospace face, boxes with square corners and a
 hard offset shadow, and the screenshot inside a window frame. The colours are the Catppuccin
 Mocha ground and mauve the built-in theme draws, and two things on the page are drawn the way
@@ -55,16 +55,36 @@ prints, drawn as an SVG with each half of a cell as one square, so it matches th
 without depending on how a font draws block characters. The text is JetBrains Mono from Google
 Fonts, falling back to the system's monospace font.
 
-**The words are the ones people search with.** The heading is "Run Claude Code, Codex and
-OpenCode in parallel", which is how people type the need into a search box and how Anthropic's
-own documentation words it. The paragraph opens with "domux is an open-source terminal
-multiplexer for AI coding agents", a sentence of the shape an assistant quotes when it recommends
-a tool, and "terminal multiplexer" is the name comparisons and searches give this kind of tool.
-The page never calls domux a runtime: herdr, the terminal tool of this kind with the most stars,
-calls itself one, and a heading that said so read as a copy of it. The title, the description and
-the card a shared link unfolds into name the category and all three agents. The six reasons under the
-screenshot say in text what domux does that other tools of this kind do not say, such as hooks
-that report each agent's state, a closed lid, and Ghostty on Linux.
+**The heading sells the idea and the paragraph says what domux is.** The heading is "Run all
+your coding agents from one terminal": one idea, the size of it, and the place. The paragraph
+opens with "domux is a terminal multiplexer for AI coding agents", a sentence of the shape an
+assistant quotes when it recommends a tool, and "terminal multiplexer" is the name comparisons and
+searches give this kind of tool; the rest of it is verbs the reader will do, the way tmux's own
+first paragraph reads. The page never calls domux a runtime: herdr, the terminal tool of this kind
+with the most stars, calls itself one, and a heading that said so read as a copy of it. The title,
+the description and the card a shared link unfolds into name the category and all three agents,
+which the heading does not, so a search for an agent's name still finds the page.
+
+**The copy names what domux does for the reader, never what it is built on.** Ghostty and Rust
+are in the repository and nowhere on the page: a reader deciding whether to install domux asks
+what happens to their agents, not which library draws the cells. "Your tmux keys" stays because
+the keys are the reader's habit, not domux's implementation.
+
+**Six features, in the order the alternatives sell them, kept to what domux does.** The tools
+that compete for the same reader sell parallel agents in worktrees, knowing which agent needs
+input, work that survives the lid, one key to switch, an API, and reviewing diffs before a merge.
+domux can show the first five and not the last, so the page shows five and says nothing about
+diffs, and leads with the three things none of the alternatives state: state reported by the
+agent's own hooks, the recap before you switch, and a worktree that arrives with the reader's
+`.env` and setup in it. Each feature has a heading of a few words, two or three sentences, and a
+mock, the shape hunk.dev uses.
+
+**The mocks are HTML, in the theme's own colours.** A screenshot goes stale with every change to
+the chrome and blurs on a phone; a mock is text, so it stays sharp and is edited with the copy.
+Each one draws the rows domux draws, from the row grammar in `render::agents_box` and
+`render::projects_box` and the roles in the built-in theme, so a reader who installs domux sees
+what the page showed. The mocks are hidden from a screen reader: every fact in one is also in the
+paragraph beside it.
 
 **What crawlers read is also on the page.** The JSON-LD block describes domux as a
 SoftwareApplication, and every fact in it is in the page's text too, because an assistant that
