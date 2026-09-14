@@ -222,9 +222,13 @@
   /* The heading's last three words stay on one line, so the focused tab ends the heading. */
   .nowrap { white-space: nowrap; }
 
-  /* The focused tab in domux's tab row: the accent as the ground, the page's ground as the text. */
+  /* The focused tab in domux's tab row: the accent as the ground, the page's ground as the text.
+     An inline block one line-height tall, so the ground stops short of the line above rather
+     than filling the font's whole content box. */
   .focused {
-    padding-inline: 0.12em;
+    display: inline-block;
+    padding: 0.02em 0.12em 0.05em;
+    line-height: 1;
     background: var(--accent);
     color: var(--ground);
   }
