@@ -376,14 +376,11 @@ fn line_one(a: &AgentEntry, view: &AgentsView, form: RowForm, width: usize) -> V
     spans
 }
 
-/// The name in `text` bold, a kind standing in for one in the agent's colour, and both dimmed
-/// on an unknown row (interface spec 6.2).
+/// The name, or a kind standing in for one, both bold in the agent's colour so a rename never
+/// erases which kind is running (MUX-42); dimmed on an unknown row, whose kind is unverified.
 fn label_style(a: &AgentEntry) -> Style {
     match a.state {
         AgentState::Unknown => Style::default().fg(theme::OVERLAY0),
-        _ if a.name.is_some() => Style::default()
-            .fg(theme::TEXT)
-            .add_modifier(Modifier::BOLD),
         _ => Style::default()
             .fg(theme::agent_color(a.kind))
             .add_modifier(Modifier::BOLD),
@@ -694,7 +691,11 @@ mod tests {
         );
         let name = &rows[0].lines[0].spans[0];
         assert_eq!(name.content, "auth-cleanup");
-        assert_eq!(name.style.fg, Some(theme::TEXT), "a name reads in text");
+        assert_eq!(
+            name.style.fg,
+            Some(theme::CLAUDE),
+            "a name keeps the kind's colour, so a rename does not erase which kind this is"
+        );
         assert!(name.style.add_modifier.contains(Modifier::BOLD), "and bold");
         let two = &rows[0].lines[1].spans;
         assert_eq!(
@@ -707,6 +708,26 @@ mod tests {
             two[2].style.fg,
             Some(theme::OVERLAY1),
             "the place in the agents overlay"
+        );
+    }
+
+    /// MUX-42: the default Navigator sidebar row (`RowForm::Nested`) has no second line and no
+    /// tail, so it was the one surface with nothing left once a renamed agent went idle: no
+    /// glyph, no colour, nothing to say which kind it was.
+    #[test]
+    fn a_renamed_idle_agent_keeps_its_kind_colour_in_the_nested_row() {
+        let v = view(vec![entry(
+            AgentState::Idle,
+            Some("auth-cleanup"),
+            AgentKind::Codex,
+        )]);
+        let row = one_row(&v.agents[0], &v, RowForm::Nested, 72);
+        let label = &row.lines[0].spans[1];
+        assert_eq!(label.content, "auth-cleanup");
+        assert_eq!(
+            label.style.fg,
+            Some(theme::CODEX),
+            "the kind's colour survives the rename, even idle in the default Navigator row"
         );
     }
 
