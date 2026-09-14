@@ -39,6 +39,8 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
   tool, no longer takes over that pane's agent row. The row keeps its session name and its state,
   and the worker gets no row of its own. Restart the server with `domux server restart` for this to
   apply.
+- A Codex session renamed with `/rename` shows the new name on its agent row within a second, where
+  the row used to say `codex` for the whole session.
 
 ## [1.0.1] - 2026-09-13
 

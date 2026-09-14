@@ -153,8 +153,12 @@ fn claude_notification_event(v: &Value) -> Option<AgentEvent> {
 
 /// Codex: the same envelope shape as Claude, its own event names, and a session field recorded
 /// under one of three names (M3 plan assumption 13); the adapter accepts all three.
-/// `PermissionRequest` is the waiting event. The transcript path is Codex's own `rollout_path`,
-/// absent when the payload does not carry one.
+/// `PermissionRequest` is the waiting event.
+///
+/// The transcript path is the session's rollout file. Codex's hooks name it `transcript_path`,
+/// as Claude's do; `rollout_path` is the name M3 planned on and is still read when a payload
+/// carries no `transcript_path`. The rollout is what the session name's index is found from
+/// (decision record 0049).
 pub fn parse_codex(v: &Value) -> AgentReport {
     let event = match string(v, "hook_event_name").as_deref() {
         Some("SessionStart") => Some(AgentEvent::SessionStart),
@@ -171,7 +175,7 @@ pub fn parse_codex(v: &Value) -> AgentReport {
         session_id: string(v, "session_id")
             .or_else(|| string(v, "thread_id"))
             .or_else(|| string(v, "conversation_id")),
-        transcript_path: path(v, "rollout_path"),
+        transcript_path: path(v, "transcript_path").or_else(|| path(v, "rollout_path")),
         cwd: path(v, "cwd"),
         reason: if event == Some(AgentEvent::Notification) {
             string(v, "message")
@@ -353,7 +357,7 @@ mod tests {
         );
         assert_eq!(
             r.transcript_path, None,
-            "this fixture carries no rollout_path"
+            "this fixture carries no transcript_path"
         );
     }
 
@@ -389,16 +393,29 @@ mod tests {
         }
     }
 
+    /// Codex's hooks name the rollout `transcript_path`, as Claude's do, and that is the name
+    /// read first. `rollout_path` stands in when a payload carries no `transcript_path`, and a
+    /// payload carrying both is read by `transcript_path`.
     #[test]
-    fn codex_reads_the_transcript_path_from_rollout_path() {
-        let r = parse(
-            AgentKind::Codex,
-            r#"{"hook_event_name":"Stop","session_id":"t-1","rollout_path":"/Users/pranav/.codex/sessions/t-1.jsonl"}"#,
-        )
-        .unwrap();
+    fn codex_reads_the_transcript_path_from_transcript_path_then_rollout_path() {
+        let rollout = "/Users/pranav/.codex/sessions/2026/09/14/rollout-t-1.jsonl";
+        for field in ["transcript_path", "rollout_path"] {
+            let text = format!(
+                "{{\"hook_event_name\":\"Stop\",\"session_id\":\"t-1\",\"{field}\":\"{rollout}\"}}"
+            );
+            assert_eq!(
+                parse(AgentKind::Codex, &text).unwrap().transcript_path,
+                Some(PathBuf::from(rollout)),
+                "{field}"
+            );
+        }
+        let both = format!(
+            "{{\"hook_event_name\":\"Stop\",\"session_id\":\"t-1\",\"transcript_path\":\"{rollout}\",\"rollout_path\":\"/elsewhere.jsonl\"}}"
+        );
         assert_eq!(
-            r.transcript_path,
-            Some(PathBuf::from("/Users/pranav/.codex/sessions/t-1.jsonl"))
+            parse(AgentKind::Codex, &both).unwrap().transcript_path,
+            Some(PathBuf::from(rollout)),
+            "transcript_path wins over rollout_path"
         );
         let r = parse(
             AgentKind::Codex,
@@ -407,7 +424,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             r.transcript_path, None,
-            "absent when the payload names no rollout_path"
+            "absent when the payload names neither"
         );
     }
 
