@@ -6,7 +6,7 @@
 
 **terminal runtime for scaling coding agents.**
 
-domux allows you to scale running multiple coding agents. Parallel work comes from Projects and Workspaces. A Project is a git repo, and Workspaces are long running git worktrees in that repo. Long running means you don't have to manage their lifecycle, and gives you the ability to deploy as many parallel agents as you want. domux currently natively works with Claude Code, Codex and OpenCode. Agent sessions are automatically organised within projects and workspaces, so you can easily peek at which agent is blocked on you.
+domux (/ˈduː.mʌks/) allows you to scale running multiple coding agents. Parallel work comes from Projects and Workspaces. A Project is a git repo, and Workspaces are long running git worktrees in that repo. Long running means you don't have to manage their lifecycle, and gives you the ability to deploy as many parallel agents as you want. domux currently natively works with Claude Code, Codex and OpenCode. Agent sessions are automatically organised within projects and workspaces, so you can easily peek at which agent is blocked on you.
 
 domux will keep your terminal running in a background server so when you close your laptop you don't lose your work. The multiplexing works similarly to tmux (that's where the name comes from), but is natively built on top of Ghostty. All your tmux shortcuts should work out the box as well.
 
@@ -27,12 +27,12 @@ domux
 The server starts on the first run and keeps running after you detach, so a closed laptop does
 not lose the work. Then:
 
-| Command | What it does |
-|---|---|
-| `domux` | attach, starting the server if it is not running |
-| `domux peek` | every agent: kind, place, state, recap |
+| Command             | What it does                                       |
+| ------------------- | -------------------------------------------------- |
+| `domux`             | attach, starting the server if it is not running   |
+| `domux peek`        | every agent: kind, place, state, recap             |
 | `domux open <path>` | register a directory as a project and switch to it |
-| `domux --help` | everything else |
+| `domux --help`      | everything else                                    |
 
 Inside domux the leader key is the one the installer asked for, `ctrl-s` unless you picked
 another: `leader a` opens the agents overlay, and `leader ?` lists the keys.
