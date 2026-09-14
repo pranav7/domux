@@ -1,6 +1,6 @@
 //! One attached client: its capabilities and the diff to the last queued frame.
 
-use domux_core::ids::ClientId;
+use domux_core::ids::{ClientId, PaneId};
 use domux_core::proto::{Capabilities, CellUpdate, CursorState, FrameDiff, ServerMsg, WireColor};
 use domux_core::theme::{Desktop, TerminalColors, Theme, Themes};
 use ratatui::buffer::Buffer;
@@ -69,6 +69,10 @@ pub struct ClientConn {
     follow_unsent: Option<bool>,
     /// This client's theme, painted for its terminal's colours.
     pub theme: ThemeCache,
+    /// The pane whose program was told a button from this client went down, while the button
+    /// is held. The drag and the release that follow go to that program wherever the pointer
+    /// is, so it is never left holding a button nobody let go of (decision 0044).
+    pub reported_press: Option<PaneId>,
 }
 
 /// One client's painted theme, with what it was painted from. It is painted again only when
@@ -126,6 +130,7 @@ impl ClientConn {
             hint: None,
             follow_unsent: None,
             theme: ThemeCache::default(),
+            reported_press: None,
         }
     }
 

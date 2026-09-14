@@ -1,8 +1,9 @@
-//! Where a pointer event goes (decision 0014).
+//! Where a pointer event goes (decisions 0014 and 0044).
 //!
 //! The wheel over a pane belongs to that pane's program when the program asked for the mouse,
-//! and to copy mode otherwise. The buttons are always domux's: a press focuses what it lands
-//! on, a drag selects, a release copies.
+//! and to copy mode otherwise. The buttons belong to that program too, from the press to the
+//! release, unless the pane is in copy mode. Everywhere else they are domux's: a press focuses
+//! what it lands on, a drag selects, a release copies.
 //!
 //! What a cell belongs to is `render::hit_at`'s answer, asked through the same input the frame
 //! is drawn from, so nothing here measures the screen a second time.
@@ -58,17 +59,19 @@ pub fn wheel(core: &mut Core, client: &ClientId, column: u16, row: u16, lines: i
     } else {
         MouseButton::WheelDown
     };
-    if to_program(
-        core,
-        &hit,
-        MouseEvent {
-            button,
-            action: MouseAction::Press,
-            mods: domux_term::Mods::empty(),
-            row: hit.row,
-            col: hit.col,
-        },
-    ) {
+    if wants_mouse(core, &hit.pane)
+        && report(
+            core,
+            &hit.pane,
+            MouseEvent {
+                button,
+                action: MouseAction::Press,
+                mods: domux_term::Mods::empty(),
+                row: hit.row,
+                col: hit.col,
+            },
+        )
+    {
         return;
     }
     // Copy mode's own gesture, which the keys share: it opens the mode and moves the viewport.
@@ -94,16 +97,30 @@ pub fn wheel(core: &mut Core, client: &ClientId, column: u16, row: u16, lines: i
 
 /// One button event.
 ///
-/// Only the left button acts. The other two are reported so that a binding can be given to them
-/// later; nothing claims them now, and a middle-click paste would put the primary selection
-/// somewhere the reader cannot see it first.
+/// A gesture a program took stays that program's until the button comes up, and a press over a
+/// pane whose program asked for the mouse is that program's whichever button it is (decision
+/// 0044). Of the rest, only the left button acts. The other two are reported so that a binding
+/// can be given to them later; nothing claims them now, and a middle-click paste would put the
+/// primary selection somewhere the reader cannot see it first.
 pub fn button(core: &mut Core, client: &ClientId, event: MouseEvent, count: u8) {
-    if event.button != MouseButton::Left {
+    if event.action == MouseAction::Press {
+        // Every press decides afresh, so a release the outer terminal never sent cannot hand
+        // this gesture to the program the last press went to.
+        if let Some(conn) = core.clients.get_mut(client) {
+            conn.reported_press = None;
+        }
+    } else if to_holding_program(core, client, event) {
         return;
     }
     match core.hit_at(client, event.col, event.row) {
         Some(Hit::Pane { pane, row, col }) => {
             let hit = PaneHit { pane, row, col };
+            if event.action == MouseAction::Press && press_to_program(core, client, &hit, event) {
+                return;
+            }
+            if event.button != MouseButton::Left {
+                return;
+            }
             match event.action {
                 MouseAction::Press => press(core, client, &hit, count),
                 MouseAction::Drag => drag(core, client, &hit),
@@ -113,9 +130,58 @@ pub fn button(core: &mut Core, client: &ClientId, event: MouseEvent, count: u8) 
         // The chrome acts on the press. A release is the same gesture ending and a drag across
         // the chrome is not a gesture at all, so acting on either would run the operation twice
         // or run it somewhere the reader did not press.
-        Some(hit) if event.action == MouseAction::Press => chrome(core, client, hit),
+        Some(hit) if event.button == MouseButton::Left && event.action == MouseAction::Press => {
+            chrome(core, client, hit)
+        }
         _ => {}
     }
+}
+
+/// A press over a pane whose program asked for the mouse is reported to that program, which
+/// answers it: Claude Code selects and copies its own text, opens its own links and closes its
+/// own sidebar on a click (decision 0044). The press still focuses the pane, and it is input
+/// reaching the pane, as a key is. `true` when the press was the program's.
+///
+/// A pane in copy mode is showing copy mode's viewport rather than the program's screen, so a
+/// press there stays domux's.
+fn press_to_program(core: &mut Core, client: &ClientId, hit: &PaneHit, event: MouseEvent) -> bool {
+    let in_copy_mode = core
+        .panes
+        .get(&hit.pane)
+        .is_some_and(|rt| rt.copy.is_some());
+    if in_copy_mode || !wants_mouse(core, &hit.pane) {
+        return false;
+    }
+    focus_pane(core, client, &hit.pane);
+    report(core, &hit.pane, event.at(hit.row, hit.col));
+    core.seen_by_input(&hit.pane);
+    if let Some(conn) = core.clients.get_mut(client) {
+        conn.reported_press = Some(hit.pane.clone());
+    }
+    true
+}
+
+/// A drag or a release from a client whose press went to a program goes to that program, at the
+/// cell of its pane nearest the pointer, so a gesture that wandered out of the pane still ends
+/// in it. The release ends the gesture. `true` when the event was the program's.
+fn to_holding_program(core: &mut Core, client: &ClientId, event: MouseEvent) -> bool {
+    let Some(conn) = core.clients.get_mut(client) else {
+        return false;
+    };
+    let held = if event.action == MouseAction::Release {
+        conn.reported_press.take()
+    } else {
+        conn.reported_press.clone()
+    };
+    let Some(pane) = held else {
+        return false;
+    };
+    // A pane this client no longer draws has no cell to report at. The gesture is still the
+    // program's, so nothing else acts on it either.
+    if let Some((row, col)) = core.cell_in_pane(client, &pane, event.col, event.row) {
+        report(core, &pane, event.at(row, col));
+    }
+    true
 }
 
 /// A press on the chrome runs the same handler the key for that operation runs, so a click, a
@@ -351,15 +417,20 @@ fn word_at(grid: &domux_term::Grid, row: u16, col: u16) -> (u16, u16) {
     (first, last)
 }
 
-/// Hands the event to the pane's program when the program asked for the mouse. `true` means it
-/// was the program's and nothing else may act on it.
-fn to_program(core: &mut Core, hit: &PaneHit, event: MouseEvent) -> bool {
-    let Some(rt) = core.panes.get_mut(&hit.pane) else {
+/// Whether the pane's program asked to be told about the mouse.
+fn wants_mouse(core: &Core, pane: &PaneId) -> bool {
+    core.panes
+        .get(pane)
+        .is_some_and(|rt| rt.emulator.mode_active(Mode::MouseTracking))
+}
+
+/// Writes the report `event` makes in the protocol the pane's program asked for. Nothing is
+/// written when that protocol has no report for the event, such as a drag to a program that
+/// asked for presses alone. `true` when something was written.
+fn report(core: &mut Core, pane: &PaneId, event: MouseEvent) -> bool {
+    let Some(rt) = core.panes.get_mut(pane) else {
         return false;
     };
-    if !rt.emulator.mode_active(Mode::MouseTracking) {
-        return false;
-    }
     let mut out = Vec::new();
     rt.emulator.encode_mouse(&event, &mut out);
     if out.is_empty() {

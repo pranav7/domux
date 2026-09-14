@@ -95,9 +95,11 @@ changing any of it.
 - Work on `v2`, or on a milestone branch (`m1`, `m2`, `m3`) that merges into `v2` by pull request. Never commit to `main`, `master`, or `workspace-*`.
 - The state directory is `~/.local/share/domux`, the config file `~/.config/domux/domux.toml` and the socket `domux.sock`; every such name comes from `domux_core::names` and `domux_core::paths`. `sessions/` under the state directory is V1's and is only ever read, by `import v1`. Nothing here writes under `~/.claude` or `~/.codex` except `install <kind> --apply`, and never without the author saying so. The cut-over of 2026-09-11 renamed all of these from `domux2`; `names::OLD_NAME` and `domux_server::migrate` are what carry a machine across it, and no other source spells the old name.
 - No tmux. No Windows. The mouse is read: the wheel, a drag that selects, clicks on the
-  chrome, and a click that opens the link under it. Read `docs/decisions/0014-the-mouse.md`
-  and `docs/decisions/0024-a-click-opens-the-link-under-it.md` before changing what any of
-  them do.
+  chrome, and a click that opens the link under it. A program that asked for the mouse gets
+  the buttons as well as the wheel. Read `docs/decisions/0014-the-mouse.md`,
+  `docs/decisions/0024-a-click-opens-the-link-under-it.md` and
+  `docs/decisions/0044-a-program-that-asked-for-the-mouse-gets-the-buttons.md` before changing
+  what any of them do.
 - One implementation per operation: a key, a CLI subcommand and an API call reach the same handler in `domux_server::api`.
 - One core task owns all mutable state. Atomic writes: `path.tmp`, then rename.
 - Test names are `behavior_condition` in snake_case.

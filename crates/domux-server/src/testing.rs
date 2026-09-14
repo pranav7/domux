@@ -601,11 +601,25 @@ impl Harness {
         row: u16,
         count: u8,
     ) {
+        self.button(client, MouseButton::Left, action, column, row, count)
+            .await;
+    }
+
+    /// One event of any button at a screen cell, for the tests about the other two.
+    pub async fn button(
+        &mut self,
+        client: ClientId,
+        button: MouseButton,
+        action: MouseAction,
+        column: u16,
+        row: u16,
+        count: u8,
+    ) {
         self.send(
             &client,
             ClientMsg::Mouse {
                 event: MouseEvent {
-                    button: MouseButton::Left,
+                    button,
                     action,
                     mods: Mods::empty(),
                     row,

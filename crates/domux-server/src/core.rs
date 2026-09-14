@@ -1173,7 +1173,7 @@ impl Core {
     /// Input reached `pane`, so the agent there has been seen (interface spec 6.5). The one
     /// rule lives in `Model::clear_unseen_for_pane`; this is the core's way of recording what
     /// it produced, and `api::pane`'s `seen_by_input` is the handler's.
-    fn seen_by_input(&mut self, pane: &PaneId) {
+    pub(crate) fn seen_by_input(&mut self, pane: &PaneId) {
         let cleared = self.model.clear_unseen_for_pane(pane);
         self.view_dirty |= !cleared.is_empty();
         self.pending_events.extend(cleared);
@@ -1195,18 +1195,43 @@ impl Core {
         self.view_dirty = true;
     }
 
-    /// What the cell at `column`, `row` of this client's screen belongs to.
+    /// What the cell at `column`, `row` of this client's screen belongs to. The question is
+    /// `render::hit_at`'s.
+    pub fn hit_at(&mut self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
+        self.ask_screen(client, |input| render::hit_at(input, column, row))?
+    }
+
+    /// The cell of `pane`'s grid nearest the cell at `column`, `row` of this client's screen,
+    /// clamped to its box. The question is `render::cell_in_pane`'s.
+    pub fn cell_in_pane(
+        &mut self,
+        client: &ClientId,
+        pane: &PaneId,
+        column: u16,
+        row: u16,
+    ) -> Option<(u16, u16)> {
+        self.ask_screen(client, |input| {
+            render::cell_in_pane(input, pane, column, row)
+        })?
+    }
+
+    /// Asks `question` about this client's screen, or answers `None` for a client the model
+    /// does not have.
     ///
-    /// The question is `render::hit_at`'s, and it is asked through the same `RenderInput` the
-    /// frame is drawn from, so a pointer and a frame cannot disagree about what is where. It
-    /// lives here because that input is built from fields the core owns.
+    /// The question is asked through the same `RenderInput` the frame is drawn from, so a
+    /// pointer and a frame cannot disagree about what is where. It lives here because that
+    /// input is built from fields the core owns.
     ///
     /// `&mut self` for the agent view alone, which `render` also builds by mutation:
     /// `agents_view` hands a working agent the word it already gave that agent, so asking here
     /// changes no word the reader is looking at. Building a thinner view instead would put the
     /// count in the top bar on one measurement and the pointer on another, and the tab row
     /// starts after that count.
-    pub fn hit_at(&mut self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
+    fn ask_screen<R>(
+        &mut self,
+        client: &ClientId,
+        question: impl FnOnce(&RenderInput) -> R,
+    ) -> Option<R> {
         let now = self.deps.clock.now();
         let agents = agents_view(&self.model, &mut self.agents, now);
         let view = self.model.client(client)?;
@@ -1226,7 +1251,7 @@ impl Core {
             navigator: self.config.config.navigator.enabled,
             theme: domux_core::theme::Theme::domux(),
         };
-        render::hit_at(&input, column, row)
+        Some(question(&input))
     }
 
     /// A note is gone once the reader has been in a box with it on the screen, so it is read

@@ -1,7 +1,8 @@
 # 0014: The mouse
 
 **Date:** 2026-09-09
-**Status:** Accepted
+**Status:** Accepted. **The rule about buttons is replaced by decision record 0044**: a program
+that asked for the mouse gets the buttons as well as the wheel. The rest stands.
 **Decision:** domux2 reads the mouse. The wheel over a pane belongs to that pane's program
 when the program asked for mouse events, and to copy mode otherwise. The buttons are always
 domux2's: dragging inside a pane selects text and copies it on release, a click focuses the
@@ -39,6 +40,9 @@ V1, so it is M2 work now, and the rest of the pointer comes with it: a click on 
 `+`, or on a row of the sidebar does what the key for it does.
 
 ## The rule about buttons
+
+Replaced by decision record 0044, which gives the buttons to a program that asked for the mouse.
+Claude Code now selects, copies and opens links itself, so the reason below no longer holds.
 
 The wheel is the program's when the program asked for the mouse. The buttons are not: they
 select text and move focus, whatever the program asked for. A program that wants the buttons

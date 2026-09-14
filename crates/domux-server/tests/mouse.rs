@@ -1,9 +1,10 @@
 //! The pointer: the wheel to a program that asked for it, and the buttons to a selection
-//! (decision 0014).
+//! (decision 0014), except over a program that asked for the mouse, which takes the buttons too
+//! (decision 0044).
 
 use domux_core::config::Config;
 use domux_server::testing::{row, Harness};
-use domux_term::MouseAction;
+use domux_term::{MouseAction, MouseButton};
 use std::time::Duration;
 
 /// A pane holding `line 00` up to `line NN` and a prompt. On an 80x10 screen the box's inner
@@ -661,4 +662,295 @@ async fn a_click_on_the_plus_lands_on_it_after_the_location_label() {
         )
         .await;
     assert!(f.contains(" 2 "), "the click made a second tab:\n{f}");
+}
+
+// ------------------------------------------------ a program that asked for the mouse (MUX-33)
+
+/// What Claude Code turns on as its interface starts (decision 0014): presses, drags, bare
+/// motion, and the SGR format the reports are written in.
+const CLAUDE_MOUSE: &[u8] = b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+
+/// Everything written to a pane's program after the first `before` bytes, as text.
+fn sent_since(h: &Harness, pane: &domux_core::ids::PaneId, before: usize) -> String {
+    String::from_utf8_lossy(&h.pane_input(pane)[before..]).into_owned()
+}
+
+/// MUX-33: a click in a pane whose program asked for the mouse is the program's. Claude Code
+/// closes its diff sidebar, moves its cursor and expands a result on a click, and none of that
+/// happens while domux keeps the press. The press still moves the keys to the pane it landed in,
+/// and domux opens no copy mode and copies nothing, because the program answers the gesture.
+#[tokio::test]
+async fn a_click_reaches_a_program_that_asked_for_the_mouse_and_focuses_its_pane() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let left = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(left.clone(), CLAUDE_MOUSE).await;
+    h.api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .unwrap();
+    h.frame(h.client.clone()).await;
+    assert_ne!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "the split has the keys"
+    );
+    let before = h.pane_input(&left).len();
+
+    click(&mut h, 5, 5).await;
+    h.frame(h.client.clone()).await;
+
+    assert_eq!(
+        sent_since(&h, &left, before),
+        "\x1b[<0;5;4M\x1b[<0;5;4m",
+        "a press and a release at the pane's own cell"
+    );
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "the press moved the keys to the pane it landed in"
+    );
+    assert!(!h.model().pane(&left).unwrap().copy_mode);
+    assert!(h.clipboard(h.client.clone()).await.is_empty());
+}
+
+/// A drag is the program's from the press to the release, so Claude Code selects its own text
+/// and copies it itself. domux's selection stays shut: two selections over one screen would
+/// disagree about what was taken.
+#[tokio::test]
+async fn a_drag_reaches_a_program_that_asked_for_the_mouse_and_copy_mode_stays_shut() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(pane.clone(), CLAUDE_MOUSE).await;
+    h.frame(h.client.clone()).await;
+    let before = h.pane_input(&pane).len();
+
+    h.drag(h.client.clone(), (1, 2), (7, 3)).await;
+    h.frame(h.client.clone()).await;
+
+    assert_eq!(
+        sent_since(&h, &pane, before),
+        "\x1b[<0;1;1M\x1b[<32;7;2M\x1b[<0;7;2m",
+        "the press, the drag with the button held, and the release"
+    );
+    assert!(!h.model().pane(&pane).unwrap().copy_mode);
+    assert!(h.clipboard(h.client.clone()).await.is_empty());
+}
+
+/// A drag that leaves the pane stays the program's until the button comes up, reported at the
+/// pane's nearest edge. A program that never heard the release would still be holding the
+/// button, and Claude Code copies a selection when its drag ends, so a selection dragged past
+/// the edge of its pane would never be copied. The pane the pointer crossed hears nothing.
+#[tokio::test]
+async fn a_drag_that_leaves_the_programs_pane_is_reported_at_its_edge_until_the_release() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let left = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(left.clone(), CLAUDE_MOUSE).await;
+    let right = h
+        .api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .map(|id| domux_core::ids::PaneId(id.into()))
+        .expect("the split returns its pane");
+    h.frame(h.client.clone()).await;
+    let cols = h.pane_size(&left).cols;
+    let before_left = h.pane_input(&left).len();
+    let before_right = h.pane_input(&right).len();
+
+    h.mouse(h.client.clone(), MouseAction::Press, 5, 5, 1).await;
+    // Column 60 is inside the right pane, and row 0 is the tab row.
+    h.mouse(h.client.clone(), MouseAction::Drag, 60, 5, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Release, 60, 0, 1)
+        .await;
+    h.frame(h.client.clone()).await;
+
+    assert_eq!(
+        sent_since(&h, &left, before_left),
+        format!("\x1b[<0;5;4M\x1b[<32;{cols};4M\x1b[<0;{cols};1m"),
+        "the drag at the pane's last column and the release at its first row"
+    );
+    assert_eq!(
+        h.pane_input(&right).len(),
+        before_right,
+        "the pane the pointer crossed was told nothing"
+    );
+    assert_eq!(h.focused_pane(h.client.clone()), left);
+    assert!(!h.model().pane(&right).unwrap().copy_mode);
+}
+
+/// Every button is the program's, not the left one alone: a program that asked for the mouse
+/// asked for all three. Over a pane whose program asked for nothing the right button still does
+/// nothing, which the second half checks so the first cannot pass by writing to every pane.
+#[tokio::test]
+async fn a_right_click_reaches_a_program_that_asked_for_the_mouse_and_no_other() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    let before = h.pane_input(&pane).len();
+    for action in [MouseAction::Press, MouseAction::Release] {
+        h.button(h.client.clone(), MouseButton::Right, action, 5, 5, 1)
+            .await;
+    }
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.pane_input(&pane).len(),
+        before,
+        "a program that asked for nothing is told nothing"
+    );
+
+    h.feed_pane(pane.clone(), CLAUDE_MOUSE).await;
+    h.frame(h.client.clone()).await;
+    let before = h.pane_input(&pane).len();
+    for action in [MouseAction::Press, MouseAction::Release] {
+        h.button(h.client.clone(), MouseButton::Right, action, 5, 5, 1)
+            .await;
+    }
+    h.frame(h.client.clone()).await;
+    assert_eq!(sent_since(&h, &pane, before), "\x1b[<2;5;4M\x1b[<2;5;4m");
+}
+
+/// The program opens its own links: Claude Code answers a click on a hyperlink by opening it,
+/// so domux opening it as well would open every link twice. Decision 0024 still holds over a
+/// pane whose program did not ask for the mouse.
+#[tokio::test]
+async fn a_click_on_a_link_in_a_program_that_asked_for_the_mouse_opens_nothing_in_domux() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.feed_pane(pane.clone(), CLAUDE_MOUSE).await;
+    h.feed_pane(
+        pane.clone(),
+        b"see \x1b]8;;https://example.com/artifact\x1b\\link\x1b]8;;\x1b\\ here",
+    )
+    .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("see link here"),
+        Duration::from_secs(2),
+    )
+    .await;
+    let before = h.pane_input(&pane).len();
+
+    // Column 5 of the screen is the `l` of `link`, as in the test that opens it.
+    click(&mut h, 5, 2).await;
+    h.frame(h.client.clone()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(sent_since(&h, &pane, before), "\x1b[<0;5;1M\x1b[<0;5;1m");
+    assert!(
+        h.opener.opened().is_empty(),
+        "the click was the program's, and domux opened nothing"
+    );
+}
+
+/// Every press decides afresh whose gesture it starts. A release the outer terminal never sent
+/// would otherwise leave the next drag in a plain pane going to the program the last press went
+/// to, and that drag would select nothing.
+#[tokio::test]
+async fn a_press_after_a_release_that_never_came_starts_a_gesture_of_its_own() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let left = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(left.clone(), CLAUDE_MOUSE).await;
+    let right = h
+        .api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .map(|id| domux_core::ids::PaneId(id.into()))
+        .expect("the split returns its pane");
+    h.feed_pane(right.clone(), b"right pane text").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("right pane text"),
+        Duration::from_secs(2),
+    )
+    .await;
+    let before = h.pane_input(&left).len();
+
+    // A press in the program's pane whose release is lost.
+    h.mouse(h.client.clone(), MouseAction::Press, 5, 5, 1).await;
+    // Column 41 is the first cell inside the right pane's box, and row 2 its first row.
+    h.drag(h.client.clone(), (41, 2), (45, 2)).await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    assert_eq!(
+        h.clipboard(h.client.clone()).await,
+        vec!["right".to_string()],
+        "the drag selected in the pane it was made in"
+    );
+    assert_eq!(
+        sent_since(&h, &left, before),
+        "\x1b[<0;5;4M",
+        "the program heard its own press and nothing of the next gesture"
+    );
+}
+
+/// A pane in copy mode is showing copy mode's viewport rather than the program's screen, so a
+/// drag there selects for domux and the program hears nothing. `leader [` then a drag is how
+/// text leaves a program's pane through domux's own selection.
+#[tokio::test]
+async fn a_drag_in_copy_mode_selects_for_domux_over_a_program_that_asked_for_the_mouse() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(pane.clone(), CLAUDE_MOUSE).await;
+    h.api("pane.copy_mode", serde_json::json!({}))
+        .await
+        .unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    let before = h.pane_input(&pane).len();
+
+    h.drag(h.client.clone(), (1, 2), (7, 3)).await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    assert_eq!(
+        h.clipboard(h.client.clone()).await,
+        vec!["line 14\nline 15".to_string()]
+    );
+    assert_eq!(
+        h.pane_input(&pane).len(),
+        before,
+        "the program heard nothing"
+    );
+}
+
+/// A click the program takes is input reaching its pane, as a key is, so it clears unseen on
+/// that pane's agent. The pane already has the keys, so it is the click that clears it and not
+/// a change of focus.
+#[tokio::test]
+async fn a_click_a_program_takes_clears_unseen_on_its_pane() {
+    use domux_core::model::agent::AgentKind;
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.report(
+        pane.clone(),
+        AgentKind::Codex,
+        r#"{"hook_event_name":"PermissionRequest","session_id":"x1"}"#,
+    )
+    .await;
+    assert!(
+        h.agents().await.iter().any(|a| a.unseen),
+        "waiting set unseen"
+    );
+    h.feed_pane(pane.clone(), CLAUDE_MOUSE).await;
+    h.frame(h.client.clone()).await;
+
+    click(&mut h, 5, 5).await;
+    h.frame(h.client.clone()).await;
+
+    assert!(
+        !h.agents().await.iter().any(|a| a.unseen),
+        "the click cleared it"
+    );
 }

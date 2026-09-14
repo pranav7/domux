@@ -8,6 +8,15 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- A click in a pane whose program asked for the mouse reaches that program, so Claude Code's own
+  interface answers it: the `×` on its sidebar, a click that moves the cursor or expands a result,
+  and a drag that selects and copies with Claude Code's own selection. The press, the drag and the
+  release all go to the program, and the press still focuses the pane. domux's own drag, double
+  click, triple click and link click still work in every other pane. Over such a program, shift and
+  a drag reach the terminal's own selection, and `leader [` then a drag uses domux's.
+
 ## [1.0.1] - 2026-09-13
 
 ```sh
