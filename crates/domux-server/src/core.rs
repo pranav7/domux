@@ -7,6 +7,7 @@ use crate::facts::FactRegistry;
 use crate::pane::{new_pane_emulator, PaneRuntime, SpawnRequest, PANE_TERM};
 use crate::process::ForegroundProcess;
 use crate::render::{self, RenderInput};
+use crate::upgrade::{HandedPane, Handoff};
 use crate::worktree_conf;
 use crate::{CoreDeps, LoadedConfig, ServerOptions};
 use chrono::{DateTime, Local};
@@ -21,7 +22,7 @@ use domux_core::model::{
 };
 use domux_core::proto::{ClientMsg, Hello, ServerMsg};
 use domux_core::state_file::{self, StateFile};
-use domux_term::{Emulator, Rgb, Size};
+use domux_term::{Emulator, GhosttyEmulator, Rgb, Size};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -269,7 +270,37 @@ struct Dispatched {
     jobs: Vec<CoreJob>,
     /// The handler queued a job that carries the answer, so `result` is not the answer.
     deferred: bool,
+    /// `server.upgrade` accepted this binary, and its caller is answered by the upgrade.
+    upgrade: Option<PathBuf>,
 }
+
+/// An upgrade under way (decision 0045). It moves through its stages between batches, on the
+/// core task, and hands over from `run`, the one place that can wait.
+struct Upgrade {
+    binary: PathBuf,
+    /// The caller, answered only if the upgrade does not happen: one that does closes the
+    /// connection instead.
+    reply: Option<JobReply>,
+    stage: UpgradeStage,
+    /// When the current stage stops waiting.
+    deadline: Instant,
+}
+
+enum UpgradeStage {
+    /// Accepting no connection and starting no job or fetch, while what is in flight finishes.
+    Draining,
+    /// Waiting for these panes' readers to stop between two reads.
+    Pausing(HashSet<PaneId>),
+    /// Every reader has stopped, and `run` hands over.
+    Ready,
+}
+
+/// How long an upgrade waits for jobs, fetches and calls in flight before it goes on anyway.
+const DRAIN_WAIT: Duration = Duration::from_secs(10);
+/// How long it waits for the readers to stop before it gives up and the server goes on.
+const PAUSE_WAIT: Duration = Duration::from_secs(5);
+/// How long it waits for the clients' last message to be written.
+const WRITER_WAIT: Duration = Duration::from_secs(1);
 
 /// The waiting caller's answer, carried with the job that will produce it.
 ///
@@ -451,9 +482,19 @@ pub struct Core {
     notes: Vec<String>,
     /// `ServerOptions.theme`: when set, every client is drawn in it.
     theme: Option<domux_core::theme::Theme>,
+    /// The task accepting connections, once `Server::start` has one.
+    acceptor: Option<crate::socket::Acceptor>,
+    upgrade: Option<Upgrade>,
+    /// When this server took over from an upgrade (decision 0045).
+    upgraded_at: Option<String>,
+    /// Jobs started and not yet finished. An upgrade waits for none.
+    jobs_in_flight: usize,
 }
 
 impl Core {
+    // The handover is read by `Server::start`, which needs its listener before the core
+    // exists, so it arrives beside the options rather than inside them.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         opts: ServerOptions,
         core_tx: mpsc::Sender<CoreMsg>,
@@ -462,6 +503,7 @@ impl Core {
         snapshot: Arc<Mutex<Model>>,
         pane_sizes: Arc<Mutex<HashMap<PaneId, Size>>>,
         published_facts: Arc<Mutex<HashMap<FactKey, Fact>>>,
+        handoff: Option<(Handoff, PathBuf)>,
     ) -> anyhow::Result<Core> {
         let started_at = opts.deps.clock.now().to_rfc3339();
         let project_root = opts.project_root.clone();
@@ -558,6 +600,10 @@ impl Core {
             stay_awake: crate::stay_awake::StayAwake::new(&state_dir_for_hold),
             toast: None,
             theme: opts.theme,
+            acceptor: None,
+            upgrade: None,
+            upgraded_at: None,
+            jobs_in_flight: 0,
         };
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
@@ -579,8 +625,13 @@ impl Core {
         // empty model.
         core.facts.forget_deleted(&core.model);
         core.ensure_every_workspace_has_a_tab();
-        for pane in core.model.all_pane_ids() {
-            core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
+        match handoff {
+            Some((handoff, dir)) => core.take_over(handoff, &dir),
+            None => {
+                for pane in core.model.all_pane_ids() {
+                    core.spawn_pane(&pane, Size { cols: 80, rows: 24 });
+                }
+            }
         }
         core.take_the_hold_the_state_file_remembers();
         core.pending_events.push(Event::ServerStarted {
@@ -838,8 +889,18 @@ impl Core {
             term: PANE_TERM.into(),
         };
         match self.deps.spawner.spawn(req, self.core_tx.clone()) {
-            Ok(pty) => {
+            Ok(mut pty) => {
                 let pid = pty.pid();
+                // A pane started while an upgrade waits for the readers to stop waits too, or
+                // its first bytes could be read after its screen was taken.
+                if let Some(Upgrade {
+                    stage: UpgradeStage::Pausing(waiting),
+                    ..
+                }) = self.upgrade.as_mut()
+                {
+                    pty.pause_reader();
+                    waiting.insert(pane.clone());
+                }
                 self.panes
                     .insert(pane.clone(), PaneRuntime::new(pane.clone(), emulator, pty));
                 self.pane_started_at.insert(pane.clone(), Instant::now());
@@ -863,7 +924,453 @@ impl Core {
         self.view_dirty = true;
     }
 
-    fn reader_paused(&mut self, _pane: PaneId) {}
+    /// Serves the socket through `acceptor`, which `Server::start` makes once the core exists.
+    pub fn serve(&mut self, acceptor: crate::socket::Acceptor) {
+        self.acceptor = Some(acceptor);
+    }
+
+    /// A reader an upgrade asked to stop has stopped, or its pane has exited and has nothing
+    /// more to read.
+    fn reader_paused(&mut self, pane: &PaneId) {
+        if let Some(Upgrade {
+            stage: UpgradeStage::Pausing(waiting),
+            ..
+        }) = self.upgrade.as_mut()
+        {
+            waiting.remove(pane);
+        }
+    }
+
+    /// Takes over the panes, records and start time of the server that handed over to this
+    /// one (decision 0045). A pane the handover names is adopted, with its screen when that can
+    /// be restored; a pane the state file holds and the handover does not is spawned, as at
+    /// any start.
+    fn take_over(&mut self, handoff: Handoff, dir: &Path) {
+        tracing::info!(
+            "taking over {} panes from {} {}",
+            handoff.panes.len(),
+            domux_core::names::PRODUCT_NAME,
+            handoff.from_version
+        );
+        self.started_at = handoff.started_at;
+        self.upgraded_at = Some(self.deps.clock.now().to_rfc3339());
+        self.restore_agents(handoff.agents, &handoff.agent_pids);
+        let mut handed: HashMap<PaneId, HandedPane> = handoff
+            .panes
+            .into_iter()
+            .map(|p| (p.pane.clone(), p))
+            .collect();
+        let mut lost = 0;
+        for pane in self.model.all_pane_ids() {
+            match handed.remove(&pane) {
+                Some(h) => {
+                    if !self.adopt_pane(&pane, &h, dir) {
+                        lost += 1;
+                    }
+                }
+                None => self.spawn_pane(&pane, Size { cols: 80, rows: 24 }),
+            }
+        }
+        // A pane the state file no longer holds went with a record the start pruned. Its
+        // program is hung up, as a restart would have.
+        for (pane, h) in handed {
+            tracing::warn!(pane = %pane, "the handover names a pane this server does not hold, so its program is hung up");
+            match self
+                .deps
+                .spawner
+                .adopt(pane.clone(), h.pty(), self.core_tx.clone())
+            {
+                Ok(mut pty) => pty.kill(),
+                Err(e) => {
+                    tracing::warn!(pane = %pane, "it could not be adopted to hang it up: {e}");
+                    crate::pane::hang_up(h.pty());
+                }
+            }
+        }
+        if lost > 0 {
+            let said = match lost {
+                1 => "The upgrade could not restore one pane's screen".to_string(),
+                n => format!("The upgrade could not restore the screens of {n} panes"),
+            };
+            self.toast = Some(
+                crate::toast::Toast::new(said, self.deps.clock.now())
+                    .and("Their programs are still running; the server log says why"),
+            );
+        }
+    }
+
+    /// The agent records an upgrade carried. A record this build cannot read costs the records
+    /// and nothing else: the observer finds each agent still running again, as at any start.
+    fn restore_agents(
+        &mut self,
+        agents: serde_json::Value,
+        pids: &std::collections::BTreeMap<String, u32>,
+    ) {
+        let records: Vec<domux_core::model::agent::Agent> = match serde_json::from_value(agents) {
+            Ok(records) => records,
+            Err(e) => {
+                tracing::warn!("the agent records in the handover could not be read, so the observer finds the agents again: {e}");
+                return;
+            }
+        };
+        for mut record in records {
+            let pane_lives = record
+                .pane
+                .as_ref()
+                .is_none_or(|pane| self.model.pane(pane).is_some());
+            if !pane_lives || self.model.workspace(&record.workspace).is_none() {
+                continue;
+            }
+            // Not in the record's own JSON: a process id means nothing to a later start.
+            record.pid = pids.get(record.id.as_str()).copied();
+            self.model.agents.push(record);
+        }
+    }
+
+    /// Adopts one pane an upgrade handed over. Answers whether its screen came with it.
+    fn adopt_pane(&mut self, pane: &PaneId, handed: &HandedPane, dir: &Path) -> bool {
+        let scrollback = self.config.config.terminal.scrollback;
+        let restored = crate::upgrade::read_screen(dir, handed).and_then(|bytes| {
+            GhosttyEmulator::decode_snapshot(&bytes, scrollback)
+                .inspect_err(
+                    |e| tracing::warn!(pane = %pane, "the screen could not be restored: {e}"),
+                )
+                .ok()
+        });
+        let kept = restored.is_some();
+        let emulator = match restored {
+            Some(emulator) => emulator,
+            None => {
+                let (fg, bg) = self.default_colors();
+                match new_pane_emulator(handed.size, scrollback, fg, bg) {
+                    Ok(emulator) => emulator,
+                    Err(e) => {
+                        tracing::error!("emulator: {e}");
+                        crate::pane::hang_up(handed.pty());
+                        return false;
+                    }
+                }
+            }
+        };
+        let mut pty = match self.deps.spawner.adopt(
+            pane.clone(),
+            handed.pty(),
+            self.core_tx.clone(),
+        ) {
+            Ok(pty) => pty,
+            Err(e) => {
+                tracing::error!(pane = %pane, "the handed over PTY could not be adopted, so the pane starts a new shell: {e}");
+                crate::pane::hang_up(handed.pty());
+                self.spawn_pane(pane, handed.size);
+                return false;
+            }
+        };
+        if !kept {
+            // An empty screen under a program that believes it drew one. A resize is what a
+            // full screen program redraws on, so the PTY goes a row shorter and back.
+            let size = handed.size;
+            let _ = pty.resize(Size {
+                rows: size.rows.saturating_sub(1).max(1),
+                ..size
+            });
+            let _ = pty.resize(size);
+        }
+        let pid = pty.pid();
+        self.panes
+            .insert(pane.clone(), PaneRuntime::new(pane.clone(), emulator, pty));
+        // The program started long ago, so an exit now is not an immediate one.
+        self.pane_started_at.insert(
+            pane.clone(),
+            Instant::now()
+                .checked_sub(IMMEDIATE_EXIT)
+                .unwrap_or_else(Instant::now),
+        );
+        self.model.set_pane_facts(
+            pane,
+            PaneFacts {
+                pid,
+                ..Default::default()
+            },
+        );
+        let observed = self.panes.get(pane).map(|rt| self.observe_pane(rt).0);
+        if let Some(facts) = observed {
+            self.model.set_pane_facts(pane, facts);
+        }
+        self.view_dirty = true;
+        kept
+    }
+
+    /// Starts an upgrade to `binary` (decision 0045): no new connection is accepted from here
+    /// on, and `advance_upgrade` takes it through its stages between batches.
+    fn begin_upgrade(&mut self, binary: PathBuf, reply: Option<JobReply>) {
+        tracing::info!("upgrading the server to {}", binary.display());
+        if let Some(acceptor) = &self.acceptor {
+            acceptor.pause();
+        }
+        self.upgrade = Some(Upgrade {
+            binary,
+            reply,
+            stage: UpgradeStage::Draining,
+            deadline: Instant::now() + DRAIN_WAIT,
+        });
+        self.advance_upgrade();
+    }
+
+    /// Whether nothing is in flight that an upgrade would cut off: no job, no fetch, and no
+    /// control call but the one that asked for the upgrade.
+    fn drained(&self) -> bool {
+        let calls = self.acceptor.as_ref().map_or(0, |a| {
+            a.open_control.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        self.jobs_in_flight == 0 && self.facts.in_flight() == 0 && calls <= 1
+    }
+
+    fn advance_upgrade(&mut self) {
+        let drained = self.drained();
+        let now = Instant::now();
+        let Some(upgrade) = self.upgrade.as_mut() else {
+            return;
+        };
+        if let UpgradeStage::Draining = upgrade.stage {
+            if !drained && now < upgrade.deadline {
+                return;
+            }
+            if !drained {
+                tracing::warn!(
+                    jobs = self.jobs_in_flight,
+                    fetches = self.facts.in_flight(),
+                    "the upgrade stopped waiting for what was still in flight"
+                );
+            }
+            let mut waiting = HashSet::new();
+            for (id, rt) in self.panes.iter_mut() {
+                if rt.exited.is_none() {
+                    rt.pty.pause_reader();
+                    waiting.insert(id.clone());
+                }
+            }
+            upgrade.stage = UpgradeStage::Pausing(waiting);
+            upgrade.deadline = now + PAUSE_WAIT;
+        }
+        let mut stuck = None;
+        if let UpgradeStage::Pausing(waiting) = &upgrade.stage {
+            if waiting.is_empty() {
+                upgrade.stage = UpgradeStage::Ready;
+            } else if now >= upgrade.deadline {
+                let mut panes: Vec<String> = waiting.iter().map(|p| p.to_string()).collect();
+                panes.sort();
+                stuck = Some(format!("the reader of {} did not stop", panes.join(", ")));
+            }
+        }
+        if let Some(reason) = stuck {
+            self.abandon_upgrade(&reason);
+        }
+    }
+
+    /// Ends an upgrade that has not handed anything over yet. Every reader goes on reading,
+    /// the socket accepts again, and the caller is told why.
+    fn abandon_upgrade(&mut self, reason: &str) {
+        let Some(upgrade) = self.upgrade.take() else {
+            return;
+        };
+        tracing::warn!("the upgrade did not happen: {reason}");
+        for rt in self.panes.values_mut() {
+            rt.pty.resume_reader();
+        }
+        if let Some(acceptor) = &self.acceptor {
+            acceptor.resume();
+        }
+        if let Some(reply) = upgrade.reply {
+            let _ = reply.tx.send(Response::err(
+                reply.id,
+                ApiError::internal(format!(
+                    "the server did not upgrade: {reason}. It is still running"
+                )),
+            ));
+        }
+    }
+
+    /// Hands the panes, the socket and the records to the upgrade's binary and replaces this
+    /// process with it (decision 0045). Answers true when this process is no longer the server.
+    /// On false everything handed over has been taken back and the server goes on.
+    async fn hand_over(&mut self) -> bool {
+        let Some(mut upgrade) = self.upgrade.take() else {
+            return false;
+        };
+        let listener = match &self.acceptor {
+            Some(acceptor) => acceptor.give_back().await,
+            None => None,
+        };
+        let Some(listener) = listener else {
+            // Nothing has been handed over, so this is the same as never having started.
+            self.upgrade = Some(upgrade);
+            self.abandon_upgrade("the listening socket could not be taken from its task");
+            return false;
+        };
+        let listener = {
+            use std::os::unix::io::IntoRawFd;
+            listener.into_raw_fd()
+        };
+        let now = self.deps.clock.now().to_rfc3339();
+        // What can fail without anything handed over comes first: the screens and the state
+        // file.
+        let mut screens = Vec::new();
+        for (id, rt) in &self.panes {
+            if rt.exited.is_some() {
+                continue;
+            }
+            match rt.emulator.encode_snapshot() {
+                Ok(bytes) => screens.push((crate::upgrade::screen_file_name(id), bytes)),
+                Err(e) => {
+                    tracing::warn!(pane = %id, "the screen could not be encoded, so the pane crosses without it: {e}")
+                }
+            }
+        }
+        let state_file = self.state_dir.join("state.json");
+        let snapshot = state_file::snapshot(&self.model, &now);
+        // The persistence task may be holding an older snapshot for its debounce. Handing it
+        // this one too means whatever it writes before the exec is the file written below.
+        let _ = self.persist_tx.try_send(snapshot.clone());
+        if let Err(e) = crate::persist::write_atomic(&state_file, &state_file::to_json(&snapshot)) {
+            let reason = format!("{} could not be written: {e}", state_file.display());
+            self.take_back(Vec::new(), listener, &reason, upgrade.reply.take());
+            return false;
+        }
+        let agent_pids = self
+            .model
+            .agents
+            .iter()
+            .filter_map(|a| Some((a.id.to_string(), a.pid?)))
+            .collect();
+        let agents = serde_json::to_value(&self.model.agents).unwrap_or_default();
+        let mut panes = Vec::new();
+        for (id, rt) in self.panes.iter_mut() {
+            if rt.exited.is_some() {
+                continue;
+            }
+            let size = rt.size();
+            let pty = std::mem::replace(&mut rt.pty, Box::new(crate::pane::HandedOver));
+            if let Some(handed) = pty.hand_over() {
+                let screen = crate::upgrade::screen_file_name(id);
+                let screen = screens.iter().any(|(n, _)| *n == screen).then_some(screen);
+                panes.push(HandedPane {
+                    pane: id.clone(),
+                    fd: handed.fd,
+                    pid: handed.pid,
+                    size,
+                    screen,
+                });
+            }
+        }
+        let handoff = Handoff {
+            format: crate::upgrade::HANDOFF_FORMAT,
+            from_version: domux_core::VERSION.to_string(),
+            started_at: self.started_at.clone(),
+            listener,
+            panes: panes.clone(),
+            agents,
+            agent_pids,
+        };
+        let dir = domux_core::paths::handoff_dir_under(&self.state_dir);
+        let path = match crate::upgrade::write(&dir, &handoff, &screens) {
+            Ok(path) => path,
+            Err(e) => {
+                let reason = format!("the handover could not be written: {e:#}");
+                self.take_back(panes, listener, &reason, upgrade.reply.take());
+                return false;
+            }
+        };
+        for id in self.clients.keys().cloned().collect::<Vec<_>>() {
+            self.detach(&id, Some(domux_core::proto::SERVER_UPGRADING));
+        }
+        self.subscribers.clear();
+        if let Some(acceptor) = &self.acceptor {
+            let deadline = Instant::now() + WRITER_WAIT;
+            while acceptor
+                .open_writers
+                .load(std::sync::atomic::Ordering::SeqCst)
+                > 0
+                && Instant::now() < deadline
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        if let Err(e) = crate::pane::set_cloexec(listener, false) {
+            let reason = format!("the listening socket could not be kept open: {e}");
+            self.take_back(panes, listener, &reason, upgrade.reply.take());
+            return false;
+        }
+        tracing::info!(
+            "handing {} panes to {}",
+            panes.len(),
+            upgrade.binary.display()
+        );
+        match self.deps.exec.exec(&upgrade.binary, &path) {
+            Ok(()) => true,
+            Err(e) => {
+                let reason = format!("{} could not be run: {e}", upgrade.binary.display());
+                self.take_back(panes, listener, &reason, upgrade.reply.take());
+                false
+            }
+        }
+    }
+
+    /// Takes back what `hand_over` handed over, when the exec did not happen: every pane's PTY,
+    /// the listening socket and the handover file. The clients have already left, and they
+    /// reattach to this server.
+    fn take_back(
+        &mut self,
+        panes: Vec<HandedPane>,
+        listener: std::os::unix::io::RawFd,
+        reason: &str,
+        reply: Option<JobReply>,
+    ) {
+        tracing::error!("the upgrade did not happen, so the server takes its panes back: {reason}");
+        for handed in panes {
+            let Some(rt) = self.panes.get_mut(&handed.pane) else {
+                continue;
+            };
+            match self
+                .deps
+                .spawner
+                .adopt(handed.pane.clone(), handed.pty(), self.core_tx.clone())
+            {
+                Ok(pty) => rt.pty = pty,
+                Err(e) => {
+                    tracing::error!(pane = %handed.pane, "the pane could not be taken back: {e}")
+                }
+            }
+        }
+        for rt in self.panes.values_mut() {
+            rt.pty.resume_reader();
+        }
+        let _ = crate::pane::set_cloexec(listener, true);
+        // Safe: the descriptor was this server's listener, and `hand_over` gave up the only
+        // owner it had.
+        let listener = unsafe {
+            use std::os::unix::io::FromRawFd;
+            std::os::unix::net::UnixListener::from_raw_fd(listener)
+        };
+        match crate::socket::serve(listener, self.core_tx.clone()) {
+            Ok(acceptor) => self.acceptor = Some(acceptor),
+            Err(e) => tracing::error!("the socket could not be served again: {e:#}"),
+        }
+        let dir = domux_core::paths::handoff_dir_under(&self.state_dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        self.toast = Some(
+            crate::toast::Toast::new("The upgrade did not happen", self.deps.clock.now())
+                .and(reason.to_string()),
+        );
+        self.view_dirty = true;
+        if let Some(reply) = reply {
+            let _ = reply.tx.send(Response::err(
+                reply.id,
+                ApiError::internal(format!(
+                    "the server did not upgrade: {reason}. It is still running"
+                )),
+            ));
+        }
+    }
 
     fn default_colors(&self) -> (Rgb, Rgb) {
         let recent = self
@@ -879,7 +1386,10 @@ impl Core {
         }
     }
 
-    pub async fn run(mut self, mut rx: mpsc::Receiver<CoreMsg>) {
+    /// Serves until a stop or a handover. Answers the acceptor after a stop, so the caller keeps
+    /// the socket listening until it has removed the socket file: a listener closed first leaves
+    /// a window in which the next server binds the path and this one then removes its file.
+    pub async fn run(mut self, mut rx: mpsc::Receiver<CoreMsg>) -> Option<crate::socket::Acceptor> {
         loop {
             let Some(first) = rx.recv().await else { break };
             self.handle(first);
@@ -893,8 +1403,20 @@ impl Core {
             if self.stopping {
                 break;
             }
+            if matches!(
+                self.upgrade,
+                Some(Upgrade {
+                    stage: UpgradeStage::Ready,
+                    ..
+                })
+            ) && self.hand_over().await
+            {
+                // This process is no longer the server. Nothing is stopped: the panes, the
+                // socket and the stay awake hold are the new server's.
+                return None;
+            }
         }
-        self.shutdown();
+        self.shutdown()
     }
 
     fn handle(&mut self, msg: CoreMsg) {
@@ -924,9 +1446,12 @@ impl Core {
                     // that was running in this pane is gone with it, and a row must not read
                     // `working` for up to a second after the process it names ended.
                     self.agents_gone_with_pane(&pane);
+                    // A reader that has ended has nothing more to read, so an upgrade stops
+                    // waiting for it.
+                    self.reader_paused(&pane);
                 }
             }
-            CoreMsg::ReaderPaused { pane } => self.reader_paused(pane),
+            CoreMsg::ReaderPaused { pane } => self.reader_paused(&pane),
             CoreMsg::ClientConnected { hello, tx, reply } => {
                 let _ = reply.send(self.attach(hello, tx));
             }
@@ -1390,6 +1915,10 @@ impl Core {
         let client = param_client(&method).or_else(|| self.model.most_recent_client());
         let done = self.dispatch_inner(method, client.clone(), false);
         let mut reply = Some(reply);
+        if let Some(binary) = done.upgrade {
+            let carried = reply.take().map(|tx| JobReply { id: id.clone(), tx });
+            self.begin_upgrade(binary, carried);
+        }
         if !done.deferred {
             if let Some(tx) = reply.take() {
                 let _ = tx.send(match done.result {
@@ -1449,6 +1978,9 @@ impl Core {
         from_key: bool,
     ) -> Result<serde_json::Value, ApiError> {
         let done = self.dispatch_inner(method, client.clone(), from_key);
+        if let Some(binary) = done.upgrade {
+            self.begin_upgrade(binary, None);
+        }
         // No reply travels with a key's job: nobody is waiting on a keystroke, and a
         // failure reaches that client's hint row instead (`Core::answer`).
         for job in done.jobs {
@@ -1479,6 +2011,9 @@ impl Core {
             socket_path: &self.socket_path,
             state_dir: &self.state_dir,
             started_at: &self.started_at,
+            upgraded_at: self.upgraded_at.as_deref(),
+            upgrading: self.upgrade.is_some(),
+            upgrade: None,
             client,
             from_key,
             events: Vec::new(),
@@ -1505,6 +2040,7 @@ impl Core {
         let view_dirty = ctx.view_dirty;
         let release_blocks = ctx.release_respawn_blocks;
         let deferred = ctx.defer_reply;
+        let upgrade = ctx.upgrade.take();
         drop(ctx);
         if stop {
             self.stopping = true;
@@ -1525,6 +2061,7 @@ impl Core {
             result,
             jobs,
             deferred,
+            upgrade,
         }
     }
 
@@ -1544,6 +2081,18 @@ impl Core {
     }
 
     fn start_job(&mut self, job: CoreJob, reply: Option<JobReply>, client: Option<ClientId>) {
+        // An upgrade waits for the jobs in flight, so it starts none that could keep it
+        // waiting, or leave a process behind for a server that does not know it.
+        if self.upgrade.is_some() {
+            if let Some(reply) = reply {
+                let _ = reply.tx.send(Response::err(
+                    reply.id,
+                    ApiError::busy("the server is upgrading; try again once it has"),
+                ));
+            }
+            return;
+        }
+        self.jobs_in_flight += 1;
         let claim = job.claim();
         if let Some(claim) = &claim {
             self.claims.insert(claim.clone());
@@ -1578,6 +2127,7 @@ impl Core {
         client: Option<ClientId>,
         claim: Option<String>,
     ) {
+        self.jobs_in_flight = self.jobs_in_flight.saturating_sub(1);
         // Before the arm, and whatever the arm does with it: the job is over either way, and
         // a claim a failure kept would hold its slot number until the server stopped.
         if let Some(claim) = claim {
@@ -2305,7 +2855,9 @@ impl Core {
             self.view_dirty = true;
             self.persist();
         }
-        self.start_due_fetches();
+        if self.upgrade.is_none() {
+            self.start_due_fetches();
+        }
     }
 
     /// Starts every provider whose interval has passed, each on its own blocking task. A
@@ -2368,6 +2920,7 @@ impl Core {
     }
 
     fn after_batch(&mut self) {
+        self.advance_upgrade();
         self.reset_respawn_guards_for_surviving_panes();
         self.close_exited_panes();
         self.publish_events();
@@ -2722,7 +3275,7 @@ impl Core {
         self.view_dirty = false;
     }
 
-    fn shutdown(mut self) {
+    fn shutdown(mut self) -> Option<crate::socket::Acceptor> {
         // Before the state file is written, so the flag it saves is the one this server ends
         // with. The hold itself goes with the server (design principle 11); the flag stays,
         // and the next start takes a fresh hold.
@@ -2751,6 +3304,7 @@ impl Core {
         }
         // `self` drops here with the only `persist_tx`; the persistence task then writes the
         // last snapshot at once and exits, and `ServerHandle::stop` awaits it.
+        self.acceptor.take()
     }
 }
 
@@ -3228,6 +3782,7 @@ fn param_client(method: &Method) -> Option<ClientId> {
         AgentGet(p) | AgentFocus(p) => p.client.clone(),
         ServerInfo(_)
         | ServerStop(_)
+        | ServerUpgrade(_)
         | EventsSubscribe(_)
         | ConfigReload(_)
         | TabList(_)
@@ -3287,12 +3842,14 @@ mod tests {
             project_root: project,
             providers,
             theme: None,
+            handoff: None,
             deps: CoreDeps {
                 spawner: Arc::new(FakeSpawner::default()),
                 inspector: Arc::new(FakeInspector::default()),
                 clock: Arc::new(FixedClock::at("2026-09-04T14:32:00")),
                 opener: Arc::new(crate::testing::RecordingOpener::default()),
                 runner: Arc::new(crate::command::FakeRunner::default()),
+                exec: Arc::new(crate::testing::FakeExec::default()),
                 id_seed: 7,
                 platform: "macos".into(),
             },
@@ -3305,6 +3862,7 @@ mod tests {
             Arc::new(Mutex::new(Model::new(7))),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
+            None,
         )
         .unwrap();
         (core, core_rx)

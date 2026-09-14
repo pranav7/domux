@@ -177,6 +177,40 @@ impl crate::Opener for RecordingOpener {
     }
 }
 
+/// What `server.upgrade` would have replaced the process with, recorded rather than run
+/// (decision 0045). Each call answers `Ok`, which the core reads as "this process is the new
+/// server now", unless the test told it to fail.
+#[derive(Default)]
+pub struct FakeExec {
+    calls: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+    fails_with: std::sync::Mutex<Option<String>>,
+}
+
+impl FakeExec {
+    /// Every binary and handover the core asked to exec, in order.
+    pub fn calls(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    /// Makes every exec from here on fail with `reason`, the way a binary that cannot run does.
+    pub fn fail_with(&self, reason: &str) {
+        *self.fails_with.lock().unwrap() = Some(reason.to_string());
+    }
+}
+
+impl crate::upgrade::Exec for FakeExec {
+    fn exec(&self, binary: &Path, handoff: &Path) -> std::io::Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((binary.to_path_buf(), handoff.to_path_buf()));
+        match self.fails_with.lock().unwrap().clone() {
+            Some(reason) => Err(std::io::Error::other(reason)),
+            None => Ok(()),
+        }
+    }
+}
+
 pub struct Harness {
     /// The first attached client.
     pub client: ClientId,
@@ -191,6 +225,11 @@ pub struct Harness {
     pub runner: Arc<FakeRunner>,
     /// The server's clock, which a test moves when it is waiting for time to pass.
     pub clock: Arc<MovableClock>,
+    /// What an upgrade would have run. It runs nothing: `Harness::upgrade` starts the server
+    /// the upgrade hands over to in this process instead.
+    pub exec: Arc<FakeExec>,
+    /// The handover the next server start takes over from.
+    handoff: Option<PathBuf>,
     _tmp: tempfile::TempDir,
     /// Temp directories the harness made on a caller's behalf, kept alive until it drops:
     /// `git_project` hands back a path inside one, and a caller that had to bind the temp
@@ -321,6 +360,8 @@ impl Harness {
             opener: Arc::new(RecordingOpener::default()),
             runner: opts.runner.clone().unwrap_or_default(),
             clock: Arc::new(MovableClock::at("2026-09-04T14:32:00")),
+            exec: Arc::new(FakeExec::default()),
+            handoff: None,
             _tmp: tmp,
             kept: Vec::new(),
             state_dir,
@@ -365,12 +406,14 @@ impl Harness {
             project_root: self.project_root.clone(),
             providers: self.providers.clone(),
             theme: self.theme.clone(),
+            handoff: self.handoff.take(),
             deps: CoreDeps {
                 spawner,
                 inspector,
                 clock: self.clock.clone(),
                 opener: self.opener.clone(),
                 runner: self.runner.clone(),
+                exec: self.exec.clone(),
                 id_seed: 7,
                 platform: self.platform.into(),
             },
@@ -1164,6 +1207,66 @@ impl Harness {
             server.stop().await;
         }
         self.clients.clear();
+    }
+
+    /// Asks the server to upgrade to `binary` over a fresh control connection, and answers the
+    /// refusal when there is one. `None` is the connection closing unanswered, which is what a
+    /// server that handed over does (decision 0045).
+    pub async fn request_upgrade(&mut self, binary: &Path) -> Option<ApiError> {
+        let s = UnixStream::connect(&self.socket).await.expect("connect");
+        let (r, mut w) = s.into_split();
+        let req = Request {
+            id: Value::from(1),
+            method: "server.upgrade".into(),
+            params: serde_json::json!({
+                "binary": binary,
+                "handoff": crate::upgrade::HANDOFF_FORMAT,
+            }),
+        };
+        w.write_all(format!("{}\n", serde_json::to_string(&req).unwrap()).as_bytes())
+            .await
+            .unwrap();
+        let mut line = String::new();
+        let read = tokio::time::timeout(
+            Duration::from_secs(30),
+            BufReader::new(r).read_line(&mut line),
+        )
+        .await
+        .expect("server.upgrade was answered or the connection closed");
+        match read {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                let resp: Response =
+                    serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+                Some(
+                    resp.error
+                        .unwrap_or_else(|| panic!("server.upgrade answered {line}")),
+                )
+            }
+        }
+    }
+
+    /// Upgrades the server in place, the way `domux server upgrade` does, with the exec made
+    /// in this process: the old server hands over and ends, and a new one starts from its
+    /// handover with the same spawner, so the panes it adopts are the panes the old one had.
+    /// A fresh first client attaches, as a client that reattached after the upgrade would.
+    pub async fn upgrade(&mut self) {
+        let binary = std::env::current_exe().expect("the test binary");
+        let refused = self.request_upgrade(&binary).await;
+        assert!(refused.is_none(), "the upgrade was refused: {refused:?}");
+        let server = self.server.take().expect("server");
+        tokio::time::timeout(SETTLE, server.handed_over())
+            .await
+            .expect("the old server ended after handing over");
+        let (_, handoff) = self
+            .exec
+            .calls()
+            .pop()
+            .expect("the old server asked to exec the new binary");
+        self.clients.clear();
+        self.handoff = Some(handoff);
+        self.start_server().await;
+        self.client = self.attach(self.cols, self.rows).await;
     }
 
     /// Starts a new server on the same state dir and attaches a fresh first client. The

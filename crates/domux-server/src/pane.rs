@@ -126,6 +126,60 @@ pub struct HandedPty {
     pub pid: Option<u32>,
 }
 
+/// What a pane holds in place of a PTY an upgrade has handed over (decision 0045). It is there
+/// between the handover and the exec, and after a handover a test made: the PTY belongs to the
+/// new server by then, so nothing here reaches it.
+pub struct HandedOver;
+
+impl PtyHandle for HandedOver {
+    fn write(&mut self, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "the PTY has been handed over",
+        ))
+    }
+
+    fn resize(&mut self, _size: Size) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn kill(&mut self) {}
+
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    fn raw_fd(&self) -> Option<RawFd> {
+        None
+    }
+
+    fn exit_status(&mut self) -> Option<i32> {
+        None
+    }
+
+    fn pause_reader(&mut self) {}
+
+    fn resume_reader(&mut self) {}
+
+    fn hand_over(self: Box<Self>) -> Option<HandedPty> {
+        None
+    }
+}
+
+/// Hangs up a handed over PTY nothing could adopt: the program gets the hangup a closed
+/// terminal sends, and the descriptor is closed. A PTY without a process id is a test's, whose
+/// descriptor is only a number, so nothing is done with it.
+pub fn hang_up(pty: HandedPty) {
+    let Some(pid) = pty.pid else {
+        return;
+    };
+    // Safe: the descriptor was handed over open and nothing in this process owns it.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGHUP);
+        libc::close(pty.fd);
+    }
+}
+
 /// Refuses a shell the pane could not run, naming it and the setting that names it
 /// (principle 9). Without this the spawn would quietly succeed on a different shell.
 fn executable(shell: &Path) -> Result<()> {
@@ -361,10 +415,13 @@ impl PtyHandle for UnixPty {
             return None;
         }
         let UnixPty { master, pid, .. } = *self;
-        Some(HandedPty {
-            fd: master.into_raw_fd(),
-            pid: Some(pid),
-        })
+        let fd = master.into_raw_fd();
+        // Open across the exec that follows. `adopt` sets it again on whichever side takes the
+        // descriptor, so a program that server starts later does not inherit it.
+        if let Err(e) = set_cloexec(fd, false) {
+            tracing::warn!("the PTY of process {pid} may not survive the upgrade: {e}");
+        }
+        Some(HandedPty { fd, pid: Some(pid) })
     }
 }
 

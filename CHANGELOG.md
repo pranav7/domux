@@ -8,6 +8,16 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- `domux server upgrade` replaces the running server with a new build and keeps every pane: the
+  programs in them go on running, their screens and scrollback come back, and agents keep their
+  state, session name and recap. Attached clients leave and attach again on their own. A server
+  started before this release cannot hand over, so the first upgrade onto it is a
+  `domux server restart`.
+- `scripts/dev/deploy.sh` pulls, builds and upgrades the server in one step, for running a build
+  of your own checkout.
+
 ### Fixed
 
 - A click in a pane whose program asked for the mouse reaches that program, so Claude Code's own

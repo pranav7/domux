@@ -19,7 +19,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Attach to the server, starting it first when it is not running
-    Attach,
+    Attach(cli::attach::AttachArgs),
     /// Start, stop, restart or inspect the server
     Server(cli::server::ServerCmd),
     /// Reload domux.toml
@@ -70,7 +70,7 @@ async fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         None => cli::attach::run_bare().await,
-        Some(Command::Attach) => cli::attach::run().await,
+        Some(Command::Attach(args)) => cli::attach::run_command(args).await,
         Some(Command::Server(c)) => cli::server::run(c).await,
         Some(Command::Config(c)) => cli::config::run(c).await,
         Some(Command::Api(c)) => cli::api::run(c).await,

@@ -179,6 +179,11 @@ pub enum ServerMsg {
 /// a test on each side pinning its own copy.
 pub const SERVER_STOPPED: &str = "the server stopped";
 
+/// The reason the server sends when it is about to hand over to a new build of itself
+/// (decision 0045). A client that reads it restores the terminal and attaches again from the
+/// binary it was started as, so what it attaches to is the new server.
+pub const SERVER_UPGRADING: &str = "the server is upgrading";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
     #[error("frame of {0} bytes exceeds the {MAX_FRAME} byte limit")]

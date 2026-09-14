@@ -112,7 +112,7 @@ jobs:
         run: TEST_SHELL=bash sh tests/install/run.sh
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck -s sh install.sh scripts/release/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*
+        run: shellcheck -s sh install.sh scripts/release/*.sh scripts/dev/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*
 
   # Every crate compiled into a release binary carries a license the project accepts, and the
   # attribution file the archives ship can be generated.

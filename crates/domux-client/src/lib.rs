@@ -13,11 +13,13 @@ use crate::frame::Screen;
 use crate::terminal::TerminalGuard;
 use anyhow::Context;
 use crossterm::event::{Event, EventStream, MouseEventKind};
-// `SERVER_STOPPED` is the reason the server sends when the whole server is going away, rather
-// than one view. It is defined beside the message that carries it, so the server writing it and
-// this crate reading it are one string rather than two literals a reword could part.
+// `SERVER_STOPPED` and `SERVER_UPGRADING` are the reasons the server sends when the whole server
+// is going away, rather than one view. They are defined beside the message that carries them, so
+// the server writing one and this crate reading it are one string rather than two literals a
+// reword could part.
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION, SERVER_STOPPED,
+    SERVER_UPGRADING,
 };
 use domux_core::theme::{Desktop, TerminalColors};
 use domux_term::{Mods, MouseAction, MouseButton, MouseEvent};
@@ -36,6 +38,9 @@ pub enum AttachOutcome {
     /// The server ended the session on request; the string is its reason.
     Detached(String),
     ServerStopped,
+    /// The server is handing over to a new build of itself, which the caller attaches to once
+    /// it is up (decision 0045).
+    ServerUpgrading,
     ConnectionLost,
     Refused(String),
 }
@@ -53,6 +58,8 @@ const WHEEL_LINES: i16 = 3;
 fn detach_outcome(reason: String) -> AttachOutcome {
     if reason == SERVER_STOPPED {
         AttachOutcome::ServerStopped
+    } else if reason == SERVER_UPGRADING {
+        AttachOutcome::ServerUpgrading
     } else {
         AttachOutcome::Detached(reason)
     }
@@ -928,6 +935,10 @@ mod tests {
         assert_eq!(
             detach_outcome(SERVER_STOPPED.into()),
             AttachOutcome::ServerStopped
+        );
+        assert_eq!(
+            detach_outcome(SERVER_UPGRADING.into()),
+            AttachOutcome::ServerUpgrading
         );
         assert_eq!(
             detach_outcome("detached".into()),

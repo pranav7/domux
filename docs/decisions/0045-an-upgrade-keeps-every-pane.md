@@ -41,7 +41,7 @@ domux does the third.
 | Each pane's PTY | The master descriptor, with close-on-exec cleared, and the child's process id. The new server wraps the two in the same handle a spawned pane gets. |
 | Each pane's screen and scrollback | A Ghostty snapshot (`ghostty_snapshot_encode`), restored with the snapshot decoder. |
 | The structure | `state.json`, written at once rather than after the persistence debounce. |
-| Agent records | The model's `agents`, as JSON. |
+| Agent records | The model's `agents`, as JSON, and each record's process id beside it: a record's own JSON leaves the id out, because it means nothing to a later start. |
 | The listening socket | The descriptor, so a connection made during the handover waits in the kernel's backlog. |
 | The stay awake hold | Nothing new: the holder is still this process's child, and a start already adopts it through `stay-awake.pid` (decision 0029). |
 
@@ -106,7 +106,12 @@ restart does anyway.
 ## Consequences
 
 - The first upgrade onto this build is a restart: a server built before it has no
-  `server.upgrade` to call.
+  `server.upgrade` to call, and the CLI says so rather than printing the unknown method.
+- `server upgrade` with no server running starts one, so the deploy script does not have to ask
+  which case it is in.
+- A stop keeps the socket accepting until its file is removed. The core used to own the listener
+  task only through the server handle; now it hands the task back when it stops, because a
+  listener that closed first let a restart's new server bind the path and then lose its file.
 - The CLI knows the upgrade worked when `server.info` answers with an `upgraded_at` it did not
   answer with before. The process id is the same, so it cannot tell by that.
 - `scripts/dev/deploy.sh` is how the author and a contributor run their build: it fast-forwards

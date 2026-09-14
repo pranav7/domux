@@ -31,6 +31,36 @@ pub async fn run_bare() -> anyhow::Result<()> {
     run().await
 }
 
+#[derive(clap::Args)]
+pub struct AttachArgs {
+    /// Attach again after `server upgrade`: ask nothing, and start no server (decision 0045)
+    #[arg(long, hide = true)]
+    pub after_upgrade: bool,
+}
+
+pub async fn run_command(args: AttachArgs) -> anyhow::Result<()> {
+    if args.after_upgrade {
+        run_after_upgrade().await
+    } else {
+        run().await
+    }
+}
+
+/// The client a server upgrade detached, started again from the command line it was started
+/// with. It asks nothing, because the reader answered once already, and it starts no server,
+/// because a server that is not there after an upgrade is one that failed, and a new one would
+/// hide that behind an empty screen.
+async fn run_after_upgrade() -> anyhow::Result<()> {
+    let socket = socket();
+    if !control::is_live(&socket).await {
+        anyhow::bail!(
+            "The server did not come back after the upgrade. Read {}.",
+            domux_core::paths::log_file().display()
+        );
+    }
+    finish(attach(&socket).await?)
+}
+
 pub async fn run() -> anyhow::Result<()> {
     let socket = socket();
     if !control::is_live(&socket).await {
@@ -49,8 +79,35 @@ pub async fn run() -> anyhow::Result<()> {
     }
     // `attach` returns with the terminal already restored, so the line below lands on a
     // terminal the reader can type into again (principle 11).
-    eprintln!("{}", ending(attach(&socket).await?)?);
+    finish(attach(&socket).await?)
+}
+
+/// What happens once a session has ended: the line for the reader, or, when the server is
+/// upgrading, this process replaced by the client it was started as.
+fn finish(outcome: AttachOutcome) -> anyhow::Result<()> {
+    if outcome == AttachOutcome::ServerUpgrading {
+        return Err(attach_again());
+    }
+    eprintln!("{}", ending(outcome)?);
     Ok(())
+}
+
+/// Replaces this client with `<argv[0]> attach --after-upgrade` (decision 0045). The command
+/// line it was started with is the one the reader typed, so it names the binary they meant:
+/// the symlink they run, and so the build the server has just become. The attach waits in the
+/// socket's backlog until the new server is up. Returns only when the exec failed.
+fn attach_again() -> anyhow::Error {
+    use std::os::unix::process::CommandExt;
+    let program = std::env::args_os()
+        .next()
+        .unwrap_or_else(|| OsString::from(BIN_NAME));
+    let failed = std::process::Command::new(&program)
+        .args(["attach", "--after-upgrade"])
+        .exec();
+    anyhow::anyhow!(
+        "The server upgraded, and {} could not be started again ({failed}). Run {BIN_NAME} to attach.",
+        Path::new(&program).display()
+    )
 }
 
 /// Asks, once, whether the directory this was typed in should become a project, and registers
@@ -400,6 +457,9 @@ fn ending(outcome: AttachOutcome) -> anyhow::Result<String> {
     match outcome {
         AttachOutcome::Detached(_) => Ok(format!("Detached. Run {BIN_NAME} to reattach.")),
         AttachOutcome::ServerStopped => Ok("The server stopped.".to_string()),
+        AttachOutcome::ServerUpgrading => Ok(format!(
+            "The server upgraded. Run {BIN_NAME} to attach again."
+        )),
         AttachOutcome::ConnectionLost => Err(anyhow::anyhow!(
             "Lost the connection to the server. Run {BIN_NAME} server status."
         )),

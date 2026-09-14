@@ -227,6 +227,9 @@ pub struct CoreDeps {
     /// through this, so a test records those calls rather than making them.
     pub runner: Arc<dyn crate::command::CommandRunner>,
     pub id_seed: u64,
+    /// What `server.upgrade` replaces the process with (decision 0045). A test records the call
+    /// rather than making it.
+    pub exec: Arc<dyn crate::upgrade::Exec>,
     /// The operating system, as `std::env::consts::OS` spells it. Given rather than read, so
     /// a test can ask what this server does on a machine it is not running on.
     pub platform: String,
@@ -246,6 +249,10 @@ pub struct ServerOptions {
     /// each role can be told apart on the screen; nothing else does, and a real server passes
     /// `None`.
     pub theme: Option<domux_core::theme::Theme>,
+    /// The `handoff.json` an upgrade wrote, when this server is the one it hands over to
+    /// (decision 0045). Its panes are adopted rather than spawned, and its listener is served
+    /// rather than a new one bound.
+    pub handoff: Option<PathBuf>,
 }
 
 pub struct ServerHandle {
@@ -264,9 +271,8 @@ pub struct ServerHandle {
     /// reason: the harness (and, later, a control API method) reads it rather than
     /// reaching into the core task, which owns all mutable state.
     pub facts: Arc<Mutex<HashMap<FactKey, Fact>>>,
-    core: tokio::task::JoinHandle<()>,
+    core: tokio::task::JoinHandle<Option<socket::Acceptor>>,
     persist: tokio::task::JoinHandle<()>,
-    listener: tokio::task::JoinHandle<()>,
     tick: tokio::task::JoinHandle<()>,
     animation: tokio::task::JoinHandle<()>,
 }
@@ -275,12 +281,24 @@ impl ServerHandle {
     /// Persists, closes the PTYs, removes the socket. Returns once `state.json` is written.
     pub async fn stop(self) {
         let _ = self.core_tx.send(CoreMsg::Shutdown).await;
-        let _ = self.core.await;
+        // Still accepting until the file is gone, so no second server can bind the path in
+        // between and lose its file to the removal below.
+        let acceptor = self.core.await.ok().flatten();
         let _ = self.persist.await;
-        self.listener.abort();
         self.tick.abort();
         self.animation.abort();
         let _ = std::fs::remove_file(&self.socket_path);
+        drop(acceptor);
+    }
+
+    /// Waits for a server that has handed itself over to finish (decision 0045). Its panes,
+    /// its listener and its socket file belong to the new server, so nothing is closed or
+    /// removed here. Only a test sees this: a real handover replaces the process.
+    pub async fn handed_over(self) {
+        let _ = self.core.await;
+        let _ = self.persist.await;
+        self.tick.abort();
+        self.animation.abort();
     }
 }
 
@@ -293,12 +311,30 @@ impl Server {
         let (core_tx, core_rx) = mpsc::channel::<CoreMsg>(1024);
         let (persist_tx, persist_rx) = mpsc::channel(64);
         let state_file = opts.state_dir.join("state.json");
+        // Read before anything else runs, so a handover this build cannot read stops the start
+        // before a single pane is touched.
+        let handoff = match &opts.handoff {
+            Some(path) => Some(upgrade::read(path)?),
+            None => None,
+        };
         let persist = tokio::spawn(persist::spawn(state_file.clone(), persist_rx));
         let socket_path = opts.socket_path.clone();
+        let handoff_path = opts.handoff.clone();
         let snapshot = Arc::new(Mutex::new(Model::new(opts.deps.id_seed)));
         let pane_sizes = Arc::new(Mutex::new(HashMap::new()));
         let facts = Arc::new(Mutex::new(HashMap::new()));
-        let core = Core::new(
+        let listener = match &handoff {
+            // Safe: the descriptor crossed the exec open, and nothing else in this process
+            // owns it.
+            Some(h) => {
+                use std::os::unix::io::FromRawFd;
+                pane::set_cloexec(h.listener, true)
+                    .context("mark the handed over socket close-on-exec")?;
+                unsafe { std::os::unix::net::UnixListener::from_raw_fd(h.listener) }
+            }
+            None => socket::bind(&socket_path)?,
+        };
+        let mut core = Core::new(
             opts,
             core_tx.clone(),
             persist_tx,
@@ -306,8 +342,25 @@ impl Server {
             snapshot.clone(),
             pane_sizes.clone(),
             facts.clone(),
+            handoff.map(|h| {
+                let dir = handoff_path
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_default();
+                (h, dir)
+            }),
         )?;
-        let listener = socket::listen(&socket_path, core_tx.clone()).await?;
+        core.serve(socket::serve(listener, core_tx.clone())?);
+        // What it held is adopted now, and a screen file holds what a pane showed.
+        if let Some(dir) = handoff_path.as_deref().and_then(Path::parent) {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                tracing::warn!(
+                    "the handover at {} could not be removed: {e}",
+                    dir.display()
+                );
+            }
+        }
         let tick_tx = core_tx.clone();
         let tick = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -343,7 +396,6 @@ impl Server {
             facts,
             core,
             persist,
-            listener,
             tick,
             animation,
         })

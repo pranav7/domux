@@ -627,7 +627,11 @@ pub struct ServerInfo {
     pub state_dir: PathBuf,
     pub config_file: PathBuf,
     pub pid: u32,
+    /// When this process started serving. An upgrade keeps the process, so this does not move.
     pub started_at: String,
+    /// When the server was last upgraded in place (decision 0045), and absent until it has been.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgraded_at: Option<String>,
     /// The leader the running server is using, as a key name. The config file can disagree
     /// with it - it is read at start and on `config.reload`, so an edit not yet reloaded is
     /// not in force - and when the two disagree this is the one that answers keys.
@@ -755,6 +759,7 @@ macro_rules! methods {
 methods! {
     ServerInfo = "server.info": NoParams => ServerInfo,
     ServerStop = "server.stop": NoParams => Ack,
+    ServerUpgrade = "server.upgrade": ServerUpgradeParams => Ack,
     EventsSubscribe = "events.subscribe": SubscribeParams => Ack,
     ConfigReload = "config.reload": NoParams => ConfigReloadResult,
     ClientDetach = "client.detach": ClientParams => Ack,
@@ -820,6 +825,20 @@ methods! {
     StayAwakeDisable = "stay_awake.disable": NoParams => StayAwakeResult,
     StayAwakeToggle = "stay_awake.toggle": NoParams => StayAwakeResult,
 }
+
+/// Replace the running server with `binary`, keeping every pane (decision 0045). A server that
+/// hands over answers nothing: the connection closes when the process becomes the new server,
+/// and `server.info` then answers with a new `upgraded_at`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ServerUpgradeParams {
+    /// The binary to run as the server from here on. Absolute.
+    pub binary: PathBuf,
+    /// The handover format `binary` reads. A server that writes another refuses, having
+    /// changed nothing.
+    pub handoff: u32,
+}
+impl Params for ServerUpgradeParams {}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1217,6 +1236,7 @@ mod tests {
     const EXPECTED_METHOD_NAMES: &[&str] = &[
         "server.info",
         "server.stop",
+        "server.upgrade",
         "events.subscribe",
         "config.reload",
         "client.detach",
@@ -1401,6 +1421,10 @@ mod tests {
         let cases = [
             ("server.info", serde_json::json!({})),
             ("server.stop", serde_json::json!({})),
+            (
+                "server.upgrade",
+                serde_json::json!({"binary": "/bin/domux", "handoff": 1}),
+            ),
             ("events.subscribe", serde_json::json!({})),
             ("config.reload", serde_json::json!({})),
             ("client.detach", serde_json::json!({})),

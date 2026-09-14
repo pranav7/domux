@@ -10,6 +10,7 @@ use domux_core::ids::PaneId;
 use domux_core::names::HANDOFF_FILE_NAME;
 use domux_term::Size;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::io::RawFd;
@@ -34,6 +35,10 @@ pub struct Handoff {
     /// The model's agent records. Kept as JSON rather than typed here, so records the new
     /// build cannot read cost the records and not the handover.
     pub agents: serde_json::Value,
+    /// Each record's process id, by agent id. A record's own JSON leaves it out, because a
+    /// process id means nothing to a later start, and across an upgrade it still does.
+    #[serde(default)]
+    pub agent_pids: BTreeMap<String, u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +180,7 @@ mod tests {
                 },
             ],
             agents: serde_json::json!([]),
+            agent_pids: BTreeMap::from([("a_0001".to_string(), 4244)]),
         }
     }
 
