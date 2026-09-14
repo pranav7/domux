@@ -2,7 +2,7 @@
 description: Cut a domux release: check the state, write the changelog, tag, watch the pipeline
 ---
 
-Release domux $ARGUMENTS (a version such as 1.0.1; ask for one if it is missing).
+Release domux $ARGUMENTS (a version such as 0.1.2; ask for one if it is missing).
 
 Work through these in order and stop at the first thing that does not hold. Every failure names
 what to do next; do that rather than working around it.
@@ -10,8 +10,11 @@ what to do next; do that rather than working around it.
 ## 1. The version is a real next version
 
 - `git status --short` is empty and the branch is the one releases come from.
+- `git fetch origin --prune --prune-tags --force` makes the tags here the tags on GitHub, so a
+  tag deleted there is not taken for the newest one.
 - The version is greater than the newest tag: `git tag --sort=-v:refname | head -3`.
-- A breaking change means a new major, a feature a new minor, a fix a new patch.
+- The version is the next patch, such as 0.1.2 after 0.1.1, unless the author asks for another.
+  The number stays low while domux is young, and the changelog carries what changed.
 
 ## 2. The tree is green
 
@@ -31,6 +34,9 @@ sh tests/license/run.sh && sh tests/release/run.sh && sh tests/install/run.sh
   `### Fixed` or `### Removed` under it, and the compare link at the bottom of the file. Read
   `git log --oneline <last tag>..HEAD` and write what a reader of the release notes needs, not a
   list of commits.
+- Open the section with one line and a blank line after it: what the release brings, as a short
+  list separated by commas, in 50 characters or fewer, with no markdown and no full stop, such as
+  `Themes, a leader you pick, Linux fixes`. domux.dev shows that line beside the newest version.
 - `sh scripts/release/check-version.sh v<version>` and
   `sh scripts/release/changelog-section.sh <version>` both answer.
 - Commit: `Release <version>`.

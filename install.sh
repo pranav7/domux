@@ -6,7 +6,7 @@
 #   curl -fsSL https://domux.dev/install.sh | sh
 #
 # Environment:
-#   DOMUX_VERSION      release tag to install, for example v1.0.0; default: the newest release
+#   DOMUX_VERSION      release tag to install, for example v0.1.1; default: the newest release
 #                      (stable first; a prerelease only when no stable release exists)
 #   DOMUX_INSTALL_DIR  directory for the binary; default: ~/.local/bin
 #   DOMUX_CONFIG_FILE  the config file the leader and stay awake go in; default:
@@ -375,10 +375,9 @@ esac
 
 if [ -z "$version" ]; then
   spin "looking up the newest release" curl -fsSL -o "$tmp/releases.json" "$API" \
-    || fail "could not list releases at $API" "check the network (GitHub allows 60 unauthenticated API requests an hour), or set DOMUX_VERSION=v1.x.y to skip the lookup"
-  # v0 tags are domux V1, the Go version, and are not what this script installs.
-  tags=$(grep -o '"tag_name": *"[^"]*"' "$tmp/releases.json" | sed 's/.*"\(v[^"]*\)"$/\1/' | grep '^v[1-9]' || true)
-  [ -n "$tags" ] || fail "no domux release exists yet at $RELEASES" "set DOMUX_VERSION=v1.x.y once one is published, or build from source: $SOURCE"
+    || fail "could not list releases at $API" "check the network (GitHub allows 60 unauthenticated API requests an hour), or set DOMUX_VERSION=v0.x.y to skip the lookup"
+  tags=$(grep -o '"tag_name": *"[^"]*"' "$tmp/releases.json" | sed 's/.*"\(v[^"]*\)"$/\1/' | grep '^v[0-9]' || true)
+  [ -n "$tags" ] || fail "no domux release exists yet at $RELEASES" "set DOMUX_VERSION=v0.x.y once one is published, or build from source: $SOURCE"
   stable=$(printf '%s\n' "$tags" | grep -v -e '-' | head -n 1 || true)
   version=${stable:-$(printf '%s\n' "$tags" | head -n 1)}
   version_how="found"
@@ -387,9 +386,8 @@ else
 fi
 
 case $version in
-  v0.*) fail "release $version is domux V1, the Go version; this script installs the Rust version" "set DOMUX_VERSION to a v1 release or later from $RELEASES" ;;
-  v[1-9]*) ;;
-  *) fail "DOMUX_VERSION must be a release tag such as v1.0.0; got \"$version\"" "set DOMUX_VERSION=v1.x.y and run this script again" ;;
+  v[0-9]*) ;;
+  *) fail "DOMUX_VERSION must be a release tag such as v0.1.1; got \"$version\"" "set DOMUX_VERSION=v0.x.y and run this script again" ;;
 esac
 body=${version#v}
 archive="domux_${body}_${os}_${arch}.tar.gz"

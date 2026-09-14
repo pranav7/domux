@@ -24,7 +24,7 @@ sandbox() {
 members = ["crates/domux"]
 
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0"
 edition = "2021"
 
 [profile.release]
@@ -37,21 +37,23 @@ TOML
 
 - Not yet released.
 
-## [1.0.0] - 2026-09-20
+## [0.1.0] - 2026-09-20
+
+Everything, in one release
 
 ### Added
 
 - Everything in the first release.
 
-## [1.0.0-beta.1] - 2026-09-10
+## [0.1.0-beta.1] - 2026-09-10
 
 - Beta.
 
-## [1.0.0-alpha.1] - 2026-09-01
+## [0.1.0-alpha.1] - 2026-09-01
 
-[1.0.0]: https://github.com/pranav7/domux/compare/v1.0.0-beta.1...v1.0.0
-[1.0.0-beta.1]: https://github.com/pranav7/domux/compare/v1.0.0-alpha.1...v1.0.0-beta.1
-[1.0.0-alpha.1]: https://github.com/pranav7/domux/releases/tag/v1.0.0-alpha.1
+[0.1.0]: https://github.com/pranav7/domux/compare/v0.1.0-beta.1...v0.1.0
+[0.1.0-beta.1]: https://github.com/pranav7/domux/compare/v0.1.0-alpha.1...v0.1.0-beta.1
+[0.1.0-alpha.1]: https://github.com/pranav7/domux/releases/tag/v0.1.0-alpha.1
 MD
 }
 
@@ -81,34 +83,44 @@ archive() {
 
 test_check_version_prints_the_body_when_the_tag_matches() {
   sandbox
-  out=$(sh "$ROOT/scripts/release/check-version.sh" v1.0.0 Cargo.toml 2>err); code=$?
+  out=$(sh "$ROOT/scripts/release/check-version.sh" v0.1.0 Cargo.toml 2>err); code=$?
   assert_exit 0 "$code" "exit"
-  assert_eq "1.0.0" "$out" "stdout"
+  assert_eq "0.1.0" "$out" "stdout"
   assert_eq "" "$(cat err)" "stderr"
 }
 
 test_check_version_accepts_a_prerelease_tag() {
   sandbox
-  sed -i.bak 's/^version = "1.0.0"/version = "1.0.0-beta.1"/' Cargo.toml
-  out=$(sh "$ROOT/scripts/release/check-version.sh" v1.0.0-beta.1 Cargo.toml 2>err); code=$?
+  sed -i.bak 's/^version = "0.1.0"/version = "0.1.0-beta.1"/' Cargo.toml
+  out=$(sh "$ROOT/scripts/release/check-version.sh" v0.1.0-beta.1 Cargo.toml 2>err); code=$?
   assert_exit 0 "$code" "exit"
-  assert_eq "1.0.0-beta.1" "$out" "stdout"
+  assert_eq "0.1.0-beta.1" "$out" "stdout"
 }
 
 test_check_version_rejects_a_mismatched_tag() {
   sandbox
-  out=$(sh "$ROOT/scripts/release/check-version.sh" v1.1.0 Cargo.toml 2>err); code=$?
+  out=$(sh "$ROOT/scripts/release/check-version.sh" v0.2.0 Cargo.toml 2>err); code=$?
   assert_exit 1 "$code" "exit"
   assert_eq "" "$out" "stdout"
-  assert_contains "$(cat err)" "check-version: tag v1.1.0 does not match Cargo.toml version 1.0.0" "state"
-  assert_contains "$(cat err)" "  next: set version = \"1.1.0\" in Cargo.toml" "next action"
+  assert_contains "$(cat err)" "check-version: tag v0.2.0 does not match Cargo.toml version 0.1.0" "state"
+  assert_contains "$(cat err)" "  next: set version = \"0.2.0\" in Cargo.toml" "next action"
 }
 
-test_check_version_rejects_a_v1_go_tag() {
+test_check_version_accepts_a_major_version_above_zero() {
   sandbox
-  sh "$ROOT/scripts/release/check-version.sh" v0.4.0 Cargo.toml >out 2>err; code=$?
+  sed -i.bak 's/^version = "0.1.0"/version = "1.0.0"/' Cargo.toml
+  out=$(sh "$ROOT/scripts/release/check-version.sh" v1.0.0 Cargo.toml 2>err); code=$?
+  assert_exit 0 "$code" "exit"
+  assert_eq "1.0.0" "$out" "stdout"
+}
+
+test_check_version_rejects_a_tag_without_a_patch_number() {
+  sandbox
+  sed -i.bak 's/^version = "0.1.0"/version = "0.1"/' Cargo.toml
+  sh "$ROOT/scripts/release/check-version.sh" v0.1 Cargo.toml >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
-  assert_contains "$(cat err)" "v0.4.0 is a domux V1 tag" "state"
+  assert_contains "$(cat err)" "check-version: v0.1 is not a release tag" "state"
+  assert_contains "$(cat err)" "  next: tag as v<major>.<minor>.<patch>" "next action"
 }
 
 test_check_version_rejects_a_tag_that_is_not_a_version() {
@@ -121,15 +133,16 @@ test_check_version_rejects_a_tag_that_is_not_a_version() {
 test_check_version_fails_without_a_workspace_version() {
   sandbox
   printf '[workspace]\nmembers = []\n' > Cargo.toml
-  sh "$ROOT/scripts/release/check-version.sh" v1.0.0 Cargo.toml >out 2>err; code=$?
+  sh "$ROOT/scripts/release/check-version.sh" v0.1.0 Cargo.toml >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
   assert_contains "$(cat err)" "no version under [workspace.package] in Cargo.toml" "state"
 }
 
 test_changelog_section_prints_one_version() {
   sandbox
-  out=$(sh "$ROOT/scripts/release/changelog-section.sh" 1.0.0 CHANGELOG.md 2>err); code=$?
+  out=$(sh "$ROOT/scripts/release/changelog-section.sh" 0.1.0 CHANGELOG.md 2>err); code=$?
   assert_exit 0 "$code" "exit"
+  assert_eq "Everything, in one release" "$(printf '%s\n' "$out" | sed '/^$/d' | head -n 1)" "the one line that opens the section comes first"
   assert_contains "$out" "Everything in the first release." "own content"
   assert_contains "$out" "### Added" "own subheading"
   assert_not_contains "$out" "Not yet released" "unreleased content"
@@ -140,7 +153,7 @@ test_changelog_section_prints_one_version() {
 
 test_changelog_section_prints_a_prerelease_version() {
   sandbox
-  out=$(sh "$ROOT/scripts/release/changelog-section.sh" 1.0.0-beta.1 CHANGELOG.md 2>err); code=$?
+  out=$(sh "$ROOT/scripts/release/changelog-section.sh" 0.1.0-beta.1 CHANGELOG.md 2>err); code=$?
   assert_exit 0 "$code" "exit"
   assert_eq "- Beta." "$(printf '%s' "$out" | sed '/^$/d')" "body without blank lines"
 }
@@ -155,29 +168,29 @@ test_changelog_section_fails_when_the_section_is_missing() {
 
 test_changelog_section_fails_when_the_section_is_empty() {
   sandbox
-  sh "$ROOT/scripts/release/changelog-section.sh" 1.0.0-alpha.1 CHANGELOG.md >out 2>err; code=$?
+  sh "$ROOT/scripts/release/changelog-section.sh" 0.1.0-alpha.1 CHANGELOG.md >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
-  assert_contains "$(cat err)" 'no section "## [1.0.0-alpha.1]" with content' "state"
+  assert_contains "$(cat err)" 'no section "## [0.1.0-alpha.1]" with content' "state"
 }
 
 test_build_archive_packs_and_names_linux_targets() {
   sandbox
-  fake_domux fake-domux 1.0.0
-  archive x86_64-unknown-linux-gnu 1.0.0; code=$?
+  fake_domux fake-domux 0.1.0
+  archive x86_64-unknown-linux-gnu 0.1.0; code=$?
   assert_exit 0 "$code" "exit for x86_64: $(cat err)"
-  archive aarch64-unknown-linux-gnu 1.0.0; code=$?
+  archive aarch64-unknown-linux-gnu 0.1.0; code=$?
   assert_exit 0 "$code" "exit for aarch64: $(cat err)"
-  assert_file dist/domux_1.0.0_linux_amd64.tar.gz "amd64 archive"
-  assert_file dist/domux_1.0.0_linux_arm64.tar.gz "arm64 archive"
+  assert_file dist/domux_0.1.0_linux_amd64.tar.gz "amd64 archive"
+  assert_file dist/domux_0.1.0_linux_arm64.tar.gz "arm64 archive"
   assert_eq "LICENSE
 NOTICE
 THIRD_PARTY_LICENSES.md
-domux" "$(tar -tzf dist/domux_1.0.0_linux_amd64.tar.gz | LC_ALL=C sort)" "archive members"
-  sum_line=$(cat dist/domux_1.0.0_linux_amd64.sha256)
-  assert_contains "$sum_line" "  domux_1.0.0_linux_amd64.tar.gz" "checksum line names the archive after two spaces"
+domux" "$(tar -tzf dist/domux_0.1.0_linux_amd64.tar.gz | LC_ALL=C sort)" "archive members"
+  sum_line=$(cat dist/domux_0.1.0_linux_amd64.sha256)
+  assert_contains "$sum_line" "  domux_0.1.0_linux_amd64.tar.gz" "checksum line names the archive after two spaces"
   assert_eq 64 "$(printf '%s' "$sum_line" | cut -d' ' -f1 | tr -d '\n' | wc -c | tr -d ' ')" "hash length"
-  mkdir x && tar -xzf dist/domux_1.0.0_linux_amd64.tar.gz -C x
-  assert_eq "domux 1.0.0" "$(x/domux --version)" "packed binary runs"
+  mkdir x && tar -xzf dist/domux_0.1.0_linux_amd64.tar.gz -C x
+  assert_eq "domux 0.1.0" "$(x/domux --version)" "packed binary runs"
   [ -x x/domux ] || fail "packed binary is not executable"
   assert_eq "" "$(cat out)" "stdout stays empty"
 }
@@ -188,14 +201,14 @@ test_build_archive_signs_macos_targets_on_macos_and_refuses_them_elsewhere() {
   # that tar does not carry, while a Mach-O binary keeps it inside the file. That is the property
   # the release archive depends on, so the test packs something that has it.
   cp /bin/echo fake-domux
-  archive aarch64-apple-darwin 1.0.0; code=$?
+  archive aarch64-apple-darwin 0.1.0; code=$?
   if [ "$HOST" = Darwin ]; then
     assert_exit 0 "$code" "exit: $(cat err)"
-    assert_file dist/domux_1.0.0_darwin_arm64.tar.gz "arm64 archive"
-    archive x86_64-apple-darwin 1.0.0; code=$?
+    assert_file dist/domux_0.1.0_darwin_arm64.tar.gz "arm64 archive"
+    archive x86_64-apple-darwin 0.1.0; code=$?
     assert_exit 0 "$code" "exit for x86_64: $(cat err)"
-    assert_file dist/domux_1.0.0_darwin_amd64.tar.gz "amd64 archive"
-    mkdir x && tar -xzf dist/domux_1.0.0_darwin_arm64.tar.gz -C x
+    assert_file dist/domux_0.1.0_darwin_amd64.tar.gz "amd64 archive"
+    mkdir x && tar -xzf dist/domux_0.1.0_darwin_arm64.tar.gz -C x
     codesign --verify --verbose=2 x/domux 2>/dev/null || fail "packed binary has no valid signature"
   else
     assert_exit 1 "$code" "exit"
@@ -205,8 +218,8 @@ test_build_archive_signs_macos_targets_on_macos_and_refuses_them_elsewhere() {
 
 test_build_archive_rejects_an_unknown_target() {
   sandbox
-  fake_domux fake-domux 1.0.0
-  archive x86_64-pc-windows-msvc 1.0.0; code=$?
+  fake_domux fake-domux 0.1.0
+  archive x86_64-pc-windows-msvc 0.1.0; code=$?
   assert_exit 1 "$code" "exit"
   assert_contains "$(cat err)" "build-archive: no release mapping for target x86_64-pc-windows-msvc" "state"
   assert_no_file dist "no dist directory"
@@ -214,44 +227,44 @@ test_build_archive_rejects_an_unknown_target() {
 
 test_build_archive_fails_when_the_binary_is_missing() {
   sandbox
-  archive x86_64-unknown-linux-gnu 1.0.0 missing-binary; code=$?
+  archive x86_64-unknown-linux-gnu 0.1.0 missing-binary; code=$?
   assert_exit 1 "$code" "exit"
   assert_contains "$(cat err)" "build-archive: DOMUX_RELEASE_BIN missing-binary is not a file" "state"
 }
 
 test_smoke_passes_on_a_good_archive() {
   sandbox
-  fake_domux fake-domux 1.0.0
-  archive x86_64-unknown-linux-gnu 1.0.0
-  sh "$ROOT/scripts/release/smoke.sh" dist/domux_1.0.0_linux_amd64.tar.gz 1.0.0 >out 2>err; code=$?
+  fake_domux fake-domux 0.1.0
+  archive x86_64-unknown-linux-gnu 0.1.0
+  sh "$ROOT/scripts/release/smoke.sh" dist/domux_0.1.0_linux_amd64.tar.gz 0.1.0 >out 2>err; code=$?
   assert_exit 0 "$code" "exit: $(cat err)"
-  assert_contains "$(cat err)" "smoke: domux_1.0.0_linux_amd64.tar.gz ok (domux 1.0.0)" "summary"
+  assert_contains "$(cat err)" "smoke: domux_0.1.0_linux_amd64.tar.gz ok (domux 0.1.0)" "summary"
   assert_eq "" "$(cat out)" "stdout stays empty"
 }
 
 test_smoke_fails_when_the_version_differs() {
   sandbox
-  fake_domux fake-domux 1.0.0
-  archive x86_64-unknown-linux-gnu 1.0.0
-  sh "$ROOT/scripts/release/smoke.sh" dist/domux_1.0.0_linux_amd64.tar.gz 1.0.1 >out 2>err; code=$?
+  fake_domux fake-domux 0.1.0
+  archive x86_64-unknown-linux-gnu 0.1.0
+  sh "$ROOT/scripts/release/smoke.sh" dist/domux_0.1.0_linux_amd64.tar.gz 0.1.1 >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
-  assert_contains "$(cat err)" 'smoke: domux --version printed "domux 1.0.0", want "domux 1.0.1"' "state"
+  assert_contains "$(cat err)" 'smoke: domux --version printed "domux 0.1.0", want "domux 0.1.1"' "state"
 }
 
 test_smoke_fails_when_the_schema_call_fails() {
   sandbox
-  fake_domux fake-domux 1.0.0 3
-  archive x86_64-unknown-linux-gnu 1.0.0
-  sh "$ROOT/scripts/release/smoke.sh" dist/domux_1.0.0_linux_amd64.tar.gz 1.0.0 >out 2>err; code=$?
+  fake_domux fake-domux 0.1.0 3
+  archive x86_64-unknown-linux-gnu 0.1.0
+  sh "$ROOT/scripts/release/smoke.sh" dist/domux_0.1.0_linux_amd64.tar.gz 0.1.0 >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
   assert_contains "$(cat err)" "smoke: domux api schema exited 3" "state"
 }
 
 test_smoke_fails_when_the_schema_has_no_methods() {
   sandbox
-  fake_domux fake-domux 1.0.0 0 '{}'
-  archive x86_64-unknown-linux-gnu 1.0.0
-  sh "$ROOT/scripts/release/smoke.sh" dist/domux_1.0.0_linux_amd64.tar.gz 1.0.0 >out 2>err; code=$?
+  fake_domux fake-domux 0.1.0 0 '{}'
+  archive x86_64-unknown-linux-gnu 0.1.0
+  sh "$ROOT/scripts/release/smoke.sh" dist/domux_0.1.0_linux_amd64.tar.gz 0.1.0 >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
   assert_contains "$(cat err)" "printed no methods" "state"
 }
@@ -260,7 +273,7 @@ test_smoke_fails_when_the_binary_starts_a_server() {
   sandbox
   cat > fake-domux <<'SH'
 #!/bin/sh
-if [ "${1:-}" = --version ]; then printf 'domux 1.0.0\n'; exit 0; fi
+if [ "${1:-}" = --version ]; then printf 'domux 0.1.0\n'; exit 0; fi
 if [ "${1:-}" = api ] && [ "${2:-}" = schema ]; then
   mkdir -p "$XDG_RUNTIME_DIR" && : > "$XDG_RUNTIME_DIR/domux.sock"
   printf '{"methods": []}\n'
@@ -269,27 +282,28 @@ fi
 exit 2
 SH
   chmod 0755 fake-domux
-  archive x86_64-unknown-linux-gnu 1.0.0
-  sh "$ROOT/scripts/release/smoke.sh" dist/domux_1.0.0_linux_amd64.tar.gz 1.0.0 >out 2>err; code=$?
+  archive x86_64-unknown-linux-gnu 0.1.0
+  sh "$ROOT/scripts/release/smoke.sh" dist/domux_0.1.0_linux_amd64.tar.gz 0.1.0 >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
   assert_contains "$(cat err)" "created a socket" "state"
 }
 
 test_smoke_fails_when_a_license_file_is_missing() {
   sandbox
-  fake_domux domux 1.0.0
+  fake_domux domux 0.1.0
   mkdir dist
-  tar -czf dist/domux_1.0.0_linux_amd64.tar.gz domux LICENSE
-  sh "$ROOT/scripts/release/smoke.sh" dist/domux_1.0.0_linux_amd64.tar.gz 1.0.0 >out 2>err; code=$?
+  tar -czf dist/domux_0.1.0_linux_amd64.tar.gz domux LICENSE
+  sh "$ROOT/scripts/release/smoke.sh" dist/domux_0.1.0_linux_amd64.tar.gz 0.1.0 >out 2>err; code=$?
   assert_exit 1 "$code" "exit"
-  assert_contains "$(cat err)" "smoke: NOTICE is missing from dist/domux_1.0.0_linux_amd64.tar.gz" "state"
+  assert_contains "$(cat err)" "smoke: NOTICE is missing from dist/domux_0.1.0_linux_amd64.tar.gz" "state"
 }
 
 run_tests \
   test_check_version_prints_the_body_when_the_tag_matches \
   test_check_version_accepts_a_prerelease_tag \
   test_check_version_rejects_a_mismatched_tag \
-  test_check_version_rejects_a_v1_go_tag \
+  test_check_version_accepts_a_major_version_above_zero \
+  test_check_version_rejects_a_tag_without_a_patch_number \
   test_check_version_rejects_a_tag_that_is_not_a_version \
   test_check_version_fails_without_a_workspace_version \
   test_changelog_section_prints_one_version \
