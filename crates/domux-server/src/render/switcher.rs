@@ -31,6 +31,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         .list_cursor()
         .unwrap_or_else(|| input.view.workspace.as_str());
     let rows = rows(
+        input.theme,
         input.model,
         input.facts,
         &input.view.filter,
@@ -46,7 +47,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     let empty = empty_text(input);
     // `clear` and not `frame_at`: a `ListBox` draws its own `Boxed`, so the switcher paints
     // the background and lets the box own the border.
-    overlay::clear(area, buf);
+    overlay::clear(input.theme, area, buf);
     ListBox {
         title: crate::render::projects_box::title(input.navigator),
         rows: &rows.rows,
@@ -56,7 +57,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         empty_text: &empty,
         pad: OVERLAY_PAD,
     }
-    .render(area, buf);
+    .render(input.theme, area, buf);
     // The footer's row is the box's last, inside the border (MUX-16), so the keys read as
     // part of the box they act on.
     if let Some(footer) = footer_area(area, OVERLAY_PAD) {
@@ -95,6 +96,7 @@ mod tests {
     use domux_term::Size;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use ratatui::style::Color;
     use std::collections::HashMap;
 
     fn view(filter: &str) -> ClientView {
@@ -158,6 +160,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         draw(&input, &mut buf);
@@ -187,11 +190,11 @@ mod tests {
         // Rows inside the box: 4 header, 5 main, 6 workspace-1, 7 workspace-2. The pad and
         // the indent are in the text because the assertion is on the drawn line.
         assert_eq!(inner_line(&buf, 8), "    workspace-2");
-        assert_eq!(buf[(11, 8)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(buf[(11, 8)].bg, Color::Rgb(0x31, 0x32, 0x44));
         assert_eq!(inner_line(&buf, 6), "    main");
         assert_ne!(
             buf[(11, 6)].bg,
-            crate::render::theme::SURFACE0,
+            Color::Rgb(0x31, 0x32, 0x44),
             "and the workspace this client is in does not also carry one"
         );
     }
@@ -208,11 +211,11 @@ mod tests {
         v.projects_cursor = None;
         let buf = draw_into(&model, &v, 80, 24);
         assert_eq!(inner_line(&buf, 8), "    workspace-2");
-        assert_eq!(buf[(11, 8)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(buf[(11, 8)].bg, Color::Rgb(0x31, 0x32, 0x44));
         assert_eq!(inner_line(&buf, 6), "    main");
         assert_ne!(
             buf[(11, 6)].bg,
-            crate::render::theme::SURFACE0,
+            Color::Rgb(0x31, 0x32, 0x44),
             "and no other row carries one"
         );
     }
@@ -320,7 +323,7 @@ mod tests {
         let buf = draw_into(&model, &v, 80, 13);
         assert_eq!(inner_line(&buf, 5), "    workspace-2");
         assert_eq!(inner_line(&buf, 6), "    workspace-3");
-        assert_eq!(buf[(11, 6)].bg, crate::render::theme::SURFACE0);
+        assert_eq!(buf[(11, 6)].bg, Color::Rgb(0x31, 0x32, 0x44));
     }
 
     /// The switcher over a model with no projects at all, which is the only way to reach the
@@ -347,6 +350,7 @@ mod tests {
             stay_awake: false,
             toast: None,
             navigator: false,
+            theme: domux_core::theme::Theme::domux(),
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);

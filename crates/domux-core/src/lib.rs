@@ -14,5 +14,7 @@ pub mod model;
 pub mod names;
 pub mod paths;
 pub mod proto;
+pub mod shell;
 pub mod state_file;
 pub mod text;
+pub mod theme;

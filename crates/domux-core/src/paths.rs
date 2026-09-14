@@ -5,9 +5,9 @@
 
 use crate::names::{
     CONFIG_DIR_NAME, OLD_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME,
-    V1_SESSIONS_DIR_NAME, V1_STATE_DIR_NAME,
+    THEMES_DIR_NAME, V1_SESSIONS_DIR_NAME, V1_STATE_DIR_NAME,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The inputs the paths depend on.
 #[derive(Debug, Clone)]
@@ -82,6 +82,20 @@ pub fn config_file_in(env: &Env) -> PathBuf {
     }
 }
 
+/// Where theme files live: `themes/` beside the config file, so `DOMUX_CONFIG_FILE` moves the
+/// themes with the config.
+pub fn themes_dir_in(env: &Env) -> PathBuf {
+    themes_dir_beside(&config_file_in(env))
+}
+
+/// The theme directory for a config file at `config`: `themes/` in the same directory.
+pub fn themes_dir_beside(config: &Path) -> PathBuf {
+    config
+        .parent()
+        .map(|dir| dir.join(THEMES_DIR_NAME))
+        .unwrap_or_else(|| PathBuf::from(THEMES_DIR_NAME))
+}
+
 /// Where the state directory was before the cut-over, for the server to move the files it
 /// finds there once. `None` under `DOMUX_STATE_DIR`: a scratch server has no old directory
 /// and must not carry the real one off.
@@ -148,6 +162,28 @@ pub fn v1_sessions_dir() -> PathBuf {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn themes_dir_follows_the_config_file_override() {
+        let mut env = Env {
+            home: "/home/u".into(),
+            xdg_runtime_dir: None,
+            uid: 501,
+            socket_override: None,
+            state_dir_override: None,
+            config_file_override: None,
+        };
+        assert_eq!(
+            themes_dir_in(&env),
+            PathBuf::from("/home/u/.config/domux/themes")
+        );
+        env.config_file_override = Some("/scratch/cfg/domux.toml".into());
+        assert_eq!(themes_dir_in(&env), PathBuf::from("/scratch/cfg/themes"));
+        assert_eq!(
+            themes_dir_beside(Path::new("domux.toml")),
+            PathBuf::from("themes")
+        );
+    }
 
     #[test]
     fn socket_path_uses_xdg_runtime_dir_when_set() {

@@ -25,7 +25,7 @@ async fn pane_with_lines(h: &mut Harness, n: usize) -> domux_core::ids::PaneId {
 async fn leader_bracket_enters_copy_mode_and_marks_the_border() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     let pane = pane_with_lines(&mut h, 20).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "[").await;
     let f = h
         .wait_for(
@@ -73,7 +73,7 @@ async fn moving_above_the_top_scrolls_into_the_scrollback_and_the_flag_counts() 
     let mut h = Harness::start(Config::default(), 80, 10).await;
     pane_with_lines(&mut h, 20).await;
     // 7 visible rows: line 14 to line 19 and the prompt; 14 lines are in the scrollback.
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "[").await;
     h.wait_for(
         h.client.clone(),
@@ -173,7 +173,7 @@ async fn wheel_scroll_moves_the_pane_under_the_pointer_immediately() {
 async fn v_enter_copies_the_selection_to_the_client_and_leaves() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
     pane_with_lines(&mut h, 20).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "[").await;
     h.wait_for(
         h.client.clone(),
@@ -538,15 +538,15 @@ async fn the_leader_inside_copy_mode_shows_the_chord_rather_than_the_copy_keys()
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("C-a  ? keys"),
+            |f| f.contains("C-s  ? keys"),
             Duration::from_secs(2),
         )
         .await;
-    assert!(row(&f, 0).ends_with("C-a  ? keys ● |"), "{f}");
+    assert!(row(&f, 0).ends_with("C-s  ? keys ● |"), "{f}");
     assert!(f.contains(" copy "), "copy mode is still open:\n{f}");
     // An unbound second key ends the chord and changes nothing else.
     h.key(h.client.clone(), "Tab").await;

@@ -151,6 +151,27 @@ pub fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
 /// narrower public surface. The tests need it because the alternative is a test that waits
 /// out `TIME_LIMIT`.
 fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String, GitError> {
+    let stdout = stdout_within(dir, args, limit)?;
+    Ok(String::from_utf8_lossy(&stdout).trim().to_string())
+}
+
+/// Runs git in `dir` and returns the one path it printed, byte for byte.
+///
+/// `run` reads stdout as text, and a directory's name does not have to be UTF-8: read that
+/// way, `caf\xe9` comes back as `caf\u{fffd}`, a different directory that is not there. git
+/// prints a path as the directory's own bytes, so this keeps them, and takes off only the
+/// newline git ends its answer with, because a name can end in a space.
+pub fn run_for_path(dir: &Path, args: &[&str]) -> Result<PathBuf, GitError> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut stdout = stdout_within(dir, args, TIME_LIMIT)?;
+    if stdout.last() == Some(&b'\n') {
+        stdout.pop();
+    }
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(stdout)))
+}
+
+/// What git printed on stdout when it succeeded, as it printed it.
+fn stdout_within(dir: &Path, args: &[&str], limit: Duration) -> Result<Vec<u8>, GitError> {
     let command = format!("git {}", args.join(" "));
     if !dir.is_absolute() {
         return Err(not_absolute(command, dir));
@@ -181,7 +202,7 @@ fn run_within(dir: &Path, args: &[&str], limit: Duration) -> Result<String, GitE
         }
         return Err(GitError::Failed { command, message });
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(out.stdout)
 }
 
 pub fn is_repo(dir: &Path) -> bool {
@@ -597,6 +618,28 @@ mod tests {
                 .starts_with("git rev-parse --verify no-such-ref failed: "),
             "{err}"
         );
+    }
+
+    /// A path is the directory's own bytes. Read as text, a name that is not UTF-8 names a
+    /// directory that is not there; read as a path, it is the directory, a space at the end of
+    /// its name included.
+    #[test]
+    fn a_path_git_prints_is_read_byte_for_byte() {
+        use std::os::unix::ffi::OsStringExt;
+        let tmp = tempfile::tempdir().unwrap();
+        for name in [b"caf\xe9".to_vec(), b"ends in a space ".to_vec()] {
+            let repo = tmp.path().join(std::ffi::OsString::from_vec(name));
+            // A file system that refuses a name that is not UTF-8, as APFS does, has no such
+            // directory to read.
+            if std::fs::create_dir(&repo).is_err() {
+                continue;
+            }
+            run(&repo, &["init", "-q"]).unwrap();
+            assert_eq!(
+                run_for_path(&repo, &["rev-parse", "--show-toplevel"]).unwrap(),
+                repo.canonicalize().unwrap()
+            );
+        }
     }
 
     /// A git that could not be started at all is a plain failure carrying the reason, never a

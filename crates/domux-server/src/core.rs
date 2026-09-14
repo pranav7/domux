@@ -444,6 +444,8 @@ pub struct Core {
     /// readers at two screens therefore share one note, and the first of them to look at a
     /// list takes it away from the other.
     notes: Vec<String>,
+    /// `ServerOptions.theme`: when set, every client is drawn in it.
+    theme: Option<domux_core::theme::Theme>,
 }
 
 impl Core {
@@ -550,6 +552,7 @@ impl Core {
             agents: crate::agents::AgentsState::default(),
             stay_awake: crate::stay_awake::StayAwake::new(&state_dir_for_hold),
             toast: None,
+            theme: opts.theme,
         };
         // Before the seed below and before anything is spawned or resumed. A record whose
         // path is gone must not reach `ensure_every_workspace_has_a_tab`, which would give it
@@ -862,8 +865,8 @@ impl Core {
             .and_then(|id| self.model.client(&id).map(|c| c.caps.clone()));
         match recent {
             Some(caps) => (
-                caps.default_fg.unwrap_or(DEFAULT_FG),
-                caps.default_bg.unwrap_or(DEFAULT_BG),
+                caps.colors.fg.unwrap_or(DEFAULT_FG),
+                caps.colors.bg.unwrap_or(DEFAULT_BG),
             ),
             None => (DEFAULT_FG, DEFAULT_BG),
         }
@@ -1011,6 +1014,7 @@ impl Core {
                 rows: hello.rows,
             },
             caps: hello.caps.clone(),
+            desktop: hello.desktop,
             workspace: workspace.clone(),
             tab,
             focus: Focus::Pane(focused),
@@ -1038,6 +1042,11 @@ impl Core {
             client: id.clone(),
             version: domux_core::VERSION.into(),
         });
+        // A client starts out not following its terminal's colours, so only a theme that reads
+        // them needs saying; a reload that changes the answer says either (`api::config`).
+        if self.config.themes.reads_terminal(hello.desktop) {
+            let _ = tx.try_send(ServerMsg::FollowColors(true));
+        }
         self.clients.insert(
             id.clone(),
             ClientConn::new(id.clone(), tx, hello.caps, hello.cols, hello.rows),
@@ -1068,9 +1077,20 @@ impl Core {
         if !self.clients.contains_key(&client) {
             return;
         }
+        // A colours message is not the reader's activity: the most recent client decides where
+        // a reload's notice goes and whose colours a new pane gets, so it is handled before
+        // the touch.
+        if let ClientMsg::Colors(colors) = msg {
+            if let Some(conn) = self.clients.get_mut(&client) {
+                conn.caps.colors = colors.clone();
+            }
+            self.model.set_client_colors(&client, colors);
+            self.view_dirty = true;
+            return;
+        }
         self.model.touch_client(&client);
         match msg {
-            ClientMsg::Hello(_) => {}
+            ClientMsg::Hello(_) | ClientMsg::Colors(_) => {}
             ClientMsg::Key(key) => {
                 self.clear_action_hint(&client);
                 self.key(&client, key);
@@ -1153,7 +1173,7 @@ impl Core {
     /// Input reached `pane`, so the agent there has been seen (interface spec 6.5). The one
     /// rule lives in `Model::clear_unseen_for_pane`; this is the core's way of recording what
     /// it produced, and `api::pane`'s `seen_by_input` is the handler's.
-    fn seen_by_input(&mut self, pane: &PaneId) {
+    pub(crate) fn seen_by_input(&mut self, pane: &PaneId) {
         let cleared = self.model.clear_unseen_for_pane(pane);
         self.view_dirty |= !cleared.is_empty();
         self.pending_events.extend(cleared);
@@ -1175,18 +1195,43 @@ impl Core {
         self.view_dirty = true;
     }
 
-    /// What the cell at `column`, `row` of this client's screen belongs to.
+    /// What the cell at `column`, `row` of this client's screen belongs to. The question is
+    /// `render::hit_at`'s.
+    pub fn hit_at(&mut self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
+        self.ask_screen(client, |input| render::hit_at(input, column, row))?
+    }
+
+    /// The cell of `pane`'s grid nearest the cell at `column`, `row` of this client's screen,
+    /// clamped to its box. The question is `render::cell_in_pane`'s.
+    pub fn cell_in_pane(
+        &mut self,
+        client: &ClientId,
+        pane: &PaneId,
+        column: u16,
+        row: u16,
+    ) -> Option<(u16, u16)> {
+        self.ask_screen(client, |input| {
+            render::cell_in_pane(input, pane, column, row)
+        })?
+    }
+
+    /// Asks `question` about this client's screen, or answers `None` for a client the model
+    /// does not have.
     ///
-    /// The question is `render::hit_at`'s, and it is asked through the same `RenderInput` the
-    /// frame is drawn from, so a pointer and a frame cannot disagree about what is where. It
-    /// lives here because that input is built from fields the core owns.
+    /// The question is asked through the same `RenderInput` the frame is drawn from, so a
+    /// pointer and a frame cannot disagree about what is where. It lives here because that
+    /// input is built from fields the core owns.
     ///
     /// `&mut self` for the agent view alone, which `render` also builds by mutation:
     /// `agents_view` hands a working agent the word it already gave that agent, so asking here
     /// changes no word the reader is looking at. Building a thinner view instead would put the
     /// count in the top bar on one measurement and the pointer on another, and the tab row
     /// starts after that count.
-    pub fn hit_at(&mut self, client: &ClientId, column: u16, row: u16) -> Option<render::Hit> {
+    fn ask_screen<R>(
+        &mut self,
+        client: &ClientId,
+        question: impl FnOnce(&RenderInput) -> R,
+    ) -> Option<R> {
         let now = self.deps.clock.now();
         let agents = agents_view(&self.model, &mut self.agents, now);
         let view = self.model.client(client)?;
@@ -1204,8 +1249,9 @@ impl Core {
             stay_awake: self.stay_awake.on(),
             toast: self.toast.as_ref(),
             navigator: self.config.config.navigator.enabled,
+            theme: domux_core::theme::Theme::domux(),
         };
-        render::hit_at(&input, column, row)
+        Some(question(&input))
     }
 
     /// A note is gone once the reader has been in a box with it on the screen, so it is read
@@ -2638,6 +2684,14 @@ impl Core {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
             };
+            // Each client's own theme, painted from the chosen one against that client's
+            // terminal colours and desktop.
+            let theme = match &self.theme {
+                Some(theme) => theme,
+                None => conn
+                    .theme
+                    .get(&self.config.themes, &view.caps.colors, view.desktop),
+            };
             let input = RenderInput {
                 model: &self.model,
                 facts: &self.facts,
@@ -2652,6 +2706,7 @@ impl Core {
                 stay_awake: self.stay_awake.on(),
                 toast: self.toast.as_ref(),
                 navigator: self.config.config.navigator.enabled,
+                theme,
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -3223,6 +3278,7 @@ mod tests {
             config: load_config(&dir.join("none.toml")),
             project_root: project,
             providers,
+            theme: None,
             deps: CoreDeps {
                 spawner: Arc::new(FakeSpawner::default()),
                 inspector: Arc::new(FakeInspector::default()),
@@ -3260,6 +3316,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     caps: Default::default(),
+                    desktop: Default::default(),
                 },
                 tx,
             )
@@ -3499,6 +3556,7 @@ mod tests {
                     cols: 80,
                     rows: 24,
                     caps: Default::default(),
+                    desktop: Default::default(),
                 },
                 tx,
             )

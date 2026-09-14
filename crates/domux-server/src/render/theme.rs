@@ -1,42 +1,24 @@
-//! The colours of interface spec section 9.1: Catppuccin Mocha, the palette V1 ships, plus
-//! the accent, the branch pink and the workspace teal. The last two are the spec's own
-//! values and not Mocha's, so read the hexes from the spec's table rather than from a
-//! Mocha palette.
+//! From a theme's roles to the colours a cell is drawn in. The colours themselves live in the
+//! theme (`domux_core::theme`); the built-in `domux` theme holds the values interface spec
+//! section 9.1 names.
 
+use domux_core::model::agent::AgentKind;
+use domux_core::theme::{Paint, Role, Theme};
 use ratatui::style::Color;
 
-pub const BASE: Color = Color::Rgb(0x1e, 0x1e, 0x2e);
-pub const MANTLE: Color = Color::Rgb(0x18, 0x18, 0x25);
-pub const SURFACE0: Color = Color::Rgb(0x31, 0x32, 0x44);
-pub const SURFACE1: Color = Color::Rgb(0x45, 0x47, 0x5a);
-pub const SURFACE2: Color = Color::Rgb(0x58, 0x5b, 0x70);
-pub const OVERLAY0: Color = Color::Rgb(0x6c, 0x70, 0x86);
-pub const OVERLAY1: Color = Color::Rgb(0x7f, 0x84, 0x9c);
-pub const SUBTEXT0: Color = Color::Rgb(0xa6, 0xad, 0xc8);
-pub const TEXT: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
-pub const BLUE: Color = Color::Rgb(0x89, 0xb4, 0xfa);
-pub const GREEN: Color = Color::Rgb(0xa6, 0xe3, 0xa1);
-pub const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
-pub const MAUVE: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
-/// The focused region's border and bold title, and the current tab's fill. Nothing else.
-/// The domux logo's mauve, the same value as MAUVE (ruled 2026-09-06).
-pub const ACCENT: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
-/// Branch names.
-pub const PINK: Color = Color::Rgb(0xe3, 0xb4, 0xd8);
-/// Workspace names.
-pub const TEAL: Color = Color::Rgb(0x93, 0xe2, 0xd5);
-
-/// The agent kinds (interface spec 9.1). The manifests carry the same values as hex strings.
-pub const CLAUDE: Color = Color::Rgb(0xde, 0x73, 0x56);
-pub const CODEX: Color = Color::Rgb(0x89, 0xb4, 0xfa);
-pub const OPENCODE: Color = Color::Rgb(0xc6, 0x78, 0xb8);
-/// The glyph and the word while compacting.
-pub const COMPACTING: Color = Color::Rgb(0xaf, 0xaf, 0xff);
+/// The colour `theme` gives `role`. A role painted in the terminal's default colour is
+/// `Color::Reset`, which is how a cell asks for that colour.
+pub fn color(theme: &Theme, role: Role) -> Color {
+    match theme.get(role) {
+        Paint::Rgb(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
+        Paint::Default => Color::Reset,
+    }
+}
 
 /// The two ends of the band that runs along a working word, dim and bright.
 ///
 /// Channel triples rather than `Color`, because the row draws every value between them:
-/// these are numbers to mix, where every other colour here is one to set.
+/// these are numbers to mix, where every other colour is one to set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shimmer {
     pub dim: (u8, u8, u8),
@@ -56,45 +38,52 @@ impl Shimmer {
     }
 }
 
-/// V1's pairs, which it picked by eye rather than deriving from the kind's colour above: kept
-/// off the kind's own dim so the characters away from the band fade without going invisible
-/// (V1's `claudeShimmerDim` and the three beside it).
-pub const SHIMMER_CLAUDE: Shimmer = Shimmer {
-    dim: (0xb8, 0x5e, 0x47),
-    bright: (0xff, 0xc9, 0xb0),
-};
-pub const SHIMMER_CODEX: Shimmer = Shimmer {
-    dim: (0x64, 0x78, 0xa8),
-    bright: (0xc8, 0xda, 0xff),
-};
-pub const SHIMMER_OPENCODE: Shimmer = Shimmer {
-    dim: (0x9f, 0x5d, 0x93),
-    bright: (0xf0, 0xb5, 0xe3),
-};
-pub const SHIMMER_COMPACTING: Shimmer = Shimmer {
-    dim: (0x6f, 0x6f, 0xcf),
-    bright: (0xd8, 0xd8, 0xff),
-};
-/// A recap on a working, waiting, compacting or unseen row.
-pub const RECAP: Color = Color::Rgb(0xdd, 0xca, 0xf7);
-/// A recap on a seen or exited row: `subtext0`, same as the clock.
-pub const RECAP_SEEN: Color = SUBTEXT0;
+/// The colour of an agent's kind: the name standing in for a session name, the kind on line 2
+/// and the glyph while it works.
+pub fn agent_color(theme: &Theme, kind: AgentKind) -> Color {
+    color(theme, kind_role(kind))
+}
 
-pub fn agent_color(kind: domux_core::model::agent::AgentKind) -> Color {
-    use domux_core::model::agent::AgentKind::*;
+/// The band that runs along an agent's working word, from the kind's two band roles.
+pub fn agent_shimmer(theme: &Theme, kind: AgentKind) -> Shimmer {
+    let (dim, bright) = match kind {
+        AgentKind::Claude => (Role::BandClaudeDim, Role::BandClaudeBright),
+        AgentKind::Codex => (Role::BandCodexDim, Role::BandCodexBright),
+        AgentKind::Opencode => (Role::BandOpencodeDim, Role::BandOpencodeBright),
+    };
+    shimmer(theme, dim, bright)
+}
+
+/// The band on the word `Compacting`, whatever the kind.
+pub fn compacting_shimmer(theme: &Theme) -> Shimmer {
+    shimmer(theme, Role::BandCompactingDim, Role::BandCompactingBright)
+}
+
+fn kind_role(kind: AgentKind) -> Role {
     match kind {
-        Claude => CLAUDE,
-        Codex => CODEX,
-        Opencode => OPENCODE,
+        AgentKind::Claude => Role::Claude,
+        AgentKind::Codex => Role::Codex,
+        AgentKind::Opencode => Role::Opencode,
     }
 }
 
-pub fn agent_shimmer(kind: domux_core::model::agent::AgentKind) -> Shimmer {
-    use domux_core::model::agent::AgentKind::*;
-    match kind {
-        Claude => SHIMMER_CLAUDE,
-        Codex => SHIMMER_CODEX,
-        Opencode => SHIMMER_OPENCODE,
+/// A band between two roles. A band is mixed channel by channel, and the terminal's default
+/// has no channels to mix, so an end painted `default` takes the `domux` theme's value for
+/// that role, which is always a hex.
+fn shimmer(theme: &Theme, dim: Role, bright: Role) -> Shimmer {
+    let end = |role: Role| {
+        let rgb = match theme.get(role) {
+            Paint::Rgb(rgb) => rgb,
+            Paint::Default => match Theme::domux().get(role) {
+                Paint::Rgb(rgb) => rgb,
+                Paint::Default => unreachable!("the domux theme paints every band end in hex"),
+            },
+        };
+        (rgb.r, rgb.g, rgb.b)
+    };
+    Shimmer {
+        dim: end(dim),
+        bright: end(bright),
     }
 }
 
@@ -102,15 +91,30 @@ pub fn agent_shimmer(kind: domux_core::model::agent::AgentKind) -> Shimmer {
 mod tests {
     use super::*;
 
+    /// A role painted in hex is that hex, and one painted in the terminal's default is the
+    /// reset colour, which is how a cell asks the terminal for its own.
+    #[test]
+    fn a_role_converts_to_its_hex_or_to_reset_when_default() {
+        let domux = Theme::domux();
+        assert_eq!(
+            color(domux, Role::OverlayBackground),
+            Color::Rgb(0x1e, 0x1e, 0x2e)
+        );
+        assert_eq!(color(domux, Role::SidebarBackground), Color::Reset);
+        let themed = domux.with(Role::Text, Paint::Default);
+        assert_eq!(color(&themed, Role::Text), Color::Reset);
+    }
+
+    /// The `domux` theme's kind roles are the manifests' `color_hex`, so the kind reads the
+    /// same colour in domux as the agent's own manifest gives it.
     #[test]
     fn the_agent_colours_match_the_manifests() {
-        use domux_core::model::agent::AgentKind;
         let r = crate::agents::manifests::Registry::builtin();
         for kind in AgentKind::ALL {
             let hex = r.for_kind(kind).unwrap().color_hex.trim_start_matches('#');
             let n = u32::from_str_radix(hex, 16).unwrap();
             let expected = Color::Rgb((n >> 16) as u8, (n >> 8) as u8, n as u8);
-            assert_eq!(agent_color(kind), expected, "{kind}");
+            assert_eq!(agent_color(Theme::domux(), kind), expected, "{kind}");
         }
     }
 
@@ -118,7 +122,10 @@ mod tests {
     /// stored: `at` mixes them.
     #[test]
     fn a_shimmer_runs_from_its_dim_end_to_its_bright_end() {
-        let band = SHIMMER_CLAUDE;
+        let band = Shimmer {
+            dim: (0xb8, 0x5e, 0x47),
+            bright: (0xff, 0xc9, 0xb0),
+        };
         assert_eq!(band.at(0.0), Color::Rgb(0xb8, 0x5e, 0x47), "unlit is dim");
         assert_eq!(
             band.at(1.0),
@@ -132,13 +139,19 @@ mod tests {
         );
     }
 
-    /// Every kind has one, so no working row falls back to a colour that is not its own, and
-    /// every one of them runs dim to bright on all three channels.
+    /// Under the `domux` theme every kind has a band of its own, and so has compacting, and
+    /// every one of them runs dim to bright on all three channels. A theme file may run a band
+    /// either way, so this holds for the built-in theme and not for every theme.
     #[test]
     fn every_kinds_shimmer_runs_dim_to_bright() {
-        use domux_core::model::agent::AgentKind;
-        for kind in AgentKind::ALL.iter().copied() {
-            let band = agent_shimmer(kind);
+        let bands = AgentKind::ALL
+            .iter()
+            .map(|kind| (kind.to_string(), agent_shimmer(Theme::domux(), *kind)))
+            .chain(std::iter::once((
+                "compacting".to_string(),
+                compacting_shimmer(Theme::domux()),
+            )));
+        for (kind, band) in bands {
             let ends = [
                 (band.dim.0, band.bright.0),
                 (band.dim.1, band.bright.1),

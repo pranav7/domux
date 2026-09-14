@@ -34,8 +34,8 @@ not lose the work. Then:
 | `domux open <path>` | register a directory as a project and switch to it |
 | `domux --help` | everything else |
 
-Inside domux the leader key is `ctrl-a`: `leader a` opens the agents overlay, and `leader ?`
-lists the keys.
+Inside domux the leader key is the one the installer asked for, `ctrl-s` unless you picked
+another: `leader a` opens the agents overlay, and `leader ?` lists the keys.
 
 ## License
 

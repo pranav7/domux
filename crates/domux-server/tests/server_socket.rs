@@ -6,6 +6,7 @@ use domux_core::api::{Request, Response};
 use domux_core::proto::{
     encode, Capabilities, ClientMsg, Decoder, Hello, ServerMsg, PROTOCOL_VERSION,
 };
+use domux_core::theme::Desktop;
 use domux_server::core::CoreMsg;
 use domux_server::pane::{FakeSpawner, PtyHandle, PtySpawner, SpawnRequest};
 use domux_server::process::FakeInspector;
@@ -37,6 +38,7 @@ async fn start_with_config(config: &str) -> (domux_server::ServerHandle, tempfil
         config: load_config(&dir.path().join(config)),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
@@ -109,6 +111,7 @@ fn hello(version: &str) -> ClientMsg {
         cols: 40,
         rows: 10,
         caps: Capabilities::default(),
+        desktop: Desktop::Unknown,
     })
 }
 
@@ -183,6 +186,41 @@ async fn version_mismatch_is_refused_with_the_restart_instruction() {
             reason,
             format!(
                 "the server is domux {} and this client is {other_version}; run domux server restart",
+                domux_core::VERSION
+            )
+        ),
+        other => panic!("{other:?}"),
+    }
+    server.stop().await;
+}
+
+/// The hello a domux 1.0.0 client sends, protocol 3, byte for byte. Protocol 4 cannot decode
+/// it whole, so this is the hello an old client puts on a new server's socket.
+const PROTOCOL_3_HELLO: &[u8] = &[
+    0, 0, 0, 0, // ClientMsg::Hello
+    5, 0, 0, 0, 0, 0, 0, 0, b'1', b'.', b'0', b'.', b'0', // version
+    3, 0, 0, 0, // protocol
+    80, 0, 24, 0, // cols, rows
+    1, 0, 1, 1, // truecolor, kitty_keyboard, hyperlinks, osc52
+    1, 0xcd, 0xd6, 0xf4, // default_fg
+    1, 0x1e, 0x1e, 0x2e, // default_bg
+];
+
+/// An old client is told to restart the server, not dropped: the server reads the head of a
+/// hello it cannot decode whole.
+#[tokio::test]
+async fn a_protocol_3_client_is_refused_with_the_restart_instruction() {
+    let (server, _dir) = start().await;
+    let mut s = UnixStream::connect(&server.socket_path).await.unwrap();
+    let mut frame = (PROTOCOL_3_HELLO.len() as u32).to_be_bytes().to_vec();
+    frame.extend_from_slice(PROTOCOL_3_HELLO);
+    s.write_all(&frame).await.unwrap();
+    let mut dec = Decoder::default();
+    match read_msg(&mut s, &mut dec).await {
+        ServerMsg::Refused { reason } => assert_eq!(
+            reason,
+            format!(
+                "the server is domux {} and this client is 1.0.0; run domux server restart",
                 domux_core::VERSION
             )
         ),
@@ -326,6 +364,7 @@ async fn a_broken_config_is_reported_and_the_server_still_starts() {
         config: loaded,
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: Arc::new(FakeSpawner::default()),
             inspector: Arc::new(FakeInspector::default()),
@@ -389,6 +428,7 @@ async fn a_shell_that_exits_immediately_has_bounded_respawns_and_keeps_the_serve
         config,
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -485,6 +525,7 @@ async fn a_workspace_whose_shell_survives_gets_its_full_respawn_allowance_back()
         config: load_config(&dir.path().join("none.toml")),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -571,6 +612,7 @@ async fn a_client_attached_when_the_guard_trips_is_told_which_shell_failed() {
         config,
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -665,6 +707,7 @@ async fn enter_on_a_retained_pane_starts_no_shell_until_the_config_is_reloaded()
         config: load_config(&config_path),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),
@@ -819,6 +862,7 @@ async fn a_pane_that_is_not_the_workspaces_last_does_not_spend_the_respawn_allow
         config: load_config(&dir.path().join("none.toml")),
         project_root: project,
         providers: Vec::new(),
+        theme: None,
         deps: CoreDeps {
             spawner: spawner.clone(),
             inspector: Arc::new(FakeInspector::default()),

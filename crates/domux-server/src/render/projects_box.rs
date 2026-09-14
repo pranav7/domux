@@ -9,10 +9,11 @@
 use crate::facts::FactRegistry;
 use crate::render::agents_box::{self, AgentsView, RowForm};
 use crate::render::list_box::{filter_rows, needs_gap_between, ListRow};
-use crate::render::theme;
+use crate::render::theme::color;
 use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
 use domux_core::model::{Model, Project, Workspace, WorkspaceHandle};
 use domux_core::text::{display_width, truncate_with_ellipsis};
+use domux_core::theme::{Role, Theme};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -100,6 +101,7 @@ pub struct Rows {
 ///
 /// Every project holds `main`, so no header here is left without rows under it.
 pub fn rows(
+    theme: &Theme,
     model: &Model,
     facts: &FactRegistry,
     filter: &str,
@@ -114,12 +116,12 @@ pub fn rows(
         if !out.is_empty() {
             out.push(ListRow::blank());
         }
-        out.push(header(&project.name, extras.width));
+        out.push(header(theme, &project.name, extras.width));
         // No blank after the header, and none between two workspaces that each say one line.
         // `needs_gap_between` is the whole rule, and `filter_rows` rebuilds to the same one.
         let mut first = true;
         for w in project.workspaces.iter() {
-            let row = workspace_row(project, w, facts, filled, extras);
+            let row = workspace_row(theme, project, w, facts, filled, extras);
             if !first
                 && out
                     .last()
@@ -133,7 +135,7 @@ pub fn rows(
             // reorders them, so a row does not move under the reader while a state changes
             // (decision record 0030). No blank between them: they are one block under the
             // workspace they belong to, and a gap would read as a second workspace.
-            out.extend(agent_rows(w, agents, extras));
+            out.extend(agent_rows(theme, w, agents, extras));
         }
     }
     // The box's own filter, not a second one here: `/` keeps the same rows in the sidebar,
@@ -146,21 +148,22 @@ pub fn rows(
 /// `AUDREY-APP ─────────`: the name in upper case, one space, a rule to the box's edge.
 /// A name too long for the box is shortened like any other (interface spec 5.6), and the
 /// rule then has nothing left to draw.
-pub(crate) fn header(name: &str, width: usize) -> ListRow {
+pub(crate) fn header(theme: &Theme, name: &str, width: usize) -> ListRow {
     let label = truncate_with_ellipsis(&format!("{} ", name.to_uppercase()), width);
     let rule = "─".repeat(width.saturating_sub(display_width(&label)));
     ListRow::header(vec![Line::from(vec![
         Span::styled(
             label,
             Style::default()
-                .fg(theme::OVERLAY1)
+                .fg(color(theme, Role::DimText))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(rule, Style::default().fg(theme::SURFACE0)),
+        Span::styled(rule, Style::default().fg(color(theme, Role::Rule))),
     ])])
 }
 
 fn workspace_row(
+    theme: &Theme,
     project: &Project,
     w: &Workspace,
     facts: &FactRegistry,
@@ -193,13 +196,14 @@ fn workspace_row(
     };
     // Line 1 carries the indent itself, because the glyph of an untouched slot lives in it.
     let mut lines = vec![line1(
+        theme,
         w,
         branch,
         pr.is_some(),
         filled == Some(key.as_str()),
         inset.width,
     )];
-    if let Some(line) = line2(w, branch, pr, inset) {
+    if let Some(line) = line2(theme, w, branch, pr, inset) {
         lines.push(indented(line));
     }
     ListRow::selectable(key, filter_text, lines)
@@ -207,7 +211,12 @@ fn workspace_row(
 
 /// Every agent of `w`, as rows indented under its workspace. Empty when the Navigator is off,
 /// which is what `agents` being `None` says.
-fn agent_rows(w: &Workspace, agents: Option<&AgentsView>, extras: Extras) -> Vec<ListRow> {
+fn agent_rows(
+    theme: &Theme,
+    w: &Workspace,
+    agents: Option<&AgentsView>,
+    extras: Extras,
+) -> Vec<ListRow> {
     let Some(view) = agents else {
         return Vec::new();
     };
@@ -219,7 +228,7 @@ fn agent_rows(w: &Workspace, agents: Option<&AgentsView>, extras: Extras) -> Vec
     view.agents
         .iter()
         .filter(|a| a.workspace == w.id)
-        .map(|a| indented_row(agents_box::one_row(a, view, form, width)))
+        .map(|a| indented_row(agents_box::one_row(theme, a, view, form, width)))
         .collect()
 }
 
@@ -258,6 +267,7 @@ enum Line1 {
 /// standing in front of the handle, so every name in the box starts in the same column
 /// whether or not its row is marked. V1's switcher reads this way.
 fn line1(
+    theme: &Theme,
     w: &Workspace,
     branch: Option<&str>,
     has_pr: bool,
@@ -277,7 +287,7 @@ fn line1(
         Line1::Untouched => "◌ ".to_string(),
         _ => " ".repeat(INDENT),
     };
-    let style = line1_style(kind, filled);
+    let style = line1_style(theme, kind, filled);
     Line::from(vec![
         Span::styled(gutter, style),
         Span::styled(truncate_with_ellipsis(&w.display_name(), width), style),
@@ -288,25 +298,29 @@ fn line1(
 ///
 /// 5.3 is split across two files, by design. `ListBox` draws the fill band and removes
 /// `Modifier::DIM` from the filled line; it cannot do the rest, because removing the
-/// dimming from an `overlay1` span leaves it `overlay1` rather than `text`, and the box
+/// dimming from a `dim_text` span leaves it `dim_text` rather than `text`, and the box
 /// does not know which span is a name. So the bold and the `text` colour are decided here,
 /// where the row knows what it is saying. Keep it here: a second rule for the fill in
 /// `ListBox` would be a second answer to what a filled row looks like.
-fn line1_style(kind: Line1, filled: bool) -> Style {
-    let plain = Style::default().fg(match kind {
-        Line1::Main => theme::OVERLAY1,
-        Line1::Untouched => theme::OVERLAY0,
-        Line1::Live => theme::TEAL,
-    });
+fn line1_style(theme: &Theme, kind: Line1, filled: bool) -> Style {
+    let plain = Style::default().fg(color(
+        theme,
+        match kind {
+            Line1::Main => Role::DimText,
+            Line1::Untouched => Role::FaintText,
+            Line1::Live => Role::WorkspaceName,
+        },
+    ));
     if !filled {
         return plain;
     }
     match kind {
-        // "A name goes bold." It keeps its teal, which is already bright, and a handle that
-        // stands in for a name (12.24) brightens the same way the name it replaced would.
+        // "A name goes bold." It keeps its `workspace_name` colour, which is already bright,
+        // and a handle that stands in for a name (12.24) brightens the same way the name it
+        // replaced would.
         Line1::Live => plain.add_modifier(Modifier::BOLD),
         // "`main` and a slot handle go from dim to `text`."
-        Line1::Main | Line1::Untouched => plain.fg(theme::TEXT),
+        Line1::Main | Line1::Untouched => plain.fg(color(theme, Role::Text)),
     }
 }
 
@@ -314,6 +328,7 @@ fn line1_style(kind: Line1, filled: bool) -> Style {
 /// would only repeat line 1: a slot on its own handle, or `main` on `main`. Truncation drops
 /// the title, then shortens the branch, and never the number (interface spec 5.6 and 12.16).
 fn line2(
+    theme: &Theme,
     w: &Workspace,
     branch: Option<&str>,
     pr: Option<&Fact>,
@@ -336,16 +351,19 @@ fn line2(
         // name is a space.
         let text = truncate_with_ellipsis(branch, room);
         if !text.is_empty() {
-            spans.push(Span::styled(text, Style::default().fg(theme::PINK)));
+            spans.push(Span::styled(
+                text,
+                Style::default().fg(color(theme, Role::Branch)),
+            ));
         }
     }
     if let Some(pr_text) = pr_text {
         if !spans.is_empty() {
-            spans.push(Span::styled(SEP, Style::default().fg(theme::SURFACE1)));
+            spans.push(Span::styled(SEP, separator(theme)));
         }
         spans.push(Span::styled(
             pr_text.to_string(),
-            pr_style(pr.and_then(|f| f.state.as_ref())),
+            pr_style(theme, pr.and_then(|f| f.state.as_ref())),
         ));
     }
     // The title travels in `Fact.url`: Task 7's `PullRequest::title` records the decision,
@@ -354,26 +372,32 @@ fn line2(
         let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
         let room = extras.width.saturating_sub(used + sep_width);
         if room >= MIN_TITLE_WIDTH {
-            spans.push(Span::styled(SEP, Style::default().fg(theme::SURFACE1)));
+            spans.push(Span::styled(SEP, separator(theme)));
             spans.push(Span::styled(
                 truncate_with_ellipsis(title, room),
-                Style::default().fg(theme::OVERLAY1),
+                Style::default().fg(color(theme, Role::DimText)),
             ));
         }
     }
     Some(Line::from(spans))
 }
 
-/// V1's colours (`prStyleForState` in `picker.go`): green open, mauve merged, red closed,
-/// grey draft. A state nobody reported takes the draft colour rather than a guess at open.
-pub fn pr_style(state: Option<&FactState>) -> Style {
-    let colour = match state {
-        Some(FactState::Open) => theme::GREEN,
-        Some(FactState::Merged) => theme::MAUVE,
-        Some(FactState::Closed) => theme::RED,
-        _ => theme::OVERLAY1,
+/// V1's colours (`prStyleForState` in `picker.go`), by role: open, merged and closed each have
+/// one, and a draft is `dim_text`. A state nobody reported takes the draft colour rather than a
+/// guess at open.
+pub fn pr_style(theme: &Theme, state: Option<&FactState>) -> Style {
+    let role = match state {
+        Some(FactState::Open) => Role::PrOpen,
+        Some(FactState::Merged) => Role::PrMerged,
+        Some(FactState::Closed) => Role::PrClosed,
+        _ => Role::DimText,
     };
-    Style::default().fg(colour)
+    Style::default().fg(color(theme, role))
+}
+
+/// ` · ` between the words on line 2.
+fn separator(theme: &Theme) -> Style {
+    Style::default().fg(color(theme, Role::Separator))
 }
 
 /// The index of the row whose key is `key`. `rows` calls it for the fill; the cursor calls

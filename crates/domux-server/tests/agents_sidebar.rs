@@ -35,8 +35,8 @@ const CLAUDE_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id"
 const CLAUDE_ENDS: &str = r#"{"hook_event_name":"SessionEnd","session_id":"c1"}"#;
 
 /// The accent and the unfocused border (interface spec 9.1), as the style dump spells them.
-/// The literals rather than `theme::ACCENT` and `theme::SURFACE2`, so a token that moved
-/// would fail here instead of moving the assertion with it.
+/// The literals rather than the `domux` theme's `accent` and `border` roles, so a role that
+/// moved would fail here instead of moving the assertion with it.
 const ACCENT: &str = "fg=#cba6f7";
 const UNFOCUSED: &str = "fg=#585b70";
 
@@ -423,7 +423,7 @@ async fn hiding_the_sidebar_from_either_box_gives_the_keys_back_to_the_pane() {
         h.api("focus.region", json!({ "region": region }))
             .await
             .unwrap();
-        h.key(h.client.clone(), "C-a").await;
+        h.key(h.client.clone(), "C-s").await;
         h.key(h.client.clone(), "b").await;
         h.frame(h.client.clone()).await;
         assert!(

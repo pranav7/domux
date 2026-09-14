@@ -257,7 +257,7 @@ pub const SIDEBAR_MIN_COLS: u16 = 120;
 /// A leader chord in progress: the leader was pressed and the next key resolves it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Chord {
-    /// The leader as configured, for the indicator: `C-a`.
+    /// The leader as configured, for the indicator: `C-s`.
     pub leader: String,
 }
 
@@ -266,6 +266,10 @@ pub struct ClientView {
     pub id: ClientId,
     pub size: Size,
     pub caps: Capabilities,
+    /// Where this client runs, from its hello: what `auto` names for it. Not persisted, as no
+    /// client is.
+    #[serde(default)]
+    pub desktop: crate::theme::Desktop,
     pub workspace: WorkspaceId,
     pub tab: TabId,
     pub focus: Focus,
@@ -705,6 +709,14 @@ impl Model {
             .iter()
             .max_by_key(|c| c.last_active_seq)
             .map(|c| c.id.clone())
+    }
+
+    /// Replaces one client's terminal colours, and nothing else about it: a colours message
+    /// is not the reader's input, so it moves no activity.
+    pub fn set_client_colors(&mut self, id: &ClientId, colors: crate::theme::TerminalColors) {
+        if let Some(c) = self.client_mut(id) {
+            c.caps.colors = colors;
+        }
     }
 
     pub fn touch_client(&mut self, id: &ClientId) {
@@ -2074,6 +2086,7 @@ mod tests {
             id: ClientId(id.to_string()),
             size: Size { cols: 80, rows: 24 },
             caps: Capabilities::default(),
+            desktop: Default::default(),
             workspace: ws.clone(),
             tab: tab.clone(),
             focus: Focus::Pane(pane.clone()),
@@ -2226,6 +2239,43 @@ mod tests {
         m.toggle_zoom(&tab).unwrap();
         m.close_pane(&new).unwrap();
         assert_eq!(m.tab(&tab).unwrap().zoomed, None);
+    }
+
+    #[test]
+    fn set_client_colors_replaces_that_clients_colours_only() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        let mut first = client("c_0001", &ws, &tab, &pane);
+        first.caps.truecolor = true;
+        first.desktop = crate::theme::Desktop::Omarchy;
+        m.attach_client(first);
+        m.attach_client(client("c_0002", &ws, &tab, &pane));
+        let seq = m
+            .client(&ClientId("c_0001".into()))
+            .unwrap()
+            .last_active_seq;
+        let rgb = |r, g, b| Some(domux_term::Rgb { r, g, b });
+        let mut palette = [None; 16];
+        palette[4] = rgb(0xf3, 0x8d, 0x70);
+        let colors = crate::theme::TerminalColors {
+            fg: rgb(0xe6, 0xd9, 0xdb),
+            bg: rgb(0x2c, 0x25, 0x25),
+            palette,
+        };
+        m.set_client_colors(&ClientId("c_0001".into()), colors.clone());
+        let one = m.client(&ClientId("c_0001".into())).unwrap();
+        assert_eq!(one.caps.colors, colors);
+        assert!(one.caps.truecolor, "the rest of the capabilities stay");
+        assert_eq!(one.desktop, crate::theme::Desktop::Omarchy);
+        assert_eq!(
+            one.last_active_seq, seq,
+            "colours are not the reader's input"
+        );
+        let two = m.client(&ClientId("c_0002".into())).unwrap();
+        assert_eq!(two.caps.colors, crate::theme::TerminalColors::default());
+        // A client that is gone changes nothing.
+        let before = m.clients.clone();
+        m.set_client_colors(&ClientId("c_0009".into()), colors);
+        assert_eq!(m.clients, before);
     }
 
     #[test]

@@ -77,6 +77,8 @@ pub struct RenderInput<'a> {
     /// boxes, and goes when that key does. The agents overlay is under `leader a` either way
     /// (decision record 0033).
     pub navigator: bool,
+    /// This client's colours, painted from the chosen theme and this client's terminal.
+    pub theme: &'a domux_core::theme::Theme,
 }
 
 /// The one line a list of notes prints as, or `None` when there is nothing to say.
@@ -163,7 +165,8 @@ pub fn compose(input: &RenderInput) -> (Buffer, Option<CursorState>) {
         // branch - it is 43 cells and the branch is only taken below 40 columns - so a
         // single row would show two thirds of it and drop the size the screen has to reach,
         // which is the one fact the reader is here for (principle 9).
-        let style = ratatui::style::Style::default().fg(theme::TEXT);
+        let style = ratatui::style::Style::default()
+            .fg(theme::color(input.theme, domux_core::theme::Role::Text));
         for (y, line) in domux_core::text::wrap_to_width(&msg, size.cols as usize)
             .iter()
             .zip(0..size.rows)
@@ -264,24 +267,48 @@ fn tab_hit(input: &RenderInput, target: Option<tab_row::TabTarget>) -> Option<Hi
 
 /// The pane whose box holds the cell, and the cell of its own grid under it.
 fn pane_hit(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
+    let (pane, rect) = pane_boxes(input)?.into_iter().find(|(_, rect)| {
+        column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
+    })?;
+    let (row, col) = grid_cell(rect, column, row)?;
+    Some(Hit::Pane { pane, row, col })
+}
+
+/// The cell of `pane`'s own grid nearest the screen cell, or `None` when this client draws no
+/// box for that pane. A cell outside the box clamps to the box's nearest edge, as a cell on its
+/// rule does, which is where a drag that has left the pane is reported to its program
+/// (decision 0044).
+pub fn cell_in_pane(
+    input: &RenderInput,
+    pane: &PaneId,
+    column: u16,
+    row: u16,
+) -> Option<(u16, u16)> {
+    if !draws_panes(input.view) {
+        return None;
+    }
+    let (_, rect) = pane_boxes(input)?.into_iter().find(|(p, _)| p == pane)?;
+    grid_cell(rect, column, row)
+}
+
+/// Every pane box on this client's tab, on the rectangle `draw_panes` lays the boxes out on.
+fn pane_boxes(input: &RenderInput) -> Option<Vec<(PaneId, domux_core::model::Rect)>> {
     let tab = input.model.tab(&input.view.tab)?;
-    // The rectangle `draw_panes` lays the boxes out on, and the inner area it draws each grid
-    // in.
     let area = smallest_workpanel(input.model, &tab.id, input.view);
-    let (pane, rect) = solve(&tab.layout, area, tab.zoomed.as_ref())
-        .into_iter()
-        .find(|(_, rect)| {
-            column >= rect.x && column < rect.right() && row >= rect.y && row < rect.bottom()
-        })?;
+    Some(solve(&tab.layout, area, tab.zoomed.as_ref()))
+}
+
+/// The cell of a box's grid nearest a screen cell, in the inner area `draw_panes` draws the grid
+/// in, or `None` for a box too small to hold one.
+fn grid_cell(rect: domux_core::model::Rect, column: u16, row: u16) -> Option<(u16, u16)> {
     let inner = boxed::Boxed::inner_of(to_rect(rect));
     if inner.width == 0 || inner.height == 0 {
         return None;
     }
-    Some(Hit::Pane {
-        pane,
-        row: row.clamp(inner.y, inner.bottom() - 1) - inner.y,
-        col: column.clamp(inner.x, inner.right() - 1) - inner.x,
-    })
+    Some((
+        row.clamp(inner.y, inner.bottom() - 1) - inner.y,
+        column.clamp(inner.x, inner.right() - 1) - inner.x,
+    ))
 }
 
 /// Whether this client draws pane boxes at all. A screen under the minimum shows only the
@@ -395,7 +422,7 @@ pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<Cursor
             flag: flag_text.as_deref(),
             focused,
         }
-        .render(to_rect(rect), buf);
+        .render(input.theme, to_rect(rect), buf);
         if let Some(rt) = runtime {
             let selection = copy.and_then(|c| c.selection_at(history));
             render_grid(&rt.grid, selection.as_ref(), inner, buf);

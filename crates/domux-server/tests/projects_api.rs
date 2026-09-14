@@ -364,6 +364,76 @@ async fn adding_a_file_rather_than_a_folder_says_so_and_registers_nothing() {
     );
 }
 
+/// A relative path is refused rather than read against the server's own directory.
+///
+/// MUX-37: the server inherits its directory from whichever command started it, so `.` sent
+/// as typed named that directory and not the one the reader was standing in, and the call
+/// answered for the wrong folder with a status of 0. The CLI resolves what a person types; a
+/// caller that sends a relative path by hand is told to send a full one.
+#[tokio::test]
+async fn adding_a_relative_path_is_refused_and_registers_nothing() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    let err = h
+        .api("project.add", json!({"path": "."}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidParams, "{err}");
+    assert_eq!(
+        err.message,
+        ". is a relative path, and the server cannot tell which directory it was typed in; give the full path"
+    );
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before
+    );
+}
+
+/// An empty path is not a relative path the reader typed: it is no path at all, and the
+/// relative refusal read as a sentence starting with a space. A path of spaces reads the same.
+#[tokio::test]
+async fn adding_an_empty_path_says_a_path_is_needed_and_registers_nothing() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    for path in ["", "  "] {
+        let err = h
+            .api("project.add", json!({ "path": path }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams, "{path:?}: {err}");
+        assert_eq!(
+            err.message, "project.add needs a path; give the full path of the folder to register",
+            "{path:?}"
+        );
+    }
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before
+    );
+}
+
+/// A path that starts with `~` was written for a shell, which expands it before a command
+/// sees it. A key binding or `domux api` sends it as written, and the server expands nothing,
+/// so calling it a relative path the server cannot place names the wrong problem.
+#[tokio::test]
+async fn adding_a_path_that_starts_with_a_tilde_says_only_a_shell_expands_it() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let before = project_names(&h.api("project.list", json!({})).await.unwrap());
+    let err = h
+        .api("project.add", json!({"path": "~/code/app"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidParams, "{err}");
+    assert_eq!(
+        err.message,
+        "~/code/app starts with ~, which only a shell expands; give the full path, with the home directory written out"
+    );
+    assert_eq!(
+        project_names(&h.api("project.list", json!({})).await.unwrap()),
+        before
+    );
+}
+
 /// The removal asks first, says what goes and what stays, and leaves the worktrees where
 /// they are (interface spec 12.8).
 #[tokio::test]
@@ -717,7 +787,7 @@ async fn a_key_bound_to_project_remove_asks_in_an_overlay_and_y_removes_the_proj
         .await
         .unwrap();
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "X").await;
     let f = h
         .wait_for(
@@ -786,7 +856,7 @@ async fn a_key_other_than_y_closes_the_question_and_keeps_the_project() {
     h.api("project.add", json!({"path": dir.path().to_str().unwrap()}))
         .await
         .unwrap();
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "X").await;
     h.wait_for(
         h.client.clone(),
@@ -918,7 +988,7 @@ async fn a_job_a_key_started_reports_its_failure_in_the_hint_row() {
         .bindings
         .insert("A".into(), "project.add /nonexistent/place".into());
     let mut h = Harness::start(config, 120, 24).await;
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "A").await;
     let f = h
         .wait_for(
@@ -1118,7 +1188,7 @@ async fn the_confirmation_names_the_project_s_root_so_two_of_one_name_are_told_a
     .unwrap();
     h.api("config.reload", json!({})).await.unwrap();
 
-    h.key(h.client.clone(), "C-a").await;
+    h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "X").await;
     let f = h
         .wait_for(

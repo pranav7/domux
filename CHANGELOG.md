@@ -8,6 +8,79 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- A click in a pane whose program asked for the mouse reaches that program, so Claude Code's own
+  interface answers it: the `×` on its sidebar, a click that moves the cursor or expands a result,
+  and a drag that selects and copies with Claude Code's own selection. The press, the drag and the
+  release all go to the program, and the press still focuses the pane. domux's own drag, double
+  click, triple click and link click still work in every other pane. Over such a program, shift and
+  a drag reach the terminal's own selection, and `leader [` then a drag uses domux's.
+
+## [1.0.1] - 2026-09-13
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+```
+
+Themes, an installer that asks for your leader and stay awake, and fixes for the hooks and for
+attach that showed up on Linux. After upgrading, run `domux server restart`: the attach protocol
+changed, so a 1.0.0 server and a 1.0.1 client refuse each other. The default leader is now `C-s`.
+
+### Added
+
+- Themes. `[theme] name` in `domux.toml` picks the colours the chrome draws in: `domux`, the colours
+  domux has always drawn; `terminal`, which takes them from the terminal's background, foreground and
+  palette; or a theme file under `~/.config/domux/themes/`. The default is `auto`, which draws
+  `terminal` on an Omarchy desktop and `domux` everywhere else, and always over ssh. Under `terminal` on
+  Omarchy, the chrome follows a theme change while you stay attached.
+  [docs/themes.md](https://github.com/pranav7/domux/blob/main/docs/themes.md) says how to choose one
+  and how to write one.
+- The installer asks you to select your leader, from `C-s`, `C-a`, `C-b` and `C-Space` or any key
+  name you type, and writes it under `[keys]` in the config file. `DOMUX_LEADER` answers without
+  asking, and without a terminal the installer writes `C-s`.
+- The installer asks whether to set up stay awake for a closed lid on Linux as well as macOS. A
+  yes writes `mode = "full"` under `[stay_awake]` in the config file, after the sudo setup on
+  macOS, and the installer says which keys turn stay awake on inside domux.
+
+### Changed
+
+- The attach protocol is version 4, so run `domux server restart` after upgrading: a server and a
+  client from either side of the upgrade refuse each other.
+- The default leader is now `C-s`, in place of `C-a`. To keep `C-a`, put `leader = "C-a"` under
+  `[keys]` in `~/.config/domux/domux.toml` and run `domux config reload`, or pick `C-a` when the
+  installer asks. Running the installer again on a machine that relied on the old default, and
+  pressing enter or giving it no terminal, writes `C-s`.
+- Pressed twice, the leader sends `C-s` to the pane. A shell at its prompt usually leaves flow
+  control on, and there `C-s` pauses the pane's output until `C-q`.
+- The installer marks each finished step with a check mark and says what it detected and did,
+  with one line per coding agent whose hooks it installed. The release lookup and the download
+  turn a spinner while they wait.
+- The installer never replaces a leader or a stay awake mode the config file already sets, and
+  it writes to the file `DOMUX_CONFIG_FILE` names when that is set. When it replaces a domux
+  binary and writes to the config file, it says to run `domux config reload`.
+- At attach the client asks the terminal for its whole palette, not only its background and
+  foreground.
+- `project.add` in the control API refuses a path that is relative, empty or starts with `~`,
+  and says what to send instead. It used to resolve such a path against the server's own
+  directory. `domux open` and `domux project add` send full paths, so only `domux api` calls and
+  key bindings that pass a path meet the refusal.
+
+### Fixed
+
+- Hooks no longer run a V1 domux left at `~/bin/domux`, which made Claude Code report
+  `unknown command "agent"` on every hook. An install writes `~/bin/domux` only when it is the
+  binary doing the install, and says which binary the hooks run, or the plugin for OpenCode. To
+  repair the hooks, run the curl command again, or run `~/.local/bin/domux install claude --apply`
+  (and `codex` or `opencode`) once this version is installed.
+- `domux attach` in a repository under a folder project, such as a home directory the first
+  server was started in, now offers to register the repository instead of saying nothing, and
+  `domux open .` registers the directory it was typed in rather than the server's. A home
+  project registered by accident is dropped with `domux project remove`.
+- `domux attach` in a worktree of a registered repository, or in a submodule checked out in
+  one, no longer asks to register it, wherever the worktree was made, and an offer that fails
+  says why in one line and attaches anyway instead of ending the command.
+
 ## [1.0.0] - 2026-09-11
 
 ```sh
@@ -39,5 +112,6 @@ The first release of the Rust domux. domux V1, the Go version built on tmux, is 
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/pranav7/domux/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pranav7/domux/releases/tag/v1.0.0

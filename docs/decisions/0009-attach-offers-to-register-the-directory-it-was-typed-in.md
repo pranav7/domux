@@ -1,7 +1,13 @@
 # 0009: Attach offers to register the directory it was typed in
 
 **Date:** 2026-09-09
-**Status:** Accepted. Extends decision record 0006, which stands.
+**Status:** Accepted. Extends decision record 0006, which stands. **Amended by decision record
+0041:** inside a repository the offer is about the repository's top level, and a folder project
+does not hold the repositories under it, so "under one" below no longer covers a repository
+under a folder project, and a linked worktree of a registered git project, or a submodule
+checked out in one, counts as under it wherever it was made. The offer's failures are said in
+one line and the attach goes on, where the first version of the code ended the attach with the
+error although the text below called them skips.
 **Decision:** Before it attaches, `domux2` and `domux2 attach` ask once whether the directory
 they were typed in should become a project, when that directory is not one already and is not
 under one. Answering yes runs the two calls `open` runs, `project.add` and `workspace.focus`.
@@ -32,10 +38,16 @@ answer that changes nothing.
 - The question is asked on the plain terminal, before raw mode and before the client draws,
   so it is not a second thing on a screen that already has an accent border (principle 2).
 - It is skipped whenever there is nobody to answer: standard input or standard error not a
-  terminal, a working directory that cannot be read, a `project.list` the server will not
-  answer. The attach is what was asked for; the offer is an extra and never blocks it.
-- A server this command had to start needs no offer: `Core::new` seeds the directory it was
-  started in, so the directory is registered before the question could be asked.
+  terminal, or a working directory that cannot be read. The attach is what was asked for; the
+  offer is an extra and never blocks it. Anything else that stops it short, a `project.list`
+  the server will not answer or a `project.add` it refuses, is said in one line and the client
+  attaches anyway (decision record 0041).
+- A server this command had to start can still ask. `Core::new` seeds the directory it was
+  started in only when the state file holds no project. On a first start the directory is
+  registered before the question could be asked, so nothing is asked; over a state file with
+  projects in it nothing is seeded, and the offer asks as it would of a server that was already
+  running. The first version of this record said such a server never needs the offer, which is
+  only true of the first start.
 - Reattaching from a directory that is not registered asks every time. There is no record of a
   declined directory and there should not be one: a file of "do not ask about this path" is
   state nobody can see and nobody would think to clear. If the asking becomes a nuisance, the

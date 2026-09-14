@@ -2,8 +2,10 @@
 //! number, unknown tables and keys reported and kept out of the way. M1 reads `[keys]` and
 //! `[terminal]`; there is no layout table (roadmap section 5.5).
 
+use crate::theme::ThemeChoice;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use toml::{Spanned, Value};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -13,6 +15,10 @@ pub struct Config {
     pub worktrees: WorktreesConfig,
     pub stay_awake: StayAwakeConfig,
     pub navigator: NavigatorConfig,
+    /// Read by `Config::parse` from the table itself rather than by serde, so a theme name
+    /// that is wrong in any way is a warning and never an error.
+    #[serde(skip_deserializing)]
+    pub theme: ThemeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +80,36 @@ impl Default for NavigatorConfig {
     }
 }
 
+/// `[theme]` (decision record 0042).
+///
+/// ```toml
+/// [theme]
+/// # auto, domux, terminal, or the name of a file under ~/.config/domux/themes/.
+/// # docs/themes.md says how to write one.
+/// name = "auto"
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    pub name: String,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> ThemeConfig {
+        ThemeConfig {
+            name: "auto".to_string(),
+        }
+    }
+}
+
+impl ThemeConfig {
+    /// The theme this config names. `auto` for a name that is not a theme name, which
+    /// `Config::parse` has already warned about.
+    pub fn choice(&self) -> ThemeChoice {
+        ThemeChoice::parse(&self.name).unwrap_or(ThemeChoice::Auto)
+    }
+}
+
 /// `[stay_awake]` (architecture spec section 9, renamed by decision 0029).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -111,7 +147,13 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 impl Default for KeysConfig {
     fn default() -> Self {
         KeysConfig {
-            leader: "C-a".into(),
+            // `C-s` since MUX-35, and `C-a` before it. The client's raw mode turns off flow
+            // control, so the reader's own terminal never keeps the key to pause output.
+            // Pressed twice, the leader reaches the pane, where a program that reads keys
+            // itself, such as an editor, gets `C-s`. A shell at its prompt usually leaves flow
+            // control on in the pane's terminal, and there `C-s` pauses the pane's output
+            // until `C-q`.
+            leader: "C-s".into(),
             bindings: map(&[
                 // The unshifted half of the key `|` lives on: a split is common enough that
                 // it should not need a shift.
@@ -252,7 +294,14 @@ pub struct Parsed {
     pub warnings: Vec<ConfigWarning>,
 }
 
-pub const KNOWN_TABLES: &[&str] = &["keys", "terminal", "worktrees", "stay_awake", "navigator"];
+pub const KNOWN_TABLES: &[&str] = &[
+    "keys",
+    "terminal",
+    "worktrees",
+    "stay_awake",
+    "navigator",
+    "theme",
+];
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     (
         "keys",
@@ -263,6 +312,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("worktrees", &["base"]),
     ("stay_awake", &["mode"]),
     ("navigator", &["enabled"]),
+    ("theme", &["name"]),
 ];
 
 impl Config {
@@ -289,6 +339,7 @@ impl Config {
             }
         }
         let user: Config = toml::from_str(text).map_err(|e| to_config_error(text, e))?;
+        let theme = parse_theme(text, &doc, &mut warnings)?;
         // Build the value in one expression. Starting from `Config::default()` and then
         // assigning fields trips `clippy::field_reassign_with_default`, which is in
         // `clippy::all`, which the gate runs as `-D warnings`.
@@ -311,9 +362,74 @@ impl Config {
             worktrees: user.worktrees,
             stay_awake: user.stay_awake,
             navigator: user.navigator,
+            theme,
         };
         Ok(Parsed { config, warnings })
     }
+}
+
+/// `[theme]`, read from the table so that nothing in it can fail the config: a name that is not
+/// a theme name, or not a string, or a `theme` that is not a table, is a warning with its
+/// line, and `auto` applies.
+fn parse_theme(
+    text: &str,
+    doc: &toml::Table,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<ThemeConfig, ConfigError> {
+    let written = |value: &Value| match value {
+        Value::String(s) => format!("{s:?}"),
+        other => other.to_string(),
+    };
+    let table = match doc.get("theme") {
+        None => return Ok(ThemeConfig::default()),
+        Some(Value::Table(table)) => table,
+        Some(other) => {
+            let message = match line_of_key(text, "theme") {
+                Some(line) => format!(
+                    "theme {} (line {line}) is not a table; auto applies",
+                    written(other)
+                ),
+                None => format!("theme {} is not a table; auto applies", written(other)),
+            };
+            warnings.push(ConfigWarning(one_line(&message)));
+            return Ok(ThemeConfig::default());
+        }
+    };
+    let Some(name) = table.get("name") else {
+        return Ok(ThemeConfig::default());
+    };
+    if let Value::String(s) = name {
+        if ThemeChoice::parse(s).is_some() {
+            return Ok(ThemeConfig { name: s.clone() });
+        }
+    }
+    // The line comes from the value's span, so a `name` key in another table cannot take it.
+    #[derive(Deserialize)]
+    struct Doc {
+        theme: Table,
+    }
+    #[derive(Deserialize)]
+    struct Table {
+        name: Spanned<serde::de::IgnoredAny>,
+    }
+    // toml fails to give a span for a name that a nested header such as `[theme.name.x]`
+    // makes, so that one case finds its header line instead.
+    let line = match toml::from_str::<Doc>(text) {
+        Ok(doc) => Some(position(text, doc.theme.name.span().start).0),
+        Err(_) => line_of_key(text, "theme.name"),
+    };
+    let message = match line {
+        Some(line) => format!(
+            "theme.name {} (line {line}) is not a theme name; use lowercase letters, digits, - and _; auto applies",
+            written(name)
+        ),
+        None => format!(
+            "theme.name {} is not a theme name; use lowercase letters, digits, - and _; auto applies",
+            written(name)
+        ),
+    };
+    warnings.push(ConfigWarning(one_line(&message)));
+    Ok(ThemeConfig::default())
 }
 
 /// `user` came from `#[serde(default)]`, so it already holds the defaults for keys the file
@@ -398,7 +514,7 @@ pub(crate) fn one_line(message: &str) -> String {
 /// 1-based line and column of a byte offset. Clamped so a span at or past end of input names
 /// the file's actual last line rather than one past it, and safe against an offset that lands
 /// inside a multi-byte character rather than on a char boundary.
-fn position(text: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn position(text: &str, offset: usize) -> (usize, usize) {
     let mut end = offset.min(text.len());
     let before = loop {
         match text.get(..end) {
@@ -421,7 +537,7 @@ fn position(text: &str, offset: usize) -> (usize, usize) {
 /// The first line whose trimmed text starts with `[key]`, `[key.`, or `key` followed by
 /// (optional whitespace and) `=`. Returns `None` rather than a guess when no line matches -
 /// the caller must render that as an absent position, never as a default line number.
-fn line_of_key(text: &str, key: &str) -> Option<usize> {
+pub(crate) fn line_of_key(text: &str, key: &str) -> Option<usize> {
     text.lines()
         .position(|l| {
             let l = l.trim_start();
@@ -450,7 +566,8 @@ mod tests {
     #[test]
     fn defaults_match_the_architecture_spec_keymap() {
         let c = Config::default();
-        assert_eq!(c.keys.leader, "C-a");
+        // The spec's keymap put the leader on `C-a`; MUX-35 moved it to `C-s`.
+        assert_eq!(c.keys.leader, "C-s");
         // The spec's keymap put this on `|`; see the M1 deviations.
         assert_eq!(
             c.keys.bindings.get("\\").map(String::as_str),
@@ -839,6 +956,137 @@ mod tests {
             parsed.warnings[0].0.contains("depth"),
             "{:?}",
             parsed.warnings
+        );
+    }
+
+    #[test]
+    fn the_theme_is_auto_by_default() {
+        let c = Config::default();
+        assert_eq!(c.theme.name, "auto");
+        assert_eq!(c.theme.choice(), ThemeChoice::Auto);
+        let parsed = Config::parse("").unwrap();
+        assert_eq!(parsed.config.theme.choice(), ThemeChoice::Auto);
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn a_theme_name_parses_into_its_choice() {
+        let parsed = Config::parse("[theme]\nname = \"ristretto\"\n").unwrap();
+        assert_eq!(parsed.config.theme.name, "ristretto");
+        assert_eq!(
+            parsed.config.theme.choice(),
+            ThemeChoice::File("ristretto".to_string())
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn a_theme_name_that_is_not_a_file_name_warns_with_its_line_and_auto_applies() {
+        let parsed = Config::parse("[theme]\nname = \"../x\"\n").unwrap();
+        assert_eq!(
+            parsed.warnings,
+            vec![ConfigWarning(
+                "theme.name \"../x\" (line 2) is not a theme name; use lowercase letters, digits, - and _; auto applies"
+                    .to_string()
+            )]
+        );
+        assert_eq!(parsed.config.theme.name, "auto");
+        assert_eq!(parsed.config.theme.choice(), ThemeChoice::Auto);
+    }
+
+    /// The line comes from the value's own position, so a `name` key in an earlier table does
+    /// not take it.
+    #[test]
+    fn a_bad_theme_name_is_found_on_its_own_line_after_another_name() {
+        let parsed =
+            Config::parse("[keys.bindings]\n\"x\" = \"tab.create\"\n\n[theme]\nname = \"Nord\"\n")
+                .unwrap();
+        assert_eq!(
+            parsed.warnings,
+            vec![ConfigWarning(
+                "theme.name \"Nord\" (line 5) is not a theme name; use lowercase letters, digits, - and _; auto applies"
+                    .to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_theme_name_that_is_not_a_string_warns_and_auto_applies() {
+        let parsed = Config::parse("[keys]\nleader = \"C-b\"\n[theme]\nname = 3\n").unwrap();
+        assert_eq!(
+            parsed.warnings,
+            vec![ConfigWarning(
+                "theme.name 3 (line 4) is not a theme name; use lowercase letters, digits, - and _; auto applies"
+                    .to_string()
+            )]
+        );
+        assert_eq!(parsed.config.theme.choice(), ThemeChoice::Auto);
+        assert_eq!(parsed.config.keys.leader, "C-b");
+    }
+
+    #[test]
+    fn a_theme_that_is_not_a_table_warns_and_auto_applies() {
+        let parsed = Config::parse("theme = \"nord\"\n[keys]\nleader = \"C-b\"\n").unwrap();
+        assert_eq!(
+            parsed.warnings,
+            vec![ConfigWarning(
+                "theme \"nord\" (line 1) is not a table; auto applies".to_string()
+            )]
+        );
+        assert_eq!(parsed.config.theme.choice(), ThemeChoice::Auto);
+        assert_eq!(parsed.config.keys.leader, "C-b");
+    }
+
+    #[test]
+    fn a_theme_name_that_is_an_array_or_a_table_warns_with_its_line_and_auto_applies() {
+        for (text, written, line) in [
+            ("[theme]\nname = [\"nord\"]\n", "[\"nord\"]", 2),
+            ("[theme]\nname = { x = 1 }\n", "{ x = 1 }", 2),
+            ("[theme.name]\nx = 1\n", "{ x = 1 }", 1),
+            (
+                "[keys.bindings]\n\"g\" = \"pane.zoom\"\n[theme.name.deeper]\nx = 1\n",
+                "{ deeper = { x = 1 } }",
+                3,
+            ),
+        ] {
+            let parsed = Config::parse(text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+            assert_eq!(parsed.config.theme.choice(), ThemeChoice::Auto, "{text:?}");
+            assert_eq!(
+                parsed.warnings,
+                vec![ConfigWarning(format!(
+                    "theme.name {written} (line {line}) is not a theme name; use lowercase letters, digits, - and _; auto applies"
+                ))],
+                "{text:?}"
+            );
+        }
+    }
+
+    /// A theme never blocks the config: a `ConfigError` would put the reader back on the
+    /// default key bindings.
+    #[test]
+    fn a_bad_theme_name_keeps_the_rest_of_the_config() {
+        let parsed = Config::parse(
+            "[keys]\nleader = \"C-b\"\n[keys.bindings]\n\"g\" = \"pane.zoom\"\n[theme]\nname = \"Catppuccin Mocha\"\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.config.keys.leader, "C-b");
+        assert_eq!(
+            parsed.config.keys.bindings.get("g").map(String::as_str),
+            Some("pane.zoom")
+        );
+        assert_eq!(parsed.config.theme.choice(), ThemeChoice::Auto);
+        assert_eq!(parsed.warnings.len(), 1, "{:?}", parsed.warnings);
+    }
+
+    #[test]
+    fn an_unknown_key_under_theme_warns_with_its_line_and_keeps_the_rest() {
+        let parsed = Config::parse("[theme]\nname = \"domux\"\naccent = \"#ff0000\"\n").unwrap();
+        assert_eq!(parsed.config.theme.choice(), ThemeChoice::Builtin("domux"));
+        assert_eq!(
+            parsed.warnings,
+            vec![ConfigWarning(
+                "unknown key theme.accent (line 3) is ignored".to_string()
+            )]
         );
     }
 }

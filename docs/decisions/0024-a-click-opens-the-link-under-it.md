@@ -1,7 +1,8 @@
 # 0020: A click opens the link under it
 
 **Date:** 2026-09-10
-**Status:** Accepted. Extends decision record 0014, which stands.
+**Status:** Accepted. Extends decision record 0014. Narrowed by decision record 0044: over a pane
+whose program asked for the mouse, the click is the program's and domux opens nothing.
 **Decision:** A press and release on one cell of a pane, with no drag between them, opens the
 link under that cell. A cell the program marked with OSC 8 carries its own target; otherwise
 the run of text around the cell is read. Only an http or https address and a path that exists

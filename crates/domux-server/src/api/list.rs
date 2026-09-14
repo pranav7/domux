@@ -135,7 +135,10 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             crate::render::sidebar::split_for(ctx.model, ctx.facts, view.size, false);
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, now);
+        // The rows are built for the keys and their styles are thrown away, so any theme gives
+        // the same rows.
         let all = agents_box::rows(
+            domux_core::theme::Theme::domux(),
             &agents,
             RowForm::Sidebar,
             content_width(area.width, SIDEBAR_PAD),
@@ -154,7 +157,12 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let width = crate::render::overlay::list_overlay_width(screen);
         let now = ctx.deps.clock.now();
         let agents = crate::core::agents_view(ctx.model, ctx.agents, now);
-        let all = agents_box::rows(&agents, RowForm::Overlay, content_width(width, OVERLAY_PAD));
+        let all = agents_box::rows(
+            domux_core::theme::Theme::domux(),
+            &agents,
+            RowForm::Overlay,
+            content_width(width, OVERLAY_PAD),
+        );
         // The renderer filters the built rows where `projects_box::rows` takes the filter
         // itself, so this arm filters here for the same reason: one list, filtered once, the
         // way the box on the screen was.
@@ -195,6 +203,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     let (rows, height) = if surface == Surface::Switcher {
         let width = crate::render::overlay::list_overlay_width(screen);
         let rows = projects_box::rows(
+            domux_core::theme::Theme::domux(),
             ctx.model,
             ctx.facts,
             &view.filter,
@@ -215,6 +224,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
             crate::render::sidebar::projects_area(ctx.model, ctx.facts, view.size, navigator);
         let pad = crate::render::sidebar::pad_for(navigator);
         let rows = projects_box::rows(
+            domux_core::theme::Theme::domux(),
             ctx.model,
             ctx.facts,
             &view.filter,
