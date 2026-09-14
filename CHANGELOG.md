@@ -8,10 +8,16 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-09-11
+## [0.1.0] - 2026-09-11
 
-The first release of the Rust domux. domux V1, the Go version built on tmux, is the v0.x tags;
-`domux import v1` reads what it saved.
+First release: panes, the Navigator, agent records
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pranav7/domux/main/install.sh | sh
+```
+
+The first release of the Rust domux. domux V1, the Go version built on tmux, lives on the `v1`
+branch; `domux import v1` reads what it saved.
 
 ### Added
 
@@ -35,5 +41,5 @@ The first release of the Rust domux. domux V1, the Go version built on tmux, is 
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/pranav7/domux/releases/tag/v1.0.0
+[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/pranav7/domux/releases/tag/v0.1.0
