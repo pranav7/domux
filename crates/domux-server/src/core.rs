@@ -37,6 +37,11 @@ pub enum CoreMsg {
         pane: PaneId,
         status: Option<i32>,
     },
+    /// A pane's reader has stopped between two reads, as `PtyHandle::pause_reader` asked,
+    /// and every byte it read came before this (decision 0045).
+    ReaderPaused {
+        pane: PaneId,
+    },
     ClientConnected {
         hello: Hello,
         tx: mpsc::Sender<ServerMsg>,
@@ -858,6 +863,8 @@ impl Core {
         self.view_dirty = true;
     }
 
+    fn reader_paused(&mut self, _pane: PaneId) {}
+
     fn default_colors(&self) -> (Rgb, Rgb) {
         let recent = self
             .model
@@ -919,6 +926,7 @@ impl Core {
                     self.agents_gone_with_pane(&pane);
                 }
             }
+            CoreMsg::ReaderPaused { pane } => self.reader_paused(pane),
             CoreMsg::ClientConnected { hello, tx, reply } => {
                 let _ = reply.send(self.attach(hello, tx));
             }

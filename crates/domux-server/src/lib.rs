@@ -22,6 +22,7 @@ pub mod stay_awake;
 pub mod subprocess;
 pub mod testing;
 pub mod toast;
+pub mod upgrade;
 pub mod worktree_conf;
 
 use crate::core::{Core, CoreMsg};

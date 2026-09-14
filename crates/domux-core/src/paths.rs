@@ -4,8 +4,8 @@
 //! explicit `Env` so tests and the harness can pin every input.
 
 use crate::names::{
-    CONFIG_DIR_NAME, OLD_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME, STATE_DIR_NAME,
-    THEMES_DIR_NAME, V1_SESSIONS_DIR_NAME, V1_STATE_DIR_NAME,
+    CONFIG_DIR_NAME, HANDOFF_DIR_NAME, OLD_NAME, SOCKET_DIR_PREFIX, SOCKET_FILE_NAME,
+    STATE_DIR_NAME, THEMES_DIR_NAME, V1_SESSIONS_DIR_NAME, V1_STATE_DIR_NAME,
 };
 use std::path::{Path, PathBuf};
 
@@ -86,6 +86,12 @@ pub fn config_file_in(env: &Env) -> PathBuf {
 /// themes with the config.
 pub fn themes_dir_in(env: &Env) -> PathBuf {
     themes_dir_beside(&config_file_in(env))
+}
+
+/// Where `server upgrade` writes what it hands over, under the state directory `state_dir`
+/// (decision 0045).
+pub fn handoff_dir_under(state_dir: &Path) -> PathBuf {
+    state_dir.join(HANDOFF_DIR_NAME)
 }
 
 /// The theme directory for a config file at `config`: `themes/` in the same directory.
