@@ -1,5 +1,6 @@
 //! The working row's animation: one tick every 70 ms while an agent works or compacts, which
-//! moves the band along the word and turns the glyph on every second one.
+//! moves the band along the word and turns the glyph on every second one, or breathes the
+//! arrow's colour on a compacting row.
 //!
 //! What these tests can and cannot see. The animation reaches the screen, so a frame test
 //! holds it: the glyph on a working row turns, the band along the word moves, and the word
@@ -22,6 +23,7 @@ use std::time::Duration;
 
 const CLAUDE_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"c1"}"#;
 const CLAUDE_STOPS: &str = r#"{"hook_event_name":"Stop","session_id":"c1"}"#;
+const CLAUDE_COMPACTS: &str = r#"{"hook_event_name":"PreCompact","session_id":"c1"}"#;
 const CODEX_WORKS: &str = r#"{"hook_event_name":"UserPromptSubmit","session_id":"x1"}"#;
 
 /// Line 1 of the row for `kind`, which is where the glyph and the word are drawn.
@@ -198,6 +200,56 @@ async fn the_band_lights_the_working_word_and_moves_along_it() {
     assert!(
         looks.windows(2).any(|pair| pair[0] != pair[1]),
         "and it moves along the word: {looks:?}"
+    );
+}
+
+/// MUX-48: a compacting row draws a down arrow rather than the star, and the arrow holds
+/// still while its colour breathes. Read off the screen, over looks spread across more than
+/// half a breath, so a row that turned the star, drew nothing, or drew the arrow in one colour
+/// fails here.
+#[tokio::test]
+async fn the_compacting_arrow_holds_still_while_its_colour_breathes() {
+    let mut h = Harness::start(Config::default(), 100, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.report(pane.clone(), AgentKind::Claude, CLAUDE_COMPACTS)
+        .await;
+    let f = open_overlay(&mut h).await;
+
+    // Where the arrow is: the cell after the name and its gap on the claude row. A frame row
+    // is bracketed by `|`, so cell zero is character one.
+    let rows: Vec<&str> = f.lines().filter(|l| l.starts_with('|')).collect();
+    let row = rows
+        .iter()
+        .position(|l| l.contains("claude ↓"))
+        .unwrap_or_else(|| panic!("a compacting claude row draws the arrow:\n{f}"))
+        as u16;
+    let column = rows[row as usize]
+        .chars()
+        .position(|c| c == '↓')
+        .expect("the arrow is on the row") as u16
+        - 1;
+
+    // Fourteen looks 90 ms apart: 1.26 s, well over half of a 1.96 s breath, so the arrow
+    // passes through far more than one colour whichever tick the first look lands on.
+    let mut colours = HashSet::new();
+    for _ in 0..14 {
+        let f = h.frame(h.client.clone()).await;
+        let line = row_of(&f, "claude ").to_string();
+        assert!(line.contains("claude ↓"), "the arrow holds still: {line}");
+        for g in GLYPH_FRAMES {
+            assert!(
+                !line.contains(g),
+                "no star turns on a compacting row: {line}"
+            );
+        }
+        let cell = &h.buffer(&h.client.clone())[(column, row)];
+        assert_eq!(cell.symbol(), "↓", "the arrow stays in its cell");
+        colours.insert(format!("{:?}", cell.fg));
+        tokio::time::sleep(Duration::from_millis(90)).await;
+    }
+    assert!(
+        colours.len() >= 3,
+        "the arrow's colour breathes, saw {colours:?}"
     );
 }
 

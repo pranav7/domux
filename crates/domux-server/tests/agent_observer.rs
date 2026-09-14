@@ -436,7 +436,7 @@ async fn any_working_is_true_only_while_a_record_works_or_compacts() {
     for (event, working, why) in [
         ("SessionStart", false, "idle is not working"),
         ("UserPromptSubmit", true, "a turn started"),
-        ("PreCompact", true, "compacting turns the glyph too"),
+        ("PreCompact", true, "compacting breathes the arrow"),
         ("Notification", false, "waiting is not working"),
     ] {
         h.report(

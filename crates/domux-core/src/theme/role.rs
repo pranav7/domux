@@ -230,7 +230,7 @@ roles! {
     Codex = "codex", Kind on [OverlayBackground, SidebarBackground];
     /// An OpenCode agent's kind colour.
     Opencode = "opencode", Kind on [OverlayBackground, SidebarBackground];
-    /// The glyph and the word while compacting.
+    /// The compacting arrow half way through its breath, between the compacting band's two ends.
     Compacting = "compacting", Kind on [OverlayBackground, SidebarBackground];
     /// The dim end of the band on a Claude agent's working word.
     BandClaudeDim = "band_claude_dim", Kind on [OverlayBackground, SidebarBackground];
@@ -244,9 +244,9 @@ roles! {
     BandOpencodeDim = "band_opencode_dim", Kind on [OverlayBackground, SidebarBackground];
     /// The bright end of the band on an OpenCode agent's working word.
     BandOpencodeBright = "band_opencode_bright", Kind on [OverlayBackground, SidebarBackground];
-    /// The dim end of the band on the compacting word.
+    /// The dim end of the band on the compacting word, and of the compacting arrow's breath.
     BandCompactingDim = "band_compacting_dim", Kind on [OverlayBackground, SidebarBackground];
-    /// The bright end of the band on the compacting word.
+    /// The bright end of the band on the compacting word, and of the compacting arrow's breath.
     BandCompactingBright = "band_compacting_bright", Kind on [OverlayBackground, SidebarBackground];
 }
 

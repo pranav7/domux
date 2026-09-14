@@ -1,4 +1,5 @@
-//! The working word and the animated glyph, carried over from V1 unchanged.
+//! The working word and the animated glyph, carried over from V1 unchanged, and the arrow a
+//! compacting row draws instead of the glyph.
 //!
 //! The list is V1's `aiWorkingLabels` (`ai_working_labels.go`); the frames are V1's `picker.go`
 //! `claudeSpinnerFrames`, and the interval is a little quicker than its `pickerSpinnerInterval`. The word
@@ -202,6 +203,12 @@ pub const WORDS: [&str; 186] = [
 pub const GLYPH_FRAMES: [&str; 13] = [
     "·", "✦", "✶", "✳", "✢", "✻", "✽", "✻", "✢", "✳", "✶", "✦", "·",
 ];
+
+/// The glyph a compacting row draws in place of the star: a down arrow that holds still while
+/// its colour breathes (`render::shimmer::breath`). The star turns for working, so in the
+/// sidebar, where neither row carries its word, the shape says which of the two it is (MUX-48,
+/// decision record 0048).
+pub const COMPACTING_GLYPH: &str = "↓";
 
 /// One animation tick every 70 ms. V1 ticked every 80 (`pickerSpinnerInterval`) and so did
 /// this until the author asked for a slightly quicker glyph on 2026-09-11 (decision record

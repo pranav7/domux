@@ -249,22 +249,24 @@ In the tab row, the `│` between tabs is `rule` and the ` · ` between words is
 
 ### Kinds and the band
 
-The working word wears a band, a bright wave that runs from its dim end to its bright end and back.
+The working word wears a band, a bright wave that runs from its dim end to its bright end and back. A
+compacting agent's arrow breathes instead of turning: its colour runs from `band_compacting_dim` through
+`compacting` to `band_compacting_bright` and back, about once every two seconds.
 
 | role | what it colours | domux | terminal |
 |---|---|---|---|
 | `claude` | a Claude agent's kind: its glyph while working, and the word `claude` where a row names the kind | `#de7356` | not set |
 | `codex` | a Codex agent's kind: its glyph while working, and the word `codex` where a row names the kind | `#89b4fa` | not set |
 | `opencode` | an OpenCode agent's kind: its glyph while working, and the word `opencode` where a row names the kind | `#c678b8` | not set |
-| `compacting` | the glyph while an agent is compacting | `#afafff` | not set |
+| `compacting` | the arrow `↓` while an agent is compacting, half way through its breath | `#afafff` | not set |
 | `band_claude_dim` | the dim end of the band on a Claude agent's working word | `#b85e47` | not set |
 | `band_claude_bright` | the bright end of the band on a Claude agent's working word | `#ffc9b0` | not set |
 | `band_codex_dim` | the dim end of the band on a Codex agent's working word | `#6478a8` | not set |
 | `band_codex_bright` | the bright end of the band on a Codex agent's working word | `#c8daff` | not set |
 | `band_opencode_dim` | the dim end of the band on an OpenCode agent's working word | `#9f5d93` | not set |
 | `band_opencode_bright` | the bright end of the band on an OpenCode agent's working word | `#f0b5e3` | not set |
-| `band_compacting_dim` | the dim end of the band on the word `Compacting` | `#6f6fcf` | not set |
-| `band_compacting_bright` | the bright end of the band on the word `Compacting` | `#d8d8ff` | not set |
+| `band_compacting_dim` | the dim end of the band on the word `Compacting`, and of the arrow's breath | `#6f6fcf` | not set |
+| `band_compacting_bright` | the bright end of the band on the word `Compacting`, and of the arrow's breath | `#d8d8ff` | not set |
 
 ## The readability guards
 

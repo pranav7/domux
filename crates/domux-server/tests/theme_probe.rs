@@ -162,6 +162,10 @@ enum Layer {
     /// a working word under its band: each must sit between the role's pair of band ends, and
     /// the least lit of them must be nearer the dim end, so a band drawn backwards fails too.
     Band,
+    /// The foreground of one cell, which is the compacting arrow as it breathes: it must sit on
+    /// the way from the compacting band's dim end to the role, or from the role to the band's
+    /// bright end, which is the only path a breath draws (MUX-48).
+    Breath,
 }
 
 struct Probe {
@@ -196,6 +200,37 @@ const fn band(place: &'static str, at: At, role: Role) -> Probe {
         layer: Layer::Band,
         role,
     }
+}
+
+const fn breath(place: &'static str, at: At, role: Role) -> Probe {
+    Probe {
+        place,
+        at,
+        layer: Layer::Breath,
+        role,
+    }
+}
+
+/// Whether `found` sits on the straight way from `from` to `to`, to within the rounding that
+/// mixing each channel on its own gives. The channel that moves furthest says how far along
+/// the way the colour is, and the other two must agree with it.
+fn on_the_way(found: Color, from: Rgb, to: Rgb) -> bool {
+    let Color::Rgb(r, g, b) = found else {
+        return false;
+    };
+    let found = [r, g, b].map(f64::from);
+    let from = [from.r, from.g, from.b].map(f64::from);
+    let to = [to.r, to.g, to.b].map(f64::from);
+    let far = (0..3)
+        .max_by(|a, b| {
+            (to[*a] - from[*a])
+                .abs()
+                .total_cmp(&(to[*b] - from[*b]).abs())
+        })
+        .expect("three channels");
+    let along = (found[far] - from[far]) / (to[far] - from[far]);
+    (0.0..=1.0).contains(&along)
+        && (0..3).all(|c| (from[c] + along * (to[c] - from[c]) - found[c]).abs() <= 1.0)
 }
 
 /// Each screen row as its cells' text and the column each cell starts in. A wide glyph's
@@ -273,6 +308,26 @@ fn check(theme: &Theme, screen: &str, buf: &Buffer, table: &[Probe]) -> Vec<Stri
                     ));
                 }
             }
+            Layer::Breath => {
+                let pair = BANDS
+                    .iter()
+                    .position(|(dim, _)| *dim == Role::BandCompactingDim)
+                    .expect("the compacting band is one of the four");
+                let rest = probe_rgb(probe.role);
+                let found = buf[(x, y)].fg;
+                if !on_the_way(found, probe_rgb(BANDS[pair].0), rest)
+                    && !on_the_way(found, rest, probe_rgb(BANDS[pair].1))
+                {
+                    out.push(format!(
+                        "{screen}: {} at c{x} r{y} is {} where the table says a colour on the way from {} through {} to {}",
+                        probe.place,
+                        name_of(theme, found),
+                        BANDS[pair].0.name(),
+                        probe.role.name(),
+                        BANDS[pair].1.name()
+                    ));
+                }
+            }
             Layer::Band => {
                 let pair = band_pair(probe.role).expect("a band row names a band end");
                 let dim = probe_rgb(BANDS[pair].0);
@@ -338,8 +393,12 @@ async fn screen(
     let mut frame = h.wait_for(h.client.clone(), ready, WAIT).await;
     let mut found = check(theme, name, &h.buffer(&h.client), table);
     // A band moves every tick, so a screen with one is read a few ticks apart: where the band
-    // sits changes what one frame can say about which way it runs.
-    if table.iter().any(|p| p.layer == Layer::Band) {
+    // sits changes what one frame can say about which way it runs. A breath changes colour
+    // every tick too, and each look finds it somewhere else on its way.
+    if table
+        .iter()
+        .any(|p| matches!(p.layer, Layer::Band | Layer::Breath))
+    {
         for _ in 0..4 {
             tokio::time::sleep(Duration::from_millis(150)).await;
             frame = h.frame(h.client.clone()).await;
@@ -361,6 +420,10 @@ async fn screen(
             let pair = band_pair(probe.role).unwrap();
             covered.insert(BANDS[pair].0);
             covered.insert(BANDS[pair].1);
+        }
+        if probe.layer == Layer::Breath {
+            covered.insert(Role::BandCompactingDim);
+            covered.insert(Role::BandCompactingBright);
         }
     }
 }
@@ -820,8 +883,8 @@ async fn every_role_is_drawn_where_the_role_table_says() {
                 text("opencode").in_row("…").skip(11),
                 BandOpencodeDim,
             ),
-            fg(
-                "the compacting glyph",
+            breath(
+                "the compacting arrow",
                 text("probe-compact").skip(14),
                 Compacting,
             ),

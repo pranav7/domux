@@ -20,6 +20,10 @@ release. Versions follow [semantic versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- A compacting agent's row draws a still `↓` whose colour breathes, where a working agent's row
+  turns the star, so the two tell apart in the Navigator's sidebar too. A theme's `compacting` role
+  is the arrow's colour half way through each breath, between `band_compacting_dim` and
+  `band_compacting_bright`.
 - The install command is `curl -fsSL https://domux.dev/install.sh | sh`. The GitHub URL it
   replaces still works.
 

@@ -424,24 +424,32 @@ fn label_style(theme: &Theme, a: &AgentEntry, form: RowForm) -> Style {
 
 /// What the row says after the name, and the only place a state is written down.
 ///
-/// One slot, five answers. Working and compacting turn a glyph beside their word, or the glyph
-/// alone where the form has no room for a word. Waiting is the red dot, and it is the only dot
-/// in the box: the agent has asked you something and is stopped until you answer. Idle says
-/// nothing, because nothing is happening and "idle" would be a word for the absence of one
-/// (principle 5). Unknown says so, because an agent domux can see and cannot hear is a fact
-/// worth reporting rather than a quiet row.
+/// One slot, five answers. Working turns the star beside its word and compacting breathes an
+/// arrow beside its own, or either alone where the form has no room for a word. Waiting is the
+/// red dot, and it is the only dot in the box: the agent has asked you something and is stopped
+/// until you answer. Idle says nothing, because nothing is happening and "idle" would be a word
+/// for the absence of one (principle 5). Unknown says so, because an agent domux can see and
+/// cannot hear is a fact worth reporting rather than a quiet row.
 fn activity(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm) -> Vec<Span<'static>> {
     match a.state {
         AgentState::Working => working(
             view.tick,
+            Span::styled(
+                crate::agents::labels::frame_at(view.tick),
+                Style::default().fg(theme::agent_color(theme, a.kind)),
+            ),
             form.shows_word().then_some(a.word),
-            theme::agent_color(theme, a.kind),
             theme::agent_shimmer(theme, a.kind),
         ),
         AgentState::Compacting => working(
             view.tick,
+            Span::styled(
+                crate::agents::labels::COMPACTING_GLYPH,
+                Style::default()
+                    .fg(theme::compacting_breath(theme)
+                        .at(crate::render::shimmer::breath(view.tick))),
+            ),
             form.shows_word().then_some("Compacting"),
-            color(theme, Role::Compacting),
             theme::compacting_shimmer(theme),
         ),
         AgentState::Waiting => vec![Span::styled(
@@ -456,24 +464,21 @@ fn activity(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm) -> 
     }
 }
 
-/// `✶ Percolating…`: the frame's glyph in the kind's colour, then the word and the ellipsis it
-/// is drawn with, under a bright band that runs along them (MUX-26, V1's `shimmerText`). With
-/// no word, the glyph alone.
+/// `✶ Percolating…` or `↓ Compacting…`: the glyph, already styled by the caller, then the word
+/// and the ellipsis it is drawn with, under a bright band that runs along them (MUX-26, V1's
+/// `shimmerText`). With no word, the glyph alone.
 ///
 /// One span per grapheme, because each one is lit differently. Every caller measures a row by
 /// summing `display_width` over its spans, so a word split this way measures what the same
 /// word in one span measured.
 fn working(
     tick: u64,
+    glyph: Span<'static>,
     word: Option<&str>,
-    glyph: Color,
     band: theme::Shimmer,
 ) -> Vec<Span<'static>> {
     use unicode_segmentation::UnicodeSegmentation;
-    let mut spans = vec![Span::styled(
-        crate::agents::labels::frame_at(tick),
-        Style::default().fg(glyph),
-    )];
+    let mut spans = vec![glyph];
     let Some(word) = word else {
         return spans;
     };
@@ -841,26 +846,21 @@ mod tests {
     }
 
     #[test]
-    fn compacting_reads_its_own_word_in_its_own_colour() {
+    fn compacting_reads_its_own_arrow_and_word_in_its_own_colours() {
         let v = view(vec![entry(
             AgentState::Compacting,
             Some("auth-cleanup"),
             AgentKind::Claude,
         )]);
         let rows = overlay_rows(&v, 72);
-        assert_eq!(text(&rows[0])[0], "auth-cleanup ✶ Compacting…");
+        assert_eq!(text(&rows[0])[0], "auth-cleanup ↓ Compacting…");
         let spans = &rows[0].lines[0].spans;
         assert!(
             spans.iter().all(|s| s.content != DOT),
-            "compacting draws no dot; the glyph and the word say it"
+            "compacting draws no dot; the arrow and the word say it"
         );
-        // The name, the gap, the glyph and its space, then one span per character of
+        // The name, the gap, the arrow and its space, then one span per character of
         // "Compacting…".
-        assert_eq!(
-            spans[2].style.fg,
-            Some(Color::Rgb(0xaf, 0xaf, 0xff)),
-            "the glyph, in the compacting colour"
-        );
         let word: Vec<Option<Color>> = spans[4..].iter().map(|s| s.style.fg).collect();
         assert_eq!(
             word,
@@ -873,6 +873,58 @@ mod tests {
                 4
             )
         );
+    }
+
+    /// MUX-48: a compacting row draws a down arrow that holds still while its colour breathes,
+    /// where a working row turns the star. In the sidebar, where neither carries a word, that
+    /// is what tells the two apart. The breath runs from the band's dim end through the
+    /// `compacting` colour to its bright end and back, in every form.
+    #[test]
+    fn a_compacting_arrow_stands_still_and_breathes_through_its_three_colours() {
+        let arrow_at = |tick: u64, form: RowForm| {
+            let mut v = view(vec![entry(
+                AgentState::Compacting,
+                Some("auth-cleanup"),
+                AgentKind::Claude,
+            )]);
+            v.tick = tick;
+            let row = one_row(Theme::domux(), &v.agents[0], &v, form, 72);
+            let arrow = row.lines[0]
+                .spans
+                .iter()
+                .find(|s| s.content == "↓")
+                .unwrap_or_else(|| panic!("an arrow at tick {tick} in {form:?}: {:?}", text(&row)))
+                .clone();
+            arrow.style.fg
+        };
+        let quarter = crate::render::shimmer::BREATH_TICKS / 4;
+        for form in [
+            RowForm::Nested,
+            RowForm::NestedWide,
+            RowForm::Sidebar,
+            RowForm::Overlay,
+        ] {
+            assert_eq!(
+                arrow_at(0, form),
+                Some(Color::Rgb(0x6f, 0x6f, 0xcf)),
+                "{form:?}: the dim end first"
+            );
+            assert_eq!(
+                arrow_at(quarter, form),
+                Some(Color::Rgb(0xaf, 0xaf, 0xff)),
+                "{form:?}: the compacting colour a quarter of a breath in"
+            );
+            assert_eq!(
+                arrow_at(quarter * 2, form),
+                Some(Color::Rgb(0xd8, 0xd8, 0xff)),
+                "{form:?}: the bright end half way"
+            );
+            assert_eq!(
+                arrow_at(quarter * 3, form),
+                Some(Color::Rgb(0xaf, 0xaf, 0xff)),
+                "{form:?}: the compacting colour on the way back"
+            );
+        }
     }
 
     /// The colours a band gives a word of `len` characters at `tick`, which is what a working
@@ -956,26 +1008,35 @@ mod tests {
 
     /// The two sidebar forms draw a working or compacting row's glyph without its word, so
     /// the row stays short where the box is narrow; the overlays keep the word (decision
-    /// record 0038). The glyph is the same frame in every form.
+    /// record 0038). The glyph is the same in every form: the star's frame while working, the
+    /// arrow while compacting (decision record 0048).
     #[test]
     fn the_sidebar_forms_draw_the_glyph_alone_and_the_overlays_keep_the_word() {
-        for (state, word) in [
-            (AgentState::Working, "Percolating…"),
-            (AgentState::Compacting, "Compacting…"),
+        for (state, glyph, word) in [
+            (AgentState::Working, "✶", "Percolating…"),
+            (AgentState::Compacting, "↓", "Compacting…"),
         ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
             let first = |form: RowForm| {
                 text(&one_row(Theme::domux(), &v.agents[0], &v, form, 72))[0].clone()
             };
-            assert_eq!(first(RowForm::Nested), "└ auth-cleanup ✶", "{state}");
-            assert_eq!(first(RowForm::Sidebar), "auth-cleanup ✶", "{state}");
+            assert_eq!(
+                first(RowForm::Nested),
+                format!("└ auth-cleanup {glyph}"),
+                "{state}"
+            );
+            assert_eq!(
+                first(RowForm::Sidebar),
+                format!("auth-cleanup {glyph}"),
+                "{state}"
+            );
             assert_eq!(
                 first(RowForm::Overlay),
-                format!("auth-cleanup ✶ {word}"),
+                format!("auth-cleanup {glyph} {word}"),
                 "{state}"
             );
             assert!(
-                first(RowForm::NestedWide).starts_with(&format!("└ auth-cleanup ✶ {word}")),
+                first(RowForm::NestedWide).starts_with(&format!("└ auth-cleanup {glyph} {word}")),
                 "{state}: {}",
                 first(RowForm::NestedWide)
             );

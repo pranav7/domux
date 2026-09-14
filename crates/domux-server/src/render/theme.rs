@@ -38,6 +38,39 @@ impl Shimmer {
     }
 }
 
+/// The three colours the compacting arrow breathes through: the dim end, the colour it rests
+/// in half way, and the bright end (MUX-48).
+///
+/// Three rather than a band's two, so the `compacting` role is still what the arrow is drawn
+/// in whenever it is neither dimmed nor lit, and a theme that sets that role sees it there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Breath {
+    pub dim: (u8, u8, u8),
+    pub rest: (u8, u8, u8),
+    pub bright: (u8, u8, u8),
+}
+
+impl Breath {
+    /// The colour `lit` of the way through the breath, which is what `render::shimmer::breath`
+    /// answers for a tick: the first half mixes dim into the resting colour and the second
+    /// mixes the resting colour into bright.
+    pub fn at(&self, lit: f64) -> Color {
+        if lit <= 0.5 {
+            Shimmer {
+                dim: self.dim,
+                bright: self.rest,
+            }
+            .at(lit * 2.0)
+        } else {
+            Shimmer {
+                dim: self.rest,
+                bright: self.bright,
+            }
+            .at(lit * 2.0 - 1.0)
+        }
+    }
+}
+
 /// The colour of an agent's kind: the name standing in for a session name, the kind on line 2
 /// and the glyph while it works.
 pub fn agent_color(theme: &Theme, kind: AgentKind) -> Color {
@@ -59,6 +92,16 @@ pub fn compacting_shimmer(theme: &Theme) -> Shimmer {
     shimmer(theme, Role::BandCompactingDim, Role::BandCompactingBright)
 }
 
+/// The compacting arrow's breath, whatever the kind: the ends of the band on the word
+/// `Compacting`, through the `compacting` role itself.
+pub fn compacting_breath(theme: &Theme) -> Breath {
+    Breath {
+        dim: channels(theme, Role::BandCompactingDim),
+        rest: channels(theme, Role::Compacting),
+        bright: channels(theme, Role::BandCompactingBright),
+    }
+}
+
 fn kind_role(kind: AgentKind) -> Role {
     match kind {
         AgentKind::Claude => Role::Claude,
@@ -67,24 +110,26 @@ fn kind_role(kind: AgentKind) -> Role {
     }
 }
 
-/// A band between two roles. A band is mixed channel by channel, and the terminal's default
-/// has no channels to mix, so an end painted `default` takes the `domux` theme's value for
-/// that role, which is always a hex.
+/// A band between two roles.
 fn shimmer(theme: &Theme, dim: Role, bright: Role) -> Shimmer {
-    let end = |role: Role| {
-        let rgb = match theme.get(role) {
-            Paint::Rgb(rgb) => rgb,
-            Paint::Default => match Theme::domux().get(role) {
-                Paint::Rgb(rgb) => rgb,
-                Paint::Default => unreachable!("the domux theme paints every band end in hex"),
-            },
-        };
-        (rgb.r, rgb.g, rgb.b)
-    };
     Shimmer {
-        dim: end(dim),
-        bright: end(bright),
+        dim: channels(theme, dim),
+        bright: channels(theme, bright),
     }
+}
+
+/// A role as channels to mix. A band and a breath are mixed channel by channel, and the
+/// terminal's default has no channels to mix, so a role painted `default` takes the `domux`
+/// theme's value for it, which is always a hex for the roles that are mixed.
+fn channels(theme: &Theme, role: Role) -> (u8, u8, u8) {
+    let rgb = match theme.get(role) {
+        Paint::Rgb(rgb) => rgb,
+        Paint::Default => match Theme::domux().get(role) {
+            Paint::Rgb(rgb) => rgb,
+            Paint::Default => unreachable!("the domux theme paints every mixed role in hex"),
+        },
+    };
+    (rgb.r, rgb.g, rgb.b)
 }
 
 #[cfg(test)]
@@ -136,6 +181,52 @@ mod tests {
             band.at(0.5),
             Color::Rgb(0xdc, 0x94, 0x7c),
             "and half way is half way"
+        );
+    }
+
+    /// A breath passes through all three of its colours: the dim end, the resting colour half
+    /// way, and the bright end at the top, mixing the two it is between everywhere else.
+    #[test]
+    fn a_breath_runs_from_dim_through_its_rest_to_bright() {
+        let breath = Breath {
+            dim: (0x6f, 0x6f, 0xcf),
+            rest: (0xaf, 0xaf, 0xff),
+            bright: (0xd8, 0xd8, 0xff),
+        };
+        assert_eq!(breath.at(0.0), Color::Rgb(0x6f, 0x6f, 0xcf), "unlit is dim");
+        assert_eq!(
+            breath.at(0.5),
+            Color::Rgb(0xaf, 0xaf, 0xff),
+            "half way rests"
+        );
+        assert_eq!(
+            breath.at(1.0),
+            Color::Rgb(0xd8, 0xd8, 0xff),
+            "fully lit is bright"
+        );
+        assert_eq!(
+            breath.at(0.25),
+            Color::Rgb(0x8f, 0x8f, 0xe7),
+            "a quarter is half way from dim to rest"
+        );
+        assert_eq!(
+            breath.at(0.75),
+            Color::Rgb(0xc4, 0xc4, 0xff),
+            "three quarters is half way from rest to bright"
+        );
+    }
+
+    /// The compacting arrow breathes on the compacting band's two ends, through the
+    /// `compacting` role's own colour.
+    #[test]
+    fn the_compacting_breath_is_drawn_from_its_three_roles() {
+        assert_eq!(
+            compacting_breath(Theme::domux()),
+            Breath {
+                dim: (0x6f, 0x6f, 0xcf),
+                rest: (0xaf, 0xaf, 0xff),
+                bright: (0xd8, 0xd8, 0xff),
+            }
         );
     }
 
