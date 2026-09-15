@@ -39,8 +39,8 @@ the installer it names change together in one pull request.
 **The page says what domux is and where to get it.** A top row with the name, a link to the
 changelog and a link to the repository with its star count; a heading and a paragraph that say
 what domux is and why to use it; the install command with a copy button; the latest version and
-its one-line summary, linked to its release notes; a screenshot; six features under it, each with
-a mock of the rows domux draws; and a short list of the rest. The layout follows hunk.dev's first
+its one-line summary, linked to its release notes; a screenshot; four features, each with a short
+terminal example; and a closing install link. The layout follows hunk.dev's first
 screen: a left-aligned heading in a large bold monospace face, boxes with square corners and a
 hard offset shadow, and the screenshot inside a window frame. The colours are the Catppuccin
 Mocha ground and mauve the built-in theme draws, and two things on the page are drawn the way
@@ -65,26 +65,38 @@ with the most stars, calls itself one, and a heading that said so read as a copy
 the description and the card a shared link unfolds into name the category and all three agents,
 which the heading does not, so a search for an agent's name still finds the page.
 
-**The copy names what domux does for the reader, never what it is built on.** Ghostty and Rust
-are in the repository and nowhere on the page: a reader deciding whether to install domux asks
-what happens to their agents, not which library draws the cells. "Your tmux keys" stays because
-the keys are the reader's habit, not domux's implementation.
+**The copy describes the reader's work.** The author's September 15, 2026 review asked for fewer
+features and removed implementation details from the marketing copy. The page describes parallel
+tasks, agents waiting for input, work that stays running, and familiar terminal controls. Hooks,
+handlers, configuration files, event payloads, and startup instructions belong in documentation.
+Rust appears once in the introduction at the author's request: "Built in Rust for speed" states
+a design goal without claiming a measured advantage. Familiar tmux controls describe the
+reader's habits.
 
-**Six features, in the order the alternatives sell them, kept to what domux does.** The tools
-that compete for the same reader sell parallel agents in worktrees, knowing which agent needs
-input, work that survives the lid, one key to switch, an API, and reviewing diffs before a merge.
-domux can show the first five and not the last, so the page shows five and says nothing about
-diffs, and leads with the three things none of the alternatives state: state reported by the
-agent's own hooks, the recap before you switch, and a worktree that arrives with the reader's
-`.env` and setup in it. Each feature has a heading of a few words, two or three sentences, and a
-mock, the shape hunk.dev uses.
+**Four features, each with one use case.** Separate workspaces let the reader run a bug fix and a
+feature at the same time. Agent status and Claude Code recaps share one feature because both
+help the reader choose where to go next. Persistence covers returning after a disconnect; the
+closed-lid claim requires stay awake setup in the same paragraph. Tabs, split panes, keyboard
+controls, and the mouse share the fourth feature. Each has two or three short sentences and a
+compact example that fits on a phone. A closing install link replaces the extra feature grid.
 
-**The mocks are HTML, in the theme's own colours.** A screenshot goes stale with every change to
-the chrome and blurs on a phone; a mock is text, so it stays sharp and is edited with the copy.
-Each one draws the rows domux draws, from the row grammar in `render::agents_box` and
-`render::projects_box` and the roles in the built-in theme, so a reader who installs domux sees
-what the page showed. The mocks are hidden from a screen reader: every fact in one is also in the
-paragraph beside it.
+The structure draws on [Herdr](https://herdr.dev/) and [hunk](https://www.hunk.dev/): name a use
+case, explain the result, and show a small example. The copy follows the author's `write-clearly`
+skill. It uses domux's supported behavior and makes no claims about features from other tools.
+
+**The illustrations are HTML, using domux's colours and frames.** Text stays sharp as the reader
+zooms. Workspace and agent rows follow the grammar in `render::agents_box` and
+`render::projects_box`: the Navigator shows working glyphs, and the agents overlay adds working
+words and recaps. Each illustration has an accessible description, and its feature paragraph
+explains the use case.
+
+The author's September 15 visual review asked for clearer, more polished examples. Structured
+rows replace text padded with spaces, so a selection fills one continuous rectangle and text
+wraps on a narrow screen. Titles sit in the terminal frame's border. A dark surrounding surface
+uses a neutral shadow ring and the site's accent shadow, following the `better-ui` skill. The
+terminal workflow illustration shows an editor and tests in split panes. The split becomes
+vertical when the illustration is narrow, so both panes keep readable text. These are static
+illustrations, with no controls that appear clickable and no animation.
 
 **What crawlers read is also on the page.** The JSON-LD block describes domux as a
 SoftwareApplication, and every fact in it is in the page's text too, because an assistant that
