@@ -755,3 +755,59 @@ async fn a_create_puts_a_green_pill_in_the_hint_row_of_the_client_that_asked() {
         "the other reader's hint row is their own:\n{other}"
     );
 }
+
+/// `c` in a Projects box carries no argument, so it makes a slot in the project of the row
+/// under the cursor.
+///
+/// The number it picks is the lowest free one, which is the handler's own rule; what this
+/// test is about is which project the key chose, so the cursor is put on a project that is
+/// not the one the client is looking at.
+#[tokio::test]
+async fn the_create_key_makes_a_slot_in_the_project_under_the_cursor() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, _w1, w2) = h.git_project_with_two_slots().await;
+    assert_eq!(
+        handles(&h, &root),
+        vec!["main", "workspace-1", "workspace-2"],
+        "two slots to start with"
+    );
+    api_at(
+        h.socket_path(),
+        "workspace.focus",
+        json!({ "workspace": w2.to_string() }),
+    )
+    .await
+    .expect("the client sits in this project");
+    api_at(h.socket_path(), "sidebar.show", json!({}))
+        .await
+        .expect("the Navigator is on the screen for the keys to be in");
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Navigator"),
+        Duration::from_secs(5),
+    )
+    .await;
+
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    h.key(h.client.clone(), "c").await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while handles(&h, &root).len() < 4 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the key makes a slot, got {:?}",
+            handles(&h, &root)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        handles(&h, &root),
+        vec!["main", "workspace-1", "workspace-2", "workspace-3"],
+        "at the lowest free number"
+    );
+    assert!(
+        root.join(".domux/worktrees/workspace-3").is_dir(),
+        "with its worktree on disk"
+    );
+}

@@ -318,7 +318,7 @@ fn overlay_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
             close_overlay(core, client);
             if confirmed(&key) {
                 let method = Method::WorkspaceDelete(domux_core::api::WorkspaceDeleteParams {
-                    workspace: workspace.to_string(),
+                    workspace: Some(workspace.to_string()),
                     yes: true,
                     force: false,
                 });

@@ -228,6 +228,12 @@ impl Default for KeysConfig {
                 ("/", "list.filter"),
                 ("?", "help"),
                 ("n", "workspace.rename"),
+                // Neither names a target, so each acts on the row under the cursor, the way
+                // `n` and `X` do. Unshifted for the one that makes a workspace and shifted
+                // for the one that takes it away, which is the rule `n` and `X` already
+                // follow (MUX-50).
+                ("c", "workspace.create"),
+                ("D", "workspace.delete"),
                 ("Tab", "focus.next_region"),
                 // Destructive, so the key asks first: `project.remove` with no project named
                 // opens the confirmation for the project of the row under the cursor.
@@ -680,6 +686,26 @@ mod tests {
             c.keys.list.get("Tab").map(String::as_str),
             Some("focus.next_region"),
             "Tab crosses to the Agents box M3 added"
+        );
+    }
+
+    /// MUX-50 gives the two workspace operations a key of their own. Neither names a target,
+    /// so each acts on the row under the cursor, the way `X` and `n` already do.
+    ///
+    /// The case carries the warning: a key that destroys is shifted and a key that makes is
+    /// not, which is the rule `n` and `X` already follow.
+    #[test]
+    fn the_default_list_table_binds_workspace_create_and_delete() {
+        let c = Config::default();
+        assert_eq!(
+            c.keys.list.get("c").map(String::as_str),
+            Some("workspace.create"),
+            "unshifted, because making a workspace takes nothing away"
+        );
+        assert_eq!(
+            c.keys.list.get("D").map(String::as_str),
+            Some("workspace.delete"),
+            "shifted, like X, because it removes a worktree and a branch"
         );
     }
 

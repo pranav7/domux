@@ -673,10 +673,11 @@ async fn reopening_after_a_switch_out_of_the_filter_comes_back_with_the_keys_row
 /// placed last is gone rather than merely late. 26 rather than the 24 M3 picked: the modifier
 /// legend and the `projects` header the grouped rows now draw under both push the leader table
 /// down by a line, and 24 cut the screen before any leader row, which answered a different
-/// question than this test asks.
+/// question than this test asks. 28 since MUX-50, which adds `c` and `D` to `[keys.list]` and
+/// so pushes the leader table down by two more.
 #[tokio::test]
 async fn help_inside_the_box_lists_the_box_keys_first_after_the_help_has_been_closed_once() {
-    let mut h = Harness::start(Config::default(), 100, 26).await;
+    let mut h = Harness::start(Config::default(), 100, 28).await;
     two_agents(&mut h).await;
     open_overlay(&mut h).await;
     h.key(h.client.clone(), "?").await;

@@ -307,7 +307,9 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
     cfg.keys.list.remove("/");
     cfg.keys.list.insert("g".into(), "list.filter".into());
     cfg.keys.list.remove("?");
-    let mut h = Harness::start(cfg, 80, 54).await;
+    // 56 rather than 54 since MUX-50: `c` and `D` joined `[keys.list]`, and the assertion
+    // below that nothing is truncated is only worth making on a screen that fits everything.
+    let mut h = Harness::start(cfg, 80, 56).await;
     h.api("help", json!({})).await.unwrap();
     let f = h
         .wait_for(
@@ -754,7 +756,10 @@ fn row_holding(frame: &str, needle: &str) -> usize {
 /// special-cased its own surface.
 #[tokio::test]
 async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
-    let mut h = Harness::start(Config::default(), 120, 26).await;
+    // 28 rather than 26 since MUX-50, for the reason its twin in `tests/agents_overlay.rs`
+    // gives: `c` and `D` push the leader table down by two rows, and a screen that cuts
+    // before any leader row would answer a different question than this test asks.
+    let mut h = Harness::start(Config::default(), 120, 28).await;
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(
         h.client.clone(),

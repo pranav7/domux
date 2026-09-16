@@ -971,8 +971,16 @@ impl Params for WorkspaceClearParams {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// `None` is "the workspace under the cursor", which is what `D` in a Projects box means.
+///
+/// Optional the way `WorkspaceClearParams` is, and for the same reason: a key carries no
+/// argument. It does **not** follow `clear` in what an absent target resolves to. A clear
+/// falls back to the caller's own workspace; a delete goes through
+/// `Ctx::workspace_of_cursor`, which refuses a caller that has no cursor rather than
+/// removing the worktree the shell happens to be standing in.
 pub struct WorkspaceDeleteParams {
-    pub workspace: String,
+    #[serde(default)]
+    pub workspace: Option<String>,
     #[serde(default)]
     pub yes: bool,
     #[serde(default)]
@@ -981,7 +989,7 @@ pub struct WorkspaceDeleteParams {
 impl Params for WorkspaceDeleteParams {
     fn from_args(args: &[String]) -> Result<Self, ApiError> {
         Ok(WorkspaceDeleteParams {
-            workspace: arg::<String>(args, 0, "workspace")?,
+            workspace: args.first().cloned(),
             yes: false,
             force: false,
         })
@@ -1626,7 +1634,7 @@ mod tests {
         // `from_action` goes through `Params::from_args`, which every params type in the table
         // has to implement for the macro to compile at all. This pins the arguments each one
         // takes from a key.
-        let cases: [(&str, &[&str]); 20] = [
+        let cases: [(&str, &[&str]); 21] = [
             ("project.list", &[]),
             ("project.add", &["/x"]),
             ("project.remove", &["audrey-app"]),
@@ -1637,6 +1645,9 @@ mod tests {
             ("workspace.create", &["audrey-app"]),
             ("workspace.clear", &[]),
             ("workspace.delete", &["workspace-1"]),
+            // `D` in a Projects box, the way `X` names no project: the workspace is the row
+            // under the cursor (MUX-50).
+            ("workspace.delete", &[]),
             ("workspace.rename", &[]),
             ("workspace.clear_name", &[]),
             ("workspace.focus", &["workspace-1"]),
@@ -1658,10 +1669,12 @@ mod tests {
             let m = Method::from_action(&action).unwrap_or_else(|e| panic!("{name}: {e:?}"));
             assert_eq!(m.name(), name);
         }
-        // The three that need an argument say which one is missing rather than inventing a
+        // The two that need an argument say which one is missing rather than inventing a
         // target. `project.remove` is not among them: it has a target a key can see, the row
         // the cursor is on, and `api::project::remove` refuses when the keys are in no box.
-        for name in ["workspace.delete", "workspace.focus", "project.add"] {
+        // `workspace.delete` joined it in MUX-50, for the same reason and with the same
+        // refusal, `Ctx::workspace_of_cursor`.
+        for name in ["workspace.focus", "project.add"] {
             let action = Action {
                 method: name.to_string(),
                 args: Vec::new(),
@@ -2226,6 +2239,29 @@ mod tests {
                 "{name} with no argument means this pane"
             );
         }
+    }
+
+    /// `workspace.delete` takes its target the way `workspace.clear` and the agent verbs take
+    /// theirs: one optional positional, so `D` on a row can mean "this one" (MUX-50).
+    ///
+    /// Absent is not the same as "the workspace this shell is in". What an absent target
+    /// resolves to is `Ctx::workspace_of_cursor`'s answer, which refuses a caller with no
+    /// cursor rather than guessing; this test is only about the params carrying the absence
+    /// instead of refusing to parse it.
+    #[test]
+    fn workspace_delete_takes_its_target_as_one_optional_positional_argument() {
+        let named = crate::keymap::Action::parse("workspace.delete workspace-2").unwrap();
+        let bare = crate::keymap::Action::parse("workspace.delete").unwrap();
+        let target = |a: &crate::keymap::Action| match Method::from_action(a).unwrap() {
+            Method::WorkspaceDelete(p) => p.workspace,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(target(&named).as_deref(), Some("workspace-2"));
+        assert_eq!(
+            target(&bare),
+            None,
+            "a key with no argument means the row under the cursor"
+        );
     }
 
     #[test]

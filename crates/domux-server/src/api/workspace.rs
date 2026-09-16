@@ -488,19 +488,23 @@ pub fn clear_copy(name: &str, path: &Path) -> ClearCopy {
 
 /// Everything both destructive handlers read off the model before they queue anything.
 ///
-/// One reader, because the two must agree about which workspace, which branch and which
-/// project they are acting on. `verb` is the word the `main` refusal uses, so the two
-/// refusals differ only where they should.
+/// One reader, because the two must agree about which branch and which project they are
+/// acting on. `refuses_main` is the wording of the `main` refusal, so the two refusals differ
+/// only where they should.
+///
+/// **Which workspace is not decided here.** Each caller resolves its own target and hands the
+/// id in, because that is the one thing the two do differently: a clear with no target means
+/// the caller's own workspace and a delete with no target means the row under the cursor
+/// (decision record 0053).
 fn target_of(
     ctx: &Ctx,
-    workspace: Option<&str>,
+    target: WorkspaceId,
     refuses_main: &str,
 ) -> Result<(WorkspaceId, Doomed), ApiError> {
-    let target = ctx.resolve_workspace_param(workspace)?;
-    // Unreachable: `resolve_workspace_param` answers with the id of a workspace the model
-    // holds, and nothing runs between the two. Written out rather than left as an `expect`
-    // in a handler that removes worktrees, and rather than left silent, so the next reader
-    // can tell a considered choice from an oversight.
+    // Unreachable: every caller resolves the id from the model, and nothing runs between the
+    // two. Written out rather than left as an `expect` in a handler that removes worktrees,
+    // and rather than left silent, so the next reader can tell a considered choice from an
+    // oversight.
     let w = ctx
         .model
         .workspace(&target)
@@ -550,7 +554,11 @@ struct Doomed {
 /// A key press has no `--yes` to add, so from a key it asks on the screen first, every time.
 /// The alternative would be a red pill telling a reader with no command line to use a flag.
 pub fn clear(ctx: &mut Ctx, p: WorkspaceClearParams) -> Result<Value, ApiError> {
-    let (target, doomed) = target_of(ctx, p.workspace.as_deref(), CLEAR_REFUSES_MAIN)?;
+    // A clear that names nothing means this workspace: it puts a branch back, and the one the
+    // caller is standing in is the one they mean. A delete does not read an absent target the
+    // same way; `Ctx::workspace_of_cursor` says why.
+    let target = ctx.resolve_workspace_param(p.workspace.as_deref())?;
+    let (target, doomed) = target_of(ctx, target, CLEAR_REFUSES_MAIN)?;
     if ctx.from_key && !p.yes {
         return ask(ctx, ConfirmKind::ClearWorkspace(target));
     }
@@ -591,7 +599,15 @@ pub fn clear(ctx: &mut Ctx, p: WorkspaceClearParams) -> Result<Value, ApiError> 
 /// branch the worktree is really on, so this is misinformation rather than misdeletion, and the
 /// result names what went. `CoreJob::DeleteWorkspace::expected_branch` has the whole of it.
 pub fn delete(ctx: &mut Ctx, p: WorkspaceDeleteParams) -> Result<Value, ApiError> {
-    let (target, doomed) = target_of(ctx, Some(&p.workspace), MAIN_CANNOT_BE_DELETED)?;
+    let target = match p.workspace.as_deref() {
+        Some(named) => ctx.resolve_workspace_param(Some(named))?,
+        // `D` in a Projects box (interface spec 7.3). The cursor is the only target a key
+        // carries, and it is a target the reader can see, because the fill is on the row it
+        // names. Anywhere else a delete that names nothing stays a mistake rather than
+        // becoming a delete of whichever slot the caller happened to be in.
+        None => ctx.workspace_of_cursor()?,
+    };
+    let (target, doomed) = target_of(ctx, target, MAIN_CANNOT_BE_DELETED)?;
     if !p.yes {
         if ctx.from_key {
             return ask(ctx, ConfirmKind::DeleteWorkspace(target));
@@ -741,6 +757,24 @@ impl Ctx<'_> {
             ));
         }
         self.project_of_view()
+    }
+
+    /// The workspace of the row the cursor is on, for a delete that named none.
+    ///
+    /// `workspace_of_view` falls back to the caller's own workspace, which is right for
+    /// clearing one and wrong for deleting one: a shell that typed `workspace delete` with
+    /// nothing after it would then remove the slot it is standing in, worktree and branch
+    /// and all. So this refuses unless the keys are in a Projects box, where the row is on
+    /// the screen with the fill on it, and names the way to ask in the refusal.
+    ///
+    /// The same rule as `project_of_cursor`, and for the same reason. `D` is the key it
+    /// exists for (MUX-50).
+    pub fn workspace_of_cursor(&self) -> Result<WorkspaceId, ApiError> {
+        let client = self.view()?;
+        if !super::list::in_a_projects_box(self, &client) {
+            return Err(ApiError::invalid_params("name a workspace to delete"));
+        }
+        self.workspace_of_view()
     }
 
     /// The project the calling client is looking at, for a call that named none.
