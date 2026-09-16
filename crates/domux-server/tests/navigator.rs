@@ -12,6 +12,7 @@ use domux_core::ids::PaneId;
 use domux_core::model::agent::AgentKind;
 use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
 use domux_server::testing::{row, Harness};
+use ratatui::style::Color;
 use serde_json::json;
 use std::time::Duration;
 
@@ -127,6 +128,49 @@ async fn only_a_waiting_row_draws_a_dot_and_it_follows_the_name() {
         f.contains("└ claude"),
         "an idle row is still there and says nothing:\n{f}"
     );
+}
+
+/// The colour of the dot on the row holding `└ claude`, or a panic naming the frame.
+fn dot_color(h: &Harness, f: &str) -> Color {
+    let buf = h.buffer(&h.client);
+    let y = row_with(f, "└ claude") as u16;
+    let x = (0..buf.area.width)
+        .find(|x| buf[(*x, y)].symbol() == "◉")
+        .unwrap_or_else(|| panic!("no dot on the agent row:\n{f}"));
+    buf[(x, y)].fg
+}
+
+/// An agent that stopped for you keeps its dot until it is answered, but the dot is red only
+/// until you have looked: opening its pane turns it grey, and a new call turns it red again
+/// (decision record 0052). The row never falls silent while the agent is blocked.
+#[tokio::test]
+async fn opening_the_agents_pane_turns_its_dot_grey_and_a_new_call_turns_it_red() {
+    const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
+    const GREY: Color = Color::Rgb(0x6c, 0x70, 0x86);
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = one_agent(&mut h).await;
+
+    h.report(pane.clone(), AgentKind::Claude, WAITS).await;
+    let f = h
+        .wait_for(h.client.clone(), |f| f.contains("claude ◉"), WAIT)
+        .await;
+    assert_eq!(dot_color(&h, &f), RED, "it has asked for you:\n{f}");
+
+    h.api("pane.focus", json!({"pane": pane.to_string()}))
+        .await
+        .unwrap();
+    h.wait_for_agent(|a| !a.unseen, WAIT).await;
+    let f = h.frame(h.client.clone()).await;
+    assert!(
+        f.contains("claude ◉"),
+        "the dot stands, because the agent is still stopped:\n{f}"
+    );
+    assert_eq!(dot_color(&h, &f), GREY, "you have looked at it:\n{f}");
+
+    h.report(pane, AgentKind::Claude, WAITS).await;
+    h.wait_for_agent(|a| a.unseen, WAIT).await;
+    let f = h.frame(h.client.clone()).await;
+    assert_eq!(dot_color(&h, &f), RED, "it has asked again:\n{f}");
 }
 
 /// A session that ends takes its row with it, and the workspace above it closes up.

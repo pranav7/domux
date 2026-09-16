@@ -192,8 +192,10 @@ roles! {
     ConfigError = "config_error", Red on [OverlayBackground, TopBarBackground, TabRowBackground];
     /// A confirmation's question.
     Question = "question", Red on [OverlayBackground];
-    /// The dot while an agent is waiting.
+    /// The dot while an agent is waiting and you have not looked at its pane.
     WaitingDot = "waiting_dot", Red on [OverlayBackground, Fill, SidebarBackground];
+    /// The dot while an agent is waiting and you have looked at its pane.
+    WaitingDotSeen = "waiting_dot_seen", Line on [OverlayBackground, Fill, SidebarBackground];
     /// The stay awake dot while the hold is on.
     StayAwakeDotOn = "stay_awake_dot_on", Green on [
         OverlayBackground,
@@ -264,7 +266,7 @@ impl Role {
             }
             Guard::Line => Some(match self {
                 Role::Rule => RULE_FLOOR,
-                Role::StayAwakeDotOff => DOT_OFF_FLOOR,
+                Role::StayAwakeDotOff | Role::WaitingDotSeen => DOT_OFF_FLOOR,
                 _ => LINE_FLOOR,
             }),
             Guard::Unguarded => None,
@@ -284,9 +286,9 @@ mod tests {
 
     #[test]
     fn every_role_has_one_public_name_and_it_round_trips() {
-        assert_eq!(Role::ALL.len(), 43);
+        assert_eq!(Role::ALL.len(), 44);
         let names: BTreeSet<&str> = Role::ALL.iter().map(|r| r.name()).collect();
-        assert_eq!(names.len(), 43, "two roles share a name");
+        assert_eq!(names.len(), 44, "two roles share a name");
         for (i, role) in Role::ALL.iter().enumerate() {
             assert_eq!(*role as usize, i, "{role:?} is out of order");
             let name = role.name();
@@ -397,6 +399,7 @@ mod tests {
             (ConfigError, Red, Some(FLOOR), BAR),
             (Question, Red, Some(FLOOR), &[OverlayBackground]),
             (WaitingDot, Red, Some(FLOOR), ROW),
+            (WaitingDotSeen, Line, Some(DOT_OFF_FLOOR), ROW),
             (StayAwakeDotOn, Green, Some(FLOOR), BAR),
             (StayAwakeDotOff, Line, Some(DOT_OFF_FLOOR), BAR),
             (Recap, TextTier, Some(FLOOR), TIER),

@@ -870,6 +870,11 @@ impl Model {
     }
 
     /// Moves one client to a tab in its workspace and focuses that tab's focused pane.
+    ///
+    /// The pane it lands on has been seen, the same as one `focus_pane` lands on: the tab is in
+    /// front of the reader with the focus in that pane. Without this a dot survived every way of
+    /// reaching an agent by its tab, which is `leader 2` and a click on the tab row (decision
+    /// record 0052).
     pub fn select_tab(&mut self, client: &ClientId, tab: &TabId) -> Result<Vec<Event>, ApiError> {
         let focused = self.tab(tab).map(|t| t.focused.clone()).ok_or_else(|| {
             ApiError::not_found(format!(
@@ -887,15 +892,17 @@ impl Model {
         })?;
         c.tab = tab.clone();
         c.workspace = ws_id.clone();
-        c.focus = Focus::Pane(focused);
+        c.focus = Focus::Pane(focused.clone());
         c.overlay = None;
         if let Some(w) = self.workspace_mut(&ws_id) {
             w.last_tab = Some(tab.clone());
         }
-        Ok(vec![Event::TabSelected {
+        let mut events = vec![Event::TabSelected {
             client: client.clone(),
             tab: tab.clone(),
-        }])
+        }];
+        events.extend(self.clear_unseen_for_pane(&focused));
+        Ok(events)
     }
 
     /// Splits `pane` and focuses the new pane. A zoom on the tab is cleared, and reported:
@@ -1969,6 +1976,8 @@ impl Model {
 
     /// Interface spec 6.7 and 12.28: waiting first, then working and compacting by last
     /// activity, then unseen idle, then quiet idle, then unknown, each group newest first.
+    /// A waiting record you have looked at sits under the ones you have not, because the
+    /// question this order answers is which agent wants you (decision record 0052).
     /// The architecture spec's 3.7 puts unseen idle ahead of working and says the plans take
     /// this order; `rank` is the whole difference between the two.
     ///
@@ -1978,11 +1987,12 @@ impl Model {
     pub fn sorted_agents(&self) -> Vec<&Agent> {
         fn rank(a: &Agent) -> u8 {
             match (a.state, a.unseen) {
-                (AgentState::Waiting, _) => 0,
-                (AgentState::Working | AgentState::Compacting, _) => 1,
-                (AgentState::Idle, true) => 2,
-                (AgentState::Idle, false) => 3,
-                (AgentState::Unknown, _) => 4,
+                (AgentState::Waiting, true) => 0,
+                (AgentState::Waiting, false) => 1,
+                (AgentState::Working | AgentState::Compacting, _) => 2,
+                (AgentState::Idle, true) => 3,
+                (AgentState::Idle, false) => 4,
+                (AgentState::Unknown, _) => 5,
             }
         }
         let mut agents: Vec<&Agent> = self.agents.iter().collect();
@@ -2791,6 +2801,41 @@ mod tests {
             Focus::Pane(p2),
             "a client on another tab does not follow"
         );
+    }
+
+    /// Switching to the tab an agent runs in puts its pane in front of you with the focus on
+    /// it, which is opening that pane by any reading of it. It is how `leader 2` and a click on
+    /// the tab reach an agent, and until decision record 0052 it left the dot red.
+    #[test]
+    fn select_tab_clears_unseen_on_the_pane_it_lands_on() {
+        let (mut m, ws, tab, pane) = model_with_one_tab();
+        let (t2, p2, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+        m.attach_client(client("c_0001", &ws, &tab, &pane));
+        m.report_agent(
+            &p2,
+            AgentKind::Claude,
+            hook(AgentEvent::SessionStart, "s"),
+            T0,
+        )
+        .unwrap()
+        .unwrap();
+        let id = m
+            .report_agent(
+                &p2,
+                AgentKind::Claude,
+                hook(AgentEvent::Notification, "s"),
+                T1,
+            )
+            .unwrap()
+            .unwrap()
+            .agent;
+        assert!(m.agent(&id).unwrap().unseen, "it has asked for you");
+        let events = m.select_tab(&ClientId("c_0001".into()), &t2).unwrap();
+        assert!(!m.agent(&id).unwrap().unseen, "you opened its pane");
+        assert!(events.contains(&Event::AgentUnseenChanged {
+            agent: id,
+            unseen: false
+        }));
     }
 
     #[test]
@@ -4159,6 +4204,68 @@ mod tests {
             "the waiting one alone: unseen no longer counts, so an idle record you have not \
              looked at carries no red dot"
         );
+    }
+
+    /// Two records stopped on you, one you have looked at. The seen one is the newer, so last
+    /// activity alone would put it first; the rank is what holds it under the unseen one.
+    /// The agents overlay asks which agent wants you, and a fresh call beats one you have
+    /// already read (decision record 0052).
+    #[test]
+    fn a_seen_waiting_record_sorts_under_an_unseen_waiting_one() {
+        let (mut m, unseen, seen) = two_waiting_records();
+        m.clear_unseen(&seen);
+        let order: Vec<AgentId> = m.sorted_agents().iter().map(|a| a.id.clone()).collect();
+        assert_eq!(order, vec![unseen, seen]);
+    }
+
+    /// The count is the red dots, and a dot you have looked at is grey (decision record 0052).
+    /// The record stays waiting, so a caller that wants every stopped agent counts the state.
+    #[test]
+    fn red_dot_count_is_the_waiting_records_you_have_not_seen() {
+        let (mut m, _, seen) = two_waiting_records();
+        assert_eq!(m.red_dot_count(), 2, "neither has been looked at yet");
+        m.clear_unseen(&seen);
+        assert_eq!(m.red_dot_count(), 1);
+        assert_eq!(
+            m.agent(&seen).unwrap().state,
+            AgentState::Waiting,
+            "looking at a pane does not answer the agent"
+        );
+    }
+
+    /// Two agents waiting on you, each in its own tab. The second is the newer.
+    fn two_waiting_records() -> (Model, AgentId, AgentId) {
+        let (mut m, ws, _, _) = model_with_one_tab();
+        let mut ids = Vec::new();
+        for (i, at) in ["2026-09-04T14:00:00+00:00", "2026-09-04T14:01:00+00:00"]
+            .into_iter()
+            .enumerate()
+        {
+            let (_, pane, _) = m.create_tab(&ws, PathBuf::from("/x")).unwrap();
+            let sid = format!("s{i}");
+            m.report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, &sid),
+                at,
+            )
+            .unwrap()
+            .unwrap();
+            let id = m
+                .report_agent(
+                    &pane,
+                    AgentKind::Claude,
+                    hook(AgentEvent::Notification, &sid),
+                    at,
+                )
+                .unwrap()
+                .unwrap()
+                .agent;
+            ids.push(id);
+        }
+        let newer = ids.pop().expect("two records");
+        let older = ids.pop().expect("two records");
+        (m, older, newer)
     }
 
     #[test]

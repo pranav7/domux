@@ -86,6 +86,7 @@ pill_error = "palette 1"
 config_error = "palette 1"
 question = "palette 1"
 waiting_dot = "palette 1"
+waiting_dot_seen = "blend 4/9"
 stay_awake_dot_on = "palette 2"
 stay_awake_dot_off = "blend 3/9"
 recap = "foreground"
@@ -241,7 +242,8 @@ In the tab row, the `│` between tabs is `rule` and the ` · ` between words is
 | `pill_error` | a refused pill's ground | `#f38ba8` | `palette 1` |
 | `config_error` | the config error in the top bar | `#f38ba8` | `palette 1` |
 | `question` | a confirmation's question | `#f38ba8` | `palette 1` |
-| `waiting_dot` | the dot `◉` while an agent is waiting on you | `#f38ba8` | `palette 1` |
+| `waiting_dot` | the dot `◉` while an agent is waiting on you and you have not looked | `#f38ba8` | `palette 1` |
+| `waiting_dot_seen` | the dot `◉` while an agent is waiting on you and you have looked | `#6c7086` | `blend 4/9` |
 | `stay_awake_dot_on` | the stay awake dot while the machine is held awake | `#a6e3a1` | `palette 2` |
 | `stay_awake_dot_off` | the stay awake dot while it is not | `#585b70` | `blend 3/9` |
 | `recap` | a recap on a working, waiting, compacting or unseen agent row | `#ddcaf7` | `foreground` |
@@ -296,7 +298,7 @@ was.
 | the kinds and the band ends | 3.0 |
 | `separator`, `border` | 1.4 |
 | `rule` | 1.25 |
-| `stay_awake_dot_off` | 2.0 |
+| `stay_awake_dot_off`, `waiting_dot_seen` | 2.0 |
 
 - Contrast is the WCAG 2 figure, where 3.0 is the minimum for large text and marks.
 - The text roles written as a blend move together by the same number of steps, so dim text stays dimmer
@@ -409,6 +411,7 @@ pill_error = "#fd6883"
 config_error = "#fd6883"
 question = "#fd6883"
 waiting_dot = "#fd6883"
+waiting_dot_seen = "#7f7576"
 stay_awake_dot_on = "#adda78"
 stay_awake_dot_off = "#6a6162"
 recap = "#e6d9db"

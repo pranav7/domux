@@ -1,6 +1,6 @@
 //! Every role is drawn where the role table says (design section 7.2, Appendix A).
 //!
-//! The server draws every client in a probe theme whose 43 roles each have a hex no other role
+//! The server draws every client in a probe theme whose 44 roles each have a hex no other role
 //! has, so the colour a cell carries names the role it was drawn from. Two roles that share a
 //! value under `domux` (`codex` and `hint_key`, `accent` and `pr_merged`, `recap_seen` and
 //! `soft_text`) are told apart here and nowhere else.
@@ -716,6 +716,7 @@ async fn every_role_is_drawn_where_the_role_table_says() {
     let working = transcript(dir.path(), "probe-work", None);
     let busy = transcript(dir.path(), "probe-compact", Some("Probe recap busy."));
     let seen = transcript(dir.path(), "probe-idle", Some("Probe recap seen."));
+    let opened = transcript(dir.path(), "probe-read", None);
 
     let pane = new_pane(&mut h).await;
     claude(&mut h, &pane, "c-work", "SessionStart", Some(&working)).await;
@@ -746,6 +747,15 @@ async fn every_role_is_drawn_where_the_role_table_says() {
         r#"{"hook_event_name":"Notification","session_id":"c-wait","notification_type":"permission_prompt","message":"m"}"#,
     )
     .await;
+    // A second agent stopped for you, this one already read: its dot is grey rather than red
+    // (decision record 0052). Focusing its pane is what makes it seen. It carries a session
+    // name so its row is the one the table names, whichever order the rows fall in.
+    let read = new_pane(&mut h).await;
+    claude(&mut h, &read, "probe-read", "SessionStart", Some(&opened)).await;
+    claude(&mut h, &read, "probe-read", "Notification", Some(&opened)).await;
+    h.api("pane.focus", json!({"pane": read.to_string()}))
+        .await
+        .unwrap();
     let pane = new_pane(&mut h).await;
     claude(&mut h, &pane, "c-idle", "SessionStart", Some(&seen)).await;
     let pane = new_pane(&mut h).await;
@@ -762,7 +772,7 @@ async fn every_role_is_drawn_where_the_role_table_says() {
             .flat_map(|p| p.workspaces.iter())
             .filter(|w| h.fact(&FactKey::workspace(&w.id, FACT_PR)).is_some())
             .count();
-        if m.agents.len() == 7 && named == 3 && recaps == 2 && prs == 4 {
+        if m.agents.len() == 8 && named == 4 && recaps == 2 && prs == 4 {
             break;
         }
         assert!(
@@ -858,6 +868,11 @@ async fn every_role_is_drawn_where_the_role_table_says() {
                 Claude,
             ),
             fg("the waiting dot", text("◉"), WaitingDot),
+            fg(
+                "the waiting dot on a row you have read",
+                text("◉").in_row("probe-read"),
+                WaitingDotSeen,
+            ),
             fg("a session name", text("probe-work"), Text),
             fg(
                 "a claude working glyph",

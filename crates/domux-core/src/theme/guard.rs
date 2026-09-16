@@ -417,6 +417,7 @@ mod tests {
             (ConfigError, hex(0xfd6883)),
             (Question, hex(0xfd6883)),
             (WaitingDot, hex(0xfd6883)),
+            (WaitingDotSeen, hex(0x7f7576)),
             (StayAwakeDotOn, hex(0xadda78)),
             (StayAwakeDotOff, hex(0x6a6162)),
             (Recap, hex(0xe6d9db)),
@@ -759,6 +760,7 @@ pill_error = "#fd6883"
 config_error = "#fd6883"
 question = "#fd6883"
 waiting_dot = "#fd6883"
+waiting_dot_seen = "#7f7576"
 stay_awake_dot_on = "#adda78"
 stay_awake_dot_off = "#6a6162"
 recap = "#e6d9db"
@@ -777,7 +779,7 @@ recap_seen = "#bdb1b3"
     fn the_ristretto_hex_example_paints_what_terminal_paints_on_ristretto() {
         let chain = chain_of(RISTRETTO_HEX);
         let layer = chain.layers().next().expect("the file's layer");
-        assert_eq!(layer.roles.len(), 29);
+        assert_eq!(layer.roles.len(), 30);
         let want = on("ristretto");
         let mut all = vec![TerminalColors::default(), answers("catppuccin-latte")];
         all.extend(OMARCHY.iter().map(|t| t.colors()));
