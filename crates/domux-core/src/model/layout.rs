@@ -67,6 +67,36 @@ impl std::str::FromStr for Direction {
     }
 }
 
+/// Which pane `pane.swap` trades places with: the one before or after in reading order, as
+/// tmux's `swap-pane -U` and `-D` step, or the one focus would move to in a direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SwapDir {
+    Previous,
+    Next,
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl std::str::FromStr for SwapDir {
+    type Err = String;
+    fn from_str(s: &str) -> Result<SwapDir, String> {
+        match s {
+            "previous" => Ok(SwapDir::Previous),
+            "next" => Ok(SwapDir::Next),
+            "left" => Ok(SwapDir::Left),
+            "right" => Ok(SwapDir::Right),
+            "up" => Ok(SwapDir::Up),
+            "down" => Ok(SwapDir::Down),
+            other => Err(format!(
+                "unknown direction {other:?}; expected previous, next, left, right, up or down"
+            )),
+        }
+    }
+}
+
 /// One terminal. `command`, `title` and `pid` are facts and are not persisted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pane {
@@ -224,6 +254,44 @@ impl LayoutNode {
                 first
                     .remove_leaf(target)
                     .or_else(|| second.remove_leaf(target))
+            }
+        }
+    }
+
+    /// Trades the places of leaves `a` and `b`. Every split keeps its direction and ratio, so
+    /// each pane takes the box the other had. Returns false, and changes nothing, when either
+    /// pane is not in the tree.
+    pub fn swap_leaves(&mut self, a: &PaneId, b: &PaneId) -> bool {
+        let (Some(at_a), Some(at_b)) = (self.content(a).cloned(), self.content(b).cloned()) else {
+            return false;
+        };
+        self.replace_leaves(a, &at_b, b, &at_a);
+        true
+    }
+
+    fn content(&self, id: &PaneId) -> Option<&PaneContent> {
+        match self {
+            LayoutNode::Leaf(c) => (&c.pane().id == id).then_some(c),
+            LayoutNode::Split { first, second, .. } => {
+                first.content(id).or_else(|| second.content(id))
+            }
+        }
+    }
+
+    /// Puts `for_a` where `a` is and `for_b` where `b` is, in one pass, so the leaf written
+    /// first is never mistaken for the one still to be written.
+    fn replace_leaves(&mut self, a: &PaneId, for_a: &PaneContent, b: &PaneId, for_b: &PaneContent) {
+        match self {
+            LayoutNode::Leaf(c) => {
+                if &c.pane().id == a {
+                    *c = for_a.clone();
+                } else if &c.pane().id == b {
+                    *c = for_b.clone();
+                }
+            }
+            LayoutNode::Split { first, second, .. } => {
+                first.replace_leaves(a, for_a, b, for_b);
+                second.replace_leaves(a, for_a, b, for_b);
             }
         }
     }
@@ -423,6 +491,33 @@ pub fn neighbour_by_geometry(
         }
     }
     best.map(|(id, _, _)| id.clone())
+}
+
+/// The pane `from` trades places with. `Previous` and `Next` step through reading order and
+/// wrap at the ends, as tmux's `swap-pane -U` and `-D` do. A direction answers with the pane
+/// focus would move to, measured on the whole layout: a zoom hides the other panes, and a
+/// swap clears it. `None` when `from` is alone, at that edge, or not in the tree.
+pub fn swap_partner(node: &LayoutNode, from: &PaneId, dir: SwapDir, area: Rect) -> Option<PaneId> {
+    let towards = match dir {
+        SwapDir::Previous | SwapDir::Next => {
+            let ids = node.pane_ids();
+            let at = ids.iter().position(|id| id == from)?;
+            if ids.len() < 2 {
+                return None;
+            }
+            let step = if dir == SwapDir::Next {
+                1
+            } else {
+                ids.len() - 1
+            };
+            return Some(ids[(at + step) % ids.len()].clone());
+        }
+        SwapDir::Left => Direction::Left,
+        SwapDir::Right => Direction::Right,
+        SwapDir::Up => Direction::Up,
+        SwapDir::Down => Direction::Down,
+    };
+    neighbour_by_geometry(&solve(node, area, None), from, towards)
 }
 
 fn overlap_1d(a0: u16, a1: u16, b0: u16, b1: u16) -> i32 {
@@ -666,6 +761,127 @@ mod tests {
             Some(PaneId("p_0004".into()))
         );
         assert_eq!(neighbour_by_geometry(&rects, &left, Direction::Left), None);
+    }
+
+    /// `p_0001 | (p_0002 / p_0003)` over `area()`, with the side-by-side split moved off 0.5
+    /// so a swap that rebuilt a split instead of trading two leaves would show in the widths:
+    /// p1 {0,1,24,9}, p2 {24,1,16,5}, p3 {24,6,16,4}.
+    fn wide_left_and_a_stacked_right() -> LayoutNode {
+        let mut tree = LayoutNode::leaf(pane("p_0001"));
+        tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002"));
+        tree.split_leaf(&PaneId("p_0002".into()), Direction::Down, pane("p_0003"));
+        assert!(tree.resize(&PaneId("p_0001".into()), Direction::Right, 4, area()));
+        tree
+    }
+
+    #[test]
+    fn swap_leaves_trades_the_two_boxes_and_keeps_every_split() {
+        let mut tree = wide_left_and_a_stacked_right();
+        assert!(tree.swap_leaves(&PaneId("p_0001".into()), &PaneId("p_0003".into())));
+        assert_eq!(
+            solve(&tree, area(), None),
+            vec![
+                (
+                    PaneId("p_0003".into()),
+                    Rect {
+                        x: 0,
+                        y: 1,
+                        width: 24,
+                        height: 9
+                    }
+                ),
+                (
+                    PaneId("p_0002".into()),
+                    Rect {
+                        x: 24,
+                        y: 1,
+                        width: 16,
+                        height: 5
+                    }
+                ),
+                (
+                    PaneId("p_0001".into()),
+                    Rect {
+                        x: 24,
+                        y: 6,
+                        width: 16,
+                        height: 4
+                    }
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn swap_leaves_changes_nothing_when_a_pane_is_not_in_the_tree() {
+        let mut tree = wide_left_and_a_stacked_right();
+        let before = tree.clone();
+        assert!(!tree.swap_leaves(&PaneId("p_0001".into()), &PaneId("p_0009".into())));
+        assert!(!tree.swap_leaves(&PaneId("p_0009".into()), &PaneId("p_0001".into())));
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn swap_partner_steps_through_reading_order_and_wraps_at_both_ends() {
+        let tree = wide_left_and_a_stacked_right();
+        let partner =
+            |from: &str, dir| swap_partner(&tree, &PaneId(from.into()), dir, area()).map(|p| p.0);
+        assert_eq!(partner("p_0001", SwapDir::Next).as_deref(), Some("p_0002"));
+        assert_eq!(partner("p_0002", SwapDir::Next).as_deref(), Some("p_0003"));
+        assert_eq!(partner("p_0003", SwapDir::Next).as_deref(), Some("p_0001"));
+        assert_eq!(
+            partner("p_0001", SwapDir::Previous).as_deref(),
+            Some("p_0003")
+        );
+        assert_eq!(
+            partner("p_0003", SwapDir::Previous).as_deref(),
+            Some("p_0002")
+        );
+        assert_eq!(partner("p_0009", SwapDir::Next), None, "not in the tree");
+
+        let alone = LayoutNode::leaf(pane("p_0001"));
+        for dir in [SwapDir::Next, SwapDir::Previous] {
+            assert_eq!(
+                swap_partner(&alone, &PaneId("p_0001".into()), dir, area()),
+                None,
+                "a pane on its own has nothing to trade places with"
+            );
+        }
+    }
+
+    #[test]
+    fn swap_partner_by_direction_is_the_pane_focus_would_move_to() {
+        let tree = wide_left_and_a_stacked_right();
+        let partner =
+            |from: &str, dir| swap_partner(&tree, &PaneId(from.into()), dir, area()).map(|p| p.0);
+        // p2 overlaps p1 by five rows and p3 by four, so right of p1 is p2.
+        assert_eq!(partner("p_0001", SwapDir::Right).as_deref(), Some("p_0002"));
+        assert_eq!(partner("p_0003", SwapDir::Left).as_deref(), Some("p_0001"));
+        assert_eq!(partner("p_0002", SwapDir::Down).as_deref(), Some("p_0003"));
+        assert_eq!(partner("p_0003", SwapDir::Up).as_deref(), Some("p_0002"));
+        assert_eq!(partner("p_0001", SwapDir::Left), None, "the left edge");
+        assert_eq!(partner("p_0002", SwapDir::Up), None, "the top edge");
+    }
+
+    #[test]
+    fn swap_dir_parses_the_six_names_an_action_writes() {
+        for (s, dir) in [
+            ("previous", SwapDir::Previous),
+            ("next", SwapDir::Next),
+            ("left", SwapDir::Left),
+            ("right", SwapDir::Right),
+            ("up", SwapDir::Up),
+            ("down", SwapDir::Down),
+        ] {
+            assert_eq!(s.parse::<SwapDir>(), Ok(dir));
+        }
+        assert_eq!(
+            "sideways".parse::<SwapDir>(),
+            Err(
+                "unknown direction \"sideways\"; expected previous, next, left, right, up or down"
+                    .to_string()
+            )
+        );
     }
 
     #[test]

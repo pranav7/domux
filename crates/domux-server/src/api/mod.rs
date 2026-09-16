@@ -269,6 +269,7 @@ pub fn dispatch(method: Method, ctx: &mut Ctx) -> Result<Value, ApiError> {
         PaneZoom(p) => pane::zoom(ctx, p),
         PaneCopyMode(p) => pane::copy_mode(ctx, p),
         PaneResize(p) => pane::resize(ctx, p),
+        PaneSwap(p) => pane::swap(ctx, p),
         PaneSendText(p) => pane::send_text(ctx, p),
         PaneSendKey(p) => pane::send_key(ctx, p),
         PaneRead(p) => pane::read(ctx, p),

@@ -209,6 +209,38 @@ async fn pane_split_read_and_send_text_act_on_the_pane_from_the_environment() {
     .await;
 }
 
+/// `DOMUX_PANE` names the pane that moves, which need not be the focused one: a script in the
+/// left pane swaps the left pane, and focus follows it there, as tmux's `swap-pane` does.
+#[tokio::test]
+async fn pane_swap_moves_the_pane_from_the_environment() {
+    let mut h = Harness::start(Config::default(), 60, 10).await;
+    let left = h.focused_pane(h.client.clone());
+    h.api("pane.split", serde_json::json!({"dir": "right"}))
+        .await
+        .unwrap();
+    let right = h.focused_pane(h.client.clone());
+    let out = domux(&h)
+        .env("DOMUX_PANE", left.as_str())
+        .args(["pane", "swap", "next"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    h.frame(h.client.clone()).await;
+    let tab = h.model().client_tab(&h.client).cloned().unwrap();
+    assert_eq!(tab.layout.pane_ids(), vec![right, left.clone()]);
+    assert_eq!(tab.focused, left);
+}
+
 #[tokio::test]
 async fn server_status_reports_a_running_server_and_a_stopped_one() {
     let h = Harness::start(Config::default(), 40, 10).await;
