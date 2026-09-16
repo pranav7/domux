@@ -1079,3 +1079,89 @@ async fn a_key_bound_to_workspace_clear_asks_in_an_overlay_and_y_clears() {
     assert!(slot.is_dir(), "and the slot stays");
     assert!(h.model().workspace(&w1).is_some(), "with its record");
 }
+
+// ------------------------------------------------- the key that names no workspace (MUX-50)
+
+/// `D` in a Projects box carries no argument, so it asks about the row under the cursor, the
+/// way `X` asks about the project of the row it is pressed on.
+///
+/// The cursor is put on `workspace-1` by seating the client in `workspace-2` and stepping up
+/// one row, rather than by counting rows from the top: the harness holds a project of its own
+/// above this one, so a count would be a count of rows this test does not own.
+#[tokio::test]
+async fn the_delete_key_asks_about_the_workspace_under_the_cursor() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, w1, w2) = h.git_project_with_two_slots().await;
+    let slot = slot_of(&root, 1);
+    api(
+        &h,
+        "workspace.focus",
+        json!({ "workspace": w2.to_string() }),
+    )
+    .await
+    .expect("the client sits in workspace-2");
+    api(&h, "sidebar.show", json!({}))
+        .await
+        .expect("the Navigator is on the screen for the keys to be in");
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Navigator"),
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // Into the Navigator, where the cursor starts on the workspace this client is in, then
+    // one row up onto workspace-1.
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    h.key(h.client.clone(), "k").await;
+    h.frame(h.client.clone()).await;
+    h.key(h.client.clone(), "D").await;
+
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Delete workspace-1?"),
+            Duration::from_secs(5),
+        )
+        .await;
+    assert!(
+        !f.contains("Delete workspace-2?"),
+        "the row under the cursor, not the workspace the client is in:\n{f}"
+    );
+    assert!(slot.is_dir(), "asking is not doing");
+
+    h.key(h.client.clone(), "y").await;
+    model_when(&h, "y is what deletes it", |m| m.workspace(&w1).is_none()).await;
+    assert!(!slot.exists(), "and the worktree goes with the record");
+    assert!(
+        h.model().workspace(&w2).is_some(),
+        "and the one the client is in is untouched"
+    );
+}
+
+/// A delete that names no workspace and has no cursor to read is refused.
+///
+/// The refusal is the point of the optional target, not a gap in it. `workspace.clear` falls
+/// back to the caller's own workspace, which is right for putting a branch back and wrong for
+/// removing a worktree: a shell that typed `workspace delete` with nothing after it would
+/// take away the slot it is standing in. This is `project.remove`'s rule, and
+/// `Ctx::workspace_of_cursor` is where both are held.
+#[tokio::test]
+async fn a_delete_that_names_no_workspace_from_a_shell_is_refused() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (root, w1, _w2) = h.git_project_with_two_slots().await;
+    let slot = slot_of(&root, 1);
+
+    let e = api(&h, "workspace.delete", json!({ "yes": true }))
+        .await
+        .expect_err("it refuses rather than guessing");
+    assert_eq!(e.code, ErrorCode::InvalidParams);
+    assert!(
+        e.message.contains("name a workspace to delete"),
+        "and says how to ask: {}",
+        e.message
+    );
+    assert!(slot.is_dir(), "and nothing is removed");
+    assert!(h.model().workspace(&w1).is_some());
+}
