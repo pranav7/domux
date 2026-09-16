@@ -97,6 +97,147 @@ async fn zoom_takes_the_whole_workpanel_and_shows_the_flag() {
     .await;
 }
 
+/// tmux's own keys: `prefix {` swaps the pane with the one before it, and `prefix }` with the
+/// one after. The screens go with their panes and focus goes with the pane that moved.
+#[tokio::test]
+async fn leader_braces_swap_the_focused_pane_as_in_tmux() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let left = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let right = h.focused_pane(h.client.clone());
+    h.feed_pane(left.clone(), b"LEFT").await;
+    h.feed_pane(right.clone(), b"RIGHT").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("LEFT") && f.contains("RIGHT"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 2),
+        "|│LEFT              ││RIGHT             │|",
+        "{f}"
+    );
+
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "{").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| row(f, 2).starts_with("|│RIGHT"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 2),
+        "|│RIGHT             ││LEFT              │|",
+        "{f}"
+    );
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        right,
+        "focus went with the pane"
+    );
+    assert!(
+        f.contains("r1 c0-0 fg=#cba6f7"),
+        "the left box, where the focused pane now sits, wears the accent:\n{f}"
+    );
+
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "}").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| row(f, 2).starts_with("|│LEFT"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 2),
+        "|│LEFT              ││RIGHT             │|",
+        "{f}"
+    );
+    assert_eq!(h.focused_pane(h.client.clone()), right);
+}
+
+/// Each program is told the size of the box it moved into, or it keeps drawing for the box it
+/// left.
+#[tokio::test]
+async fn pane_swap_gives_each_pane_the_size_of_the_box_it_moved_into() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let left = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let right = h.focused_pane(h.client.clone());
+    h.api("pane.resize", json!({"dir": "left", "cells": 10}))
+        .await
+        .unwrap();
+    h.frame(h.client.clone()).await;
+    let (narrow, wide) = (h.pane_size(&left), h.pane_size(&right));
+    assert!(narrow.cols < wide.cols, "{narrow:?} {wide:?}");
+
+    let r = h.api("pane.swap", json!({"dir": "left"})).await.unwrap();
+    assert_eq!(r["with"], left.as_str());
+    h.frame(h.client.clone()).await;
+    assert_eq!(h.pane_size(&left), wide);
+    assert_eq!(h.pane_size(&right), narrow);
+}
+
+/// Two panes of one size that trade places resize nothing, so no pane asks for a redraw of its
+/// own. The frame changes because `pane.swap` asked for it or it does not change at all, and the
+/// wait below fails rather than passing on a redraw something else supplied.
+#[tokio::test]
+async fn pane_swap_redraws_two_panes_of_one_size() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let left = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let right = h.focused_pane(h.client.clone());
+    h.feed_pane(left.clone(), b"LEFT").await;
+    h.feed_pane(right.clone(), b"RIGHT").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("LEFT") && f.contains("RIGHT"),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(h.pane_size(&left), h.pane_size(&right));
+
+    h.api("pane.swap", json!({"dir": "next"})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| row(f, 2).starts_with("|│RIGHT"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        row(&f, 2),
+        "|│RIGHT             ││LEFT              │|",
+        "{f}"
+    );
+}
+
+/// Nothing is left of the left pane, so nothing moves, and the answer says there was no pane
+/// to trade with rather than failing: the same key at the same edge does nothing for focus.
+#[tokio::test]
+async fn pane_swap_at_an_edge_answers_with_no_pane_and_moves_nothing() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let left = h.focused_pane(h.client.clone());
+    h.api("pane.split", json!({"dir": "right"})).await.unwrap();
+    let before = h.frame(h.client.clone()).await;
+    let r = h
+        .api("pane.swap", json!({"pane": left.as_str(), "dir": "left"}))
+        .await
+        .unwrap();
+    assert!(r["with"].is_null(), "{r}");
+    assert_eq!(h.frame(h.client.clone()).await, before);
+    assert_ne!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "a swap that did not happen focuses nothing"
+    );
+}
+
 #[tokio::test]
 async fn tab_create_select_rename_and_close_update_the_tab_row() {
     let mut h = Harness::start(Config::default(), 60, 10).await;

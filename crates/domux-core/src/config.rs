@@ -160,6 +160,10 @@ impl Default for KeysConfig {
                 ("\\", "pane.split right"),
                 ("-", "pane.split down"),
                 ("z", "pane.zoom"),
+                // tmux's own keys for `swap-pane -U` and `-D`. The four directions have no
+                // default key, because tmux has none to carry over (decision 0051).
+                ("{", "pane.swap previous"),
+                ("}", "pane.swap next"),
                 ("[", "pane.copy_mode"),
                 // Empties the pane, screen and scrollback. The key a reader reaches for when
                 // the shell in front of them will not run `clear` because its line editor is

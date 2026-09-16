@@ -3784,6 +3784,7 @@ fn param_client(method: &Method) -> Option<ClientId> {
         }
         PaneSplit(p) => p.client.clone(),
         PaneResize(p) => p.client.clone(),
+        PaneSwap(p) => p.client.clone(),
         PaneSendText(p) => p.client.clone(),
         PaneSendKey(p) => p.client.clone(),
         PaneRead(p) => p.client.clone(),

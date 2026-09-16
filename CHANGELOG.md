@@ -20,6 +20,10 @@ notes, and a missing or empty section stops the release. Versions follow
   `domux server restart`.
 - `scripts/dev/deploy.sh` pulls, builds and upgrades the server in one step, for running a build
   of your own checkout.
+- `leader {` and `leader }` swap the focused pane with the one before or after it, as tmux's
+  `prefix {` and `prefix }` do, and focus goes with the pane. `pane.swap` also takes `left`,
+  `right`, `up` and `down`, which have no default key; bind them in `domux.toml`. From a script,
+  `domux pane swap <dir>`.
 
 ### Changed
 

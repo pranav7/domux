@@ -4,7 +4,8 @@ use super::{ok, Ctx};
 use crate::copy_mode::CopyMode;
 use domux_core::api::{
     Ack, ApiError, PaneInfo, PaneReadParams, PaneReadResult, PaneResizeParams, PaneSendKeyParams,
-    PaneSendTextParams, PaneSplitParams, PaneTargetParams, TabTargetParams, ZoomResult,
+    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTargetParams, SwapResult,
+    TabTargetParams, ZoomResult,
 };
 use domux_core::ids::PaneId;
 use domux_core::keymap::KeyName;
@@ -161,6 +162,22 @@ pub fn resize(ctx: &mut Ctx, p: PaneResizeParams) -> Result<Value, ApiError> {
     ctx.model.resize_pane(&pane, p.dir, p.cells, area)?;
     ctx.view_dirty = true;
     ok(Ack { ok: true })
+}
+
+/// Trades the pane's place with its neighbour, as tmux's `swap-pane` does. `Model::swap_pane`
+/// has the rules; this measures the workpanel the way `pane.resize` and a focus move do, so a
+/// direction names the pane the reader sees there.
+pub fn swap(ctx: &mut Ctx, p: PaneSwapParams) -> Result<Value, ApiError> {
+    let pane = ctx.resolve_pane_param(p.pane.as_deref())?;
+    let loc = ctx
+        .model
+        .pane_location(&pane)
+        .ok_or_else(|| ApiError::not_found(format!("pane {pane} does not exist")))?;
+    let area = ctx.smallest_area(&loc.tab);
+    let (with, events) = ctx.model.swap_pane(&pane, p.dir, area)?;
+    ctx.view_dirty |= with.is_some();
+    ctx.events.extend(events);
+    ok(SwapResult { with })
 }
 
 /// Writes the text as typed. `\n` becomes `\r`, which is what Enter sends.

@@ -7,7 +7,7 @@ pub mod layout;
 
 pub use agent::{transition, Agent, AgentEvent, AgentKind, AgentReport, AgentSource, AgentState};
 pub use focus::{ConfirmKind, Focus, Overlay, PromptKind, RegionKind, RowTarget, TextInput};
-pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir};
+pub use layout::{Direction, LayoutNode, Pane, PaneContent, Rect, SplitDir, SwapDir};
 
 use crate::api::{ApiError, Event};
 use crate::ids::{AgentId, ClientId, IdGen, PaneId, ProjectId, TabId, WorkspaceId};
@@ -1114,6 +1114,47 @@ impl Model {
         })?;
         let t = self.tab_mut(&loc.tab).expect("tab exists");
         Ok(t.layout.resize(pane, dir, cells, area))
+    }
+
+    /// Trades `pane`'s place with its partner in `dir` (`layout::swap_partner`) and answers
+    /// with the partner, as tmux's `swap-pane` does: `pane` is focused afterwards, wherever
+    /// it now sits, and a zoom on the tab is cleared and reported. With no partner nothing
+    /// changes, the zoom included, and the answer is `None`.
+    pub fn swap_pane(
+        &mut self,
+        pane: &PaneId,
+        dir: SwapDir,
+        area: Rect,
+    ) -> Result<(Option<PaneId>, Vec<Event>), ApiError> {
+        let loc = self.pane_location(pane).ok_or_else(|| {
+            ApiError::not_found(format!(
+                "pane {pane} does not exist; run {BIN_NAME} api pane.list"
+            ))
+        })?;
+        let t = self.tab_mut(&loc.tab).expect("tab exists");
+        let Some(with) = layout::swap_partner(&t.layout, pane, dir, area) else {
+            return Ok((None, vec![]));
+        };
+        let swapped = t.layout.swap_leaves(pane, &with);
+        debug_assert!(
+            swapped,
+            "swap_leaves missed {pane} or {with}, which the layout holds"
+        );
+        let mut events = vec![Event::PaneSwapped {
+            tab: loc.tab.clone(),
+            pane: pane.clone(),
+            with: with.clone(),
+        }];
+        if t.zoomed.take().is_some() {
+            events.push(Event::PaneZoomed {
+                tab: loc.tab.clone(),
+                pane: None,
+            });
+        }
+        if &t.focused != pane {
+            events.extend(self.focus_pane(pane)?);
+        }
+        Ok((Some(with), events))
     }
 
     /// Records observed facts. Each `Some` overwrites; each `None` leaves the field alone.
@@ -2536,6 +2577,135 @@ mod tests {
             Some(t2),
             "or last_tab names a tab that no longer exists"
         );
+    }
+
+    /// Wide enough that three side-by-side panes each clear `MIN_BOX`.
+    const WORKPANEL: Rect = Rect {
+        x: 0,
+        y: 1,
+        width: 120,
+        height: 40,
+    };
+
+    #[test]
+    fn swap_pane_trades_places_and_the_focused_pane_keeps_focus() {
+        let (mut m, _, tab, a, b, c) = three_panes();
+        let (with, events) = m.swap_pane(&c, SwapDir::Previous, WORKPANEL).unwrap();
+        assert_eq!(with, Some(b.clone()));
+        let t = m.tab(&tab).unwrap();
+        assert_eq!(t.layout.pane_ids(), vec![a, c.clone(), b.clone()]);
+        assert_eq!(t.focused, c, "focus goes with the pane, as in tmux");
+        assert_eq!(
+            t.last_focused,
+            Some(b.clone()),
+            "focus did not move, so focus.last still answers the pane it answered before"
+        );
+        assert_eq!(
+            events,
+            vec![Event::PaneSwapped {
+                tab: tab.clone(),
+                pane: c,
+                with: b
+            }]
+        );
+    }
+
+    #[test]
+    fn swap_pane_focuses_the_pane_it_names_when_another_had_focus() {
+        let (mut m, ws, tab, a, b, c) = three_panes();
+        m.attach_client(client("c_0001", &ws, &tab, &c));
+        let (with, events) = m.swap_pane(&a, SwapDir::Next, WORKPANEL).unwrap();
+        assert_eq!(with, Some(b.clone()));
+        let t = m.tab(&tab).unwrap();
+        assert_eq!(t.layout.pane_ids(), vec![b.clone(), a.clone(), c.clone()]);
+        assert_eq!(
+            t.focused, a,
+            "tmux's swap-pane makes its target the active pane"
+        );
+        assert_eq!(t.last_focused, Some(c));
+        assert_eq!(
+            m.client(&ClientId("c_0001".into())).unwrap().focus,
+            Focus::Pane(a.clone())
+        );
+        assert_eq!(
+            events,
+            vec![
+                Event::PaneSwapped {
+                    tab: tab.clone(),
+                    pane: a.clone(),
+                    with: b
+                },
+                Event::PaneFocused {
+                    tab: tab.clone(),
+                    pane: a
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn swap_pane_reports_the_zoom_it_clears() {
+        let (mut m, _, tab, pane) = model_with_one_tab();
+        let (below, _) = m
+            .split_pane(&pane, Direction::Down, PathBuf::from("/tmp"))
+            .unwrap();
+        m.toggle_zoom(&tab).unwrap();
+        assert_eq!(m.tab(&tab).unwrap().zoomed, Some(below.clone()));
+
+        // Up is measured on the whole layout: with the zoom drawn, nothing is above `below`.
+        let (with, events) = m.swap_pane(&below, SwapDir::Up, WORKPANEL).unwrap();
+        assert_eq!(with, Some(pane.clone()));
+        assert_eq!(m.tab(&tab).unwrap().zoomed, None);
+        assert_eq!(
+            events,
+            vec![
+                Event::PaneSwapped {
+                    tab: tab.clone(),
+                    pane: below,
+                    with: pane
+                },
+                Event::PaneZoomed {
+                    tab: tab.clone(),
+                    pane: None
+                },
+            ],
+            "a client that tracks zoom from the stream has to be told the zoom went"
+        );
+    }
+
+    #[test]
+    fn swap_pane_with_nothing_to_trade_with_changes_nothing() {
+        let (mut m, _, tab, pane) = model_with_one_tab();
+        assert_eq!(
+            m.swap_pane(&pane, SwapDir::Next, WORKPANEL).unwrap(),
+            (None, vec![]),
+            "a pane on its own"
+        );
+
+        let (right, _) = m
+            .split_pane(&pane, Direction::Right, PathBuf::from("/tmp"))
+            .unwrap();
+        m.toggle_zoom(&tab).unwrap();
+        let before = m.tab(&tab).unwrap().clone();
+        assert_eq!(
+            m.swap_pane(&pane, SwapDir::Up, WORKPANEL).unwrap(),
+            (None, vec![]),
+            "nothing is above a pane in a side-by-side split"
+        );
+        assert_eq!(
+            m.tab(&tab).unwrap(),
+            &before,
+            "the zoom stays, and focus stays on {right}"
+        );
+    }
+
+    #[test]
+    fn swap_pane_names_a_pane_that_does_not_exist() {
+        let (mut m, _, _, _) = model_with_one_tab();
+        let err = m
+            .swap_pane(&PaneId("p_9999".into()), SwapDir::Next, WORKPANEL)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::NotFound);
     }
 
     #[test]

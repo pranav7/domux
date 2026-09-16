@@ -3,7 +3,7 @@
 use crate::facts::FactKey;
 use crate::ids::{AgentId, ClientId, PaneId, ProjectId, TabId, WorkspaceId};
 use crate::keymap::Action;
-use crate::model::{AgentKind, AgentSource, AgentState, Direction, Focus, RegionKind};
+use crate::model::{AgentKind, AgentSource, AgentState, Direction, Focus, RegionKind, SwapDir};
 use crate::names::BIN_NAME;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,14 @@ pub enum Event {
     PaneResized { pane: PaneId, cols: u16, rows: u16 },
     #[serde(rename = "pane.zoomed")]
     PaneZoomed { tab: TabId, pane: Option<PaneId> },
+    /// `pane` and `with` traded places in `tab`'s layout. Two panes of one size that swap
+    /// resize nothing, so this is the only event that says the layout changed.
+    #[serde(rename = "pane.swapped")]
+    PaneSwapped {
+        tab: TabId,
+        pane: PaneId,
+        with: PaneId,
+    },
     // The agent events of M3.
     #[serde(rename = "agent.created")]
     AgentCreated {
@@ -256,6 +264,7 @@ event_names! {
     Event::PaneFocused { .. } => "pane.focused",
     Event::PaneResized { .. } => "pane.resized",
     Event::PaneZoomed { .. } => "pane.zoomed",
+    Event::PaneSwapped { .. } => "pane.swapped",
     Event::AgentCreated { .. } => "agent.created",
     Event::AgentStateChanged { .. } => "agent.state_changed",
     Event::AgentRecapChanged { .. } => "agent.recap_changed",
@@ -524,6 +533,25 @@ impl Params for PaneResizeParams {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PaneSwapParams {
+    #[serde(default)]
+    pub pane: Option<String>,
+    pub dir: SwapDir,
+    #[serde(default)]
+    pub client: Option<ClientId>,
+}
+impl Params for PaneSwapParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(PaneSwapParams {
+            pane: None,
+            dir: arg(args, 0, "direction")?,
+            client: None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PaneSendTextParams {
@@ -689,6 +717,13 @@ pub struct ZoomResult {
     pub zoomed: Option<PaneId>,
 }
 
+/// The pane `pane.swap` traded places with, or `None` when there was none in that direction
+/// and nothing moved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SwapResult {
+    pub with: Option<PaneId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PaneReadResult {
     pub text: String,
@@ -777,6 +812,7 @@ methods! {
     PaneZoom = "pane.zoom": PaneTargetParams => ZoomResult,
     PaneCopyMode = "pane.copy_mode": PaneTargetParams => Ack,
     PaneResize = "pane.resize": PaneResizeParams => Ack,
+    PaneSwap = "pane.swap": PaneSwapParams => SwapResult,
     PaneSendText = "pane.send_text": PaneSendTextParams => Ack,
     PaneSendKey = "pane.send_key": PaneSendKeyParams => Ack,
     PaneRead = "pane.read": PaneReadParams => PaneReadResult,
@@ -1254,6 +1290,7 @@ mod tests {
         "pane.zoom",
         "pane.copy_mode",
         "pane.resize",
+        "pane.swap",
         "pane.send_text",
         "pane.send_key",
         "pane.read",
@@ -1445,6 +1482,7 @@ mod tests {
                 "pane.resize",
                 serde_json::json!({"dir": "left", "cells": 2}),
             ),
+            ("pane.swap", serde_json::json!({"dir": "next"})),
             ("pane.send_text", serde_json::json!({"text": "hello"})),
             ("pane.send_key", serde_json::json!({"key": "Enter"})),
             ("pane.read", serde_json::json!({})),
@@ -1826,6 +1864,11 @@ mod tests {
                 tab: TabId("t_1".into()),
                 pane: None,
             },
+            Event::PaneSwapped {
+                tab: TabId("t_1".into()),
+                pane: PaneId("p_1234".into()),
+                with: PaneId("p_5678".into()),
+            },
             Event::AgentCreated {
                 agent: AgentId("a_5e21".into()),
                 kind: AgentKind::Claude,
@@ -1877,6 +1920,22 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        let a = crate::keymap::Action::parse("pane.swap next").unwrap();
+        match Method::from_action(&a).unwrap() {
+            Method::PaneSwap(p) => {
+                assert_eq!(p.dir, crate::model::SwapDir::Next);
+                assert_eq!(p.pane, None, "a key swaps the focused pane");
+            }
+            other => panic!("{other:?}"),
+        }
+        for bad in ["pane.swap", "pane.swap sideways"] {
+            let a = crate::keymap::Action::parse(bad).unwrap();
+            assert_eq!(
+                Method::from_action(&a).unwrap_err().code,
+                ErrorCode::InvalidParams,
+                "{bad}"
+            );
+        }
         let a = crate::keymap::Action::parse("tab.select 3").unwrap();
         assert!(
             matches!(Method::from_action(&a).unwrap(), Method::TabSelect(TabSelectParams { ref tab, .. }) if tab == "3")
@@ -1920,6 +1979,16 @@ mod tests {
             serde_json::to_string(&zoom).unwrap(),
             r#"{"zoomed":"p_1234"}"#
         );
+        for (with, json) in [
+            (Some(PaneId("p_1234".into())), r#"{"with":"p_1234"}"#),
+            (None, r#"{"with":null}"#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&SwapResult { with }).unwrap(),
+                json,
+                "a swap with nothing to trade with still says so"
+            );
+        }
 
         let pane = PaneInfo {
             id: PaneId("p_1234".into()),

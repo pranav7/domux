@@ -21,6 +21,8 @@ pub enum PaneAction {
     Focus { pane: Option<String> },
     /// Zoom this pane, or restore the layout
     Zoom,
+    /// Swap this pane with its neighbour: previous, next, left, right, up or down
+    Swap { dir: String },
     /// Print the last lines of this pane, scrollback included
     Read {
         #[arg(long)]
@@ -50,6 +52,9 @@ pub async fn run(cmd: PaneCmd) -> anyhow::Result<()> {
         }
         PaneAction::Zoom => {
             call("pane.zoom", json!({ "pane": pane })).await?;
+        }
+        PaneAction::Swap { dir } => {
+            call("pane.swap", json!({ "pane": pane, "dir": dir })).await?;
         }
         PaneAction::Read { lines } => {
             let r: PaneReadResult =
