@@ -734,9 +734,13 @@ async fn clear_does_not_ask_from_a_shell_and_yes_reaches_the_job() {
         named_beats_the_variable.err
     );
 
-    run(domux(&h).args(["workspace", "clear", "workspace-1", "--yes"]))
-        .await
-        .quiet();
+    let cleared = run(domux(&h).args(["workspace", "clear", "workspace-1", "--yes"])).await;
+    assert_eq!(cleared.code, Some(0), "{}", cleared.err);
+    assert_eq!(cleared.err, "");
+    assert_eq!(
+        cleared.out,
+        "Cleared workspace-1, branch back at origin/main\n"
+    );
     assert!(
         !scratch.exists(),
         "--yes reaches the job, which cleans the tree"
