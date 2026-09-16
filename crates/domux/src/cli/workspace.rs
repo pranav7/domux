@@ -85,11 +85,14 @@ pub async fn run(cmd: WorkspaceCmd) -> anyhow::Result<()> {
         // anything to lose is a git question, so only the job can answer it, and it refuses
         // in words that name `--yes` themselves.
         WorkspaceAction::Clear { workspace, yes } => {
-            call(
+            let cleared = call(
                 "workspace.clear",
                 json!({ "workspace": workspace.or(here), "yes": yes }),
             )
             .await?;
+            let name = cleared["name"].as_str().unwrap_or_default();
+            let base = cleared["base"].as_str().unwrap_or_default();
+            print_line(&format!("Cleared {name}, branch back at {base}"))?;
         }
         // Named, never taken from the environment: a delete removes a worktree and a branch,
         // and a subcommand that could act on wherever the shell happened to be is one typo

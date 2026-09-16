@@ -829,7 +829,7 @@ methods! {
     ProjectRemove = "project.remove": ProjectRemoveParams => Ack,
     WorkspaceList = "workspace.list": WorkspaceListParams => Vec<WorkspaceInfo>,
     WorkspaceCreate = "workspace.create": WorkspaceCreateParams => WorkspaceCreated,
-    WorkspaceClear = "workspace.clear": WorkspaceClearParams => Ack,
+    WorkspaceClear = "workspace.clear": WorkspaceClearParams => WorkspaceCleared,
     WorkspaceDelete = "workspace.delete": WorkspaceDeleteParams => Ack,
     WorkspaceRename = "workspace.rename": WorkspaceRenameParams => Ack,
     WorkspaceClearName = "workspace.clear_name": WorkspaceTargetParams => Ack,
@@ -1099,6 +1099,16 @@ pub struct WorkspaceCreated {
     pub base: String,
     pub setup: Option<String>,
     pub tabs: usize,
+}
+
+/// What `workspace.clear` answers with. A bare `Ack` left a shell caller with no way to tell
+/// what happened without a separate `workspace.list`, so this names the workspace and the ref
+/// its branch was put back at.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceCleared {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub base: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

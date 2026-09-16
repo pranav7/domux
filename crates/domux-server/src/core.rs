@@ -2283,11 +2283,16 @@ impl Core {
         name: String,
         base: String,
     ) -> Result<serde_json::Value, ApiError> {
-        self.pending_events
-            .push(Event::WorkspaceCleared { workspace, base });
         self.set_pill(client.as_ref(), format!("Cleared {name}"), true);
         self.view_dirty = true;
-        api::ok(domux_core::api::Ack { ok: true })
+        let result = api::ok(domux_core::api::WorkspaceCleared {
+            id: workspace.clone(),
+            name,
+            base: base.clone(),
+        });
+        self.pending_events
+            .push(Event::WorkspaceCleared { workspace, base });
+        result
     }
 
     /// Drops the working word and the cached transcript keyed to a record that has just gone.
