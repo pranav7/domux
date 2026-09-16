@@ -422,11 +422,25 @@ fn label_style(theme: &Theme, a: &AgentEntry, form: RowForm) -> Style {
     }
 }
 
+/// Which of the two dot roles a waiting row draws in: red while you have not looked at the
+/// agent's pane, grey once you have (decision record 0052).
+///
+/// The dot itself is the state's, so it stands for as long as the agent is stopped. The colour
+/// is `unseen`'s, and `unseen` clears when the agent's pane is focused or when input reaches it,
+/// which is what "you have seen this" means everywhere else in domux.
+fn waiting_dot_role(a: &AgentEntry) -> Role {
+    if a.unseen {
+        Role::WaitingDot
+    } else {
+        Role::WaitingDotSeen
+    }
+}
+
 /// What the row says after the name, and the only place a state is written down.
 ///
 /// One slot, five answers. Working turns the star beside its word and compacting breathes an
 /// arrow beside its own, or either alone where the form has no room for a word. Waiting is the
-/// red dot, and it is the only dot in the box: the agent has asked you something and is stopped
+/// dot, and it is the only dot in the box: the agent has asked you something and is stopped
 /// until you answer. Idle says nothing, because nothing is happening and "idle" would be a word
 /// for the absence of one (principle 5). Unknown says so, because an agent domux can see and
 /// cannot hear is a fact worth reporting rather than a quiet row.
@@ -454,7 +468,7 @@ fn activity(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm) -> 
         ),
         AgentState::Waiting => vec![Span::styled(
             DOT,
-            Style::default().fg(color(theme, Role::WaitingDot)),
+            Style::default().fg(color(theme, waiting_dot_role(a))),
         )],
         AgentState::Unknown => vec![Span::styled(
             "unknown",
@@ -1043,32 +1057,35 @@ mod tests {
         }
     }
 
-    /// A dot is drawn only while an agent is waiting on you, and it is red (decision record
-    /// 0030). Every other state draws none: working and compacting say themselves with the
-    /// glyph and the word, idle has nothing to report, and unknown says so in a word.
+    /// A dot is drawn only while an agent is waiting on you (decision record 0030). Every other
+    /// state draws none: working and compacting say themselves with the glyph and the word, idle
+    /// has nothing to report, and unknown says so in a word.
     ///
-    /// `unseen` is in the table twice because it used to win over the state here, which made
-    /// the dot red on a record that had merely finished while you were looking elsewhere.
+    /// The colour is `unseen`'s: red until you have looked at the agent's pane, grey after
+    /// (decision record 0052). An agent that is still stopped keeps its dot either way, so the
+    /// row never reads as idle while the agent is blocked.
     #[test]
     fn a_dot_is_drawn_for_waiting_and_for_no_other_state() {
+        const RED: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
+        const GREY: Color = Color::Rgb(0x6c, 0x70, 0x86);
         let cases = [
-            (AgentState::Waiting, false, true),
-            (AgentState::Waiting, true, true),
-            (AgentState::Working, false, false),
-            (AgentState::Idle, true, false),
-            (AgentState::Idle, false, false),
-            (AgentState::Compacting, false, false),
-            (AgentState::Unknown, false, false),
+            (AgentState::Waiting, true, Some(RED)),
+            (AgentState::Waiting, false, Some(GREY)),
+            (AgentState::Working, false, None),
+            (AgentState::Idle, true, None),
+            (AgentState::Idle, false, None),
+            (AgentState::Compacting, false, None),
+            (AgentState::Unknown, false, None),
         ];
-        for (state, unseen, dotted) in cases {
+        for (state, unseen, want) in cases {
             let mut e = entry(state, Some("x"), AgentKind::Claude);
             e.unseen = unseen;
             let rows = overlay_rows(&view(vec![e]), 72);
             let spans = &rows[0].lines[0].spans;
             let dot = spans.iter().find(|s| s.content == DOT);
-            assert_eq!(dot.is_some(), dotted, "{state} unseen={unseen}");
+            assert_eq!(dot.is_some(), want.is_some(), "{state} unseen={unseen}");
             if let Some(dot) = dot {
-                assert_eq!(dot.style.fg, Some(Color::Rgb(0xf3, 0x8b, 0xa8)), "{state}");
+                assert_eq!(dot.style.fg, want, "{state} unseen={unseen}");
                 assert_ne!(
                     spans[0].content, DOT,
                     "the dot follows the name rather than leading the row"

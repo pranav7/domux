@@ -275,6 +275,7 @@ mod tests {
             (ConfigError, hex(0xf38ba8)),
             (Question, hex(0xf38ba8)),
             (WaitingDot, hex(0xf38ba8)),
+            (WaitingDotSeen, hex(0x6c7086)),
             (StayAwakeDotOn, hex(0xa6e3a1)),
             (StayAwakeDotOff, hex(0x585b70)),
             (Recap, hex(0xddcaf7)),

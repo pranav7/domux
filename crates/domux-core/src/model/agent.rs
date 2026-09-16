@@ -158,14 +158,19 @@ pub fn transition(state: AgentState, event: AgentEvent) -> Option<AgentState> {
     })
 }
 
-/// True when moving from `from` to `to` turns `unseen` on: an agent starts waiting, or goes
+/// True when moving from `from` to `to` turns `unseen` on: an agent arrives at waiting, or goes
 /// from working to idle (interface spec 6.5).
 ///
 /// It had a third trigger, an exit, until decision record 0030 took the exited record away. A
 /// record that ends is not there to be noticed.
+///
+/// Waiting to waiting counts, because every notification that stops for you is the agent
+/// calling you and a second one is a call you have not seen yet. It did not count while
+/// `unseen` only brightened a recap; it does now that it reddens the dot, so an agent you read
+/// and left goes red again when it asks again (decision record 0052).
 pub fn attention(from: AgentState, to: AgentState) -> bool {
     use AgentState::*;
-    (to == Waiting && from != Waiting) || (from == Working && to == Idle)
+    to == Waiting || (from == Working && to == Idle)
 }
 
 /// One AI coding session domux knows about (architecture spec 3.2 plus `name`, plus the
@@ -247,16 +252,18 @@ impl Agent {
             .unwrap_or_else(|| self.kind.as_str().to_string())
     }
 
-    /// Waiting: the agent has asked you something and is stopped until you answer, which is
-    /// the one thing a red dot means.
+    /// Waiting and not yet looked at: the agent has asked you something, is stopped until you
+    /// answer, and you have not opened its pane. That is what a red dot means.
     ///
-    /// `unseen` used to count here too, so a record that had merely finished while you were
+    /// `unseen` alone used to count here, so a record that had merely finished while you were
     /// looking elsewhere, or had exited, carried the same red dot as one holding a permission
-    /// prompt. Every row in a busy list ended up red and the mark stopped saying anything.
-    /// `unseen` still lifts a row in `sorted_agents` and still brightens its recap; what it no
-    /// longer does is claim the agent is blocked on you.
+    /// prompt. Every row in a busy list ended up red and the mark stopped saying anything. The
+    /// state alone counted next, and then a prompt you had read went on asking for you until
+    /// you answered it. So both count: the state draws the dot and `unseen` makes it red
+    /// (decision record 0052). A record you have looked at keeps its grey dot and its waiting
+    /// state; what it no longer does is call you back.
     pub fn needs_you(&self) -> bool {
-        self.state == AgentState::Waiting
+        self.state == AgentState::Waiting && self.unseen
     }
 }
 
@@ -396,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn attention_turns_on_at_start_waiting_and_working_to_idle_only() {
+    fn attention_turns_on_at_every_arrival_at_waiting_and_at_working_to_idle_only() {
         let mut on = Vec::new();
         for from in AgentState::ALL {
             for to in AgentState::ALL {
@@ -407,13 +414,14 @@ mod tests {
         }
         let mut expected = vec![(Working, Idle)];
         for from in AgentState::ALL {
-            if from != Waiting {
-                expected.push((from, Waiting));
-            }
+            expected.push((from, Waiting));
         }
         on.sort_by_key(|(a, b)| (a.as_str(), b.as_str()));
         expected.sort_by_key(|(a, b)| (a.as_str(), b.as_str()));
-        assert_eq!(on, expected);
+        assert_eq!(
+            on, expected,
+            "waiting to waiting is a second call you have not seen"
+        );
     }
 
     #[test]
