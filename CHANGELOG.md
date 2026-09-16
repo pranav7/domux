@@ -11,6 +11,18 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-16
+
+Upgrade in place, swap panes, clicks reach Claude
+
+```sh
+curl -fsSL https://domux.dev/install.sh | sh
+```
+
+After upgrading, run `domux server restart`: a server and a client from different versions
+refuse each other, and a server from before this release cannot hand over to
+`domux server upgrade`.
+
 ### Added
 
 - `domux server upgrade` replaces the running server with a new build and keeps every pane: the
@@ -33,6 +45,15 @@ notes, and a missing or empty section stops the release. Versions follow
   `band_compacting_bright`.
 - The install command is `curl -fsSL https://domux.dev/install.sh | sh`. The GitHub URL it
   replaces still works.
+- A waiting agent's dot is red until you open that agent's pane and grey once you have, so a
+  prompt you have read stops calling you while one that just arrived still does. The dot itself
+  stands until the agent is answered, so a row never falls silent while its agent waits, and an
+  agent that asks again goes red again. A theme sets the grey with the new `waiting_dot_seen`
+  role.
+- Versions start at 0.1.0. The releases published as 1.0.0 and 1.0.1 are 0.1.0 and 0.1.1,
+  rebuilt from the same code with only the version changed, and the installer and the release
+  check accept `v0` tags. domux V1, the Go version, keeps its history on the `v1` branch; its own
+  v0.x releases were deleted. Decision record 0048 says why.
 
 ### Fixed
 
@@ -48,6 +69,9 @@ notes, and a missing or empty section stops the release. Versions follow
   apply.
 - A Codex session renamed with `/rename` shows the new name on its agent row within a second, where
   the row used to say `codex` for the whole session.
+- An agent row in the Navigator's sidebar keeps its kind colour after the session is named, so an
+  idle row still says which kind is running. The sidebar's row has no second line to name the kind
+  on, where the switcher and the agents overlay both do.
 
 ## [0.1.1] - 2026-09-13
 
@@ -148,6 +172,7 @@ branch; `domux import v1` reads what it saved.
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/pranav7/domux/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/pranav7/domux/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pranav7/domux/releases/tag/v0.1.0
