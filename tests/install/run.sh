@@ -325,8 +325,8 @@ test_prints_no_path_line_when_the_install_dir_is_on_path() {
 
 test_points_at_the_neovim_setup_when_nvim_is_installed() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   mkdir -p "$S/nvimbin"
   printf '#!/bin/sh\n' > "$S/nvimbin/nvim"
   chmod +x "$S/nvimbin/nvim"
@@ -338,8 +338,8 @@ test_points_at_the_neovim_setup_when_nvim_is_installed() {
 
 test_says_nothing_about_neovim_when_nvim_is_not_installed() {
   sandbox
-  releases v1.0.0
-  release v1.0.0 darwin arm64
+  releases v0.1.0
+  release v0.1.0 darwin arm64
   if PATH="/usr/bin:/bin" command -v nvim >/dev/null 2>&1; then
     printf 'skip %s: nvim is installed under /usr/bin or /bin\n' "$CURRENT" >&2
     return 0

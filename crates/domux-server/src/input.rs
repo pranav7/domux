@@ -1,10 +1,11 @@
 //! Key routing in the architecture spec's order: overlay, leader chord, global with
 //! passthrough, then the focus target.
 //!
-//! Design principle 1: the pane owns its input. Only three things claim a key ahead of it -
-//! an open overlay, a chord, a global binding the foreground command does not pass through -
-//! and everything else reaches the pane's emulator unchanged. The leader pressed twice sends
-//! the leader itself, so a program that wants `C-s` can still have it.
+//! Design principle 1: the pane owns its input. Only three things stand ahead of it - an open
+//! overlay, a chord, and a global binding whose key is not passed through - and everything else
+//! reaches the pane's emulator unchanged. A passthrough key reaches the pane when the foreground
+//! command passes it through, or the pane holds a claim on it (decision 0054). The leader pressed
+//! twice sends the leader itself, so a program that wants `C-s` can still have it.
 
 use crate::client::Hint;
 use crate::copy_mode::{self, CopyOutcome};
