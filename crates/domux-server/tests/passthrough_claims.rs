@@ -3,6 +3,7 @@
 //! it is in front of its pane, and a program hands focus back with its own pane (decision
 //! 0054).
 
+use domux_core::api::ErrorCode;
 use domux_core::config::Config;
 use domux_core::ids::PaneId;
 use domux_core::model::{Focus, RegionKind};
@@ -96,4 +97,41 @@ async fn c_l_leaves_the_sidebar_while_fzf_is_in_front_of_the_pane() {
         "C-l is the box's key, so it comes back to the pane"
     );
     assert!(h.pane_input(&pane).is_empty(), "fzf got nothing");
+}
+
+/// A claim belongs to the process at the other end of the socket, and a key has none.
+#[tokio::test]
+async fn a_claim_from_a_key_is_refused() {
+    let mut cfg = Config::default();
+    cfg.keys
+        .bindings
+        .insert("y".into(), "pane.claim_passthrough p_0000".into());
+    let mut h = Harness::start(cfg, 120, 24).await;
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "y").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("only a program in the pane"),
+        Duration::from_secs(2),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_claim_and_a_release_answer_ok_and_a_missing_pane_is_not_found() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let pane = h.focused_pane(h.client.clone()).to_string();
+    for method in [
+        "pane.claim_passthrough",
+        "pane.release_passthrough",
+        "pane.release_passthrough",
+    ] {
+        let answer = h.api(method, json!({"pane": pane})).await.unwrap();
+        assert_eq!(answer, json!({"ok": true}), "{method}");
+    }
+    let err = h
+        .api("pane.claim_passthrough", json!({"pane": "p_ffff"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound, "{err:?}");
 }

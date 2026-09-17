@@ -490,6 +490,22 @@ impl Params for PaneTargetParams {
     }
 }
 
+/// The pane a program claims the passthrough keys in, or gives them back from (decision
+/// 0054). Required: a program claims for the pane it runs in, which `DOMUX_PANE` names. The
+/// process that claims is the caller, read from the socket, so no param names one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PaneClaimParams {
+    pub pane: String,
+}
+impl Params for PaneClaimParams {
+    fn from_args(args: &[String]) -> Result<Self, ApiError> {
+        Ok(PaneClaimParams {
+            pane: arg::<String>(args, 0, "pane")?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PaneSplitParams {
@@ -615,6 +631,18 @@ impl Params for PaneReadParams {
         })
     }
 }
+
+/// A move of the focus. With `pane` it is a program handing focus back from that pane, and
+/// the move happens only while that pane has the keys (decision 0054). A key sends no pane.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FocusStepParams {
+    #[serde(default)]
+    pub pane: Option<String>,
+    #[serde(default)]
+    pub client: Option<ClientId>,
+}
+impl Params for FocusStepParams {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -817,11 +845,13 @@ methods! {
     PaneSendKey = "pane.send_key": PaneSendKeyParams => Ack,
     PaneRead = "pane.read": PaneReadParams => PaneReadResult,
     PaneClear = "pane.clear": PaneTargetParams => Ack,
-    FocusLeft = "focus.left": ClientParams => FocusResult,
-    FocusRight = "focus.right": ClientParams => FocusResult,
-    FocusUp = "focus.up": ClientParams => FocusResult,
-    FocusDown = "focus.down": ClientParams => FocusResult,
-    FocusLast = "focus.last": ClientParams => FocusResult,
+    PaneClaimPassthrough = "pane.claim_passthrough": PaneClaimParams => Ack,
+    PaneReleasePassthrough = "pane.release_passthrough": PaneClaimParams => Ack,
+    FocusLeft = "focus.left": FocusStepParams => FocusResult,
+    FocusRight = "focus.right": FocusStepParams => FocusResult,
+    FocusUp = "focus.up": FocusStepParams => FocusResult,
+    FocusDown = "focus.down": FocusStepParams => FocusResult,
+    FocusLast = "focus.last": FocusStepParams => FocusResult,
     FocusRegion = "focus.region": FocusRegionParams => FocusResult,
     FocusPane = "focus.pane": ClientParams => FocusResult,
     ProjectList = "project.list": NoParams => Vec<ProjectInfo>,
@@ -1313,6 +1343,8 @@ mod tests {
         "pane.send_key",
         "pane.read",
         "pane.clear",
+        "pane.claim_passthrough",
+        "pane.release_passthrough",
         "focus.left",
         "focus.right",
         "focus.up",
@@ -1505,6 +1537,14 @@ mod tests {
             ("pane.send_key", serde_json::json!({"key": "Enter"})),
             ("pane.read", serde_json::json!({})),
             ("pane.clear", serde_json::json!({})),
+            (
+                "pane.claim_passthrough",
+                serde_json::json!({"pane": "p_1234"}),
+            ),
+            (
+                "pane.release_passthrough",
+                serde_json::json!({"pane": "p_1234"}),
+            ),
             ("focus.left", serde_json::json!({})),
             ("focus.right", serde_json::json!({})),
             ("focus.up", serde_json::json!({})),
@@ -1564,6 +1604,48 @@ mod tests {
             let err = Method::from_request(name, params).unwrap_err();
             assert_eq!(err.code, ErrorCode::InvalidParams, "{name}");
             assert!(err.message.contains("unknown field"), "{name}: {err}");
+        }
+    }
+
+    /// The requests the Neovim plugin sends, as its own suite records them. Each one has to
+    /// parse here, so the fake server in tests/nvim/run.lua cannot accept a request the real
+    /// one refuses (decision 0054).
+    #[test]
+    fn every_request_the_neovim_plugin_sends_parses() {
+        let lines = include_str!("../../../tests/nvim/requests.jsonl");
+        let mut parsed = 0;
+        for line in lines.lines().filter(|l| !l.trim().is_empty()) {
+            let request: Request =
+                serde_json::from_str(line).unwrap_or_else(|e| panic!("{line}: {e}"));
+            Method::from_request(&request.method, request.params)
+                .unwrap_or_else(|e| panic!("{line}: {}", e.message));
+            parsed += 1;
+        }
+        assert_eq!(parsed, 8, "one line per request the plugin sends");
+    }
+
+    #[test]
+    fn a_focus_move_takes_the_pane_a_program_hands_focus_back_from() {
+        match Method::from_request("focus.left", serde_json::json!({"pane": "p_1234"})).unwrap() {
+            Method::FocusLeft(p) => assert_eq!(p.pane.as_deref(), Some("p_1234")),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            Method::from_request("focus.last", Value::Null).unwrap(),
+            Method::FocusLast(FocusStepParams::default()),
+            "a key sends no pane"
+        );
+    }
+
+    #[test]
+    fn a_claim_names_its_pane_as_a_param_or_as_an_argument() {
+        let err =
+            Method::from_request("pane.claim_passthrough", serde_json::json!({})).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams, "the pane is required");
+        let action = crate::keymap::Action::parse("pane.release_passthrough p_1234").unwrap();
+        match Method::from_action(&action).unwrap() {
+            Method::PaneReleasePassthrough(p) => assert_eq!(p.pane, "p_1234"),
+            other => panic!("{other:?}"),
         }
     }
 

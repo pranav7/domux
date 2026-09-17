@@ -3,7 +3,7 @@
 
 use super::{ok, Ctx};
 use crate::render::sidebar;
-use domux_core::api::{ApiError, ClientParams, FocusRegionParams, FocusResult};
+use domux_core::api::{ApiError, ClientParams, FocusRegionParams, FocusResult, FocusStepParams};
 use domux_core::ids::ClientId;
 use domux_core::model::layout::{neighbour_by_geometry, solve};
 use domux_core::model::{Direction, Focus, Overlay, RegionKind, RowTarget};
@@ -20,7 +20,7 @@ fn result(ctx: &Ctx) -> Result<Value, ApiError> {
     ok(FocusResult { focus })
 }
 
-pub fn step(ctx: &mut Ctx, _p: ClientParams, dir: Direction) -> Result<Value, ApiError> {
+pub fn step(ctx: &mut Ctx, _p: FocusStepParams, dir: Direction) -> Result<Value, ApiError> {
     let client = ctx.view()?;
     // A region answers first. The keys are in a box, so the pane neighbours are not what the
     // reader is asking about, and stepping over them would move the focused pane of a tab
@@ -199,7 +199,7 @@ fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
     view.filtering = false;
 }
 
-pub fn last(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
+pub fn last(ctx: &mut Ctx, _p: FocusStepParams) -> Result<Value, ApiError> {
     let client = ctx.view()?;
     let tab = ctx
         .model

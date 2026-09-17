@@ -3777,8 +3777,8 @@ fn nothing_to_attach_to() -> String {
 fn param_client(method: &Method) -> Option<ClientId> {
     use Method::*;
     match method {
-        ClientDetach(p) | Help(p) | FocusLeft(p) | FocusRight(p) | FocusUp(p) | FocusDown(p)
-        | FocusLast(p) | FocusPane(p) => p.client.clone(),
+        ClientDetach(p) | Help(p) | FocusPane(p) => p.client.clone(),
+        FocusLeft(p) | FocusRight(p) | FocusUp(p) | FocusDown(p) | FocusLast(p) => p.client.clone(),
         FocusRegion(p) => p.client.clone(),
         TabCreate(p) => p.client.clone(),
         TabRename(p) => p.client.clone(),
@@ -3821,7 +3821,9 @@ fn param_client(method: &Method) -> Option<ClientId> {
         | AgentWait(_)
         | StayAwakeEnable(_)
         | StayAwakeDisable(_)
-        | StayAwakeToggle(_) => None,
+        | StayAwakeToggle(_)
+        | PaneClaimPassthrough(_)
+        | PaneReleasePassthrough(_) => None,
     }
 }
 

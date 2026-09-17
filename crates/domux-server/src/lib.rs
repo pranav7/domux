@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod api;
+pub mod claims;
 pub mod client;
 pub mod command;
 pub mod copy_mode;

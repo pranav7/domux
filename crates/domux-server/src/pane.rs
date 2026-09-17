@@ -784,6 +784,9 @@ pub struct PaneRuntime {
     /// still held. The drag that follows anchors its selection there, and a press with no drag
     /// after it leaves nothing behind (decision 0014).
     pub pressed_at: Option<(u16, u16)>,
+    /// The programs in this pane that claimed its passthrough keys (decision 0054). They end
+    /// with the pane and are never written to the state file; an upgrade carries them.
+    pub claims: crate::claims::Claims,
     responses: Vec<u8>,
 }
 
@@ -799,6 +802,7 @@ impl PaneRuntime {
             pty,
             copy: None,
             pressed_at: None,
+            claims: crate::claims::Claims::default(),
             responses: Vec::new(),
         }
     }
