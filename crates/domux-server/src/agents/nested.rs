@@ -5,6 +5,10 @@
 //! What tells the two apart is the process tree. A hook runs under the agent that ran it, and
 //! that agent runs under the pane's shell. A nested agent's hook has a second agent above the
 //! first one.
+//!
+//! The same walk answers a second question, for the worker whose tree no longer passes the
+//! agent that started it: is this hook one the pane's own agent ran? That one takes no names,
+//! only the process id a record holds (decision record 0055).
 
 use crate::agents::manifests::Registry;
 use crate::process::ProcessInspector;
@@ -12,12 +16,8 @@ use crate::process::ProcessInspector;
 /// Whether `caller` runs under two agents the manifests name: the one that ran the hook, and
 /// another one above it.
 ///
-/// The walk stops below `server`, because nothing above the server is in a pane: a server that
-/// was started from inside an agent's shell would otherwise mark every agent in it nested.
 /// A walk that ends early, at a process the OS no longer answers for, finds at most one agent
-/// and says no, so a report is only ever dropped on evidence of a second agent. It also ends at
-/// a process it has already read: the table is read one process at a time while processes come
-/// and go, and a loop would count one agent twice.
+/// and says no, so a report is only ever dropped on evidence of a second agent.
 pub fn is_nested(
     inspector: &dyn ProcessInspector,
     manifests: &Registry,
@@ -25,13 +25,7 @@ pub fn is_nested(
     server: u32,
 ) -> bool {
     let mut agents = 0;
-    let mut seen = Vec::new();
-    let mut next = Some(caller);
-    while let Some(pid) = next {
-        if seen.contains(&pid) {
-            break;
-        }
-        seen.push(pid);
+    for pid in ancestry(inspector, caller, server) {
         let named = inspector.name_of(pid);
         if named.is_some_and(|n| manifests.for_process(&n).is_some()) {
             agents += 1;
@@ -39,9 +33,35 @@ pub fn is_nested(
                 return true;
             }
         }
-        next = inspector.parent_of(pid).filter(|&parent| parent != server);
     }
     false
+}
+
+/// Whether the hook `caller` sent ran under `pid`, the process a record holds. This is the
+/// other way to ask the same question `is_nested` asks, and it takes no names: the pane's own
+/// agent answers for a hook of its own whatever the tree above it looks like, and a worker
+/// that agent started does not (decision record 0055).
+pub fn runs_under(inspector: &dyn ProcessInspector, caller: u32, server: u32, pid: u32) -> bool {
+    ancestry(inspector, caller, server).contains(&pid)
+}
+
+/// The processes from `caller` up, nearest first, `caller` among them and the server left out.
+///
+/// The walk stops below `server`, because nothing above the server is in a pane: a server that
+/// was started from inside an agent's shell would otherwise mark every agent in it nested. It
+/// also ends at a process it has already read: the table is read one process at a time while
+/// processes come and go, and a loop would count one agent twice.
+fn ancestry(inspector: &dyn ProcessInspector, caller: u32, server: u32) -> Vec<u32> {
+    let mut seen = Vec::new();
+    let mut next = Some(caller);
+    while let Some(pid) = next {
+        if seen.contains(&pid) {
+            break;
+        }
+        seen.push(pid);
+        next = inspector.parent_of(pid).filter(|&parent| parent != server);
+    }
+    seen
 }
 
 #[cfg(test)]
@@ -120,5 +140,39 @@ mod tests {
     fn a_table_that_loops_ends_the_walk() {
         let fake = chain(&["domux", "sh", "claude"], Some(1000));
         assert!(!nested(&fake));
+    }
+
+    /// The pane's agent is the third process up in this chain, and the hook it ran walks
+    /// through it. The same walk stops below the server, so a process on the other side of
+    /// the server is not one this hook ran under.
+    #[test]
+    fn a_hook_its_panes_agent_ran_runs_under_that_process() {
+        let fake = chain(&["domux", "sh", "claude", "zsh"], Some(SERVER));
+        assert!(runs_under(&fake, 1000, SERVER, 1002), "the claude above it");
+        assert!(runs_under(&fake, 1000, SERVER, 1000), "and its own process");
+        assert!(!runs_under(&fake, 1000, SERVER, SERVER));
+        fake.set_process(SERVER, "domux", Some(2000));
+        fake.set_process(2000, "claude", None);
+        assert!(!runs_under(&fake, 1000, SERVER, 2000), "above the server");
+    }
+
+    /// MUX-54. A worker the shell that ran it left behind, or a session on a daemon of its
+    /// own, has a tree that no longer passes the agent that started it: it counts one agent,
+    /// so `is_nested` lets it through, and it ran under no process of the pane's agent.
+    #[test]
+    fn a_worker_whose_tree_lost_its_agent_did_not_run_under_it() {
+        let fake = chain(&["domux", "sh", "codex"], None);
+        let panes_agent = 5000;
+        fake.set_process(panes_agent, "claude", None);
+        assert!(!nested(&fake), "one agent above the hook and no second one");
+        assert!(!runs_under(&fake, 1000, SERVER, panes_agent));
+    }
+
+    /// A walk that ends at a process the OS no longer answers for reaches nothing above it,
+    /// so it never claims a hook ran under the pane's agent.
+    #[test]
+    fn a_walk_that_ends_early_reaches_no_process_above_it() {
+        let fake = chain(&["domux", "sh"], None);
+        assert!(!runs_under(&fake, 1000, SERVER, 1002));
     }
 }

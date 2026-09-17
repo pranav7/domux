@@ -1098,11 +1098,21 @@ impl Harness {
     /// The server reads the caller's process id from the socket. Every call this harness makes
     /// comes from the test process, so the chain starts at the test process.
     pub fn hooks_run_under(&mut self, names: &[&str]) {
+        let chain: Vec<(&str, Option<u32>)> = names.iter().map(|name| (*name, None)).collect();
+        self.hooks_run_under_processes(&chain);
+    }
+
+    /// The same chain, with the process id of an entry that has one. The agent the observer
+    /// bound to a record is a process the test already named, and a hook that agent ran walks
+    /// up through it; an entry with no id is a process of this chain's own.
+    pub fn hooks_run_under_processes(&mut self, chain: &[(&str, Option<u32>)]) {
         let mut child = std::process::id();
         self.inspector.set_process(child, "domux", None);
-        for name in names {
-            let pid = self.next_pid;
-            self.next_pid += 1;
+        for (name, pid) in chain {
+            let pid = pid.unwrap_or_else(|| {
+                self.next_pid += 1;
+                self.next_pid - 1
+            });
             let child_name = self.inspector.name_of(child).unwrap_or_default();
             self.inspector.set_process(child, &child_name, Some(pid));
             self.inspector.set_process(pid, name, None);

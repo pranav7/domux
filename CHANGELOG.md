@@ -34,6 +34,10 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ### Fixed
 
+- An agent a session starts no longer takes its row, even when domux cannot see that the session
+  started it. A Codex worker a Claude session ran, and lost the process tree of, replaced the
+  Claude row in the Navigator for the rest of that session. A hook now takes a pane from a
+  running agent only when it came from that agent.
 - `C-l` leaves the sidebar when the pane beside it runs a program the keys pass through to, such
   as `fzf`.
 
