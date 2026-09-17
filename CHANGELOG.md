@@ -16,12 +16,26 @@ notes, and a missing or empty section stops the release. Versions follow
 - `c` in the Navigator makes a workspace in the project of the row under the cursor, and `D`
   deletes the workspace under it, asking first. Both are listed under `?`. The operations
   themselves are unchanged, including the `worktree.conf` setup a new slot gets.
+- A Neovim plugin, in this repository. With it, `C-h`, `C-j`, `C-k` and `C-l` move between
+  Neovim windows and cross into domux panes and the sidebar at the edge, and `C-\` goes back.
+  `docs/nvim.md` says how to add it. Any program in a pane can do the same with two new API calls,
+  `pane.claim_passthrough` and `pane.release_passthrough`, and the `pane` that `focus.left`,
+  `focus.right`, `focus.up`, `focus.down` and `focus.last` now take.
 
 ### Changed
 
 - `workspace.delete` takes its workspace as an optional argument, so a key can mean the row
   under the cursor. A call that names none and has no cursor to read is refused rather than
   deleting the workspace the caller is in; `domux workspace delete <ws>` still requires it.
+- `C-h`, `C-j`, `C-k`, `C-l` and `C-\` move between panes when Neovim or Vim is in front, unless
+  Neovim runs the domux plugin. Before, domux gave the keys to `nvim` and `vim` by name, and
+  nothing gave them back. To keep that, set `commands = ["nvim", "vim", "fzf"]` under
+  `[keys.passthrough]`.
+
+### Fixed
+
+- `C-l` leaves the sidebar when the pane beside it runs a program the keys pass through to, such
+  as `fzf`.
 
 ## [0.1.2] - 2026-09-16
 
