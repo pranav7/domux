@@ -323,6 +323,32 @@ test_prints_no_path_line_when_the_install_dir_is_on_path() {
   assert_not_contains "$(err)" "not on your PATH" "no hint"
 }
 
+test_points_at_the_neovim_setup_when_nvim_is_installed() {
+  sandbox
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  mkdir -p "$S/nvimbin"
+  printf '#!/bin/sh\n' > "$S/nvimbin/nvim"
+  chmod +x "$S/nvimbin/nvim"
+  run_install PATH="$S/nvimbin:$FAKEBIN:$PATH"
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_contains "$(err)" "docs/nvim.md" "the Neovim setup"
+  assert_not_contains "$(out)" "nvim.md" "the note is not on stdout"
+}
+
+test_says_nothing_about_neovim_when_nvim_is_not_installed() {
+  sandbox
+  releases v1.0.0
+  release v1.0.0 darwin arm64
+  if PATH="/usr/bin:/bin" command -v nvim >/dev/null 2>&1; then
+    printf 'skip %s: nvim is installed under /usr/bin or /bin\n' "$CURRENT" >&2
+    return 0
+  fi
+  run_install PATH="$FAKEBIN:/usr/bin:/bin"
+  assert_exit 0 "$code" "exit: $(err)"
+  assert_not_contains "$(err)" "Neovim" "no Neovim note"
+}
+
 test_never_edits_shell_startup_files() {
   sandbox
   printf '# untouched\n' > "$S/home/.zshrc"
@@ -1477,6 +1503,8 @@ run_tests \
   test_installs_into_domux_install_dir \
   test_prints_the_path_line_when_the_install_dir_is_not_on_path \
   test_prints_no_path_line_when_the_install_dir_is_on_path \
+  test_points_at_the_neovim_setup_when_nvim_is_installed \
+  test_says_nothing_about_neovim_when_nvim_is_not_installed \
   test_never_edits_shell_startup_files \
   test_replaces_an_existing_binary \
   test_fails_on_an_unsupported_os \
