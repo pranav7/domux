@@ -6,8 +6,8 @@ use domux_core::api::{
     AgentInfo, AgentListParams, AgentListResult, AgentReportParams, AgentReportResult,
     AgentSelfParams, AgentTargetParams, ApiError, FocusResult,
 };
-use domux_core::ids::AgentId;
-use domux_core::model::agent::{Agent, AgentEvent};
+use domux_core::ids::{AgentId, PaneId};
+use domux_core::model::agent::{Agent, AgentEvent, AgentKind, AgentReport};
 use domux_core::model::{AgentReportOutcome, Model};
 use domux_core::names::BIN_NAME;
 use serde_json::Value;
@@ -39,8 +39,19 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
     // the two sessions would trade the row on every hook (decision record 0045).
     if let Some(caller) = ctx.caller {
         let inspector = ctx.deps.inspector.as_ref();
-        if nested::is_nested(inspector, &ctx.agents.manifests, caller, std::process::id()) {
+        let server = std::process::id();
+        if nested::is_nested(inspector, &ctx.agents.manifests, caller, server) {
             return ok(untracked());
+        }
+        // The walk above needs the worker's tree to still pass the agent that started it, and
+        // a worker that agent left behind has no such tree: one agent above the hook and no
+        // second one. So the pane's own record is asked as well. A record whose process is
+        // running is the pane's agent, and a hook that did not run under that process is
+        // another session's, whatever the tree says (decision record 0055).
+        if let Some(pid) = displaced_agent(ctx.model, &pane, p.kind, &parsed) {
+            if inspector.is_alive(pid) && !nested::runs_under(inspector, caller, server, pid) {
+                return ok(untracked());
+            }
         }
     }
     let now = ctx.deps.clock.now().to_rfc3339();
@@ -96,6 +107,33 @@ pub fn report(ctx: &mut Ctx, p: AgentReportParams) -> Result<Value, ApiError> {
         state: Some(to),
         context,
     })
+}
+
+/// The process of the record this report would take the pane from, if it would take one: a
+/// record on the pane that this payload's session does not hold and that this kind would
+/// replace rather than adopt (`Model::report_agent`). `None` when the report displaces no
+/// record, and when the record has no process id to walk to: a record nothing has bound a
+/// process to is no evidence of an agent that is still running.
+///
+/// Two records are not displaced by a report. One its own session wrote, which is the pane's
+/// agent reporting again, and one the observer made for this kind and no hook has named yet,
+/// which is the pane's agent reporting for the first time. A session id the agent changed
+/// under a process that did not change, which is what Claude's `/clear` does, is neither: it
+/// takes the pane, and it runs under the record's own process, so the walk lets it through.
+fn displaced_agent(
+    model: &Model,
+    pane: &PaneId,
+    kind: AgentKind,
+    report: &AgentReport,
+) -> Option<u32> {
+    let a = model.agent_on_pane(pane)?;
+    if a.session_id.is_some() && a.session_id.as_deref() == report.session_id.as_deref() {
+        return None;
+    }
+    if a.kind == kind && a.session_id.is_none() {
+        return None;
+    }
+    a.pid
 }
 
 /// The answer to a hook that changes no record: no agent, no state and no context block.

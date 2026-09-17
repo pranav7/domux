@@ -13,6 +13,9 @@ use std::time::Duration;
 /// Long enough for the core's once-a-second tick to have run, which is what reads a transcript.
 const TICK: Duration = Duration::from_secs(5);
 
+/// One tick and a little: a sleep of this length has seen the observer walk the panes once.
+const A_TICK: Duration = Duration::from_millis(1200);
+
 fn payload(event: &str, extra: serde_json::Value) -> String {
     let mut v = json!({
         "session_id": "3f6a1c22-8d4e-4b90-9c7f-2a1b5e6d0f31",
@@ -262,6 +265,128 @@ async fn an_agent_another_agent_started_leaves_the_panes_record_as_it_was() {
         .await;
     assert_eq!(out.agent, Some(before.id.clone()));
     assert_eq!(only_agent(&h).state, AgentState::Idle);
+}
+
+/// MUX-54. The walk needs the worker's tree to still pass the agent that started it, and a
+/// worker that agent left behind has none: a process whose shell exited first, or a session on
+/// a daemon of its own, counts one agent above the hook and no second one. The pane's own agent
+/// is running and this hook did not run under it, so the row stays where it is, and the agent
+/// that has it goes on reporting to it (decision record 0055).
+#[tokio::test]
+async fn a_hook_no_running_agent_of_the_pane_ran_leaves_the_record_as_it_was() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let claude = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(
+        only_agent(&h).pid,
+        Some(claude),
+        "the observer bound the agent in front of the pane to its record"
+    );
+    h.hooks_run_under_processes(&[("claude", Some(claude))]);
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        &payload("SessionStart", json!({})),
+    )
+    .await;
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        &payload("UserPromptSubmit", json!({})),
+    )
+    .await;
+    let before = only_agent(&h);
+    assert_eq!(before.state, AgentState::Working);
+
+    // The codex that claude started, reporting from the pane it inherited.
+    h.hooks_run_under(&["codex"]);
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PermissionRequest",
+        "Stop",
+        "SessionEnd",
+    ] {
+        let worker = json!({"hook_event_name": event, "session_id": "codex-1"}).to_string();
+        let out = h.report_raw(pane.clone(), AgentKind::Codex, &worker).await;
+        assert_eq!(out.agent, None, "{event} landed on no record");
+        assert_eq!(out.context, None, "{event} answered with no context block");
+        assert_eq!(only_agent(&h), before, "{event} left the record as it was");
+    }
+
+    h.hooks_run_under_processes(&[("claude", Some(claude))]);
+    let out = h
+        .report(pane.clone(), AgentKind::Claude, &payload("Stop", json!({})))
+        .await;
+    assert_eq!(out.agent, Some(before.id.clone()));
+    assert_eq!(only_agent(&h).state, AgentState::Idle);
+}
+
+/// The other half of that rule. A pane whose agent really has gone holds a record whose
+/// process is not there any more, so the session that starts in its place takes the pane on
+/// its first hook, which is what a record with a live process is protected from.
+#[tokio::test]
+async fn a_session_that_starts_where_the_panes_agent_died_takes_the_pane() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let claude = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(
+        only_agent(&h).pid,
+        Some(claude),
+        "the observer bound the agent in front of the pane to its record"
+    );
+    h.hooks_run_under_processes(&[("claude", Some(claude))]);
+    h.report(
+        pane.clone(),
+        AgentKind::Claude,
+        &payload("SessionStart", json!({})),
+    )
+    .await;
+    h.kill_process(claude).await;
+    h.hooks_run_under(&["codex"]);
+    let out = h
+        .report_raw(
+            pane.clone(),
+            AgentKind::Codex,
+            r#"{"hook_event_name":"SessionStart","session_id":"codex-1"}"#,
+        )
+        .await;
+    assert!(out.agent.is_some(), "the pane was free to take");
+    let a = only_agent(&h);
+    assert_eq!(a.kind, AgentKind::Codex);
+    assert_eq!(a.session_id.as_deref(), Some("codex-1"));
+}
+
+/// Claude's `/clear` gives the session a new id without changing the process it runs in. The
+/// new session takes the pane, because its hook ran under the record's own process: the check
+/// asks which process sent the hook, not which session id it carries.
+#[tokio::test]
+async fn a_new_session_id_under_the_same_process_takes_the_pane() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let claude = h.set_foreground_for(&pane, Some("claude")).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(
+        only_agent(&h).pid,
+        Some(claude),
+        "the observer bound the agent in front of the pane to its record"
+    );
+    h.hooks_run_under_processes(&[("claude", Some(claude))]);
+    let start = |session: &str| {
+        json!({"hook_event_name": "SessionStart", "session_id": session}).to_string()
+    };
+    h.report(pane.clone(), AgentKind::Claude, &start("s1"))
+        .await;
+    let first = only_agent(&h);
+    h.report(pane.clone(), AgentKind::Claude, &start("s2"))
+        .await;
+    let after = only_agent(&h);
+    assert_ne!(after.id, first.id, "a new session is a new record");
+    assert_eq!(after.session_id.as_deref(), Some("s2"));
+    assert_eq!(after.pane.as_ref(), Some(&pane));
 }
 
 #[tokio::test]
