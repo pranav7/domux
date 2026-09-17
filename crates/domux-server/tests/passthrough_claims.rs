@@ -312,3 +312,30 @@ async fn a_claim_and_a_release_answer_ok_and_a_missing_pane_is_not_found() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::NotFound, "{err:?}");
 }
+
+#[tokio::test]
+async fn claims_cross_an_upgrade() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let (left, right) = two_panes(&mut h).await;
+    claimant_in_front(&mut h, &right, "nvim").await;
+    claim(&mut h, &right).await;
+
+    h.upgrade().await;
+
+    h.frame(h.client.clone()).await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        right,
+        "the claim came across, so C-h went to nvim"
+    );
+    release(&mut h, &right).await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "and it is the same claim: released, C-h moves"
+    );
+}

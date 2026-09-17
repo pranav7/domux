@@ -51,6 +51,10 @@ pub struct HandedPane {
     /// The screen file's name in the handover directory, absent when the screen could not be
     /// encoded.
     pub screen: Option<String>,
+    /// The processes that claimed this pane's passthrough keys (decision 0054). They are still
+    /// in the pane after the exec. A handover written before claims has none.
+    #[serde(default)]
+    pub claims: Vec<u32>,
 }
 
 impl HandedPane {
@@ -170,6 +174,7 @@ mod tests {
                     pid: Some(4242),
                     size: Size { cols: 80, rows: 24 },
                     screen: Some(screen_file_name(&PaneId("p_0001".into()))),
+                    claims: vec![4250],
                 },
                 HandedPane {
                     pane: PaneId("p_0002".into()),
@@ -177,6 +182,7 @@ mod tests {
                     pid: Some(4243),
                     size: Size { cols: 80, rows: 24 },
                     screen: None,
+                    claims: Vec::new(),
                 },
             ],
             agents: serde_json::json!([]),
@@ -237,6 +243,21 @@ mod tests {
         .unwrap();
         write(&dir, &a_handoff(), &[]).unwrap();
         assert!(!dir.join("p_0001.screen").exists());
+    }
+
+    /// A handover from a build before claims has no `claims` field, and a build before claims
+    /// ignores the field, so the format did not change (decision 0054).
+    #[test]
+    fn a_handoff_written_before_claims_reads_as_no_claims() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(HANDOFF_FILE_NAME);
+        let mut value = serde_json::to_value(a_handoff()).unwrap();
+        for pane in value["panes"].as_array_mut().unwrap() {
+            pane.as_object_mut().unwrap().remove("claims");
+        }
+        std::fs::write(&path, value.to_string()).unwrap();
+        let back = read(&path).unwrap();
+        assert!(back.panes.iter().all(|p| p.claims.is_empty()), "{back:?}");
     }
 
     #[test]

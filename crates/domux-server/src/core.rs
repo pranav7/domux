@@ -1078,8 +1078,11 @@ impl Core {
             let _ = pty.resize(size);
         }
         let pid = pty.pid();
-        self.panes
-            .insert(pane.clone(), PaneRuntime::new(pane.clone(), emulator, pty));
+        let mut runtime = PaneRuntime::new(pane.clone(), emulator, pty);
+        // The same processes are in the pane after the exec, so their claims still hold
+        // (decision 0054).
+        runtime.claims = crate::claims::Claims::from_pids(&handed.claims);
+        self.panes.insert(pane.clone(), runtime);
         // The program started long ago, so an exit now is not an immediate one.
         self.pane_started_at.insert(
             pane.clone(),
@@ -1261,6 +1264,7 @@ impl Core {
                     pid: handed.pid,
                     size,
                     screen,
+                    claims: rt.claims.pids(),
                 });
             }
         }
