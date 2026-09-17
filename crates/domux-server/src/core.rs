@@ -1906,6 +1906,22 @@ impl Core {
         }
     }
 
+    /// Whether a program in `pane` holds its passthrough keys now (decision 0054). Asked at
+    /// the key press rather than read from the once-a-second observation, so the key after a
+    /// `C-z` is already domux's. A pane nobody claimed costs one map lookup.
+    pub fn claim_holds(&self, pane: &PaneId) -> bool {
+        let Some(runtime) = self.panes.get(pane) else {
+            return false;
+        };
+        if runtime.claims.is_empty() {
+            return false;
+        }
+        let inspector = self.deps.inspector.as_ref();
+        inspector
+            .foreground_group(runtime.pty.raw_fd())
+            .is_some_and(|front| runtime.claims.hold(front, |pid| inspector.group_of(pid)))
+    }
+
     /// One API request. The answer goes to `reply` here, unless the handler deferred it:
     /// a handler that has to shell out queues a job and the job carries the answer, so the
     /// caller waits and the core does not (decision record 0006).

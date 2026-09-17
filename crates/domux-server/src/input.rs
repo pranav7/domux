@@ -86,7 +86,7 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
             let foreground = core.model.pane(pane).and_then(|p| p.command.as_deref());
             core.config
                 .keymap
-                .passes_through(&key, foreground, || false)
+                .passes_through(&key, foreground, || core.claim_holds(pane))
         });
         if !passes {
             core.run_action(client, &action);

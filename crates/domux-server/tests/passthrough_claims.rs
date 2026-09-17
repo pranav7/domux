@@ -46,6 +46,111 @@ async fn keys_in_the_sidebar(h: &mut Harness) {
     assert_eq!(focus(h), Focus::Region(RegionKind::SidebarProjects));
 }
 
+/// Puts `name` in front of `pane`, in a process group that holds this test process. Every
+/// `h.api` call comes from the test process, so a claim the test makes then holds in that
+/// pane.
+async fn claimant_in_front(h: &mut Harness, pane: &PaneId, name: &str) {
+    let group = h.set_foreground_for(pane, Some(name)).await;
+    h.inspector.set_group(std::process::id(), group);
+}
+
+async fn claim(h: &mut Harness, pane: &PaneId) {
+    h.api("pane.claim_passthrough", json!({"pane": pane.to_string()}))
+        .await
+        .unwrap();
+}
+
+async fn release(h: &mut Harness, pane: &PaneId) {
+    h.api(
+        "pane.release_passthrough",
+        json!({"pane": pane.to_string()}),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn claimed_keys_reach_the_pane_while_the_claimant_is_in_front() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let (_, right) = two_panes(&mut h).await;
+    claimant_in_front(&mut h, &right, "nvim").await;
+    claim(&mut h, &right).await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(h.focused_pane(h.client.clone()), right, "C-h went to nvim");
+    assert_eq!(h.pane_input(&right), b"\x08".to_vec());
+    h.key(h.client.clone(), "C-\\").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.pane_input(&right),
+        b"\x08\x1c".to_vec(),
+        "C-\\ is a passthrough key too"
+    );
+    h.key(h.client.clone(), "S-Left").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.pane_input(&right),
+        b"\x08\x1c".to_vec(),
+        "S-Left is not a passthrough key, so domux took it"
+    );
+}
+
+#[tokio::test]
+async fn a_claim_from_outside_the_foreground_group_changes_nothing() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let (left, right) = two_panes(&mut h).await;
+    // nvim is in front, in a group the test process is not in, so the claim is another
+    // program's. That is what a claim from outside the pane always is.
+    h.set_foreground_for(&right, Some("nvim")).await;
+    claim(&mut h, &right).await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(h.focused_pane(h.client.clone()), left);
+    assert!(h.pane_input(&right).is_empty());
+}
+
+#[tokio::test]
+async fn a_claim_stops_holding_after_release() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let (left, right) = two_panes(&mut h).await;
+    claimant_in_front(&mut h, &right, "nvim").await;
+    claim(&mut h, &right).await;
+    release(&mut h, &right).await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(h.focused_pane(h.client.clone()), left);
+}
+
+#[tokio::test]
+async fn a_claim_stops_holding_when_the_claimant_leaves_the_foreground() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let (left, right) = two_panes(&mut h).await;
+    claimant_in_front(&mut h, &right, "nvim").await;
+    claim(&mut h, &right).await;
+    // C-z in nvim: the shell is in front again, in a group of its own.
+    h.set_foreground_for(&right, Some("zsh")).await;
+    h.key(h.client.clone(), "C-h").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "the key after C-z is domux's, with no tick in between"
+    );
+}
+
+#[tokio::test]
+async fn c_l_leaves_the_sidebar_while_the_pane_beside_it_holds_a_claim() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    claimant_in_front(&mut h, &pane, "nvim").await;
+    claim(&mut h, &pane).await;
+    keys_in_the_sidebar(&mut h).await;
+    h.key(h.client.clone(), "C-l").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(focus(&h), Focus::Pane(pane.clone()));
+    assert!(h.pane_input(&pane).is_empty(), "nvim got nothing");
+}
+
 #[tokio::test]
 async fn focus_keys_move_focus_from_nvim_under_the_default_config() {
     let mut h = Harness::start(Config::default(), 60, 12).await;
