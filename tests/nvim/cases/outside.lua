@@ -1,0 +1,10 @@
+-- Outside domux the plugin moves between windows only, sends nothing and says nothing.
+local domux = require("domux")
+assert(not domux.in_pane(), "no domux variables, so not in a pane")
+vim.cmd("vsplit")
+T.move("right")
+domux.navigate("right")
+assert(domux.state.claim == nil and domux.state.last == nil, vim.inspect(domux.state))
+assert(#T.messages() == 0, vim.inspect(T.messages()))
+local report = T.health()
+assert(report:find("Not in a domux pane", 1, true), report)

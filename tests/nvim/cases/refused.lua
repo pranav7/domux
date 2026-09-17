@@ -1,0 +1,11 @@
+-- A refused claim and a refused move each warn once, however often the move is tried.
+T.claimed()
+T.hand_back("left")
+T.hand_back("left")
+T.hand_back("left")
+local messages = T.messages()
+assert(#messages == 2, vim.inspect(messages))
+assert(messages[1]:find("method pane.claim_passthrough does not exist", 1, true), messages[1])
+assert(messages[2]:find("pane p_test does not exist", 1, true), messages[2])
+local report = T.health()
+assert(report:find("refused the claim", 1, true), report)
