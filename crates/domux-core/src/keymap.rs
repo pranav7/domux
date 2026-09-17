@@ -242,18 +242,28 @@ impl Keymap {
             .map(|b| &b.action)
     }
 
-    /// The action for a key pressed without the leader, unless `foreground` is a passthrough
-    /// command and the key is a passthrough key.
-    pub fn global_for(&self, ev: &KeyEvent, foreground: Option<&str>) -> Option<&Action> {
-        let binding = self.global.iter().find(|b| b.key.matches(ev))?;
-        let passes = foreground
-            .is_some_and(|cmd| self.passthrough_commands.iter().any(|c| c == cmd))
-            && self.passthrough_keys.iter().any(|k| k.matches(ev));
-        if passes {
-            None
-        } else {
-            Some(&binding.action)
-        }
+    /// The action for a key pressed without the leader. Whether the key goes to the pane's
+    /// program instead is `passes_through`.
+    pub fn global_for(&self, ev: &KeyEvent) -> Option<&Action> {
+        self.global
+            .iter()
+            .find(|b| b.key.matches(ev))
+            .map(|b| &b.action)
+    }
+
+    /// Whether a key reaches the focused pane's program instead of domux: it is a passthrough
+    /// key, and `foreground` is a passthrough command or `claimed` answers that a program in
+    /// the pane claimed the keys (decision 0054). `claimed` is asked last, because answering
+    /// it reads the process table.
+    pub fn passes_through(
+        &self,
+        ev: &KeyEvent,
+        foreground: Option<&str>,
+        claimed: impl FnOnce() -> bool,
+    ) -> bool {
+        self.passthrough_keys.iter().any(|k| k.matches(ev))
+            && (foreground.is_some_and(|cmd| self.passthrough_commands.iter().any(|c| c == cmd))
+                || claimed())
     }
 
     /// The configured key for an action, as hint text: `C-s ,` for a leader binding, `C-h`
@@ -407,39 +417,43 @@ mod tests {
                 .to_string(),
             "pane.split right"
         );
-        assert_eq!(
-            km.global_for(&press(Key::Char('h'), Mods::CTRL), Some("zsh"))
-                .unwrap()
-                .to_string(),
-            "focus.left"
+        let ctrl_h = press(Key::Char('h'), Mods::CTRL);
+        assert_eq!(km.global_for(&ctrl_h).unwrap().to_string(), "focus.left");
+        assert!(
+            km.passes_through(&ctrl_h, Some("fzf"), || false),
+            "a passthrough command gets a passthrough key"
         );
         assert!(
-            km.global_for(&press(Key::Char('h'), Mods::CTRL), Some("nvim"))
-                .is_none(),
-            "passthrough"
+            !km.passes_through(&ctrl_h, Some("nvim"), || false),
+            "nvim is not a passthrough command by default (decision 0054)"
         );
         assert!(
-            km.global_for(&press(Key::Char('h'), Mods::CTRL), None)
-                .is_some(),
-            "unknown foreground does not pass through"
+            km.passes_through(&ctrl_h, Some("nvim"), || true),
+            "a claim passes the key whatever the command"
         );
+        assert!(
+            !km.passes_through(&ctrl_h, None, || false),
+            "an unknown foreground does not pass through by name"
+        );
+        let shift_left = press(Key::Left, Mods::SHIFT);
         assert_eq!(
-            km.global_for(&press(Key::Left, Mods::SHIFT), Some("nvim"))
-                .unwrap()
-                .to_string(),
-            "pane.resize left 2",
+            km.global_for(&shift_left).unwrap().to_string(),
+            "pane.resize left 2"
+        );
+        assert!(
+            !km.passes_through(&shift_left, Some("fzf"), || true),
             "only listed keys pass through"
         );
         // Both axes and both step sizes. Shift and ctrl with shift are separate bindings, so
         // the two steps never collapse into one another.
         assert_eq!(
-            km.global_for(&press(Key::Up, Mods::SHIFT), None)
+            km.global_for(&press(Key::Up, Mods::SHIFT))
                 .unwrap()
                 .to_string(),
             "pane.resize up 2"
         );
         assert_eq!(
-            km.global_for(&press(Key::Down, Mods::CTRL | Mods::SHIFT), None)
+            km.global_for(&press(Key::Down, Mods::CTRL | Mods::SHIFT))
                 .unwrap()
                 .to_string(),
             "pane.resize down 8"
@@ -462,12 +476,30 @@ mod tests {
         let km = Keymap::defaults();
         let leader = press(km.leader.key, km.leader.mods);
         assert!(km.binding_for(&leader).is_none(), "after the leader");
-        assert!(km.global_for(&leader, None).is_none(), "global");
+        assert!(km.global_for(&leader).is_none(), "global");
         assert!(
             !km.passthrough_keys.iter().any(|k| k.matches(&leader)),
             "passthrough"
         );
         assert!(km.list_for(&leader).is_none(), "inside a box");
+    }
+
+    /// Answering whether a program claimed the keys reads the process table, so it is the last
+    /// question: never for a key that is not a passthrough key, and never when the command
+    /// already passes it.
+    #[test]
+    fn a_claim_is_asked_about_only_when_nothing_else_decides() {
+        let km = Keymap::defaults();
+        let asked = std::cell::Cell::new(0);
+        let claimed = || {
+            asked.set(asked.get() + 1);
+            true
+        };
+        km.passes_through(&press(Key::Left, Mods::SHIFT), Some("zsh"), claimed);
+        km.passes_through(&press(Key::Char('h'), Mods::CTRL), Some("fzf"), claimed);
+        assert_eq!(asked.get(), 0);
+        assert!(km.passes_through(&press(Key::Char('h'), Mods::CTRL), Some("zsh"), claimed));
+        assert_eq!(asked.get(), 1);
     }
 
     /// The two keys M3 adds, through the lookups that answer them: `leader a` opens the

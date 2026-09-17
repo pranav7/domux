@@ -78,7 +78,7 @@ async fn global_focus_keys_move_focus_unless_the_foreground_is_a_passthrough_com
     h.frame(h.client.clone()).await;
     assert_eq!(h.focused_pane(h.client.clone()), left);
     assert!(h.pane_input(&left).is_empty() && h.pane_input(&right).is_empty());
-    h.set_foreground("nvim");
+    h.set_foreground("fzf");
     tokio::time::sleep(Duration::from_millis(1100)).await; // one inspector tick
     h.frame(h.client.clone()).await;
     h.key(h.client.clone(), "C-l").await;
@@ -86,7 +86,7 @@ async fn global_focus_keys_move_focus_unless_the_foreground_is_a_passthrough_com
     assert_eq!(
         h.focused_pane(h.client.clone()),
         left,
-        "C-l passed through to nvim"
+        "C-l passed through to fzf"
     );
     assert_eq!(h.pane_input(&left), b"\x0c".to_vec());
     h.key(h.client.clone(), "S-Right").await;
