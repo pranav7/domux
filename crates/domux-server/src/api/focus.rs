@@ -20,8 +20,11 @@ fn result(ctx: &Ctx) -> Result<Value, ApiError> {
     ok(FocusResult { focus })
 }
 
-pub fn step(ctx: &mut Ctx, _p: FocusStepParams, dir: Direction) -> Result<Value, ApiError> {
+pub fn step(ctx: &mut Ctx, p: FocusStepParams, dir: Direction) -> Result<Value, ApiError> {
     let client = ctx.view()?;
+    if !may_move_from(ctx, &client, p.pane.as_deref())? {
+        return result(ctx);
+    }
     // A region answers first. The keys are in a box, so the pane neighbours are not what the
     // reader is asking about, and stepping over them would move the focused pane of a tab
     // nobody is typing into.
@@ -199,8 +202,11 @@ fn enter_sidebar_box(ctx: &mut Ctx, client: &ClientId, region: RegionKind) {
     view.filtering = false;
 }
 
-pub fn last(ctx: &mut Ctx, _p: FocusStepParams) -> Result<Value, ApiError> {
+pub fn last(ctx: &mut Ctx, p: FocusStepParams) -> Result<Value, ApiError> {
     let client = ctx.view()?;
+    if !may_move_from(ctx, &client, p.pane.as_deref())? {
+        return result(ctx);
+    }
     let tab = ctx
         .model
         .client_tab(&client)
@@ -212,6 +218,26 @@ pub fn last(ctx: &mut Ctx, _p: FocusStepParams) -> Result<Value, ApiError> {
         ctx.view_dirty = true;
     }
     result(ctx)
+}
+
+/// Whether a move that names `pane` may happen: the keys are on that pane in this client's
+/// view. A program hands focus back with its own pane (decision 0054), and a move that arrives
+/// after the reader went somewhere else, a second `C-h` sent before the first one landed, must
+/// change nothing rather than move them again. A move that names no pane always may.
+fn may_move_from(ctx: &Ctx, client: &ClientId, pane: Option<&str>) -> Result<bool, ApiError> {
+    let Some(pane) = pane else {
+        return Ok(true);
+    };
+    let pane = ctx.model.resolve_pane(pane)?;
+    let on_a_pane = ctx
+        .model
+        .client(client)
+        .is_some_and(|view| matches!(view.focus, Focus::Pane(_)));
+    Ok(on_a_pane
+        && ctx
+            .model
+            .client_tab(client)
+            .is_some_and(|tab| tab.focused == pane))
 }
 
 /// The regions a client can put its keys in: the overlay while one is open, the switcher's

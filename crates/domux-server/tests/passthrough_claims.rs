@@ -223,6 +223,78 @@ async fn a_claim_from_a_key_is_refused() {
 }
 
 #[tokio::test]
+async fn a_focus_move_with_a_pane_happens_only_while_that_pane_has_the_keys() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let (left, right) = two_panes(&mut h).await;
+    h.api("focus.left", json!({"pane": right.to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "right had the keys, so the move happened"
+    );
+    // nvim sent this before its first move landed: right no longer has the keys.
+    h.api("focus.right", json!({"pane": right.to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        left,
+        "a late move changes nothing"
+    );
+    h.api("focus.last", json!({"pane": right.to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(h.focused_pane(h.client.clone()), left, "focus.last too");
+    h.api("focus.last", json!({"pane": left.to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        right,
+        "and it moves when its pane has the keys"
+    );
+}
+
+#[tokio::test]
+async fn a_focus_move_with_a_pane_changes_nothing_while_a_box_has_the_keys() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let (_, right) = two_panes(&mut h).await;
+    keys_in_the_sidebar(&mut h).await;
+    h.api("focus.right", json!({"pane": right.to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(
+        focus(&h),
+        Focus::Region(RegionKind::SidebarProjects),
+        "the reader is in the box, and a move from the pane must not pull them out"
+    );
+}
+
+#[tokio::test]
+async fn a_focus_move_with_a_pane_at_the_workpanel_edge_enters_the_sidebar() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.api("sidebar.show", json!({})).await.unwrap();
+    h.frame(h.client.clone()).await;
+    h.api("focus.left", json!({"pane": pane.to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(focus(&h), Focus::Region(RegionKind::SidebarProjects));
+}
+
+#[tokio::test]
+async fn a_focus_move_with_a_pane_that_does_not_exist_is_not_found() {
+    let mut h = Harness::start(Config::default(), 60, 12).await;
+    let err = h
+        .api("focus.left", json!({"pane": "p_ffff"}))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound, "{err:?}");
+}
+
+#[tokio::test]
 async fn a_claim_and_a_release_answer_ok_and_a_missing_pane_is_not_found() {
     let mut h = Harness::start(Config::default(), 60, 12).await;
     let pane = h.focused_pane(h.client.clone()).to_string();
