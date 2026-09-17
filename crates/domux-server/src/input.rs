@@ -1,10 +1,11 @@
 //! Key routing in the architecture spec's order: overlay, leader chord, global with
 //! passthrough, then the focus target.
 //!
-//! Design principle 1: the pane owns its input. Only three things claim a key ahead of it -
-//! an open overlay, a chord, a global binding the foreground command does not pass through -
-//! and everything else reaches the pane's emulator unchanged. The leader pressed twice sends
-//! the leader itself, so a program that wants `C-s` can still have it.
+//! Design principle 1: the pane owns its input. Only three things stand ahead of it - an open
+//! overlay, a chord, and a global binding whose key is not passed through - and everything else
+//! reaches the pane's emulator unchanged. A passthrough key reaches the pane when the foreground
+//! command passes it through, or the pane holds a claim on it (decision 0054). The leader pressed
+//! twice sends the leader itself, so a program that wants `C-s` can still have it.
 
 use crate::client::Hint;
 use crate::copy_mode::{self, CopyOutcome};
@@ -69,20 +70,29 @@ pub fn route_key(core: &mut Core, client: &ClientId, key: KeyEvent) -> Route {
         return Route::Chord;
     }
 
-    // 3. Global bindings, unless the foreground command passes this key through. An unknown
-    //    foreground passes nothing through (plan assumption 22): domux keeps the key rather
-    //    than dropping it into a pane whose program it has not identified yet.
-    let foreground = core
-        .focused_pane(client)
-        .and_then(|p| core.model.pane(&p).and_then(|x| x.command.clone()));
-    let global = core
-        .config
-        .keymap
-        .global_for(&key, foreground.as_deref())
-        .cloned();
-    if let Some(action) = global {
-        core.run_action(client, &action);
-        return Route::Global(action);
+    // 3. Global bindings, unless the key goes to the program in the focused pane. It does
+    //    when it is a passthrough key, the keys are on a pane, and that pane's foreground
+    //    command is a passthrough command or its program claimed the keys (decision 0054).
+    //    A key pressed in a box is the box's, so `C-l` leaves the sidebar whatever the pane
+    //    beside it runs. An unknown foreground passes nothing through by name (plan
+    //    assumption 22): domux keeps the key rather than dropping it into a pane whose
+    //    program it has not identified yet.
+    if let Some(action) = core.config.keymap.global_for(&key).cloned() {
+        let pane = core
+            .model
+            .client(client)
+            .filter(|view| matches!(view.focus, Focus::Pane(_)))
+            .and_then(|_| core.focused_pane(client));
+        let passes = pane.as_ref().is_some_and(|pane| {
+            let foreground = core.model.pane(pane).and_then(|p| p.command.as_deref());
+            core.config
+                .keymap
+                .passes_through(&key, foreground, || core.claim_holds(pane))
+        });
+        if !passes {
+            core.run_action(client, &action);
+            return Route::Global(action);
+        }
     }
 
     // 4. The focus target, which is a region or a pane.

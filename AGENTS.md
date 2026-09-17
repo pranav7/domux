@@ -21,6 +21,7 @@ The M0 pane spike is gone. M1 lifted its PTY, input and render code into `domux-
 - `crates/domux-term/scripts/ghostty-src.sh` prints the Ghostty tree the build resolved. `build.rs` exports the same path as `DOMUX_GHOSTTY_SRC`, and `tests/header_fingerprint.rs` and `tests/zig_pin.rs` read it, so the bindings are always checked against the headers that were actually compiled.
 - `cargo run -p domux -- api schema` prints the control API schema.
 - The shell half has its own suites, all POSIX sh: `sh tests/license/run.sh`, `sh tests/release/run.sh` and `sh tests/install/run.sh` (and the same under `TEST_SHELL=bash`). `shellcheck -s sh install.sh scripts/release/*.sh scripts/dev/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*` must pass too, the same list `.github/workflows/ci.yml` gives it: leave out `tests/lib/assert.sh` and shellcheck exits 1 on the files that source it. CI runs all of it on macOS and Ubuntu.
+- The Neovim plugin has its own suite: `nvim --headless -l tests/nvim/run.lua`, with Neovim 0.10 or later. It needs no build. It serves a fake control API, and `tests/nvim/requests.jsonl`, which a `domux-core` test parses, keeps that fake honest. CI runs it on macOS and Ubuntu against Neovim 0.10.4 and 0.11.6.
 - `cargo about generate --fail -o /dev/null about.hbs` checks that every compiled crate's license is in `about.toml`. Install it with `cargo install cargo-about --version 0.9.2 --locked --features cli`; without `--features cli` nothing is installed.
 - Releases: a `v*` tag runs `.github/workflows/release.yml`, which builds four archives with `scripts/release/build-archive.sh`, smoke-tests each on its own platform, verifies `SHA256SUMS`, and publishes the GitHub release with the `CHANGELOG.md` section for that version. The tag must equal `[workspace.package].version`. Versions stay low: the releases start at 0.1.0, and the next one is the next patch unless the author asks for another. A `CHANGELOG.md` section opens with a one-line summary, which domux.dev shows beside the newest version. `gh workflow run release.yml -f version=<x.y.z>` runs everything except the publish. Read `docs/decisions/0039`, `0048` and `docs/milestones/m5.md` before changing any of it.
 - `site/` is domux.dev. `.github/workflows/pages.yml` publishes it with `install.sh` at `/install.sh` on every push to `main` that changes either, so the install command is `curl -fsSL https://domux.dev/install.sh | sh`. The page is one HTML file with no build step. Decision `0047` records why.
@@ -112,6 +113,25 @@ changing any of it.
   `ghostty.conf` under `~/.local/state/omarchy` for a change, reads the colours from `colors.toml`
   or `ghostty.conf` under `current/theme/`, and never writes there. Other terminals under `terminal` pick up a change at the next attach.
 - `auto` is decided per client, from that client's desktop, and over ssh it is `domux`.
+
+## Editors
+
+MUX-45 added the Neovim plugin, and `docs/decisions/0054` records the choices the code does not
+explain on its own. `docs/nvim.md` is what a user reads. Read both before changing either.
+
+- The plugin lives at the repository root, in `plugin/domux.lua` and `lua/domux/`, so it changes
+  in the same pull request as the API it calls. lazy.nvim installs it from this repository,
+  pinned to a release.
+- `plugin/domux.lua` claims and releases, and maps no key. The keys are the user's, through
+  lazy.nvim's `keys` or `require("domux").setup()`.
+- A program gets the passthrough keys by name, from `[keys.passthrough] commands`, or by a claim.
+  A claim holds while its process is in the pane's foreground process group, checked at the key
+  press. `nvim` and `vim` are not in the default list.
+- A key pressed while a box has the keys is the box's, whatever the pane beside it runs.
+- `focus.<dir>` with `pane` moves only while that pane has the keys, so a late move changes
+  nothing.
+- Every request the plugin sends is a line in `tests/nvim/requests.jsonl`. A new request is a new
+  line, or the suite fails.
 
 ## Rules
 

@@ -114,6 +114,27 @@ jobs:
         if: runner.os == 'Linux'
         run: shellcheck -s sh install.sh scripts/release/*.sh scripts/dev/*.sh tests/lib/assert.sh tests/license/run.sh tests/release/run.sh tests/install/run.sh tests/install/fakebin/*
 
+  # The Neovim plugin in plugin/ and lua/domux/, against the oldest Neovim it supports and a
+  # current one. It needs no Rust build: tests/nvim/run.lua serves a fake control API, and
+  # tests/nvim/requests.jsonl, which domux-core parses, keeps the fake honest (decision 0054).
+  nvim-plugin:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04]
+        nvim: [v0.10.4, v0.11.6]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: rhysd/action-setup-vim@v1
+        id: nvim
+        with:
+          neovim: true
+          version: ${{ matrix.nvim }}
+      - name: Plugin tests
+        run: ${{ steps.nvim.outputs.executable }} --headless -l tests/nvim/run.lua
+
   # Every crate compiled into a release binary carries a license the project accepts, and the
   # attribution file the archives ship can be generated.
   license:

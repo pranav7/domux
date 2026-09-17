@@ -1078,8 +1078,11 @@ impl Core {
             let _ = pty.resize(size);
         }
         let pid = pty.pid();
-        self.panes
-            .insert(pane.clone(), PaneRuntime::new(pane.clone(), emulator, pty));
+        let mut runtime = PaneRuntime::new(pane.clone(), emulator, pty);
+        // The same processes are in the pane after the exec, so their claims still hold
+        // (decision 0054).
+        runtime.claims = crate::claims::Claims::from_pids(&handed.claims);
+        self.panes.insert(pane.clone(), runtime);
         // The program started long ago, so an exit now is not an immediate one.
         self.pane_started_at.insert(
             pane.clone(),
@@ -1261,6 +1264,7 @@ impl Core {
                     pid: handed.pid,
                     size,
                     screen,
+                    claims: rt.claims.pids(),
                 });
             }
         }
@@ -1904,6 +1908,22 @@ impl Core {
                 self.model.tab(&view.tab).map(|t| t.focused.clone())
             }
         }
+    }
+
+    /// Whether a program in `pane` holds its passthrough keys now (decision 0054). Asked at
+    /// the key press rather than read from the once-a-second observation, so the key after a
+    /// `C-z` is already domux's. A pane nobody claimed costs one map lookup.
+    pub fn claim_holds(&self, pane: &PaneId) -> bool {
+        let Some(runtime) = self.panes.get(pane) else {
+            return false;
+        };
+        if runtime.claims.is_empty() {
+            return false;
+        }
+        let inspector = self.deps.inspector.as_ref();
+        inspector
+            .foreground_group(runtime.pty.raw_fd())
+            .is_some_and(|front| runtime.claims.hold(front, |pid| inspector.group_of(pid)))
     }
 
     /// One API request. The answer goes to `reply` here, unless the handler deferred it:
@@ -3777,8 +3797,8 @@ fn nothing_to_attach_to() -> String {
 fn param_client(method: &Method) -> Option<ClientId> {
     use Method::*;
     match method {
-        ClientDetach(p) | Help(p) | FocusLeft(p) | FocusRight(p) | FocusUp(p) | FocusDown(p)
-        | FocusLast(p) | FocusPane(p) => p.client.clone(),
+        ClientDetach(p) | Help(p) | FocusPane(p) => p.client.clone(),
+        FocusLeft(p) | FocusRight(p) | FocusUp(p) | FocusDown(p) | FocusLast(p) => p.client.clone(),
         FocusRegion(p) => p.client.clone(),
         TabCreate(p) => p.client.clone(),
         TabRename(p) => p.client.clone(),
@@ -3821,7 +3841,9 @@ fn param_client(method: &Method) -> Option<ClientId> {
         | AgentWait(_)
         | StayAwakeEnable(_)
         | StayAwakeDisable(_)
-        | StayAwakeToggle(_) => None,
+        | StayAwakeToggle(_)
+        | PaneClaimPassthrough(_)
+        | PaneReleasePassthrough(_) => None,
     }
 }
 

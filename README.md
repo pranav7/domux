@@ -44,6 +44,9 @@ not lose the work. Then:
 Inside domux the leader key is the one the installer asked for, `ctrl-s` unless you picked
 another: `leader a` opens the agents overlay, and `leader ?` lists the keys.
 
+Using Neovim? Add the domux plugin so `C-h`, `C-j`, `C-k` and `C-l` move between Neovim windows
+and domux panes with the same keys. [docs/nvim.md](docs/nvim.md) says how.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

@@ -38,6 +38,16 @@ pub trait ProcessInspector: Send + Sync {
     /// The name a process is known by, as `foreground` names the one in front of a pane.
     fn name_of(&self, pid: u32) -> Option<String>;
 
+    /// The process group in front of the pane behind `pty_fd`, which is the group `foreground`
+    /// names the leader of, without reading that leader's name. A claim is checked against it
+    /// at a key press (decision 0054).
+    fn foreground_group(&self, pty_fd: Option<RawFd>) -> Option<u32> {
+        self.foreground(pty_fd).map(|f| f.pid)
+    }
+
+    /// The process group `pid` runs in, while the process is there.
+    fn group_of(&self, pid: u32) -> Option<u32>;
+
     /// Is this process still there? The default asks the OS for its working directory, which
     /// fails for a dead process on macOS and on Linux, so one question answers both platforms
     /// and no signal probe needs a platform arm of its own. The observer uses this to tell
@@ -74,6 +84,17 @@ impl ProcessInspector for RealInspector {
 
     fn name_of(&self, pid: u32) -> Option<String> {
         process_name(pid)
+    }
+
+    fn foreground_group(&self, pty_fd: Option<RawFd>) -> Option<u32> {
+        let pty_fd = pty_fd?;
+        // Safe: tcgetpgrp only reads; a bad fd returns -1.
+        let pgid = unsafe { libc::tcgetpgrp(pty_fd) };
+        (pgid > 0).then_some(pgid as u32)
+    }
+
+    fn group_of(&self, pid: u32) -> Option<u32> {
+        process_group(pid)
     }
 }
 
@@ -175,8 +196,9 @@ fn argv0_from_procargs2(buf: &[u8]) -> Option<Vec<u8>> {
     Some(arg[..end].to_vec())
 }
 
+/// A process's BSD information: its parent, its group and the rest `proc_pidinfo` fills.
 #[cfg(target_os = "macos")]
-fn process_parent(pid: u32) -> Option<u32> {
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     // Safe: proc_pidinfo fills a zeroed struct of the size we pass.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
@@ -193,7 +215,17 @@ fn process_parent(pid: u32) -> Option<u32> {
     if n != size {
         return None;
     }
-    Some(info.pbi_ppid)
+    Some(info)
+}
+
+#[cfg(target_os = "macos")]
+fn process_parent(pid: u32) -> Option<u32> {
+    Some(bsd_info(pid)?.pbi_ppid)
+}
+
+#[cfg(target_os = "macos")]
+fn process_group(pid: u32) -> Option<u32> {
+    Some(bsd_info(pid)?.pbi_pgid)
 }
 
 #[cfg(target_os = "macos")]
@@ -275,6 +307,19 @@ fn parent_from_stat(stat: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
+fn process_group(pid: u32) -> Option<u32> {
+    group_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// The process group out of a `/proc/<pid>/stat` line, the field after the parent. Counted
+/// from the last closing parenthesis for the reason `parent_from_stat` gives.
+#[cfg(any(target_os = "linux", test))]
+fn group_from_stat(stat: &str) -> Option<u32> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(2)?.parse().ok()
+}
+
+#[cfg(target_os = "linux")]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
     let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
     // The kernel renders a removed directory as `/path (deleted)`, which is a plausible looking
@@ -300,6 +345,7 @@ pub struct FakeInspector {
     per_fd: Mutex<HashMap<RawFd, Entry>>,
     dead: Mutex<HashSet<u32>>,
     processes: Mutex<HashMap<u32, (String, Option<u32>)>>,
+    groups: Mutex<HashMap<u32, u32>>,
 }
 
 impl FakeInspector {
@@ -324,6 +370,11 @@ impl FakeInspector {
             .lock()
             .unwrap()
             .insert(pid, (name.to_string(), parent));
+    }
+
+    /// The process group `pid` runs in. A process the table does not hold has none.
+    pub fn set_group(&self, pid: u32, group: u32) {
+        self.groups.lock().unwrap().insert(pid, group);
     }
 }
 
@@ -367,6 +418,10 @@ impl ProcessInspector for FakeInspector {
 
     fn name_of(&self, pid: u32) -> Option<String> {
         Some(self.processes.lock().unwrap().get(&pid)?.0.clone())
+    }
+
+    fn group_of(&self, pid: u32) -> Option<u32> {
+        self.groups.lock().unwrap().get(&pid).copied()
     }
 }
 
@@ -694,6 +749,9 @@ mod tests {
             fn name_of(&self, _pid: u32) -> Option<String> {
                 None
             }
+            fn group_of(&self, _pid: u32) -> Option<u32> {
+                None
+            }
         }
         assert!(OnlyCwd(Some(PathBuf::from("/tmp"))).is_alive(7));
         assert!(!OnlyCwd(None).is_alive(7));
@@ -766,5 +824,91 @@ mod tests {
         let pid = child.id();
         child.wait().unwrap();
         assert!(!RealInspector.is_alive(pid));
+    }
+
+    #[test]
+    fn real_inspector_names_the_group_this_process_runs_in() {
+        // Safe: getpgrp only reads.
+        let group = unsafe { libc::getpgrp() } as u32;
+        assert_eq!(RealInspector.group_of(std::process::id()), Some(group));
+    }
+
+    /// The group in front of a PTY is the group its program runs in, which is what a claim is
+    /// held against (decision 0054).
+    #[test]
+    fn the_group_in_front_of_a_pty_is_the_group_its_program_runs_in() {
+        let pty = native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows: 5,
+                cols: 40,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.args(["-c", "exec sleep 30"]);
+        let child = ChildGuard(pair.slave.spawn_command(cmd).unwrap());
+        drop(pair.slave);
+        let pid = child.0.process_id().expect("the child's process id");
+        let fd = pair.master.as_raw_fd().expect("master fd");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let front = RealInspector.foreground_group(Some(fd));
+            if front.is_some() && front == RealInspector.group_of(pid) {
+                break;
+            }
+            assert!(
+                Instant::now() <= deadline,
+                "the child's group never came to the front: front {front:?}, child's {:?}",
+                RealInspector.group_of(pid)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn foreground_group_is_absent_without_a_descriptor_or_for_a_bad_one() {
+        assert_eq!(RealInspector.foreground_group(None), None);
+        assert_eq!(RealInspector.foreground_group(Some(-1)), None);
+    }
+
+    #[test]
+    fn real_inspector_has_no_group_for_a_reaped_child() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert_eq!(RealInspector.group_of(pid), None);
+    }
+
+    #[test]
+    fn a_stat_line_gives_the_group_after_the_parent() {
+        assert_eq!(
+            group_from_stat("4242 (claude) S 4100 4242 4100 0"),
+            Some(4242)
+        );
+        assert_eq!(group_from_stat("4242 (a (b) c) S 7 9 7"), Some(9));
+        assert_eq!(
+            group_from_stat("4242 (claude) S 4100"),
+            None,
+            "a truncated line"
+        );
+    }
+
+    #[test]
+    fn fake_inspector_answers_the_groups_it_was_told_and_its_front_group_from_the_foreground() {
+        let fake = FakeInspector::default();
+        assert_eq!(fake.group_of(7), None);
+        fake.set_group(7, 70);
+        assert_eq!(fake.group_of(7), Some(70));
+        fake.set_for(
+            101,
+            Some(ForegroundProcess {
+                pid: 70,
+                name: "nvim".into(),
+            }),
+            None,
+        );
+        assert_eq!(fake.foreground_group(Some(101)), Some(70));
     }
 }

@@ -1,0 +1,8 @@
+{"id":1,"method":"pane.claim_passthrough","params":{"pane":"p_test"}}
+{"id":1,"method":"pane.release_passthrough","params":{"pane":"p_test"}}
+{"id":1,"method":"focus.left","params":{"pane":"p_test"}}
+{"id":1,"method":"focus.down","params":{"pane":"p_test"}}
+{"id":1,"method":"focus.up","params":{"pane":"p_test"}}
+{"id":1,"method":"focus.right","params":{"pane":"p_test"}}
+{"id":1,"method":"focus.last","params":{"pane":"p_test"}}
+{"id":1,"method":"server.info","params":{}}

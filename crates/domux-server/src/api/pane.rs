@@ -3,9 +3,9 @@
 use super::{ok, Ctx};
 use crate::copy_mode::CopyMode;
 use domux_core::api::{
-    Ack, ApiError, PaneInfo, PaneReadParams, PaneReadResult, PaneResizeParams, PaneSendKeyParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTargetParams, SwapResult,
-    TabTargetParams, ZoomResult,
+    Ack, ApiError, PaneClaimParams, PaneInfo, PaneReadParams, PaneReadResult, PaneResizeParams,
+    PaneSendKeyParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTargetParams,
+    SwapResult, TabTargetParams, ZoomResult,
 };
 use domux_core::ids::PaneId;
 use domux_core::keymap::KeyName;
@@ -255,5 +255,43 @@ pub fn read(ctx: &mut Ctx, p: PaneReadParams) -> Result<Value, ApiError> {
         .ok_or_else(|| ApiError::internal(format!("pane {pane} could not be read")))?;
     ok(PaneReadResult {
         text: text.trim_end_matches('\n').to_string(),
+    })
+}
+
+/// `pane.claim_passthrough`: the calling process takes the passthrough keys in `pane` while
+/// it is in the pane's foreground process group (decision 0054).
+pub fn claim_passthrough(ctx: &mut Ctx, p: PaneClaimParams) -> Result<Value, ApiError> {
+    let pid = claimant(ctx)?;
+    let pane = ctx.model.resolve_pane(&p.pane)?;
+    let deps = ctx.deps;
+    let runtime = ctx
+        .panes
+        .get_mut(&pane)
+        .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
+    runtime
+        .claims
+        .claim(pid, |held| deps.inspector.is_alive(held));
+    ok(Ack { ok: true })
+}
+
+/// `pane.release_passthrough`: the calling process gives the keys in `pane` back.
+pub fn release_passthrough(ctx: &mut Ctx, p: PaneClaimParams) -> Result<Value, ApiError> {
+    let pid = claimant(ctx)?;
+    let pane = ctx.model.resolve_pane(&p.pane)?;
+    let runtime = ctx
+        .panes
+        .get_mut(&pane)
+        .ok_or_else(|| ApiError::not_found(format!("pane {pane} has no terminal")))?;
+    runtime.claims.release(pid);
+    ok(Ack { ok: true })
+}
+
+/// The process a claim belongs to: the one at the other end of the socket. A key press has
+/// none, so a key bound to either method is refused.
+fn claimant(ctx: &Ctx) -> Result<u32, ApiError> {
+    ctx.caller.ok_or_else(|| {
+        ApiError::refused(
+            "only a program in the pane can claim or release its keys, over the socket",
+        )
     })
 }

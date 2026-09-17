@@ -935,5 +935,13 @@ case ":$PATH:" in
     ;;
 esac
 
+# Neovim crosses into domux panes with the same keys once its plugin is in. The installer never
+# edits Neovim's configuration, because it cannot know how one is laid out, so it says where the
+# setup is (decision 0054).
+if command -v nvim >/dev/null 2>&1; then
+  note "Neovim: add the domux plugin so C-h, C-j, C-k and C-l cross into panes"
+  note "https://github.com/pranav7/domux/blob/main/docs/nvim.md"
+fi
+
 done_line "domux is ready"
 printf '\n   %s>%s %srun%s %sdomux%s\n\n' "$MAUVE" "$OFF" "$BRIGHT" "$OFF" "$MAUVE" "$OFF" >&2

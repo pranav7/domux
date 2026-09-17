@@ -246,7 +246,10 @@ impl Default for KeysConfig {
 impl Default for PassthroughConfig {
     fn default() -> Self {
         PassthroughConfig {
-            commands: vec!["nvim".into(), "vim".into(), "fzf".into()],
+            // `fzf` moves through its list with `C-j` and `C-k`. Neovim and Vim are not here:
+            // a program that hands focus back claims the keys instead, and one that does not
+            // would keep them for good (decision 0054).
+            commands: vec!["fzf".into()],
             keys: vec![
                 "C-h".into(),
                 "C-j".into(),
@@ -638,7 +641,7 @@ mod tests {
         ] {
             assert_eq!(c.keys.global.get(key).map(String::as_str), Some(action));
         }
-        assert_eq!(c.keys.passthrough.commands, vec!["nvim", "vim", "fzf"]);
+        assert_eq!(c.keys.passthrough.commands, vec!["fzf"]);
         assert_eq!(
             c.keys.passthrough.keys,
             vec!["C-h", "C-j", "C-k", "C-l", "C-\\"]
