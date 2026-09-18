@@ -11,6 +11,13 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ## [Unreleased]
 
+### Fixed
+
+- A Claude turn that dies on an API error, such as a rate limit or an overloaded model, now
+  leaves its row idle. Claude Code ends such a turn with `StopFailure` and never sends `Stop`, so
+  the row kept the working word and the turning star until the session ended. Run
+  `domux install claude --apply` again to add the new hook line.
+
 ## [0.1.3] - 2026-09-18
 
 A Neovim plugin, workspace keys, agent fixes

@@ -11,8 +11,9 @@ use std::path::PathBuf;
 
 /// The Claude Code events the installer writes for Claude, in the order it writes them. V1
 /// installs eight; V2 adds `PostToolUse` because the state machine names it as a working event
-/// (architecture spec 3.3, M3 plan assumption 19).
-pub const EVENTS_CLAUDE: [&str; 9] = [
+/// (architecture spec 3.3, M3 plan assumption 19), and `StopFailure` because a turn that dies
+/// on an API error ends there and never reaches `Stop` (decision record 0057).
+pub const EVENTS_CLAUDE: [&str; 10] = [
     "SessionStart",
     "SessionEnd",
     "UserPromptSubmit",
@@ -22,6 +23,7 @@ pub const EVENTS_CLAUDE: [&str; 9] = [
     "PreCompact",
     "PostCompact",
     "Stop",
+    "StopFailure",
 ];
 
 /// The Codex events the installer writes for Codex. V1 installs five; V2 adds `SessionStart`
@@ -111,6 +113,9 @@ pub const CLAUDE_NOTIFICATIONS_THAT_WAIT: [&str; 5] = [
 
 /// Claude Code: `hook_event_name`, `session_id`, `transcript_path`, `cwd`, and `message` and
 /// `notification_type` on a notification (architecture spec 3.4).
+///
+/// `StopFailure` is the other end of a turn: Claude Code sends it in place of `Stop` when the
+/// turn died on an API error, so it is the same event here (decision record 0057).
 pub fn parse_claude(v: &Value) -> AgentReport {
     let event = match string(v, "hook_event_name").as_deref() {
         Some("SessionStart") => Some(AgentEvent::SessionStart),
@@ -121,7 +126,7 @@ pub fn parse_claude(v: &Value) -> AgentReport {
         Some("Notification") => claude_notification_event(v),
         Some("PreCompact") => Some(AgentEvent::PreCompact),
         Some("PostCompact") => Some(AgentEvent::PostCompact),
-        Some("Stop") => Some(AgentEvent::Stop),
+        Some("Stop") | Some("StopFailure") => Some(AgentEvent::Stop),
         _ => None,
     };
     AgentReport {
@@ -252,6 +257,7 @@ mod tests {
             ("pre_compact", AgentEvent::PreCompact),
             ("post_compact", AgentEvent::PostCompact),
             ("stop", AgentEvent::Stop),
+            ("stop_failure", AgentEvent::Stop),
             ("session_end", AgentEvent::SessionEnd),
         ];
         assert_eq!(

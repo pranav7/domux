@@ -132,6 +132,32 @@ async fn the_hook_sequence_of_one_turn_walks_the_state_machine() {
     assert_eq!(a.reason, None, "the reason went with the waiting state");
 }
 
+/// A turn that dies on an API error ends with `StopFailure` and never reaches `Stop`, so a row
+/// that only knew `Stop` said working for the rest of the session (decision record 0057).
+#[tokio::test]
+async fn a_turn_that_dies_on_an_api_error_leaves_the_record_idle() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        h.report(pane.clone(), AgentKind::Claude, &payload(event, json!({})))
+            .await;
+    }
+    assert_eq!(only_agent(&h).state, AgentState::Working);
+    let out = h
+        .report(
+            pane.clone(),
+            AgentKind::Claude,
+            &payload("StopFailure", json!({"error": "overloaded"})),
+        )
+        .await;
+    assert_eq!(out.state, Some(AgentState::Idle));
+    let a = only_agent(&h);
+    assert_eq!(a.state, AgentState::Idle);
+    // The error is not a reason: a reason is what a waiting row says, and this row is not
+    // waiting on you (decision record 0037).
+    assert_eq!(a.reason, None);
+}
+
 /// MUX-28, both halves, at the level the author met them.
 ///
 /// A turn the agent has not recapped shows no recap, however much it has said: M3 filled the

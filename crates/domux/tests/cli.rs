@@ -8,6 +8,7 @@
 use domux_core::config::Config;
 use domux_core::model::agent::AgentKind;
 use domux_core::model::ProjectKind;
+use domux_server::agents::hooks::EVENTS_CLAUDE;
 use domux_server::testing::{git, repo_with_origin, Harness, HarnessOptions};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
@@ -2294,7 +2295,7 @@ async fn install_writes_this_binary_when_the_bin_path_is_another_binary() {
     assert_eq!(String::from_utf8_lossy(&out.stderr), "", "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("[domux] You are agent a_"), "{text}");
-    assert_eq!(installed.len(), 9, "{installed:?}");
+    assert_eq!(installed.len(), EVENTS_CLAUDE.len(), "{installed:?}");
     for (event, command) in &installed {
         assert!(
             !command.contains(&linked.display().to_string()),
@@ -2304,7 +2305,8 @@ async fn install_writes_this_binary_when_the_bin_path_is_another_binary() {
 }
 
 /// The author's machine after installing 1.0.0: every hook runs V1 at `~/bin/domux`. Running the
-/// install again is the repair, so it must see those lines as something to change.
+/// install again is the repair, so it must see those lines as something to change. The nine
+/// events below are what V1 wrote, so the repair also writes the event it never had.
 #[tokio::test]
 async fn install_replaces_hooks_that_run_another_binary_at_the_bin_path() {
     let (home, linked) = home_with_v1_in_bin();
@@ -2344,10 +2346,15 @@ async fn install_replaces_hooks_that_run_another_binary_at_the_bin_path() {
     assert!(text.starts_with("Patched "), "{text}");
 
     let installed = installed_commands(&settings);
-    assert_eq!(installed.len(), 9, "one line per event: {installed:?}");
+    let want = EVENTS_CLAUDE.len();
+    assert_eq!(installed.len(), want, "one line per event: {installed:?}");
     let mut events: Vec<&str> = installed.iter().map(|(e, _)| e.as_str()).collect();
     events.dedup();
-    assert_eq!(events.len(), 9, "no event holds two lines: {installed:?}");
+    assert_eq!(
+        events.len(),
+        want,
+        "no event holds two lines: {installed:?}"
+    );
     for (event, command) in &installed {
         assert!(
             !command.contains(&linked.display().to_string()),
