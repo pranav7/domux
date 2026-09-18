@@ -34,6 +34,10 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ### Fixed
 
+- An agent started through a wrapper gets a row. A shim, an npm launcher or a script of your own
+  stays in front of the pane while the agent runs behind it, and domux read only what was in
+  front, so a Codex started as `~/.local/bin/codex` had no row at all. The row says the kind and
+  where it is; a session with no hooks reaching domux stays `unknown`.
 - An agent a session starts no longer takes its row, even when domux cannot see that the session
   started it. A Codex worker a Claude session ran, and lost the process tree of, replaced the
   Claude row in the Navigator for the rest of that session. A hook now takes a pane from a

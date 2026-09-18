@@ -12,7 +12,12 @@
 //! kind, still has its own process, and the observer asks about that process rather than
 //! reading the name in front of the pane. Reading the name would exit a live agent's record,
 //! and a hook after that exit changes nothing, so the record would never come back.
+//!
+//! What is in the foreground is not always the agent either: a wrapper that started it stays
+//! in front while the agent runs in its group, so `front::agent_in_front` answers the first
+//! question and the record holds the agent's own process (decision record 0056).
 
+use crate::agents::front;
 use crate::agents::manifests::Registry;
 use crate::process::{ForegroundProcess, ProcessInspector};
 use domux_core::api::Event;
@@ -38,11 +43,13 @@ pub fn run(
 ) -> Vec<Event> {
     let mut events = Vec::new();
     for p in panes {
-        // The kind and process id of a known agent in the foreground, if that is what is there.
+        // The kind and process id of a known agent in front of the pane, if one is there. The
+        // process in front is the agent itself, or the wrapper that started it with the agent
+        // in its group, which is what `front` answers for (decision record 0056).
         let seen = p
             .foreground
             .as_ref()
-            .and_then(|f| manifests.for_process(&f.name).map(|m| (m.kind, f.pid)));
+            .and_then(|f| front::agent_in_front(inspector, manifests, f));
         let live = model
             .agent_on_pane(&p.pane)
             .map(|a| (a.id.clone(), a.kind, a.pid));
