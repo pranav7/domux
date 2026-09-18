@@ -158,6 +158,75 @@ async fn a_turn_that_dies_on_an_api_error_leaves_the_record_idle() {
     assert_eq!(a.reason, None);
 }
 
+/// The other way a turn ends without a hook: nothing arrives at all. A turn cancelled before
+/// its request goes out sends no hook, and neither does one whose hook never reaches the socket,
+/// so the row kept the working word until the agent's process died. The tick reads the
+/// transcript's modification time and moves such a row to `unknown`, which says an agent is
+/// running and nothing is reporting (decision record 0058).
+#[tokio::test]
+async fn a_working_record_nothing_reports_on_falls_back_to_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = dir.path().join("s.jsonl");
+    std::fs::write(&transcript, "{}\n").unwrap();
+    let touched = |ago: std::time::Duration| {
+        std::fs::File::options()
+            .write(true)
+            .open(&transcript)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - ago)
+            .unwrap();
+    };
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let with_path = |event: &str| {
+        payload(
+            event,
+            json!({"transcript_path": transcript.to_str().unwrap()}),
+        )
+    };
+    h.report(pane.clone(), AgentKind::Claude, &with_path("SessionStart"))
+        .await;
+    let out = h
+        .report(
+            pane.clone(),
+            AgentKind::Claude,
+            &with_path("UserPromptSubmit"),
+        )
+        .await;
+    assert_eq!(out.state, Some(AgentState::Working));
+
+    // A turn still running keeps its row, however many ticks pass: the agent is writing.
+    touched(std::time::Duration::ZERO);
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(only_agent(&h).state, AgentState::Working);
+
+    // The turn ended and nothing said so. The transcript has not been written since.
+    touched(domux_server::agents::quiet::AFTER + std::time::Duration::from_secs(60));
+    let a = h
+        .wait_for_agent(|a| a.state == AgentState::Unknown, TICK)
+        .await;
+    assert_eq!(a.state, AgentState::Unknown);
+    assert!(
+        !a.unseen,
+        "a row nothing reports on is not a row asking for you"
+    );
+    assert_eq!(a.pane.as_ref(), Some(&pane), "the record keeps its place");
+
+    // The agent comes back. Its next prompt writes the transcript and sends the hook, as
+    // Claude Code does in that order, and the row is working again.
+    touched(std::time::Duration::ZERO);
+    let out = h
+        .report(
+            pane.clone(),
+            AgentKind::Claude,
+            &with_path("UserPromptSubmit"),
+        )
+        .await;
+    assert_eq!(out.state, Some(AgentState::Working));
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(only_agent(&h).state, AgentState::Working);
+}
+
 /// MUX-28, both halves, at the level the author met them.
 ///
 /// A turn the agent has not recapped shows no recap, however much it has said: M3 filled the

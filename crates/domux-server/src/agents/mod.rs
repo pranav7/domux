@@ -9,6 +9,7 @@ pub mod labels;
 pub mod manifests;
 pub mod nested;
 pub mod observer;
+pub mod quiet;
 pub mod recap;
 pub mod session_index;
 pub mod tail;
