@@ -504,3 +504,43 @@ async fn a_codex_record_goes_when_its_process_does() {
     tokio::time::sleep(A_TICK * 2).await;
     assert!(agents(&mut h).await.is_empty());
 }
+
+/// MUX-54. A user who starts an agent through a wrapper, a version manager's shim or a script
+/// of their own, leaves the wrapper in front of the pane while the agent runs in its group.
+/// The record is the agent's, and it holds the agent's own process rather than the wrapper's:
+/// that process is what ends the record, and what a hook's walk passes through.
+#[tokio::test]
+async fn an_agent_a_wrapper_started_is_the_panes_agent() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let group = h
+        .set_foreground_group_for(&pane, &["bash", "mise", "codex"])
+        .await;
+    tokio::time::sleep(A_TICK).await;
+    let a = one_agent(&mut h).await;
+    assert_eq!(a.kind, AgentKind::Codex);
+    assert_eq!(a.state, AgentState::Unknown);
+    assert_eq!(a.pane.as_ref(), Some(&pane));
+    assert_eq!(
+        a.pid,
+        Some(group[2]),
+        "the agent's process, not the wrapper's"
+    );
+}
+
+/// The wrapper is in front the whole time, so nothing about it ends the record. The agent's
+/// own process going away does, as it does for an agent the user started directly.
+#[tokio::test]
+async fn a_record_behind_a_wrapper_goes_when_the_agents_process_does() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let pane = h.focused_pane(h.client.clone());
+    let group = h.set_foreground_group_for(&pane, &["bash", "codex"]).await;
+    tokio::time::sleep(A_TICK).await;
+    assert_eq!(agents(&mut h).await.len(), 1);
+    h.kill_process(group[1]).await;
+    tokio::time::sleep(A_TICK * 2).await;
+    assert!(
+        agents(&mut h).await.is_empty(),
+        "the agent behind the wrapper is gone, so its record is"
+    );
+}

@@ -2,6 +2,7 @@
 //! `AgentsState`; every handler reaches it through `api::Ctx`.
 
 pub mod context;
+pub mod front;
 pub mod hooks;
 pub mod install;
 pub mod labels;

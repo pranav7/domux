@@ -1091,6 +1091,26 @@ impl Harness {
         pid
     }
 
+    /// Puts a group of processes in front of one pane, the first in front and each one after
+    /// it started by the one before, all in the same process group: `["bash", "mise", "codex"]`
+    /// is an agent a user's wrapper started. Answers their process ids in the same order.
+    pub async fn set_foreground_group_for(&mut self, pane: &PaneId, names: &[&str]) -> Vec<u32> {
+        let leader = self.set_foreground_for(pane, names.first().copied()).await;
+        let mut pids = vec![leader];
+        for name in names.iter().skip(1) {
+            let pid = self.next_pid;
+            self.next_pid += 1;
+            self.inspector
+                .set_process(pid, name, Some(*pids.last().expect("the leader")));
+            self.inspector.set_group(pid, leader);
+            pids.push(pid);
+        }
+        let front = names.first().copied().unwrap_or_default();
+        self.inspector.set_process(leader, front, None);
+        self.inspector.set_group(leader, leader);
+        pids
+    }
+
     /// The processes above every control API call this harness makes from now on, nearest
     /// first: `["claude"]` is a hook its agent ran, and `["claude", "zsh", "claude"]` is a hook
     /// run by an agent that another agent started from its shell.

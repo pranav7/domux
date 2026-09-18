@@ -48,6 +48,11 @@ pub trait ProcessInspector: Send + Sync {
     /// The process group `pid` runs in, while the process is there.
     fn group_of(&self, pid: u32) -> Option<u32>;
 
+    /// Every process in the group `leader` leads, the leader first and the rest nearest to it
+    /// first. `agents::front` reads it to find an agent a wrapper started: the wrapper is in
+    /// front of the pane and the agent runs in its group.
+    fn group_members(&self, leader: u32) -> Vec<u32>;
+
     /// Is this process still there? The default asks the OS for its working directory, which
     /// fails for a dead process on macOS and on Linux, so one question answers both platforms
     /// and no signal probe needs a platform arm of its own. The observer uses this to tell
@@ -96,7 +101,16 @@ impl ProcessInspector for RealInspector {
     fn group_of(&self, pid: u32) -> Option<u32> {
         process_group(pid)
     }
+
+    fn group_members(&self, leader: u32) -> Vec<u32> {
+        group_members(leader)
+    }
 }
+
+/// How many processes a group is read as at most. A wrapper puts one or two processes between
+/// the pane and its agent, and a shell running a pipeline puts a handful; a number this far
+/// above either keeps a pane with a runaway group from being walked every second.
+const GROUP_MAX: usize = 64;
 
 /// The base name of an executable path held as raw bytes. The bytes may carry more than the
 /// path, since a Linux `/proc/<pid>/cmdline` holds the whole argument vector separated by NUL,
@@ -226,6 +240,71 @@ fn process_parent(pid: u32) -> Option<u32> {
 #[cfg(target_os = "macos")]
 fn process_group(pid: u32) -> Option<u32> {
     Some(bsd_info(pid)?.pbi_pgid)
+}
+
+/// macOS lists a process group itself, so the answer is the group as the OS holds it, with the
+/// leader moved to the front.
+#[cfg(target_os = "macos")]
+fn group_members(leader: u32) -> Vec<u32> {
+    let mut buf = vec![0i32; GROUP_MAX];
+    let size = std::mem::size_of_val(&buf[..]) as libc::c_int;
+    // Safe: the buffer's own length in bytes is passed, so proc_listpgrppids writes no more.
+    let n = unsafe {
+        libc::proc_listpgrppids(
+            leader as libc::pid_t,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            size,
+        )
+    };
+    if n <= 0 {
+        return vec![leader];
+    }
+    let count = (n as usize / std::mem::size_of::<i32>()).min(buf.len());
+    let mut pids: Vec<u32> = std::iter::once(leader)
+        .chain(
+            buf[..count]
+                .iter()
+                .filter(|&&pid| pid > 0)
+                .map(|&pid| pid as u32),
+        )
+        .collect();
+    pids.dedup_by_key(|pid| *pid);
+    pids
+}
+
+/// Linux lists no process group, so the group is walked as what the leader started: every
+/// process in it is a descendant of the leader. A descendant that left the group, which is
+/// what a session on a daemon of its own does, is not in it and is not walked through.
+#[cfg(target_os = "linux")]
+fn group_members(leader: u32) -> Vec<u32> {
+    let group = process_group(leader);
+    let mut found = vec![leader];
+    let mut next = 0;
+    while next < found.len() && found.len() < GROUP_MAX {
+        let pid = found[next];
+        next += 1;
+        for child in linux_children(pid) {
+            if found.contains(&child) || process_group(child) != group {
+                continue;
+            }
+            found.push(child);
+        }
+    }
+    found
+}
+
+/// The processes a process started, from the list the kernel keeps. A kernel built without it
+/// answers nothing, and the group is then the leader alone.
+#[cfg(target_os = "linux")]
+fn linux_children(pid: u32) -> Vec<u32> {
+    let path = format!("/proc/{pid}/task/{pid}/children");
+    let Ok(children) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    children
+        .split_ascii_whitespace()
+        .filter_map(|pid| pid.parse().ok())
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -422,6 +501,39 @@ impl ProcessInspector for FakeInspector {
 
     fn group_of(&self, pid: u32) -> Option<u32> {
         self.groups.lock().unwrap().get(&pid).copied()
+    }
+
+    /// The table holds parents, so the group is walked the way Linux walks it: what the leader
+    /// started, without what left its group. A process the test killed is left out, because
+    /// the OS lists no process that is gone.
+    fn group_members(&self, leader: u32) -> Vec<u32> {
+        let group = self.group_of(leader);
+        let children: Vec<(u32, Option<u32>)> = self
+            .processes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(pid, (_, parent))| (*pid, *parent))
+            .collect();
+        let mut found = vec![leader];
+        let mut next = 0;
+        while next < found.len() {
+            let pid = found[next];
+            next += 1;
+            let mut born: Vec<u32> = children
+                .iter()
+                .filter(|(child, parent)| {
+                    *parent == Some(pid)
+                        && !found.contains(child)
+                        && self.group_of(*child) == group
+                        && self.is_alive(*child)
+                })
+                .map(|(child, _)| *child)
+                .collect();
+            born.sort_unstable();
+            found.extend(born);
+        }
+        found
     }
 }
 
@@ -751,6 +863,9 @@ mod tests {
             }
             fn group_of(&self, _pid: u32) -> Option<u32> {
                 None
+            }
+            fn group_members(&self, leader: u32) -> Vec<u32> {
+                vec![leader]
             }
         }
         assert!(OnlyCwd(Some(PathBuf::from("/tmp"))).is_alive(7));
