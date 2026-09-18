@@ -11,6 +11,17 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-18
+
+A Neovim plugin, workspace keys, agent fixes
+
+```sh
+curl -fsSL https://domux.dev/install.sh | sh
+```
+
+After upgrading, run `domux server upgrade`: every pane keeps running, and until you do, a
+server and a client from different versions refuse each other.
+
 ### Added
 
 - `c` in the Navigator makes a workspace in the project of the row under the cursor, and `D`
@@ -206,7 +217,8 @@ branch; `domux import v1` reads what it saved.
 - Release builds for macOS (Apple silicon and Intel) and Linux (x86_64 and arm64), and a curl
   installer that verifies the checksum and sets up the hooks.
 
-[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/pranav7/domux/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/pranav7/domux/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/pranav7/domux/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/pranav7/domux/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/pranav7/domux/releases/tag/v0.1.0
