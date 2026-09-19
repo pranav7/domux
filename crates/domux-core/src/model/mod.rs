@@ -1891,6 +1891,34 @@ impl Model {
         self.remove_agent(id)
     }
 
+    /// Nothing has reported on a record that says it is in the middle of something, for long
+    /// enough that nothing is reporting on it at all (decision record 0058).
+    ///
+    /// `last_activity_at` is not touched: nothing happened, which is the whole of what this
+    /// says, and the field is what orders `sorted_agents`. Nothing goes unseen either, because
+    /// `attention` counts working to idle and this is working to unknown: a row nothing reports
+    /// on is not a row asking for you.
+    pub fn agent_quiet(&mut self, id: &AgentId) -> Vec<Event> {
+        let Some(a) = self.agent_mut(id) else {
+            return Vec::new();
+        };
+        let from = a.state;
+        // Through the table rather than around it, so `unknown` is the table's answer and not
+        // this function's.
+        let Some(to) = agent::transition(from, AgentEvent::Quiet) else {
+            return Vec::new();
+        };
+        if to == from {
+            return Vec::new();
+        }
+        a.state = to;
+        vec![Event::AgentStateChanged {
+            agent: id.clone(),
+            from,
+            to,
+        }]
+    }
+
     pub fn set_agent_pid(&mut self, id: &AgentId, pid: Option<u32>) {
         if let Some(a) = self.agent_mut(id) {
             a.pid = pid;

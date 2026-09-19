@@ -49,7 +49,9 @@ impl FromStr for AgentKind {
     }
 }
 
-/// `unknown` means an agent is running and nothing is reporting. Never guessed.
+/// `unknown` means an agent is running and nothing is reporting. Never guessed: it is where the
+/// observer starts a record no hook has named, and where `Quiet` puts a record whose hooks have
+/// stopped arriving (decision record 0058). Every other state is something a hook said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
@@ -104,10 +106,13 @@ pub enum AgentEvent {
     SessionEnd,
     /// The observer saw the process leave, or the pane exited or closed.
     ProcessGone,
+    /// Nothing has reported on a record in the middle of something for long enough that
+    /// nothing is reporting on it at all (decision record 0058).
+    Quiet,
 }
 
 impl AgentEvent {
-    pub const ALL: [AgentEvent; 11] = [
+    pub const ALL: [AgentEvent; 12] = [
         AgentEvent::Observed,
         AgentEvent::SessionStart,
         AgentEvent::UserPromptSubmit,
@@ -119,10 +124,14 @@ impl AgentEvent {
         AgentEvent::Stop,
         AgentEvent::SessionEnd,
         AgentEvent::ProcessGone,
+        AgentEvent::Quiet,
     ];
 
     pub fn is_hook(&self) -> bool {
-        !matches!(self, AgentEvent::Observed | AgentEvent::ProcessGone)
+        !matches!(
+            self,
+            AgentEvent::Observed | AgentEvent::ProcessGone | AgentEvent::Quiet
+        )
     }
 }
 
@@ -144,11 +153,20 @@ pub enum AgentSource {
 ///
 /// `Observed` never downgrades a state a hook set. It is the observer saying a process is
 /// there, and `(s, Observed) => s` is the whole of what the observer may do to a state.
+///
+/// `Quiet` is the one event that takes a state away rather than setting one. It moves the two
+/// states a hook has to leave, working and compacting, to `unknown`, which says an agent is
+/// running and nothing is reporting: the record is not idle, because nothing said the turn
+/// ended, and it is no longer working, because nothing says so either. Every resting state
+/// stands: a waiting row is blocked on you and stays until it is answered, and idle and unknown
+/// are where it would go (decision record 0058).
 pub fn transition(state: AgentState, event: AgentEvent) -> Option<AgentState> {
     use AgentEvent::*;
     use AgentState::*;
     Some(match (state, event) {
         (s, Observed) => s,
+        (Working | Compacting, Quiet) => Unknown,
+        (s, Quiet) => s,
         (_, SessionStart) => Idle,
         (_, UserPromptSubmit | PreToolUse | PostToolUse | PostCompact) => Working,
         (_, Notification) => Waiting,
@@ -286,11 +304,11 @@ mod tests {
 
     /// Every (state, event) pair, in `AgentEvent::ALL` order per row:
     /// Observed, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification,
-    /// PreCompact, PostCompact, Stop, SessionEnd, ProcessGone.
+    /// PreCompact, PostCompact, Stop, SessionEnd, ProcessGone, Quiet.
     ///
     /// `None` is the record ending. A state is a row and an event is a column in every row, so
     /// a new state adds a row here and a new event adds a column to all of them.
-    const TABLE: [(AgentState, [Option<AgentState>; 11]); 5] = [
+    const TABLE: [(AgentState, [Option<AgentState>; 12]); 5] = [
         (
             Working,
             [
@@ -305,6 +323,7 @@ mod tests {
                 Some(Idle),
                 None,
                 None,
+                Some(Unknown),
             ],
         ),
         (
@@ -321,6 +340,7 @@ mod tests {
                 Some(Idle),
                 None,
                 None,
+                Some(Waiting),
             ],
         ),
         (
@@ -337,6 +357,7 @@ mod tests {
                 Some(Idle),
                 None,
                 None,
+                Some(Unknown),
             ],
         ),
         (
@@ -353,6 +374,7 @@ mod tests {
                 Some(Idle),
                 None,
                 None,
+                Some(Idle),
             ],
         ),
         (
@@ -369,13 +391,14 @@ mod tests {
                 Some(Idle),
                 None,
                 None,
+                Some(Unknown),
             ],
         ),
     ];
 
     #[test]
     fn transition_matches_the_table_for_every_state_and_event_pair() {
-        assert_eq!(AgentEvent::ALL.len(), 11);
+        assert_eq!(AgentEvent::ALL.len(), 12);
         assert_eq!(AgentState::ALL.len(), 5);
         let mut checked = 0;
         for (state, expected) in TABLE {
@@ -388,7 +411,24 @@ mod tests {
                 checked += 1;
             }
         }
-        assert_eq!(checked, 55, "every pair was checked");
+        assert_eq!(checked, 60, "every pair was checked");
+    }
+
+    /// Quiet takes away the two states a hook has to leave and ends no record: a session
+    /// nothing reports on is still running, and `unknown` is what says so.
+    #[test]
+    fn quiet_moves_the_two_states_a_hook_has_to_leave_and_no_others() {
+        for state in AgentState::ALL {
+            let want = match state {
+                Working | Compacting => Unknown,
+                resting => resting,
+            };
+            assert_eq!(
+                transition(state, AgentEvent::Quiet),
+                Some(want),
+                "({state:?}, Quiet)"
+            );
+        }
     }
 
     /// The two events that end a record end it from every state there is, so no state can
