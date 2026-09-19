@@ -5,7 +5,7 @@
 //! reads or writes the author's own home directory.
 
 use domux_core::model::agent::AgentKind;
-use domux_server::agents::hooks::EVENTS_OPENCODE;
+use domux_server::agents::hooks::{EVENTS_CLAUDE, EVENTS_OPENCODE};
 use domux_server::agents::install::{
     apply, backup_path, hook_binary, hook_command, is_v1_line, is_v2_line, opencode_plugin, plan,
     preview,
@@ -635,9 +635,9 @@ fn a_plan_for_another_binary_replaces_every_line_the_previous_binary_wrote() {
     let p = plan(&Registry::builtin(), AgentKind::Claude, &dir, &new).unwrap();
     let old_command = hook_command(&old, AgentKind::Claude);
     let new_command = hook_command(&new, AgentKind::Claude);
-    assert_eq!(p.removed.len(), 9, "{p:?}");
+    assert_eq!(p.removed.len(), EVENTS_CLAUDE.len(), "{p:?}");
     assert!(p.removed.iter().all(|(_, c)| *c == old_command), "{p:?}");
-    assert_eq!(p.added.len(), 9, "{p:?}");
+    assert_eq!(p.added.len(), EVENTS_CLAUDE.len(), "{p:?}");
     assert!(p.added.iter().all(|(_, c)| *c == new_command), "{p:?}");
 
     apply(&p).unwrap();

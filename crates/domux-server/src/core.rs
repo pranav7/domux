@@ -2870,6 +2870,11 @@ impl Core {
             &mut self.agents.session_names,
             &self.agents.manifests,
         );
+        // A busy record nothing is reporting on, off the same tick. An agent has more ways to
+        // stop than it has hooks to say so, and a row that kept the working word for one of
+        // them said an agent was busy that was sitting at a prompt (decision record 0058).
+        let quiet = crate::agents::quiet::poll(&mut self.model, std::time::SystemTime::now());
+        changed |= self.agents_changed(quiet);
         let minute = self.deps.clock.now().format("%H:%M").to_string();
         if self.last_minute.as_ref() != Some(&minute) {
             self.last_minute = Some(minute);
