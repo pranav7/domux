@@ -84,6 +84,10 @@ impl FactProvider for PrProvider {
         ProviderScope::Workspace
     }
 
+    fn follows_agents(&self) -> bool {
+        true
+    }
+
     fn fetch(&self, target: &FactTarget) -> Result<Option<Fact>, String> {
         // The branch fact has not arrived, or the workspace has no branch: there is nothing
         // to look a pull request up by, and asking `gh` without a head would answer about
@@ -104,6 +108,12 @@ impl FactProvider for PrProvider {
             // saw last. `Workspace::is_untouched` already reads a slot on its own branch as
             // having done nothing, so a number here contradicts the model and costs the row
             // the `◌` that says the slot is free.
+            return Ok(None);
+        }
+        if Some(branch) == target.workspace_branch.as_deref() {
+            // An agent on its workspace's branch has its workspace's pull request, and the
+            // workspace's row already draws it. Asking again would be a second `gh` call a
+            // minute for an answer nothing shows.
             return Ok(None);
         }
         // A workspace whose slot was removed outside domux is absent, not an error: `gh`

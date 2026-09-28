@@ -1776,7 +1776,7 @@ impl Core {
         question: impl FnOnce(&RenderInput) -> R,
     ) -> Option<R> {
         let now = self.deps.clock.now();
-        let agents = agents_view(&self.model, &mut self.agents, now);
+        let agents = agents_view(&self.model, &self.facts, &mut self.agents, now);
         let view = self.model.client(client)?;
         let input = RenderInput {
             model: &self.model,
@@ -3285,7 +3285,7 @@ impl Core {
         // One view for every client on this server: the agent list is the same list
         // wherever it is drawn, and the glyph is the core's frame, not each client's.
         let now = self.deps.clock.now();
-        let agents = agents_view(&self.model, &mut self.agents, now);
+        let agents = agents_view(&self.model, &self.facts, &mut self.agents, now);
         for view in self.model.clients.clone() {
             let Some(conn) = self.clients.get_mut(&view.id) else {
                 continue;
@@ -3713,10 +3713,12 @@ fn slot_directory(root: &Path, slot: u32) -> PathBuf {
 /// sidebar and the agents overlay draw one agent one way.
 pub(crate) fn agents_view(
     model: &Model,
+    facts: &FactRegistry,
     state: &mut crate::agents::AgentsState,
     now: DateTime<Local>,
 ) -> crate::render::agents_box::AgentsView {
     use crate::render::agents_box::{AgentEntry, AgentsView};
+    use domux_core::facts::{FACT_BRANCH, FACT_PR};
     let sorted = model.sorted_agents();
     let mut entries = Vec::with_capacity(sorted.len());
     for a in sorted {
@@ -3727,6 +3729,14 @@ pub(crate) fn agents_view(
         } else {
             ""
         };
+        // The agent's own branch only when it is not its workspace's, which the workspace row
+        // above already draws (decision record 0061).
+        let text = |key: FactKey| facts.get(&key).map(|f| f.text.clone());
+        let branch = text(FactKey::agent(&a.id, FACT_BRANCH))
+            .filter(|b| text(FactKey::workspace(&a.workspace, FACT_BRANCH)).as_ref() != Some(b));
+        let pr = branch
+            .as_ref()
+            .and_then(|_| facts.get(&FactKey::agent(&a.id, FACT_PR)).cloned());
         entries.push(AgentEntry {
             id: a.id.clone(),
             pane_name: a
@@ -3746,6 +3756,8 @@ pub(crate) fn agents_view(
             place_in_project: crate::agents::context::place_in_project(model, a),
             last_activity_at: a.last_activity_at.clone(),
             word,
+            branch,
+            pr,
         });
     }
     AgentsView {
@@ -6037,7 +6049,7 @@ mod tests {
     /// the pool turns on, and it is the same function.
     fn drawn(core: &mut Core) -> crate::render::agents_box::AgentsView {
         let now = core.deps.clock.now();
-        agents_view(&core.model, &mut core.agents, now)
+        agents_view(&core.model, &core.facts, &mut core.agents, now)
     }
 
     /// A core and the pane its implicit workspace starts with, for a hook to report from.

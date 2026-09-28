@@ -1204,6 +1204,8 @@ mod tests {
             place_in_project: "main › pr1".into(),
             last_activity_at: "2026-09-04T14:30:00+01:00".into(),
             word: "",
+            branch: None,
+            pr: None,
         });
         view
     }

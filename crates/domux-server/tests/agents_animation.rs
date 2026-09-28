@@ -76,6 +76,18 @@ async fn open_overlay(h: &mut Harness) -> String {
     .await
 }
 
+/// The agents overlay, `leader a`, which is the one surface that still draws the working
+/// word: the Navigator draws the glyph alone (decision records 0038 and 0061).
+async fn open_agents_overlay(h: &mut Harness) -> String {
+    h.api("agents.open", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Agents"),
+        Duration::from_secs(2),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn the_glyph_turns_while_an_agent_works_and_stands_still_when_it_stops() {
     let mut h = Harness::start(Config::default(), 100, 24).await;
@@ -113,7 +125,7 @@ async fn the_word_stands_still_while_the_glyph_turns() {
     let pane = h.focused_pane(h.client.clone());
     h.report(pane.clone(), AgentKind::Claude, CLAUDE_WORKS)
         .await;
-    let f = open_overlay(&mut h).await;
+    let f = open_agents_overlay(&mut h).await;
     let first = word_on(row_of(&f, "claude ")).to_string();
 
     // Fourteen looks rather than eight, for the same nine turns the test above samples: the
@@ -155,7 +167,7 @@ async fn the_band_lights_the_working_word_and_moves_along_it() {
     let pane = h.focused_pane(h.client.clone());
     h.report(pane.clone(), AgentKind::Claude, CLAUDE_WORKS)
         .await;
-    let f = open_overlay(&mut h).await;
+    let f = open_agents_overlay(&mut h).await;
 
     // Where the word is: the screen row the claude row is drawn on, and the cells from the
     // one after the glyph's space to the ellipsis. A frame row is bracketed by `|`, so cell
@@ -268,7 +280,7 @@ async fn two_working_agents_never_share_a_word() {
     let second = h.focused_pane(h.client.clone());
     h.report(first, AgentKind::Claude, CLAUDE_WORKS).await;
     h.report(second, AgentKind::Codex, CODEX_WORKS).await;
-    open_overlay(&mut h).await;
+    open_agents_overlay(&mut h).await;
     let f = h
         .wait_for(
             h.client.clone(),

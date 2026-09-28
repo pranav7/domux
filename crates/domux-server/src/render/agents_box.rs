@@ -10,6 +10,7 @@ use crate::render::list_box::ListRow;
 use crate::render::projects_box::{self, INDENT};
 use crate::render::theme::{self, color};
 use chrono::{DateTime, Local};
+use domux_core::facts::Fact;
 use domux_core::fuzzy::FIELD_SEPARATOR;
 use domux_core::ids::{AgentId, WorkspaceId};
 use domux_core::model::agent::{AgentKind, AgentState};
@@ -33,8 +34,14 @@ pub const RECAP_LINES: usize = 2;
 /// asked for one on 2026-09-11, so the glyph and the dot both sit one cell after the name
 /// (decision record 0038).
 const GAP: &str = " ";
-/// Between the activity and what the switcher adds after it: the kind, the tab and the pane.
+/// Between the activity and what the switcher adds after it: the agent's branch and pull
+/// request.
 const TAIL_GAP: &str = "  ";
+/// Between the branch and the pull request, as the workspace row writes them.
+const TAIL_SEP: &str = " · ";
+/// How much of the name the switcher keeps before the branch gives way to it. The name says
+/// which agent this is, and a long branch must not push it out of the row.
+const NAME_FLOOR: usize = 16;
 
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
 /// hollow glyph on an untouched slot, so every name in the box starts in one column.
@@ -50,7 +57,8 @@ pub enum RowForm {
     /// One line under its workspace in the Navigator's sidebar: the arrow, the name, the
     /// activity. The rows above it say the project and the workspace (decision record 0030).
     Nested,
-    /// The same in the switcher, which has the width for the kind, the tab and the recap.
+    /// The same in the switcher, which has the width for the agent's branch and pull request
+    /// and the recap.
     NestedWide,
 }
 
@@ -60,11 +68,13 @@ impl RowForm {
         matches!(self, RowForm::Nested | RowForm::NestedWide)
     }
 
-    /// Whether a working or compacting row carries its word after the glyph. The two sidebar
-    /// forms draw the glyph alone: the sidebar is narrow and the turning glyph says enough
-    /// there. The overlays have the width and keep the word (decision record 0038).
+    /// Whether a working or compacting row carries its word after the glyph. Only the agents
+    /// overlay does. The sidebar is narrow and the turning glyph says enough there (decision
+    /// record 0038), and the switcher draws the sidebar's row with the agent's branch where
+    /// the word was, because the word added clutter and nothing a reader acts on (MUX-55,
+    /// decision record 0061).
     fn shows_word(self) -> bool {
-        matches!(self, RowForm::Overlay | RowForm::NestedWide)
+        matches!(self, RowForm::Overlay)
     }
 }
 
@@ -96,6 +106,12 @@ pub struct AgentEntry {
     /// The working word this agent holds, or `""` for a state that shows none. Never read
     /// outside `working`, so a stale word cannot reach a row that must not carry one.
     pub word: &'static str,
+    /// The branch the agent's own directory is on, when that is not its workspace's branch:
+    /// an agent that made a worktree of its own. Absent when the agent is on its workspace's
+    /// branch, because the workspace row above already says it (decision record 0061).
+    pub branch: Option<String>,
+    /// The pull request for `branch`. Absent whenever `branch` is.
+    pub pr: Option<Fact>,
 }
 
 /// What the renderer reads. The core builds one per frame.
@@ -270,8 +286,9 @@ fn row(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm, width: u
 ///
 /// The place is not on it. The project is the header above and the workspace is the row above
 /// that, so repeating either here is the reading MUX-21 complained of, one level deeper. What
-/// the switcher adds is what the sidebar has no room for and the rows above never said: which
-/// kind this is, which tab it is in, and what it did last.
+/// the switcher adds is what the sidebar has no room for and the rows above never said: the
+/// branch and pull request of an agent working in a worktree of its own, and what it did last
+/// (MUX-55, decision record 0061).
 fn nested_row(
     theme: &Theme,
     a: &AgentEntry,
@@ -286,7 +303,17 @@ fn nested_row(
         Style::default().fg(color(theme, Role::FaintText)),
     )];
     let tail = if form == RowForm::NestedWide {
-        kind_tab_and_pane(theme, a)
+        let name = display_width(&label_text(a)).min(NAME_FLOOR);
+        let activity: usize = activity(theme, a, view, form)
+            .iter()
+            .map(|s| display_width(&s.content))
+            .sum();
+        let activity = if activity == 0 {
+            0
+        } else {
+            activity + display_width(GAP)
+        };
+        branch_and_pr(theme, a, room.saturating_sub(name + activity))
     } else {
         Vec::new()
     };
@@ -313,43 +340,46 @@ fn nested_row(
     ListRow::selectable(row_key(&a.id), filter_text(a), lines)
 }
 
-/// `  claude › pr1 › node` after the activity, in the switcher only.
+/// `  feature/eng-533 · PR#1287` after the activity, in the switcher only, in `room` cells.
 ///
-/// The kind is dropped when the row's label is already the kind, which is the rule `line_two`
-/// follows for the same reason: an unnamed agent would otherwise read `codex  codex › pr2`.
-/// The tab is dropped when the record names no pane the model still holds, which is what
-/// `place_in_project` already says by leaving it off.
-fn kind_tab_and_pane(theme: &Theme, a: &AgentEntry) -> Vec<Span<'static>> {
-    let tab = a.place_in_project.rsplit_once(" › ").map(|(_, t)| t);
-    let mut spans = vec![Span::raw(TAIL_GAP)];
-    if a.name.is_some() {
-        spans.push(Span::styled(
-            a.kind.as_str(),
-            Style::default().fg(theme::agent_color(theme, a.kind)),
-        ));
-    }
-    let separator = Style::default().fg(color(theme, Role::Separator));
-    let dim = Style::default().fg(color(theme, Role::DimText));
-    if let Some(tab) = tab {
-        if a.name.is_some() {
-            spans.push(Span::styled(" › ", separator));
-        }
-        spans.push(Span::styled(tab.to_string(), dim));
-    }
-    if let Some(pane) = &a.pane_name {
-        spans.push(Span::styled(" › ", separator));
-        spans.push(Span::styled(pane.clone(), dim));
-    }
-    // Nothing to add, so not even the gap: a trailing pair of spaces would take two cells of
-    // the name's budget for a field that is not there.
-    if spans.len() == 1 {
+/// The workspace row's colours and its order. The branch gives way first and the number never
+/// does: with no room for the number the whole tail is dropped rather than drawn in part. An
+/// agent on its workspace's branch has no `branch` here, so the row adds nothing.
+fn branch_and_pr(theme: &Theme, a: &AgentEntry, room: usize) -> Vec<Span<'static>> {
+    let Some(branch) = &a.branch else {
         return Vec::new();
+    };
+    let pr = a.pr.as_ref();
+    let pr_width = pr
+        .map(|f| display_width(TAIL_SEP) + display_width(&f.text))
+        .unwrap_or(0);
+    let fixed = display_width(TAIL_GAP) + pr_width;
+    if room <= fixed {
+        return Vec::new();
+    }
+    let branch = truncate_with_ellipsis(branch, room - fixed);
+    if branch.is_empty() {
+        return Vec::new();
+    }
+    let mut spans = vec![
+        Span::raw(TAIL_GAP),
+        Span::styled(branch, Style::default().fg(color(theme, Role::Branch))),
+    ];
+    if let Some(pr) = pr {
+        spans.push(Span::styled(
+            TAIL_SEP,
+            Style::default().fg(color(theme, Role::Separator)),
+        ));
+        spans.push(Span::styled(
+            pr.text.clone(),
+            projects_box::pr_style(theme, pr.state.as_ref()),
+        ));
     }
     spans
 }
 
-/// What `/` matches: the session name when there is one, the kind, the place and the pane's
-/// name. Each field can carry a match on its own, so `codex` finds every codex and `auth` finds
+/// What `/` matches: the session name when there is one, the kind, the place, the pane's
+/// name, and the agent's own branch and pull request when it has them. Each field can carry a match on its own, so `codex` finds every codex and `auth` finds
 /// the workspace (interface spec 6.8). A term of the filter matches within one field and never
 /// across two, as it does in the Projects box (decision record 0060).
 fn filter_text(a: &AgentEntry) -> String {
@@ -359,6 +389,8 @@ fn filter_text(a: &AgentEntry) -> String {
         .into_iter()
         .chain([a.kind.as_str(), a.place_with_tab.as_str()])
         .chain(a.pane_name.as_deref())
+        .chain(a.branch.as_deref())
+        .chain(a.pr.as_ref().map(|f| f.text.as_str()))
         .collect();
     fields.join(&FIELD_SEPARATOR.to_string())
 }
@@ -377,10 +409,7 @@ fn line_one(
     form: RowForm,
     width: usize,
 ) -> Vec<Span<'static>> {
-    let label = a
-        .name
-        .clone()
-        .unwrap_or_else(|| a.kind.as_str().to_string());
+    let label = label_text(a);
     let activity = activity(theme, a, view, form);
     let activity_width: usize = activity.iter().map(|s| display_width(&s.content)).sum();
     let lead = if activity.is_empty() {
@@ -400,16 +429,23 @@ fn line_one(
     spans
 }
 
+/// The session name, or the kind standing in for one.
+fn label_text(a: &AgentEntry) -> String {
+    a.name
+        .clone()
+        .unwrap_or_else(|| a.kind.as_str().to_string())
+}
+
 /// The name in `text` bold, a kind standing in for one in the agent's colour, and both
 /// `faint_text` on an unknown row (interface spec 6.2).
 ///
-/// The Navigator's plain `Nested` row is the exception: it has no second line to say the kind
-/// on the way `line_two` and the switcher's tail do, so there a name keeps the kind's colour
-/// too, and a rename never erases which kind is running (MUX-42).
+/// The Navigator's two nested forms are the exception: they have no second line to say the
+/// kind on the way `line_two` does, so there a name keeps the kind's colour too, and a rename
+/// never erases which kind is running (MUX-42, and MUX-55 for the switcher).
 fn label_style(theme: &Theme, a: &AgentEntry, form: RowForm) -> Style {
     match a.state {
         AgentState::Unknown => Style::default().fg(color(theme, Role::FaintText)),
-        _ if a.name.is_some() && form != RowForm::Nested => Style::default()
+        _ if a.name.is_some() && !form.nested() => Style::default()
             .fg(color(theme, Role::Text))
             .add_modifier(Modifier::BOLD),
         _ => Style::default()
@@ -655,6 +691,7 @@ pub fn relative_time(then: &str, now: DateTime<Local>) -> String {
 mod tests {
     use super::*;
     use crate::render::list_box::filter_rows;
+    use domux_core::facts::FactState;
     use domux_core::ids::AgentId;
     use domux_core::model::agent::{AgentKind, AgentState};
     use ratatui::style::Modifier;
@@ -686,6 +723,8 @@ mod tests {
             place_in_project: "auth cleanup › pr1".into(),
             last_activity_at: "2026-09-04T14:20:00+00:00".into(),
             word: "Percolating",
+            branch: None,
+            pr: None,
         }
     }
 
@@ -1016,12 +1055,12 @@ mod tests {
         );
     }
 
-    /// The two sidebar forms draw a working or compacting row's glyph without its word, so
-    /// the row stays short where the box is narrow; the overlays keep the word (decision
-    /// record 0038). The glyph is the same in every form: the star's frame while working, the
-    /// arrow while compacting (decision record 0050).
+    /// The two sidebar forms and the switcher draw a working or compacting row's glyph without
+    /// its word; the agents overlay keeps the word (decision records 0038 and 0061). The glyph
+    /// is the same in every form: the star's frame while working, the arrow while compacting
+    /// (decision record 0050).
     #[test]
-    fn the_sidebar_forms_draw_the_glyph_alone_and_the_overlays_keep_the_word() {
+    fn the_navigator_forms_draw_the_glyph_alone_and_the_agents_overlay_keeps_the_word() {
         for (state, glyph, word) in [
             (AgentState::Working, "✶", "Percolating…"),
             (AgentState::Compacting, "↓", "Compacting…"),
@@ -1045,12 +1084,113 @@ mod tests {
                 format!("auth-cleanup {glyph} {word}"),
                 "{state}"
             );
-            assert!(
-                first(RowForm::NestedWide).starts_with(&format!("└ auth-cleanup {glyph} {word}")),
-                "{state}: {}",
-                first(RowForm::NestedWide)
+            assert_eq!(
+                first(RowForm::NestedWide),
+                format!("└ auth-cleanup {glyph}"),
+                "{state}: the switcher dropped the word too (MUX-55)"
             );
         }
+    }
+
+    fn a_pull_request(state: FactState) -> Fact {
+        Fact::new(
+            "PR#1287",
+            Some(state),
+            "2026-09-04T14:30:00+00:00",
+            std::time::Duration::from_secs(600),
+        )
+    }
+
+    /// The switcher says the branch and pull request of an agent working in a worktree of its
+    /// own, where the kind, the tab and the pane used to be. A name keeps the kind's colour, as
+    /// it does in the sidebar (MUX-55, decision record 0061).
+    #[test]
+    fn the_switcher_row_says_the_agent_s_own_branch_and_pull_request_after_the_glyph() {
+        let mut e = entry(
+            AgentState::Working,
+            Some("audit-planning"),
+            AgentKind::Claude,
+        );
+        e.pane_name = Some("claude".into());
+        e.branch = Some("feature/eng-533-session-polish".into());
+        e.pr = Some(a_pull_request(FactState::Open));
+        let v = view(vec![e]);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::NestedWide, 80);
+        assert_eq!(
+            text(&row)[0],
+            "└ audit-planning ✶  feature/eng-533-session-polish · PR#1287"
+        );
+        let spans = &row.lines[0].spans;
+        let theme = Theme::domux();
+        assert_eq!(
+            spans[1].style.fg,
+            Some(theme::agent_color(theme, AgentKind::Claude)),
+            "a name keeps the kind's colour, since nothing else on the row says the kind"
+        );
+        let branch = spans
+            .iter()
+            .find(|s| s.content.starts_with("feature/"))
+            .unwrap();
+        assert_eq!(branch.style.fg, Some(color(theme, Role::Branch)));
+        let pr = spans.iter().find(|s| s.content == "PR#1287").unwrap();
+        assert_eq!(pr.style.fg, Some(color(theme, Role::PrOpen)));
+        assert!(
+            !text(&row)[0].contains("claude"),
+            "no kind, tab or pane on the row: {:?}",
+            text(&row)[0]
+        );
+        assert!(
+            row.filter_text.contains("feature/eng-533-session-polish")
+                && row.filter_text.contains("pr#1287"),
+            "/ finds an agent by its branch and its number: {}",
+            row.filter_text
+        );
+    }
+
+    /// An agent on its workspace's branch has no branch of its own to say, and the row adds
+    /// nothing after the glyph.
+    #[test]
+    fn an_agent_on_its_workspace_s_branch_adds_nothing_after_the_glyph() {
+        let v = view(vec![entry(AgentState::Idle, None, AgentKind::Codex)]);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::NestedWide, 80);
+        assert_eq!(text(&row)[0], "└ codex");
+    }
+
+    /// A narrow switcher shortens the branch first, keeps the number whole, keeps the start of
+    /// the name, and drops the tail entirely before it would draw the number in part.
+    #[test]
+    fn a_long_branch_gives_way_before_the_name_and_the_number() {
+        let mut e = entry(
+            AgentState::Waiting,
+            Some("audit-planning-phase"),
+            AgentKind::Claude,
+        );
+        e.branch = Some("feature/eng-533-537-538-session-polish".into());
+        e.pr = Some(a_pull_request(FactState::Draft));
+        let v = view(vec![e]);
+        let at = |width: u16| {
+            text(&one_row(
+                Theme::domux(),
+                &v.agents[0],
+                &v,
+                RowForm::NestedWide,
+                width,
+            ))[0]
+                .clone()
+        };
+        let row = at(48);
+        assert!(
+            row.starts_with("└ audit-planning-… ◉  feature/") && row.ends_with("… · PR#1287"),
+            "{row:?}"
+        );
+        assert!(row.contains("feature/"), "{row:?}");
+        assert!(display_width(&row) <= 48, "{row:?}");
+        let narrow = at(24);
+        assert!(
+            !narrow.contains("PR#"),
+            "no room for the number, so no tail: {narrow:?}"
+        );
+        assert!(narrow.starts_with("└ audit-planning"), "{narrow:?}");
     }
 
     /// A dot is drawn only while an agent is waiting on you (decision record 0030). Every other

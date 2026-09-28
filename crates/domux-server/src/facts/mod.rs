@@ -59,6 +59,7 @@ pub fn scope_lives(key: &FactKey, model: &Model) -> bool {
     match &key.scope {
         FactScope::Workspace(id) => model.workspace(id).is_some(),
         FactScope::Project(id) => model.project(id).is_some(),
+        FactScope::Agent(id) => model.agent(id).is_some(),
         FactScope::Server => true,
     }
 }
@@ -110,6 +111,11 @@ pub struct FactTarget {
     /// The branch fact if one has arrived, so the pull request provider does not shell out
     /// to git a second time.
     pub branch: Option<String>,
+    /// For an agent's target, the branch its workspace is on, when that has arrived. An agent
+    /// on the same branch as its workspace has the same pull request, which the workspace's
+    /// own row already draws, so the pull request provider does not ask `gh` twice for it.
+    /// `None` on every other target.
+    pub workspace_branch: Option<String>,
     /// The core's clock, for a provider to stamp `Fact::fetched_at` with. Never `Local::now()`:
     /// a provider that reads its own clock can disagree with the registry's freshness check,
     /// which is measured against this same value (see `is_fresh_at`), and the two silently
@@ -129,6 +135,12 @@ pub trait FactProvider: Send + Sync {
     /// Runs on a blocking task. `Ok(None)` means the fact is absent, which is different
     /// from `Err`: absent renders as nothing, an error also writes to the log.
     fn fetch(&self, target: &FactTarget) -> Result<Option<Fact>, String>;
+    /// Whether a workspace provider also looks at each agent's own working directory, which
+    /// can be a worktree the agent made for itself rather than its workspace's (MUX-55,
+    /// decision record 0061). The branch and the pull request do; nothing else has to.
+    fn follows_agents(&self) -> bool {
+        false
+    }
 }
 
 /// Who observes what, what has arrived, and when each target was last looked at.
@@ -357,6 +369,7 @@ fn targets(
             default_branch: None,
             handle: None,
             branch: None,
+            workspace_branch: None,
             now,
         }];
     }
@@ -375,6 +388,7 @@ fn targets(
                 default_branch: default_branch.clone(),
                 handle: None,
                 branch: None,
+                workspace_branch: None,
                 now,
             }),
             ProviderScope::Workspace => {
@@ -389,6 +403,7 @@ fn targets(
                         default_branch: default_branch.clone(),
                         handle: Some(w.handle.to_string()),
                         branch,
+                        workspace_branch: None,
                         now,
                     });
                 }
@@ -396,7 +411,47 @@ fn targets(
             ProviderScope::Server => unreachable!("returned above"),
         }
     }
+    if provider.scope() == ProviderScope::Workspace && provider.follows_agents() {
+        out.extend(agent_targets(model, provider, facts, now));
+    }
     out
+}
+
+/// One target per agent, at the directory the agent last reported from. The workspace's
+/// project gives the root and the default branch, and the workspace its handle, so the pull
+/// request provider applies the same refusals to an agent that it applies to its workspace.
+/// An agent in a plain folder project has no branch, the same as its workspace.
+fn agent_targets(
+    model: &Model,
+    provider: &dyn FactProvider,
+    facts: &HashMap<FactKey, Fact>,
+    now: DateTime<Local>,
+) -> Vec<FactTarget> {
+    let branch_of = |key: FactKey| facts.get(&key).map(|f| f.text.clone());
+    model
+        .agents
+        .iter()
+        .filter_map(|a| {
+            let project = model.project_of_workspace(&a.workspace)?;
+            let w = model.workspace(&a.workspace)?;
+            let domux_core::model::ProjectKind::Git { default_branch } = &project.kind else {
+                return None;
+            };
+            Some(FactTarget {
+                key: FactKey::agent(&a.id, provider.name()),
+                path: a.cwd.clone(),
+                root: project.root.clone(),
+                default_branch: Some(default_branch.clone()),
+                handle: Some(w.handle.to_string()),
+                branch: branch_of(FactKey::agent(&a.id, domux_core::facts::FACT_BRANCH)),
+                workspace_branch: branch_of(FactKey::workspace(
+                    &w.id,
+                    domux_core::facts::FACT_BRANCH,
+                )),
+                now,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -506,6 +561,101 @@ mod tests {
             "not due again inside the interval"
         );
         assert_eq!(r.due(&m, at(1)).len(), 2, "due again after it");
+    }
+
+    /// A provider that follows agents, like the branch and the pull request.
+    struct Follower;
+
+    impl FactProvider for Follower {
+        fn name(&self) -> &str {
+            FACT_BRANCH
+        }
+        fn interval(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn scope(&self) -> ProviderScope {
+            ProviderScope::Workspace
+        }
+        fn fetch(&self, _t: &FactTarget) -> Result<Option<Fact>, String> {
+            Ok(None)
+        }
+        fn follows_agents(&self) -> bool {
+            true
+        }
+    }
+
+    /// An agent in a worktree of its own is on a branch its workspace is not, so the branch
+    /// and the pull request look at the directory the agent reported from as well as at the
+    /// workspace (MUX-55). A provider that does not ask for agents gets none.
+    #[test]
+    fn a_provider_that_follows_agents_gets_one_target_per_agent_at_its_own_directory() {
+        use domux_core::ids::{AgentId, PaneId};
+        use domux_core::model::agent::{Agent, AgentKind, AgentSource};
+        let mut m = model_with_two_workspaces();
+        let w = m.projects[0].workspaces[1].clone();
+        let cwd = w.path.join(".claude/worktrees/session-polish");
+        m.agents.push(Agent::new(
+            AgentId("a_5e21".into()),
+            AgentKind::Claude,
+            w.id.clone(),
+            PaneId("p_0001".into()),
+            cwd.clone(),
+            AgentSource::Hook,
+            "2026-09-05T10:00:00+01:00",
+        ));
+        let mut r = FactRegistry::new();
+        r.register(Arc::new(Follower));
+        r.set(
+            FactKey::workspace(&w.id, FACT_BRANCH),
+            Some(Fact::new(
+                "feat/audit-harness",
+                None,
+                "2026-09-05T10:00:00+01:00",
+                Duration::from_secs(30),
+            )),
+        );
+        let due = r.due(&m, at(0));
+        assert_eq!(due.len(), 3, "two workspaces and one agent");
+        let (_, agent) = due
+            .iter()
+            .find(|(_, t)| t.key == FactKey::agent(&AgentId("a_5e21".into()), FACT_BRANCH))
+            .expect("a target for the agent");
+        assert_eq!(agent.path, cwd, "the agent's own directory");
+        assert_eq!(agent.handle.as_deref(), Some("workspace-1"));
+        assert_eq!(agent.default_branch.as_deref(), Some("main"));
+        assert_eq!(
+            agent.workspace_branch.as_deref(),
+            Some("feat/audit-harness"),
+            "the workspace's branch rides along, so the pull request is not asked for twice"
+        );
+
+        let mut plain = FactRegistry::new();
+        plain.register(Arc::new(Watcher {
+            name: FACT_PR.into(),
+            scope: ProviderScope::Workspace,
+        }));
+        assert_eq!(
+            plain.due(&m, at(0)).len(),
+            2,
+            "a provider that does not follow agents looks at the workspaces alone"
+        );
+
+        m.agents.clear();
+        r.set(
+            FactKey::agent(&AgentId("a_5e21".into()), FACT_BRANCH),
+            Some(Fact::new(
+                "feature/eng-533",
+                None,
+                "2026-09-05T10:00:00+01:00",
+                Duration::from_secs(30),
+            )),
+        );
+        r.forget_deleted(&m);
+        assert_eq!(
+            r.get(&FactKey::agent(&AgentId("a_5e21".into()), FACT_BRANCH)),
+            None,
+            "an agent's facts go with its record"
+        );
     }
 
     /// The interval and the in flight flag are two separate refusals, and the test above
