@@ -26,8 +26,8 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // the box's height; the width answers first because it does not depend on the rows.
     let inner_width = content_width(overlay::list_overlay_width(screen), OVERLAY_PAD);
     // The cursor carries the fill while focus is in the box. With no cursor it is the
-    // workspace this client is in (domain model, section 3.3), or the first match once the
-    // reader has typed (decision record 0059).
+    // workspace this client is in (domain model, section 3.3), or the best match once the
+    // reader has typed (decision records 0059 and 0060).
     let rows = rows_at(
         input.theme,
         input.model,

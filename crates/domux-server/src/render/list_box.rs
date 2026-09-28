@@ -4,6 +4,7 @@
 
 use crate::render::boxed::{put_within, Boxed};
 use crate::render::theme::color;
+use domux_core::fuzzy;
 use domux_core::text::{
     display_width, sanitize_for_display, truncate_with_ellipsis, wrap_to_width,
 };
@@ -20,7 +21,7 @@ pub struct ListRow {
     /// The object the cursor acts on: a workspace id in M2, an agent id in M3. `None` means
     /// the cursor never rests here (interface spec 12.14).
     pub key: Option<String>,
-    /// What `/` matches against, lower-cased by the caller's builder.
+    /// What `/` matches against: the row's fields, parted by `fuzzy::FIELD_SEPARATOR`.
     pub filter_text: String,
 }
 
@@ -376,8 +377,9 @@ fn draw_line(
     }
 }
 
-/// Keeps the rows whose `filter_text` contains `filter`, without case, and drops a header
-/// whose rows all went with it. M3's Agents box filters the same way.
+/// Keeps the rows whose `filter_text` the filter matches, and drops a header whose rows all
+/// went with it. The match is `domux_core::fuzzy::score`: every term of the filter, its letters
+/// in order, in one field of the row (decision record 0060). M3's Agents box filters the same way.
 ///
 /// The blanks are rebuilt rather than kept, because the blank above a match is usually the
 /// separator that led the group the filter just emptied. They are rebuilt to the grammar the
@@ -385,8 +387,7 @@ fn draw_line(
 /// it whatever `needs_gap_between` asks for. Keeping a blank the builder would not have
 /// written would let `/` change the shape of the list and not only its contents.
 pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
-    let filter = filter.trim().to_lowercase();
-    if filter.is_empty() {
+    if filter.trim().is_empty() {
         return rows.to_vec();
     }
     let mut out: Vec<ListRow> = Vec::new();
@@ -398,7 +399,7 @@ pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
             }
             continue;
         }
-        if !row.filter_text.contains(&filter) {
+        if fuzzy::score(filter, &row.filter_text).is_none() {
             continue;
         }
         // A header opens a group and takes the blank before it; the first row under it sits
@@ -417,6 +418,25 @@ pub fn filter_rows(rows: &[ListRow], filter: &str) -> Vec<ListRow> {
         out.push(row.clone());
     }
     out
+}
+
+/// The key of the row the filter matches best, the first of them on a tie, or `None` when it
+/// matches none. The list keeps its order; this is where the fill goes when nothing else put it
+/// somewhere, so the row Enter opens is the one the letters typed so far name best.
+pub fn best_match<'a>(rows: &'a [ListRow], filter: &str) -> Option<&'a str> {
+    let mut best: Option<(i32, &str)> = None;
+    for row in rows {
+        let Some(key) = row.key.as_deref() else {
+            continue;
+        };
+        let Some(score) = fuzzy::score(filter, &row.filter_text) else {
+            continue;
+        };
+        if best.is_none_or(|(b, _)| score > b) {
+            best = Some((score, key));
+        }
+    }
+    best.map(|(_, key)| key)
 }
 
 /// The first visible line so that the whole filled row is in view, moving as little as
@@ -445,4 +465,49 @@ pub fn scroll_to_show(rows: &[ListRow], filled: Option<usize>, height: u16, scro
         scroll = end - height;
     }
     scroll.min(max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(texts: &[(&str, &str)]) -> Vec<ListRow> {
+        texts
+            .iter()
+            .map(|(key, text)| ListRow::selectable(*key, *text, Vec::new()))
+            .collect()
+    }
+
+    #[test]
+    fn filter_rows_keeps_letters_in_order_with_letters_between() {
+        let all = rows(&[("a", "tod-agent-perf"), ("b", "billing")]);
+        let kept = filter_rows(&all, "todagent");
+        let keys: Vec<_> = kept.iter().filter_map(|r| r.key.as_deref()).collect();
+        assert_eq!(keys, ["a"]);
+    }
+
+    #[test]
+    fn best_match_prefers_the_better_match_to_the_first() {
+        let all = rows(&[("scattered", "a user that helps"), ("whole", "auth")]);
+        assert_eq!(best_match(&all, "auth"), Some("whole"));
+    }
+
+    #[test]
+    fn best_match_takes_the_first_on_a_tie() {
+        let all = rows(&[("one", "workspace-1"), ("two", "workspace-2")]);
+        assert_eq!(best_match(&all, "workspace"), Some("one"));
+    }
+
+    #[test]
+    fn best_match_is_none_when_nothing_matches() {
+        let all = rows(&[("one", "workspace-1")]);
+        assert_eq!(best_match(&all, "zzz"), None);
+    }
+
+    #[test]
+    fn best_match_skips_headers_and_blanks() {
+        let mut all = vec![ListRow::header(Vec::new()), ListRow::blank()];
+        all.extend(rows(&[("one", "auth")]));
+        assert_eq!(best_match(&all, "auth"), Some("one"));
+    }
 }

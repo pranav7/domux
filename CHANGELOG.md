@@ -18,6 +18,11 @@ notes, and a missing or empty section stops the release. Versions follow
   Enter goes there. Down and Up, or `C-n` and `C-p`, pick among the matches. Tab moves to the
   list, where `n`, `c`, `D`, `X` and `?` act on the row as before and `/` comes back to the field.
   Esc clears what you typed, and closes the switcher when there is nothing to clear.
+- The filter is fuzzy. The letters you type need only come in order, so `todagent` finds
+  `tod-agent-perf`, and words split by a space can match different parts of a row, so
+  `audrey tod` finds the `tod` workspace of `audrey-app`. The switcher highlights the best match
+  rather than the first, and the list keeps its order. This works in the sidebar and the agents
+  overlay too.
 
 ### Fixed
 

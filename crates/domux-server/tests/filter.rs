@@ -266,6 +266,78 @@ async fn down_in_the_switchers_field_moves_among_the_matches_and_keeps_the_field
     );
 }
 
+/// The filter is fuzzy: the letters typed must come in order, with anything between them, so a
+/// name typed without its hyphens still finds it (decision record 0060).
+///
+/// "workspace2" is `workspace-2` without the hyphen. It is not a substring of anything in the
+/// fixture, so the row only stays if the letters were matched in order; and `workspace-1` has
+/// no `2`, so a filter that kept everything also fails.
+#[tokio::test]
+async fn the_switchers_filter_matches_letters_in_order_with_letters_between() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    switcher_with_two_slots(&mut h).await;
+    h.type_text(h.client.clone(), "workspace2").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Filter › workspace2"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        box_text(&f).contains("workspace-2"),
+        "the row the letters spell stays:\n{f}"
+    );
+    assert!(
+        !box_text(&f).contains("workspace-1") && !box_text(&f).contains("No workspace matches"),
+        "and the box narrows to it:\n{f}"
+    );
+}
+
+/// With more than one match the fill goes to the best of them, and the rows keep their order,
+/// so Enter opens the row the letters name best rather than whichever sits highest.
+///
+/// Both slots match "auth". `workspace-1` sits higher and matches it spread out, a letter at
+/// the start of each word; `workspace-2` is named `auth` and matches it whole, so it is the
+/// best match. A fill that went to the first match opens `workspace-1`.
+#[tokio::test]
+async fn enter_in_the_switchers_field_opens_the_best_match_not_the_first() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, w1, w2) = h.git_project_with_two_slots().await;
+    for (w, name) in [(&w1, "a user that helps"), (&w2, "auth")] {
+        h.api(
+            "workspace.rename",
+            json!({"workspace": w.as_str(), "name": name}),
+        )
+        .await
+        .unwrap();
+    }
+    h.api("switcher.open", json!({})).await.unwrap();
+    h.type_text(h.client.clone(), "auth").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Filter › auth"),
+            Duration::from_secs(2),
+        )
+        .await;
+    let text = box_text(&f);
+    let rows: Vec<&str> = text.lines().map(str::trim).collect();
+    let first = rows.iter().position(|r| *r == "a user that helps");
+    let best = rows.iter().position(|r| *r == "auth");
+    let (Some(first), Some(best)) = (first, best) else {
+        panic!("both matches stay:\n{f}");
+    };
+    assert!(first < best, "and keep their order:\n{f}");
+    h.key(h.client.clone(), "Enter").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().workspace,
+        w2,
+        "Enter opens the best match"
+    );
+}
+
 /// The switcher over two unnamed slots, open.
 async fn switcher_with_two_slots(
     h: &mut Harness,
