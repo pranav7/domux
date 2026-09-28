@@ -12,6 +12,7 @@ use domux_core::ids::PaneId;
 use domux_core::model::agent::AgentKind;
 use domux_core::model::{Focus, Overlay, RegionKind, RowTarget};
 use domux_server::testing::{row, Harness};
+use domux_term::MouseAction;
 use ratatui::style::Color;
 use serde_json::json;
 use std::time::Duration;
@@ -220,6 +221,38 @@ async fn the_cursor_walks_workspaces_and_agents_and_enter_acts_on_either() {
     assert!(
         matches!(h.model().client(&h.client).unwrap().focus, Focus::Pane(_)),
         "and the keys go back to the pane"
+    );
+}
+
+/// A click on an agent row opens that agent's pane, which is what Enter on the row does
+/// (MUX-31). The click comes from another tab, so landing on the agent's pane is the click's
+/// doing and not where the client already was.
+#[tokio::test]
+async fn a_click_on_an_agent_row_opens_the_agents_pane() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = one_agent(&mut h).await;
+    h.api("tab.create", json!({})).await.unwrap();
+    let f = h.frame(h.client.clone()).await;
+    assert_ne!(
+        h.focused_pane(h.client.clone()),
+        pane,
+        "the new tab has its own pane"
+    );
+
+    let at = row_with(&f, "└ claude") as u16;
+    h.mouse(h.client.clone(), MouseAction::Press, 5, at, 1)
+        .await;
+    h.mouse(h.client.clone(), MouseAction::Release, 5, at, 1)
+        .await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        pane,
+        "the click opened the pane the agent runs in"
+    );
+    assert!(
+        matches!(h.model().client(&h.client).unwrap().focus, Focus::Pane(_)),
+        "and the keys are in that pane"
     );
 }
 

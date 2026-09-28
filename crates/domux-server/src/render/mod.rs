@@ -34,7 +34,7 @@ use domux_core::ids::PaneId;
 use domux_core::ids::TabId;
 use domux_core::keymap::Keymap;
 use domux_core::model::layout::solve;
-use domux_core::model::{ClientView, Focus, Model, Overlay, SIDEBAR_WIDTH};
+use domux_core::model::{ClientView, Focus, Model, Overlay, RowTarget, SIDEBAR_WIDTH};
 use domux_core::proto::CursorState;
 use domux_term::{Emulator, Size};
 use ratatui::buffer::Buffer;
@@ -213,6 +213,8 @@ pub enum Hit {
     NewTab,
     /// A workspace's row in the sidebar's Projects box.
     Workspace(domux_core::ids::WorkspaceId),
+    /// An agent's row in the Navigator, under its workspace.
+    Agent(domux_core::ids::AgentId),
 }
 
 /// What the cell at `column`, `row` of this client's screen belongs to, or `None` for a cell
@@ -237,7 +239,10 @@ pub fn hit_at(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
     if input.view.sidebar_visible() {
         let sidebar = sidebar::sidebar_area(size);
         if column < sidebar.right() {
-            return sidebar::workspace_at(input, row).map(Hit::Workspace);
+            return sidebar::row_target_at(input, row).map(|target| match target {
+                RowTarget::Workspace(workspace) => Hit::Workspace(workspace),
+                RowTarget::Agent(agent) => Hit::Agent(agent),
+            });
         }
         if row == 0 {
             let area = workpanel_area(input.view);

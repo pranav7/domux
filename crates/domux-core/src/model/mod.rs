@@ -1648,6 +1648,21 @@ impl Model {
         self.agents.iter().find(|a| &a.id == id)
     }
 
+    /// What a Navigator row key names, asked of the records rather than read off the string.
+    ///
+    /// The Navigator's rows carry a workspace id or an agent id, and telling them apart by their
+    /// prefix would make `w_` and `a_` a contract that `next_id` never promised. Enter and a
+    /// click both ask this, so the two cannot read one row as two things. `None` for a key that
+    /// names neither, which is a record or a workspace that went between the frame and the ask.
+    pub fn row_target(&self, key: &str) -> Option<RowTarget> {
+        let workspace = WorkspaceId(key.to_string());
+        if self.workspace(&workspace).is_some() {
+            return Some(RowTarget::Workspace(workspace));
+        }
+        let agent = AgentId(key.to_string());
+        self.agent(&agent).map(|_| RowTarget::Agent(agent))
+    }
+
     pub fn agent_mut(&mut self, id: &AgentId) -> Option<&mut Agent> {
         self.agents.iter_mut().find(|a| &a.id == id)
     }
@@ -3828,6 +3843,30 @@ mod tests {
             cwd: Some(PathBuf::from("/Users/pranav/projects/domux")),
             reason: None,
         }
+    }
+
+    #[test]
+    fn row_target_tells_a_workspace_row_from_an_agent_row_and_neither_from_a_gone_key() {
+        let (mut m, ws, _tab, pane) = model_with_one_tab();
+        let agent = m
+            .report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, "sid-1"),
+                T0,
+            )
+            .unwrap()
+            .unwrap()
+            .agent;
+        assert_eq!(
+            m.row_target(ws.as_str()),
+            Some(RowTarget::Workspace(ws.clone()))
+        );
+        assert_eq!(
+            m.row_target(agent.as_str()),
+            Some(RowTarget::Agent(agent.clone()))
+        );
+        assert_eq!(m.row_target("gone"), None);
     }
 
     #[test]
