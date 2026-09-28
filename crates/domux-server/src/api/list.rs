@@ -181,8 +181,8 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         });
     }
     // The fill is the cursor, and with no cursor it is the workspace this client is in
-    // (domain model, section 3.3), or the first match once a filter is typed (decision record
-    // 0059). `list.*` runs while a box has the keys, which is exactly when both renderers ask
+    // (domain model, section 3.3), or the best match once a filter is typed (decision records
+    // 0059 and 0060). `list.*` runs while a box has the keys, which is exactly when both renderers ask
     // `rows_at` the same question, so there is one answer and not three.
     let navigator = ctx.config.config.navigator.enabled;
     let cursor = match navigator {

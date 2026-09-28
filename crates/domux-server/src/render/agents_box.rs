@@ -10,6 +10,7 @@ use crate::render::list_box::ListRow;
 use crate::render::projects_box::{self, INDENT};
 use crate::render::theme::{self, color};
 use chrono::{DateTime, Local};
+use domux_core::fuzzy::FIELD_SEPARATOR;
 use domux_core::ids::{AgentId, WorkspaceId};
 use domux_core::model::agent::{AgentKind, AgentState};
 use domux_core::text::{display_width, truncate_with_ellipsis};
@@ -347,24 +348,19 @@ fn kind_tab_and_pane(theme: &Theme, a: &AgentEntry) -> Vec<Span<'static>> {
     spans
 }
 
-/// What `/` matches: the session name when there is one, the kind, and the place. Each field
-/// can carry a match on its own, so `codex` finds every codex and `auth` finds the workspace
-/// (interface spec 6.8). A filter that spans two adjacent fields matches by accident of this
-/// line rather than by design, as it does in the Projects box.
+/// What `/` matches: the session name when there is one, the kind, the place and the pane's
+/// name. Each field can carry a match on its own, so `codex` finds every codex and `auth` finds
+/// the workspace (interface spec 6.8). A term of the filter matches within one field and never
+/// across two, as it does in the Projects box (decision record 0060).
 fn filter_text(a: &AgentEntry) -> String {
-    let mut out = String::new();
-    if let Some(name) = &a.name {
-        out.push_str(name);
-        out.push(' ');
-    }
-    out.push_str(a.kind.as_str());
-    out.push(' ');
-    out.push_str(&a.place_with_tab);
-    if let Some(pane) = &a.pane_name {
-        out.push(' ');
-        out.push_str(pane);
-    }
-    out
+    let fields: Vec<&str> = a
+        .name
+        .as_deref()
+        .into_iter()
+        .chain([a.kind.as_str(), a.place_with_tab.as_str()])
+        .chain(a.pane_name.as_deref())
+        .collect();
+    fields.join(&FIELD_SEPARATOR.to_string())
 }
 
 /// `[name] [activity]`, one space between them. The name is what gives way when the row is

@@ -8,9 +8,10 @@
 
 use crate::facts::FactRegistry;
 use crate::render::agents_box::{self, AgentsView, RowForm};
-use crate::render::list_box::{filter_rows, needs_gap_between, ListRow};
+use crate::render::list_box::{best_match, filter_rows, needs_gap_between, ListRow};
 use crate::render::theme::color;
 use domux_core::facts::{Fact, FactKey, FactState, FACT_BRANCH, FACT_PR};
+use domux_core::fuzzy::FIELD_SEPARATOR;
 use domux_core::model::{Model, Project, Workspace, WorkspaceHandle};
 use domux_core::text::{display_width, truncate_with_ellipsis};
 use domux_core::theme::{Role, Theme};
@@ -96,8 +97,8 @@ pub struct Rows {
 /// whose rows run past the top of the box.
 ///
 /// `filter` is matched without case against the project name, the handle, the name, the
-/// branch and the pull request number; a project whose workspaces all fail it disappears
-/// with its header.
+/// branch and the pull request number, each term of it fuzzily within one of them (decision
+/// record 0060); a project whose workspaces all fail it disappears with its header.
 ///
 /// Every project holds `main`, so no header here is left without rows under it.
 pub fn rows(
@@ -146,15 +147,15 @@ pub fn rows(
 }
 
 /// `rows`, with the fill on the cursor when there is one, and otherwise on the workspace this
-/// client is in while the filter is empty and on the first row the filter kept once it is not
-/// (decision record 0059).
+/// client is in while the filter is empty and on the row the filter matches best once it is not
+/// (decision records 0059 and 0060). The rows keep their order; only the fill moves.
 ///
 /// Typing into the switcher's field clears the cursor, so the fill lands on the best match as
 /// the letters arrive and Enter opens it, the way a quick switch does. A key that moves the
 /// cursor sets it again. Every surface that draws the Projects box, and `api::list` that walks
 /// it, asks here, so the fill the reader sees is the row Enter acts on.
 ///
-/// Two passes when the first row is the answer, because the row's own styling depends on
+/// Two passes when the best match is the answer, because the row's own styling depends on
 /// whether it carries the fill and which row that is is only known once the filter has run.
 #[allow(clippy::too_many_arguments)]
 pub fn rows_at(
@@ -171,14 +172,11 @@ pub fn rows_at(
         Some(cursor) => cursor.to_string(),
         None if filter.trim().is_empty() => workspace.to_string(),
         None => {
-            let first = rows(theme, model, facts, filter, None, extras, agents)
-                .rows
-                .into_iter()
-                .find_map(|row| row.key);
-            match first {
-                Some(key) => key,
+            let unfilled = rows(theme, model, facts, filter, None, extras, agents);
+            match best_match(&unfilled.rows, filter) {
+                Some(key) => key.to_string(),
                 // Nothing matches, so there is no row to fill.
-                None => return rows(theme, model, facts, filter, None, extras, agents),
+                None => return unfilled,
             }
         }
     };
@@ -215,19 +213,18 @@ fn workspace_row(
         .map(|f| f.text.as_str());
     let pr = facts.get(&FactKey::workspace(&w.id, FACT_PR));
     let key = w.id.to_string();
-    // The five fields `/` searches. What matters is that each one can carry a match on its
-    // own and that they do not run together; the character between them is not a contract,
-    // and neither is the order they are written in. So a filter that spans two adjacent
-    // fields, such as a handle typed after a project name, matches by accident of this line
-    // rather than by design, and nothing should be built on it.
-    let filter_text = format!(
-        "{} {} {} {} {}",
-        project.name,
-        w.handle,
+    // The five fields `/` searches. Each term of the filter matches within one of them, never
+    // across two, so the separator is what keeps them apart and the order is not a contract
+    // (decision record 0060).
+    let handle = w.handle.to_string();
+    let filter_text = [
+        project.name.as_str(),
+        handle.as_str(),
         w.name.as_deref().unwrap_or_default(),
         branch.unwrap_or_default(),
         pr.map(|f| f.text.as_str()).unwrap_or_default(),
-    );
+    ]
+    .join(&FIELD_SEPARATOR.to_string());
     // The indent is the row's, not the box's, so every line of it moves together and the
     // text each line has left to spend is what is left after the indent.
     let inset = Extras {

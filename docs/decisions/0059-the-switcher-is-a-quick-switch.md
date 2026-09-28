@@ -2,7 +2,8 @@
 
 **Date:** 2026-09-28
 **Status:** Accepted. MUX-57. Changes what `leader s` opens into; the sidebar's Navigator box and
-the agents overlay keep `/` as it was.
+the agents overlay keep `/` as it was. **Amended by decision record 0060**, which makes the filter
+fuzzy and moves the fill from the first match to the best one.
 **Decision:** The switcher opens with its filter field open. The first letter typed narrows the
 list, the fill lands on the first match, and Enter opens it. Acting on a row in any other way is
 a step of its own, behind Tab, where the letters are the `[keys.list]` table again.

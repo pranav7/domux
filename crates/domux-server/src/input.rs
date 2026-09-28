@@ -288,8 +288,8 @@ fn quick_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         _ => return,
     }
     // The text changed, so the fill starts again: on the workspace this client is in when the
-    // field is empty, which is where `switcher.open` puts it, and on the first match
-    // otherwise, which is what a cursor of `None` asks `projects_box::rows_at` for. The scroll
+    // field is empty, which is where `switcher.open` puts it, and on the best match
+    // otherwise (decision record 0060), which is what a cursor of `None` asks `projects_box::rows_at` for. The scroll
     // goes back to the top with it, and the box corrects it when the fill is further down.
     let home = view
         .filter
