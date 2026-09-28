@@ -407,6 +407,9 @@ async fn the_same_keys_work_in_the_switcher_because_it_is_the_same_box() {
         Duration::from_secs(2),
     )
     .await;
+    // Tab hands the keys from the switcher's field to the list (decision record 0059), and
+    // from there they are the sidebar's keys.
+    h.key(h.client.clone(), "Tab").await;
     h.key(h.client.clone(), "j").await;
     h.frame(h.client.clone()).await;
     assert_eq!(
@@ -451,6 +454,7 @@ async fn enter_activates_the_row_under_the_cursor_in_both_surfaces() {
         Duration::from_secs(2),
     )
     .await;
+    h.key(h.client.clone(), "Tab").await;
     h.key(h.client.clone(), "j").await;
     h.key(h.client.clone(), "Enter").await;
     h.wait_for(
@@ -640,12 +644,13 @@ async fn leaving_the_box_gives_the_sidebar_its_whole_list_back() {
     );
 }
 
-/// `switcher.open` starts with an empty filter every time, which nothing could observe until
-/// `/` could type into one (`api::switcher::open` says so and leaves the test here).
+/// `switcher.open` starts with an empty filter and the field open every time (decision
+/// record 0059). `ClientView::filter` outlives the overlay, so a switcher that kept it would
+/// reopen showing only what the last search matched.
 ///
 /// The frame is searched whole here because the switcher's rows have no fixed row number, and
-/// the pill that `workspace.create` left is gone by then: the first `/` cleared it, and no key
-/// after it sets another.
+/// the pill that `workspace.create` left is gone by then: the first letter cleared it, and no
+/// key after it sets another.
 #[tokio::test]
 async fn the_switcher_opens_with_an_empty_filter_each_time() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
@@ -657,9 +662,10 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
         Duration::from_secs(2),
     )
     .await;
-    h.key(h.client.clone(), "/").await;
     h.type_text(h.client.clone(), "workspace-1").await;
-    h.key(h.client.clone(), "Enter").await;
+    // Tab keeps the filter and leaves the field, so Esc below closes the switcher rather than
+    // clearing the text.
+    h.key(h.client.clone(), "Tab").await;
     let f = h
         .wait_for(
             h.client.clone(),
@@ -684,7 +690,7 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
             Duration::from_secs(2),
         )
         .await;
-    assert_eq!(filter(&h), (String::new(), false), "{f}");
+    assert_eq!(filter(&h), (String::new(), true), "{f}");
 }
 
 /// The box scrolls to keep the cursor in view.

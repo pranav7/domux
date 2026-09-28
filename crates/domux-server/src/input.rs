@@ -13,7 +13,7 @@ use crate::core::Core;
 use domux_core::api::Method;
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::keymap::Action;
-use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind};
+use domux_core::model::{Chord, ConfirmKind, Focus, Overlay, PromptKind, RowTarget};
 use domux_core::proto::ServerMsg;
 use domux_term::{Emulator, Key, KeyAction, KeyEvent, Mods};
 
@@ -199,9 +199,13 @@ pub fn list_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
     // A key in the box clears the last result (interface spec 12.12).
     view.pill = None;
     let filtering = view.filtering;
+    let switcher = view.overlay == Some(Overlay::Switcher);
     // No `view_dirty` here or in `filter_key`. `Core::key` sets it after every key, because
     // every key gets a frame (principle 8), so a second setter would be a second cause for
     // the same redraw and neither could be tested apart from the other.
+    if filtering && switcher {
+        return quick_key(core, client, key);
+    }
     if filtering {
         return filter_key(core, client, key);
     }
@@ -234,6 +238,73 @@ fn filter_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
         // Every other key, and a chorded letter: the filter is a text field, and a key it has
         // no meaning for does nothing rather than closing it or reaching a pane.
         _ => {}
+    }
+}
+
+/// The switcher's filter field, which is open from the moment the switcher is (decision
+/// record 0059): a quick switch. Letters narrow the list and the fill lands on the first
+/// match, the arrows and `C-n`/`C-p` move it without leaving the field, and Enter opens the
+/// row under it.
+///
+/// Acting on a row in any other way is a separate step. Tab hands the keys to the list and
+/// keeps the filter, so `n`, `c`, `D` and `X` are the `[keys.list]` table's again, and `/`
+/// comes back to the field. Esc clears what was typed, and closes the switcher when there is
+/// nothing left to clear.
+///
+/// The keys are spelled here rather than read from `[keys.list]` for the reason `filter_key`
+/// gives: a text field takes every letter, so a table that bound one would lose it.
+fn quick_key(core: &mut Core, client: &ClientId, key: KeyEvent) {
+    let ctrl = key.mods.contains(Mods::CTRL) && !key.mods.contains(Mods::ALT);
+    let step = match key.key {
+        Key::Down => Some("list.down"),
+        Key::Up => Some("list.up"),
+        Key::Char('n' | 'j') if ctrl => Some("list.down"),
+        Key::Char('p' | 'k') if ctrl => Some("list.up"),
+        Key::Enter => Some("list.activate"),
+        _ => None,
+    };
+    if let Some(method) = step {
+        let action = Action {
+            method: method.to_string(),
+            args: Vec::new(),
+        };
+        return core.run_action(client, &action);
+    }
+    let navigator = core.config.config.navigator.enabled;
+    let Some(view) = core.model.client_mut(client) else {
+        return;
+    };
+    match key.key {
+        Key::Tab => {
+            view.filtering = false;
+            return;
+        }
+        Key::Escape if view.filter.is_empty() => return close_top_overlay(core, client),
+        Key::Escape => view.filter.clear(),
+        Key::Backspace => {
+            view.filter.pop();
+        }
+        Key::Char(c) if !key.mods.intersects(Mods::CTRL | Mods::ALT) => view.filter.push(c),
+        _ => return,
+    }
+    // The text changed, so the fill starts again: on the workspace this client is in when the
+    // field is empty, which is where `switcher.open` puts it, and on the first match
+    // otherwise, which is what a cursor of `None` asks `projects_box::rows_at` for. The scroll
+    // goes back to the top with it, and the box corrects it when the fill is further down.
+    let home = view
+        .filter
+        .trim()
+        .is_empty()
+        .then(|| view.workspace.clone());
+    match navigator {
+        true => {
+            view.navigator_cursor = home.map(RowTarget::Workspace);
+            view.navigator_scroll = 0;
+        }
+        false => {
+            view.projects_cursor = home;
+            view.projects_scroll = 0;
+        }
     }
 }
 

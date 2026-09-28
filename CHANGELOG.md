@@ -11,6 +11,14 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ## [Unreleased]
 
+### Changed
+
+- The switcher (`leader s`) is a quick switch. It opens with the filter field ready, so you type
+  part of a project, workspace or agent name straight away, the first match is highlighted, and
+  Enter goes there. Down and Up, or `C-n` and `C-p`, pick among the matches. Tab moves to the
+  list, where `n`, `c`, `D`, `X` and `?` act on the row as before and `/` comes back to the field.
+  Esc clears what you typed, and closes the switcher when there is nothing to clear.
+
 ### Fixed
 
 - A Claude turn that dies on an API error, such as a rate limit or an overloaded model, now

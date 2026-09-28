@@ -297,9 +297,10 @@ async fn a_note_clears_on_the_first_key_in_a_box() {
         .await;
     assert!(f.contains("Pruned workspace-2"), "the note is there:\n{f}");
 
-    // `j` is bound to `list.down`, which Task 14 has not built, so this key does nothing at
-    // all except be a key in a box. The note going is the whole visible result.
-    h.key(h.client.clone(), "j").await;
+    // Down moves the cursor and leaves the field empty, so the only thing it changes in the
+    // footer is the note. A letter would have typed into the switcher's field (decision
+    // record 0059), and the footer would have changed for that reason too.
+    h.key(h.client.clone(), "Down").await;
     let f = h
         .wait_for(
             h.client.clone(),
@@ -308,8 +309,8 @@ async fn a_note_clears_on_the_first_key_in_a_box() {
         )
         .await;
     assert!(
-        f.contains("filter") && f.contains("close"),
-        "and the footer goes back to the keys:\n{f}"
+        f.contains("Filter ›") && f.contains("esc close"),
+        "and the footer goes back to the field and its keys:\n{f}"
     );
 }
 
@@ -442,7 +443,7 @@ async fn a_key_another_client_sent_from_a_pane_does_not_clear_the_note() {
         "the other client typed into a pane, so the note is still unread:\n{f}"
     );
 
-    h.key(reader.clone(), "j").await;
+    h.key(reader.clone(), "Down").await;
     let f = h
         .wait_for(
             reader.clone(),
@@ -451,7 +452,7 @@ async fn a_key_another_client_sent_from_a_pane_does_not_clear_the_note() {
         )
         .await;
     assert!(
-        f.contains("filter"),
+        f.contains("Filter ›"),
         "and the reader's own key in the box clears it:\n{f}"
     );
 }

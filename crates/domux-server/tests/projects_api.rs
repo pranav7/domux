@@ -1410,6 +1410,8 @@ async fn x_in_the_switcher_asks_the_same_question_over_the_overlay_it_was_presse
     )
     .await;
 
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(h.client.clone(), "Tab").await;
     h.key(h.client.clone(), "X").await;
     h.wait_for(
         h.client.clone(),

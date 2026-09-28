@@ -10,7 +10,7 @@ use crate::render::boxed::{put, put_within, Boxed};
 use crate::render::list_box::{
     content_width, filter_rows, text_area, ListBox, Pad, NAVIGATOR_PAD, SIDEBAR_PAD,
 };
-use crate::render::projects_box::{filled_index, rows, Extras};
+use crate::render::projects_box::{filled_index, rows, rows_at, Extras};
 use crate::render::theme::color;
 use crate::render::top_bar::Piece;
 use crate::render::RenderInput;
@@ -214,11 +214,10 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
     // workspace this client is in otherwise (domain model, section 3.3). `rows` is given the
     // key and hands back where it put the fill, so the band and the brightening cannot land
     // on different rows.
-    let key = match focused {
+    let cursor = match focused {
         true => input.list_cursor(),
         false => None,
-    }
-    .unwrap_or(input.view.workspace.as_str());
+    };
     // The filter is the box's and the box has it only while it has the keys. A box the
     // reader has left draws its whole list: a shortened one with nothing on the screen to say
     // why would be a mode with no marker (principle 2), and the hint row below has no room to
@@ -228,12 +227,13 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         true => input.view.filter.as_str(),
         false => "",
     };
-    let built = rows(
+    let built = rows_at(
         input.theme,
         input.model,
         input.facts,
         filter,
-        Some(key),
+        cursor,
+        input.view.workspace.as_str(),
         Extras::compact(content_width(area.width, SIDEBAR_PAD)),
         input.navigator.then_some(input.agents),
     );

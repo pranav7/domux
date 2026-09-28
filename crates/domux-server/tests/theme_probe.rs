@@ -945,7 +945,7 @@ async fn every_role_is_drawn_where_the_role_table_says() {
         &mut covered,
     )
     .await;
-    h.key(client.clone(), "/").await;
+    // No `/` first: the switcher opens with its field live (decision record 0059).
     h.type_text(client.clone(), "probe").await;
     screen(
         &mut h,
@@ -1141,6 +1141,8 @@ async fn every_role_is_drawn_where_the_role_table_says() {
     h.api("switcher.open", json!({})).await.unwrap();
     h.wait_for(client.clone(), |f| f.contains("┌ Navigator"), WAIT)
         .await;
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(client.clone(), "Tab").await;
     h.key(client.clone(), "X").await;
     screen(
         &mut h,

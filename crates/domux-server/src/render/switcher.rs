@@ -7,7 +7,7 @@
 //! sidebar's 38 columns have no room for.
 
 use crate::render::list_box::{box_lines, content_width, footer_area, ListBox, OVERLAY_PAD};
-use crate::render::projects_box::{rows, Extras};
+use crate::render::projects_box::{rows_at, Extras};
 use crate::render::{overlay, RenderInput};
 use ratatui::buffer::Buffer;
 
@@ -25,17 +25,16 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
     // Two passes. The rows truncate to the box's inner width, and the row count then decides
     // the box's height; the width answers first because it does not depend on the rows.
     let inner_width = content_width(overlay::list_overlay_width(screen), OVERLAY_PAD);
-    // The cursor carries the fill while focus is in the box; with no cursor it is the
-    // workspace this client is in (domain model, section 3.3).
-    let filled = input
-        .list_cursor()
-        .unwrap_or_else(|| input.view.workspace.as_str());
-    let rows = rows(
+    // The cursor carries the fill while focus is in the box. With no cursor it is the
+    // workspace this client is in (domain model, section 3.3), or the first match once the
+    // reader has typed (decision record 0059).
+    let rows = rows_at(
         input.theme,
         input.model,
         input.facts,
         &input.view.filter,
-        Some(filled),
+        input.list_cursor(),
+        input.view.workspace.as_str(),
         Extras::switcher(inner_width),
         input.navigator.then_some(input.agents),
     );
