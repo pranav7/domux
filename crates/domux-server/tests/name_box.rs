@@ -314,6 +314,8 @@ async fn n_on_a_row_names_that_row_and_the_box_sits_over_the_switcher_it_came_fr
     h.api("switcher.open", json!({"client": client.as_str()}))
         .await
         .unwrap();
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(client.clone(), "Tab").await;
     // The cursor starts on `proj`'s `main`, the last row in the box. Two steps up is
     // `audrey-app`'s `workspace-1`, past `workspace-2`.
     h.key(client.clone(), "k").await;
@@ -386,6 +388,8 @@ async fn esc_over_the_switcher_gives_the_switcher_back() {
     h.api("switcher.open", json!({"client": client.as_str()}))
         .await
         .unwrap();
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(client.clone(), "Tab").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "n").await;
@@ -432,6 +436,8 @@ async fn a_second_n_after_esc_still_names_the_row_under_the_cursor() {
     h.api("switcher.open", json!({"client": client.as_str()}))
         .await
         .unwrap();
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(client.clone(), "Tab").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "n").await;
@@ -605,6 +611,8 @@ async fn opening_the_box_over_an_open_one_replaces_it_and_keeps_the_switcher() {
     h.api("switcher.open", json!({"client": client.as_str()}))
         .await
         .unwrap();
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(client.clone(), "Tab").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "n").await;
@@ -662,6 +670,8 @@ async fn the_cursor_row_is_the_target_only_while_the_keys_are_in_a_box() {
     h.api("switcher.open", json!({"client": client.as_str()}))
         .await
         .unwrap();
+    // Tab hands the keys from the switcher's field to the list (decision record 0059).
+    h.key(client.clone(), "Tab").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "k").await;
     h.key(client.clone(), "Esc").await;

@@ -188,7 +188,14 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
         );
         return;
     }
-    if input.view.filtering {
+    // The switcher's field is open from the moment the switcher is (decision record 0059), so
+    // a field nobody has typed into yet would hide the start-up note for good. It gives the
+    // row to the note until the first letter, and that letter is a key in a box, which clears
+    // the note, so the field is on the screen by the time it holds anything.
+    let quick = input.view.overlay == Some(Overlay::Switcher);
+    let note_first =
+        quick && input.view.filter.is_empty() && crate::render::note_line(input.notes).is_some();
+    if input.view.filtering && !note_first {
         // `esc clear` is spelled out rather than looked up: no action clears the filter, so
         // there is no binding to read. Task 14 gives Esc that meaning while `/` is open.
         let mut cx = put_within(buf, x, y, last_x, "Filter › ", word_style);
@@ -208,7 +215,29 @@ pub fn footer(input: &RenderInput, hints: &[(&str, &str)], area: Rect, buf: &mut
             " ",
             base.add_modifier(Modifier::REVERSED),
         );
-        put_within(buf, cx, y, last_x, "  esc clear", word_style);
+        if !quick {
+            put_within(buf, cx, y, last_x, "  esc clear", word_style);
+            return;
+        }
+        // The switcher's field is a quick switch (decision record 0059), and its keys are
+        // spelled in `input::quick_key` rather than read from a table, so they are spelled
+        // here too. Esc says what it does now: it clears what was typed, and closes the
+        // switcher once there is nothing to clear.
+        let esc = match input.view.filter.is_empty() {
+            true => "close",
+            false => "clear",
+        };
+        cx = put_within(buf, cx, y, last_x, "  ", word_style);
+        for (i, (k, label)) in [("⏎", "open"), ("tab", "actions"), ("esc", esc)]
+            .into_iter()
+            .enumerate()
+        {
+            if i > 0 {
+                cx = put_within(buf, cx, y, last_x, HINT_SEP, sep_style);
+            }
+            cx = put_within(buf, cx, y, last_x, k, key_style);
+            cx = put_within(buf, cx, y, last_x, &format!(" {label}"), word_style);
+        }
         return;
     }
     // What the start-up prune took away, over the keys: the keys are the same on every frame

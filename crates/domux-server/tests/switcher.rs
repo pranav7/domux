@@ -84,11 +84,14 @@ async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
         "│                                                          │"
     );
     // The footer is the box's last row, inside the border, starting at the same pad the
-    // rows above it start from (MUX-16).
-    // 60 = "│" (1) + two pad cells + the hints (38) + 18 spaces + "│" (1)
+    // rows above it start from (MUX-16). The switcher opens with its field live, so the
+    // footer is the field: the label, the caret (a reversed blank), and the field's own keys
+    // (decision record 0059).
+    // 60 = "│" (1) + two pad cells + "Filter › " (9) + the caret (1) + two spaces + the keys
+    // (32) + 12 spaces + "│" (1)
     assert_eq!(
         cols(row(&f, 17), 10, 69),
-        "│  ⏎ open · / filter · ? help · esc close                  │"
+        "│  Filter ›    ⏎ open · tab actions · esc close            │"
     );
     // 60 = "└" (1) + 58 dashes + "┘" (1)
     assert_eq!(
@@ -103,13 +106,33 @@ async fn leader_s_opens_the_switcher_with_the_projects_box_and_the_footer() {
         f.contains("r1 c1-4 dim fg=#7f849c"),
         "and the pane behind it is not: the keys are in the box, so nothing else is drawn as a focus target (principle 2):\n{f}"
     );
+    // Cell 25 is the field's `⏎`, after the label, the caret and two spaces.
     assert!(
-        f.contains("r17 c13-13 fg=#89b4fa"),
+        f.contains("r17 c25-25 fg=#89b4fa"),
         "the footer belongs to the overlay, not to the screen behind it, so its keys are not dimmed either:\n{f}"
     );
     assert_eq!(
         h.model().client(&h.client).unwrap().overlay,
         Some(domux_core::model::Overlay::Switcher)
+    );
+
+    // Tab gives the keys to the list, and the footer to the list's hints.
+    // 60 = "│" (1) + two pad cells + the hints (38) + 18 spaces + "│" (1)
+    h.key(h.client.clone(), "Tab").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("/ filter"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert_eq!(
+        cols(row(&f, 17), 10, 69),
+        "│  ⏎ open · / filter · ? help · esc close                  │"
+    );
+    assert!(
+        f.contains("r17 c13-13 fg=#89b4fa"),
+        "and the list's keys are drawn as keys too:\n{f}"
     );
 }
 
@@ -231,13 +254,13 @@ async fn the_switcher_covers_the_panes_text_and_leaves_the_rest_of_the_screen_wh
         "and the first blank row after the rows, cleared all the way across:\n{f}"
     );
     assert_eq!(
-        cols(row(&f, 17), 13, 50),
-        "⏎ open · / filter · ? help · esc close",
+        cols(row(&f, 17), 13, 56),
+        "Filter ›    ⏎ open · tab actions · esc close",
         "and the footer's row is the footer's:\n{f}"
     );
     assert_eq!(
-        cols(row(&f, 17), 51, 68),
-        " ".repeat(18),
+        cols(row(&f, 17), 57, 68),
+        " ".repeat(12),
         "the rest of the footer's row is cleared too, not left showing the pane:\n{f}"
     );
     assert_eq!(
@@ -356,7 +379,17 @@ async fn the_switcher_reads_its_keys_from_the_config_rather_than_naming_esc_itse
     config.keys.list.remove("Esc");
     config.keys.list.insert("q".into(), "focus.pane".into());
     let mut h = Harness::start(config, 80, 24).await;
-    let f = open_switcher(&mut h).await;
+    open_switcher(&mut h).await;
+    // The list's footer and the list's keys, behind Tab: the field's own keys are spelled in
+    // the field and are not what this test is about (decision record 0059).
+    h.key(h.client.clone(), "Tab").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("f filter"),
+            Duration::from_secs(2),
+        )
+        .await;
     assert_eq!(
         cols(row(&f, 17), 13, 50),
         "f filter · ? help · q close           ",
@@ -377,13 +410,13 @@ async fn the_switcher_reads_its_keys_from_the_config_rather_than_naming_esc_itse
     .await;
 }
 
-/// A key the switcher has no meaning for yet leaves it open. Task 14 gives `j` and `k` their
-/// meaning; until then they must not fall through into "any key closes".
+/// A key the switcher's field has no meaning for leaves it open, and goes nowhere else: not
+/// into "any key closes", and not into the pane behind it.
 #[tokio::test]
 async fn a_key_the_switcher_does_not_answer_leaves_it_open() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     open_switcher(&mut h).await;
-    h.key(h.client.clone(), "j").await;
+    h.key(h.client.clone(), "F5").await;
     let f = h.frame(h.client.clone()).await;
     assert!(f.contains("Navigator"), "{f}");
     assert_eq!(

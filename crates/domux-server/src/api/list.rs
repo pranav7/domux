@@ -181,16 +181,21 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         });
     }
     // The fill is the cursor, and with no cursor it is the workspace this client is in
-    // (domain model, section 3.3). `list.*` runs while a box has the keys, which is exactly
-    // when both renderers use this same key, so there is one answer and not three.
+    // (domain model, section 3.3), or the first match once a filter is typed (decision record
+    // 0059). `list.*` runs while a box has the keys, which is exactly when both renderers ask
+    // `rows_at` the same question, so there is one answer and not three.
     let navigator = ctx.config.config.navigator.enabled;
-    let key = match navigator {
-        true => view.navigator_cursor.as_ref().map(|c| c.as_str()),
-        false => view.projects_cursor.as_ref().map(|w| w.as_str()),
-    }
-    .unwrap_or(view.workspace.as_str())
-    .to_string();
-    let key = Some(key.as_str());
+    let cursor = match navigator {
+        true => view
+            .navigator_cursor
+            .as_ref()
+            .map(|c| c.as_str().to_string()),
+        false => view
+            .projects_cursor
+            .as_ref()
+            .map(|w| w.as_str().to_string()),
+    };
+    let cursor = cursor.as_deref();
     // The agents the box nests under their workspaces, or none when the two boxes are on.
     // `core::agents_view` is the same call the frame this cursor moves over makes, so a key
     // cannot give an agent a different word from the one the reader is looking at.
@@ -202,12 +207,13 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         .ok_or_else(|| ApiError::not_found(format!("client {client} is not attached")))?;
     let (rows, height) = if surface == Surface::Switcher {
         let width = crate::render::overlay::list_overlay_width(screen);
-        let rows = projects_box::rows(
+        let rows = projects_box::rows_at(
             domux_core::theme::Theme::domux(),
             ctx.model,
             ctx.facts,
             &view.filter,
-            key,
+            cursor,
+            view.workspace.as_str(),
             Extras::switcher(content_width(width, OVERLAY_PAD)),
             nested.as_ref(),
         );
@@ -223,12 +229,13 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let area =
             crate::render::sidebar::projects_area(ctx.model, ctx.facts, view.size, navigator);
         let pad = crate::render::sidebar::pad_for(navigator);
-        let rows = projects_box::rows(
+        let rows = projects_box::rows_at(
             domux_core::theme::Theme::domux(),
             ctx.model,
             ctx.facts,
             &view.filter,
-            key,
+            cursor,
+            view.workspace.as_str(),
             Extras::compact(content_width(area.width, SIDEBAR_PAD)),
             nested.as_ref(),
         );

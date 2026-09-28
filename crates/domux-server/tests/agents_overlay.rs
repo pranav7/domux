@@ -517,7 +517,9 @@ async fn n_in_the_agents_overlay_names_the_clients_own_workspace_and_not_a_navig
     // The client's own workspace may be the first selectable row or the last, and the rows
     // beside it are the agents nested under it, which name that same workspace. So this steps
     // one way and then the other until the cursor is on another workspace, and the `expect`
-    // below is what says the fixture actually worked.
+    // below is what says the fixture actually worked. Tab first, because the switcher opens
+    // with its field live and `j` there is a letter (decision record 0059).
+    h.key(h.client.clone(), "Tab").await;
     let mut elsewhere = None;
     for key in ["j", "j", "j", "k", "k", "k", "k", "k", "k"] {
         h.key(h.client.clone(), key).await;

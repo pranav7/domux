@@ -99,22 +99,30 @@ async fn switcher_with_a_named_slot(h: &mut Harness) -> String {
     .await
 }
 
-/// `/` gives the footer to the filter, the box narrows as the letters arrive, Enter keeps the
-/// filter and hands the keys back to the list, and Esc clears it (interface spec 12.10).
+/// The switcher opens with the field live: the letters narrow the box at once, with no `/`
+/// first, and the footer is the field (decision record 0059). Tab keeps the filter and hands
+/// the keys to the list, `/` comes back to the field, Esc clears what was typed, and a second
+/// Esc closes the switcher.
 ///
 /// "auth" matches the name of one slot and nothing else in the fixture: not `audrey-app`, not
 /// either handle, and not `proj`. So the row that stays could only have been kept by the name,
 /// and the three rows that go could only have gone by the filter.
 #[tokio::test]
-async fn slash_filters_the_switcher_as_you_type_and_enter_keeps_it_and_esc_clears_it() {
+async fn typing_in_the_switcher_filters_at_once_and_tab_keeps_the_filter_for_the_list_keys() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let f = switcher_with_a_named_slot(&mut h).await;
     assert!(
         box_text(&f).contains("auth cleanup") && box_text(&f).contains("workspace-2"),
         "both slots start visible:\n{f}"
     );
+    // The footer still carries `Created workspace-2` from building the slots, a pill that
+    // answers the last thing done and outranks the field until the next key. So the field is
+    // read off the model here, and off the footer once a letter has cleared the pill.
+    assert!(
+        h.model().client(&h.client).unwrap().filtering,
+        "the field is open from the start"
+    );
 
-    h.key(h.client.clone(), "/").await;
     h.type_text(h.client.clone(), "auth").await;
     let f = h
         .wait_for(
@@ -124,8 +132,9 @@ async fn slash_filters_the_switcher_as_you_type_and_enter_keeps_it_and_esc_clear
         )
         .await;
     assert!(
-        f.contains("esc clear"),
-        "the footer becomes the filter input and says the way out:\n{f}"
+        f.contains("⏎ open · tab actions · esc clear"),
+        "the footer is the field, and says Enter opens, Tab is the way to the list keys, and\n\
+         Esc clears rather than closes while there is text:\n{f}"
     );
     assert!(
         box_text(&f).contains("auth cleanup"),
@@ -136,20 +145,26 @@ async fn slash_filters_the_switcher_as_you_type_and_enter_keeps_it_and_esc_clear
         "and the box narrows to it, header and all:\n{f}"
     );
 
-    h.key(h.client.clone(), "Enter").await;
+    h.key(h.client.clone(), "Tab").await;
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("⏎ open"),
+            |f| f.contains("⏎ open · / filter"),
             Duration::from_secs(2),
         )
         .await;
     assert!(
         box_text(&f).contains("auth cleanup") && !box_text(&f).contains("workspace-2"),
-        "Enter keeps the filter and gives the keys back to the list:\n{f}"
+        "Tab keeps the filter and gives the keys back to the list:\n{f}"
     );
 
     h.key(h.client.clone(), "/").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Filter › auth"),
+        Duration::from_secs(2),
+    )
+    .await;
     h.key(h.client.clone(), "Esc").await;
     let f = h
         .wait_for(
@@ -159,14 +174,115 @@ async fn slash_filters_the_switcher_as_you_type_and_enter_keeps_it_and_esc_clear
         )
         .await;
     assert!(
-        f.contains("⏎ open") && !f.contains("Filter ›"),
-        "Esc clears the filter and the hints come back:\n{f}"
+        f.contains("Filter ›") && f.contains("esc close"),
+        "Esc clears the text and leaves the field open:\n{f}"
     );
     assert_eq!(
         overlays(&h).0,
         Some(Overlay::Switcher),
-        "and the switcher is still the overlay: Esc closed the field, not the box"
+        "and the switcher is still the overlay: Esc cleared the text, not the box"
     );
+
+    h.key(h.client.clone(), "Esc").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains("┌ Navigator"),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        overlays(&h).0,
+        None,
+        "and Esc on an empty field closes the switcher"
+    );
+}
+
+/// Enter in the field opens the first match, with no step between typing and going there,
+/// which is what makes the switcher a quick switch (decision record 0059).
+///
+/// The client starts on the harness's own `proj` main and the match is a slot of
+/// `audrey-app`, so a switch that went nowhere, or to the row the fill started on, leaves the
+/// client where it was.
+#[tokio::test]
+async fn enter_in_the_switchers_field_opens_the_first_match() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    switcher_with_a_named_slot(&mut h).await;
+    let before = h.model().client(&h.client).unwrap().workspace.clone();
+    h.type_text(h.client.clone(), "auth").await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("Filter › auth"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.key(h.client.clone(), "Enter").await;
+    h.frame(h.client.clone()).await;
+    let view = h.model().client(&h.client).unwrap().clone();
+    assert_eq!(view.overlay, None, "the switcher closed on the way");
+    assert_ne!(view.workspace, before, "and the client moved");
+    assert_eq!(
+        h.model()
+            .workspace(&view.workspace)
+            .and_then(|w| w.name.clone())
+            .as_deref(),
+        Some("auth cleanup"),
+        "to the workspace the letters matched"
+    );
+}
+
+/// Down in the field moves the fill off the first match without leaving the field, so the
+/// arrows pick among the matches and typing goes on narrowing them.
+///
+/// "workspace" matches both slots and nothing else, so the first match is `workspace-1`
+/// (named `auth cleanup`) and one Down is `workspace-2`, which has no name.
+#[tokio::test]
+async fn down_in_the_switchers_field_moves_among_the_matches_and_keeps_the_field() {
+    let mut h = Harness::start(Config::default(), 80, 24).await;
+    let (_root, _w1, w2) = switcher_with_two_slots(&mut h).await;
+    h.type_text(h.client.clone(), "workspace").await;
+    h.key(h.client.clone(), "Down").await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("Filter › workspace"),
+            Duration::from_secs(2),
+        )
+        .await;
+    let view = h.model().client(&h.client).unwrap().clone();
+    assert!(view.filtering, "the field is still open:\n{f}");
+    assert_eq!(
+        view.navigator_cursor
+            .as_ref()
+            .map(|c| c.as_str().to_string()),
+        Some(w2.to_string()),
+        "and the cursor is on the second match:\n{f}"
+    );
+    h.key(h.client.clone(), "Enter").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().workspace,
+        w2,
+        "Enter opens the row the arrows chose"
+    );
+}
+
+/// The switcher over two unnamed slots, open.
+async fn switcher_with_two_slots(
+    h: &mut Harness,
+) -> (
+    std::path::PathBuf,
+    domux_core::ids::WorkspaceId,
+    domux_core::ids::WorkspaceId,
+) {
+    let slots = h.git_project_with_two_slots().await;
+    h.api("switcher.open", json!({})).await.unwrap();
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("┌ Navigator"),
+        Duration::from_secs(3),
+    )
+    .await;
+    slots
 }
 
 /// A filter that matches nothing names what was searched for and the way out (principle 9),
@@ -175,7 +291,6 @@ async fn slash_filters_the_switcher_as_you_type_and_enter_keeps_it_and_esc_clear
 async fn a_filter_that_matches_nothing_names_what_was_searched_for_and_the_way_out() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     switcher_with_a_named_slot(&mut h).await;
-    h.key(h.client.clone(), "/").await;
     h.type_text(h.client.clone(), "zzz").await;
     let f = h
         .wait_for(
@@ -205,6 +320,8 @@ async fn a_filter_that_matches_nothing_names_what_was_searched_for_and_the_way_o
 async fn question_mark_opens_the_keys_over_the_switcher_and_esc_comes_back_to_it() {
     let mut h = Harness::start(Config::default(), 80, 40).await;
     switcher_with_a_named_slot(&mut h).await;
+    // Tab first: the switcher opens with the field live, where `?` is a letter.
+    h.key(h.client.clone(), "Tab").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(
@@ -560,19 +677,18 @@ async fn the_switcher_cuts_the_pull_request_title_to_its_own_width_and_never_the
     );
 }
 
-/// A note and an open filter want the same row. The filter has it, and gives it up to a pill
-/// (interface spec 12.10 and 12.12).
+/// A note and the switcher's empty field want the same row. The note has it until the first
+/// letter, and both give it up to a pill (interface spec 12.10 and 12.12, decision record
+/// 0059).
 ///
-/// A text field with no marker on the screen is a mode the reader cannot see they are in
-/// (principle 2), where a note kept waiting behind one is only late: closing the field brings
-/// it back, which is what the last step asserts and what separates outranked from cleared.
+/// The switcher opens with its field live, so a field that outranked a note would hide the
+/// start-up note for good. An empty field gives way instead, and the first letter is a key in
+/// a box, which clears the notes, so the field is on the screen by the time it holds anything.
 ///
-/// Reached over the API throughout, and that is the point rather than a convenience. A key in
-/// a box clears the notes before it is routed, so `/` pressed by hand can never meet one.
-/// `list.filter` opens the same field without a key, and Task 21's comment here said the state
-/// was unreachable on the strength of the key alone.
+/// Reached over the API, and that is the point rather than a convenience: a key in a box
+/// clears the notes before it is routed, so a key could never meet one.
 #[tokio::test]
-async fn the_switchers_filter_takes_the_footer_from_a_note_and_gives_it_to_a_pill() {
+async fn the_switchers_empty_field_gives_the_footer_to_a_note_and_both_give_it_to_a_pill() {
     let mut h = Harness::start(Config::default(), 80, 24).await;
     let (root, _w1, _w2) = h.git_project_with_two_slots().await;
     h.stop().await;
@@ -587,50 +703,27 @@ async fn the_switchers_filter_takes_the_footer_from_a_note_and_gives_it_to_a_pil
             Duration::from_secs(2),
         )
         .await;
+    assert!(
+        !f.contains("Filter ›"),
+        "the note has the row while the field is empty:\n{f}"
+    );
+    assert!(
+        h.model().client(&h.client).unwrap().filtering,
+        "though the field is open, so the first letter goes into it"
+    );
     let y = f
         .lines()
         .filter(|l| l.starts_with('|'))
         .position(|l| l.contains("Pruned workspace-1"))
         .expect("the note is on the screen");
 
-    h.api("list.filter", json!({})).await.unwrap();
-    let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("Filter ›"),
-            Duration::from_secs(2),
-        )
-        .await;
-    assert!(
-        !f.contains("Pruned workspace-1"),
-        "the filter field has the row, not a share of it:\n{f}"
-    );
-
-    // Outranked, not read. Closing the field over the API touches no note, so the row goes
-    // back to saying what the start-up prune took away.
-    h.api("switcher.close", json!({})).await.unwrap();
-    h.api("switcher.open", json!({})).await.unwrap();
-    h.wait_for(
-        h.client.clone(),
-        |f| f.contains("Pruned workspace-1"),
-        Duration::from_secs(2),
-    )
-    .await;
-
-    h.api("list.filter", json!({})).await.unwrap();
-    h.wait_for(
-        h.client.clone(),
-        |f| f.contains("Filter ›"),
-        Duration::from_secs(2),
-    )
-    .await;
     let _ = h
         .api("project.add", json!({"path": "/no/such/folder"}))
         .await;
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !f.contains("Filter ›"),
+            |f| !f.contains("Pruned workspace-1"),
             Duration::from_secs(5),
         )
         .await;
@@ -639,8 +732,7 @@ async fn the_switchers_filter_takes_the_footer_from_a_note_and_gives_it_to_a_pil
     assert_eq!(
         style_at(&f, y, 13),
         "bold fg=#1e1e2e bg=#f38ba8",
-        "and the field itself gives the row up to a pill, which answers what the reader\n\
-         just did:\n{f}"
+        "and a pill, which answers what the reader just did, takes the row from both:\n{f}"
     );
 }
 
@@ -767,6 +859,7 @@ async fn the_keys_overlay_lists_the_box_keys_first_from_either_box() {
         Duration::from_secs(3),
     )
     .await;
+    h.key(h.client.clone(), "Tab").await;
     h.key(h.client.clone(), "?").await;
     let f = h
         .wait_for(

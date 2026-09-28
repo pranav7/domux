@@ -145,6 +145,46 @@ pub fn rows(
     Rows { rows, filled }
 }
 
+/// `rows`, with the fill on the cursor when there is one, and otherwise on the workspace this
+/// client is in while the filter is empty and on the first row the filter kept once it is not
+/// (decision record 0059).
+///
+/// Typing into the switcher's field clears the cursor, so the fill lands on the best match as
+/// the letters arrive and Enter opens it, the way a quick switch does. A key that moves the
+/// cursor sets it again. Every surface that draws the Projects box, and `api::list` that walks
+/// it, asks here, so the fill the reader sees is the row Enter acts on.
+///
+/// Two passes when the first row is the answer, because the row's own styling depends on
+/// whether it carries the fill and which row that is is only known once the filter has run.
+#[allow(clippy::too_many_arguments)]
+pub fn rows_at(
+    theme: &Theme,
+    model: &Model,
+    facts: &FactRegistry,
+    filter: &str,
+    cursor: Option<&str>,
+    workspace: &str,
+    extras: Extras,
+    agents: Option<&AgentsView>,
+) -> Rows {
+    let key = match cursor {
+        Some(cursor) => cursor.to_string(),
+        None if filter.trim().is_empty() => workspace.to_string(),
+        None => {
+            let first = rows(theme, model, facts, filter, None, extras, agents)
+                .rows
+                .into_iter()
+                .find_map(|row| row.key);
+            match first {
+                Some(key) => key,
+                // Nothing matches, so there is no row to fill.
+                None => return rows(theme, model, facts, filter, None, extras, agents),
+            }
+        }
+    };
+    rows(theme, model, facts, filter, Some(&key), extras, agents)
+}
+
 /// `AUDREY-APP ─────────`: the name in upper case, one space, a rule to the box's edge.
 /// A name too long for the box is shortened like any other (interface spec 5.6), and the
 /// rule then has nothing left to draw.
