@@ -954,3 +954,184 @@ async fn a_click_a_program_takes_clears_unseen_on_its_pane() {
         "the click cleared it"
     );
 }
+
+/// MUX-56. A drag held above the pane scrolls it into the history while the pointer stays
+/// there, so a selection made with the pointer alone runs past the top of the screen. The
+/// pointer is on the tab row, which is not the pane, and the drag is still the pane's.
+#[tokio::test]
+async fn a_drag_held_above_the_pane_scrolls_the_selection_into_the_history() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 40).await;
+    // `line 34` is the top visible row, at row 2, so `line 37` is row 5 and ends at column 7.
+    h.mouse(h.client.clone(), MouseAction::Press, 7, 5, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 7, 4, 1).await;
+    // The first column of the top bar: above the pane, and on its first column.
+    h.mouse(h.client.clone(), MouseAction::Drag, 1, 0, 1).await;
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains("line 30"),
+            Duration::from_secs(2),
+        )
+        .await;
+    assert!(
+        f.contains("r2 c1-78 inverse"),
+        "the selection is drawn over the rows that scrolled in:\n{f}"
+    );
+    assert!(h.model().pane(&pane).unwrap().copy_mode);
+
+    h.mouse(h.client.clone(), MouseAction::Release, 1, 0, 1)
+        .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    // The ticker keeps scrolling until the release, so how far above `line 30` the copy starts
+    // is a question of time; that it starts on a whole line and reaches the press is not.
+    let copied = h.clipboard(h.client.clone()).await;
+    assert_eq!(copied.len(), 1, "one release, one copy: {copied:?}");
+    assert!(
+        copied[0].starts_with("line ")
+            && copied[0].contains("line 30\nline 31\nline 32\nline 33\nline 34")
+            && copied[0].ends_with("line 37"),
+        "the selection ran from the press up into the history: {copied:?}"
+    );
+}
+
+/// The same gesture the other way: a drag held below a pane that is scrolled into its history
+/// brings the live rows back under the selection.
+#[tokio::test]
+async fn a_drag_held_below_the_pane_scrolls_back_towards_the_live_screen() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    pane_with_lines(&mut h, 40).await;
+    h.scroll(h.client.clone(), 5, 5, 6).await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("line 28") && !f.contains("line 39"),
+        Duration::from_secs(2),
+    )
+    .await;
+    // `line 28` is the top visible row now; press on its first cell and drag below the pane.
+    h.mouse(h.client.clone(), MouseAction::Press, 1, 2, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 1, 3, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 1, 9, 1).await;
+    h.wait_for(
+        h.client.clone(),
+        |f| f.contains("line 39"),
+        Duration::from_secs(2),
+    )
+    .await;
+    h.mouse(h.client.clone(), MouseAction::Release, 1, 9, 1)
+        .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    let copied = h.clipboard(h.client.clone()).await;
+    assert_eq!(copied.len(), 1, "{copied:?}");
+    assert!(
+        copied[0].starts_with("line 28\n") && copied[0].contains("line 38\nl"),
+        "the selection ran from the press down to the live rows: {copied:?}"
+    );
+}
+
+/// A release over the chrome still ends the drag: the selection is copied and copy mode left,
+/// rather than left open with a button domux believes is still down.
+#[tokio::test]
+async fn a_release_off_the_pane_still_copies_the_selection() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.mouse(h.client.clone(), MouseAction::Press, 1, 2, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 7, 3, 1).await;
+    // Row 0 is the top bar.
+    h.mouse(h.client.clone(), MouseAction::Release, 7, 0, 1)
+        .await;
+    h.wait_for(
+        h.client.clone(),
+        |f| !f.contains(" copy "),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        h.clipboard(h.client.clone()).await,
+        vec!["line 14\nline 15".to_string()]
+    );
+    assert!(!h.model().pane(&pane).unwrap().copy_mode);
+}
+
+/// MUX-56. A program on the alternate screen that asked for no mouse, which is how Codex runs,
+/// is sent Up and Down keys for the wheel, as Ghostty sends them, in the form its cursor key
+/// mode asks for. Copy mode has no history to walk there, so the wheel used to do nothing.
+#[tokio::test]
+async fn the_wheel_over_a_program_on_the_alternate_screen_is_up_and_down_keys() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(pane.clone(), b"\x1b[?1049h").await;
+    h.frame(h.client.clone()).await;
+
+    let before = h.pane_input(&pane).len();
+    h.scroll(h.client.clone(), 5, 5, 3).await;
+    h.scroll(h.client.clone(), 5, 5, -3).await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        sent_since(&h, &pane, before),
+        "\x1b[A\x1b[A\x1b[A\x1b[B\x1b[B\x1b[B",
+        "one key a line, up then down"
+    );
+    assert!(!h.model().pane(&pane).unwrap().copy_mode);
+
+    h.feed_pane(pane.clone(), b"\x1b[?1h").await;
+    h.frame(h.client.clone()).await;
+    let before = h.pane_input(&pane).len();
+    h.scroll(h.client.clone(), 5, 5, 3).await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        sent_since(&h, &pane, before),
+        "\x1bOA\x1bOA\x1bOA",
+        "application cursor keys"
+    );
+}
+
+/// A program that turned alternate scroll off is sent nothing for the wheel, and neither is a
+/// program on the primary screen, where the wheel is copy mode's.
+#[tokio::test]
+async fn the_wheel_sends_no_keys_to_a_program_that_turned_alternate_scroll_off() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(pane.clone(), b"\x1b[?1049h\x1b[?1007l").await;
+    h.frame(h.client.clone()).await;
+    let before = h.pane_input(&pane).len();
+    h.scroll(h.client.clone(), 5, 5, 3).await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(sent_since(&h, &pane, before), "");
+    assert!(!h.model().pane(&pane).unwrap().copy_mode);
+}
+
+/// The wheel in the middle of a drag over such a program scrolls it, and the program redraws
+/// the cells the selection covered, so the selection is dropped, as Ghostty drops its own. The
+/// release after it copies nothing.
+#[tokio::test]
+async fn the_wheel_during_a_drag_on_the_alternate_screen_scrolls_and_drops_the_selection() {
+    let mut h = Harness::start(Config::default(), 80, 10).await;
+    let pane = pane_with_lines(&mut h, 20).await;
+    h.feed_pane(pane.clone(), b"\x1b[?1049hscreen text").await;
+    h.frame(h.client.clone()).await;
+    h.mouse(h.client.clone(), MouseAction::Press, 1, 2, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 5, 2, 1).await;
+    h.frame(h.client.clone()).await;
+    assert!(h.model().pane(&pane).unwrap().copy_mode);
+
+    let before = h.pane_input(&pane).len();
+    h.scroll(h.client.clone(), 5, 2, 3).await;
+    h.mouse(h.client.clone(), MouseAction::Drag, 6, 2, 1).await;
+    h.mouse(h.client.clone(), MouseAction::Release, 6, 2, 1)
+        .await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(sent_since(&h, &pane, before), "\x1b[A\x1b[A\x1b[A");
+    assert!(!h.model().pane(&pane).unwrap().copy_mode);
+    assert!(h.clipboard(h.client.clone()).await.is_empty());
+}

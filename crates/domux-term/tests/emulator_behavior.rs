@@ -584,6 +584,19 @@ fn mouse_tracking_is_active_for_every_tracking_mode_a_program_can_set() {
     }
 }
 
+/// Alternate scroll is on before a program says anything, as it is in Ghostty, so a pane gets
+/// what the program would get in the outer terminal. Codex sets it itself; a program that turns
+/// it off gets no keys for the wheel.
+#[test]
+fn alternate_scroll_is_on_until_the_program_turns_it_off() {
+    let mut e = make(20, 5);
+    assert!(e.mode_active(Mode::AlternateScroll));
+    e.feed(b"\x1b[?1007l");
+    assert!(!e.mode_active(Mode::AlternateScroll));
+    e.feed(b"\x1b[?1007h");
+    assert!(e.mode_active(Mode::AlternateScroll));
+}
+
 /// A program that asked for no mouse is sent no mouse. Anything else would type rubbish into
 /// its input: a program that never enabled tracking reads a report as the characters it is
 /// made of.

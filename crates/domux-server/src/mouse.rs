@@ -1,9 +1,11 @@
 //! Where a pointer event goes (decisions 0014 and 0044).
 //!
 //! The wheel over a pane belongs to that pane's program when the program asked for the mouse,
-//! and to copy mode otherwise. The buttons belong to that program too, from the press to the
-//! release, unless the pane is in copy mode. Everywhere else they are domux's: a press focuses
-//! what it lands on, a drag selects, a release copies.
+//! is Up and Down keys to a program on the alternate screen that asked for none, and belongs to
+//! copy mode otherwise. The buttons belong to a program that asked for the mouse too, from the
+//! press to the release, unless the pane is in copy mode. Everywhere else they are domux's: a
+//! press focuses what it lands on, a drag selects and scrolls the pane while it is held past
+//! the pane's edge, and a release copies.
 //!
 //! What a cell belongs to is `render::hit_at`'s answer, asked through the same input the frame
 //! is drawn from, so nothing here measures the screen a second time.
@@ -75,6 +77,9 @@ pub fn wheel(core: &mut Core, client: &ClientId, column: u16, row: u16, lines: i
     {
         return;
     }
+    if alternate_scroll(core, &hit.pane, lines) {
+        return;
+    }
     // Copy mode's own gesture, which the keys share: it opens the mode and moves the viewport.
     // The wheel reaches it only while the keys are in a pane, because with the keys in a box
     // the reader is scrolling that box's list rather than a pane's history.
@@ -96,6 +101,45 @@ pub fn wheel(core: &mut Core, client: &ClientId, column: u16, row: u16, lines: i
     core.model.set_pane_copy_mode(&hit.pane, true);
 }
 
+/// The wheel over a program on the alternate screen that asked for no mouse is Up and Down
+/// keys, one a line, in the form the program's cursor key mode asks for. It is what Ghostty
+/// sends the same program outside domux, and it is how Codex scrolls its transcript (MUX-56).
+/// The alternate screen keeps no history for copy mode to walk, so without it the wheel there
+/// did nothing. A program that turned mode 1007 off gets nothing, as in Ghostty. `true` when
+/// the keys were written.
+///
+/// The program redraws the cells a selection there covers, so a selection on that pane is
+/// dropped and its copy mode left, which is what Ghostty does with its own.
+fn alternate_scroll(core: &mut Core, pane: &PaneId, lines: i16) -> bool {
+    let Some(rt) = core.panes.get_mut(pane) else {
+        return false;
+    };
+    let emulator = &rt.emulator;
+    if !emulator.mode_active(Mode::AltScreen)
+        || !emulator.mode_active(Mode::AlternateScroll)
+        || emulator.mode_active(Mode::MouseTracking)
+    {
+        return false;
+    }
+    let key: &[u8] = match (lines > 0, emulator.mode_active(Mode::AppCursor)) {
+        (true, true) => b"\x1bOA",
+        (true, false) => b"\x1b[A",
+        (false, true) => b"\x1bOB",
+        (false, false) => b"\x1b[B",
+    };
+    rt.write(&key.repeat(lines.unsigned_abs() as usize));
+    rt.pressed_at = None;
+    if rt.copy.is_some() {
+        crate::input::leave_copy_mode(core, pane);
+    }
+    for conn in core.clients.values_mut() {
+        if conn.selecting.as_ref().is_some_and(|(p, _)| p == pane) {
+            conn.selecting = None;
+        }
+    }
+    true
+}
+
 /// One button event.
 ///
 /// A gesture a program took stays that program's until the button comes up, and a press over a
@@ -109,8 +153,9 @@ pub fn button(core: &mut Core, client: &ClientId, event: MouseEvent, count: u8) 
         // this gesture to the program the last press went to.
         if let Some(conn) = core.clients.get_mut(client) {
             conn.reported_press = None;
+            conn.selecting = None;
         }
-    } else if to_holding_program(core, client, event) {
+    } else if to_holding_program(core, client, event) || to_selecting_pane(core, client, event) {
         return;
     }
     match core.hit_at(client, event.col, event.row) {
@@ -185,6 +230,116 @@ fn to_holding_program(core: &mut Core, client: &ClientId, event: MouseEvent) -> 
     true
 }
 
+/// A drag or a release from a client whose press started a selection goes to the pane it
+/// started in, at the cell of that pane nearest the pointer, so a drag that wandered onto the
+/// chrome or into the pane beside it still moves the selection, and a release there still
+/// copies it. A drag past the pane's top or bottom edge scrolls it (MUX-56). `true` when the
+/// event was the selection's.
+fn to_selecting_pane(core: &mut Core, client: &ClientId, event: MouseEvent) -> bool {
+    if event.button != MouseButton::Left {
+        return false;
+    }
+    let Some((pane, _)) = core.clients.get(client).and_then(|c| c.selecting.clone()) else {
+        return false;
+    };
+    let cell = core.cell_in_pane(client, &pane, event.col, event.row);
+    let past = core.rows_past_pane(client, &pane, event.row).unwrap_or(0);
+    let over_pane = matches!(
+        core.hit_at(client, event.col, event.row),
+        Some(Hit::Pane { pane: ref p, .. }) if *p == pane
+    );
+    if event.action == MouseAction::Release {
+        if let Some(conn) = core.clients.get_mut(client) {
+            conn.selecting = None;
+        }
+    }
+    let Some((row, col)) = cell else {
+        // A pane this client no longer draws has no cell to put the selection's end on.
+        if let Some(rt) = core.panes.get_mut(&pane) {
+            rt.pressed_at = None;
+        }
+        return true;
+    };
+    let hit = PaneHit { pane, row, col };
+    match event.action {
+        MouseAction::Drag => {
+            drag(core, client, &hit);
+            drag_scroll(core, client, &hit.pane, past);
+        }
+        MouseAction::Release if over_pane => release(core, client, &hit),
+        MouseAction::Release => {
+            // Off the pane, a release that never dragged is not a click on the cell it clamps
+            // to, so it opens nothing.
+            let dragged = core
+                .panes
+                .get(&hit.pane)
+                .and_then(|rt| rt.copy.as_ref())
+                .is_some_and(|c| c.anchor.is_some());
+            if dragged {
+                release(core, client, &hit);
+            } else if let Some(rt) = core.panes.get_mut(&hit.pane) {
+                rt.pressed_at = None;
+            }
+        }
+        MouseAction::Press => {}
+    }
+    true
+}
+
+/// Sets which way a held drag scrolls its pane: into the history while the pointer is above
+/// the pane, towards the live screen while it is below, and not at all while it is on it. The
+/// step that crosses the edge scrolls at once, so the reader sees the pane answer, and the
+/// ticker keeps it going while the pointer stays where it is.
+fn drag_scroll(core: &mut Core, client: &ClientId, pane: &PaneId, past: i32) {
+    let way: i16 = match past {
+        p if p < 0 => 1,
+        p if p > 0 => -1,
+        _ => 0,
+    };
+    let Some(conn) = core.clients.get_mut(client) else {
+        return;
+    };
+    let Some((_, current)) = conn.selecting.as_mut() else {
+        return;
+    };
+    let crossed = *current == 0 && way != 0;
+    *current = way;
+    if crossed {
+        step_drag_scroll(core, pane, way);
+    }
+}
+
+/// One tick of every held drag past its pane's edge. `true` when a viewport moved.
+pub fn drag_scroll_tick(core: &mut Core) -> bool {
+    let held: Vec<(PaneId, i16)> = core
+        .clients
+        .values()
+        .filter_map(|conn| conn.selecting.clone())
+        .filter(|(_, way)| *way != 0)
+        .collect();
+    let mut moved = false;
+    for (pane, way) in held {
+        moved |= step_drag_scroll(core, &pane, way);
+    }
+    moved
+}
+
+/// Scrolls a pane under a drag by one line, when there is a selection to carry and history to
+/// carry it into. The copy cursor stays on the edge row the pointer clamps to, so the selection
+/// grows by the line that scrolled in. `true` when the viewport moved.
+fn step_drag_scroll(core: &mut Core, pane: &PaneId, way: i16) -> bool {
+    let Some(rt) = core.panes.get_mut(pane) else {
+        return false;
+    };
+    let selecting = rt.pressed_at.is_some() && rt.copy.as_ref().is_some_and(|c| c.anchor.is_some());
+    if !selecting {
+        return false;
+    }
+    let before = rt.copy.as_ref().map(|c| c.offset);
+    copy_mode::scroll(rt, way);
+    rt.copy.as_ref().map(|c| c.offset) != before
+}
+
 /// A press on the chrome runs the same handler the key for that operation runs, so a click, a
 /// key and a CLI subcommand cannot mean three different things (decision 0014). A refusal from
 /// one of them reaches the hint row the way a key's refusal does.
@@ -243,14 +398,16 @@ fn press(core: &mut Core, client: &ClientId, hit: &PaneHit, count: u8) {
         rt.dirty = true;
     }
     rt.pressed_at = Some((hit.row, hit.col));
+    if let Some(conn) = core.clients.get_mut(client) {
+        conn.selecting = Some((hit.pane.clone(), 0));
+    }
 }
 
 /// A drag opens copy mode if the press did not, anchors the selection at the press, and moves
-/// the copy cursor to the cell under the pointer.
-///
-/// A drag that leaves the pane clamps to its edge rather than scrolling the viewport under it, so
-/// a selection made with the pointer alone reaches no further than the screen. Copy mode's keys
-/// extend it into the scrollback from there, and decision 0014 records the gap.
+/// the copy cursor to the cell under the pointer, or to the pane's nearest cell when the
+/// pointer has left it. Held past the pane's top or bottom edge, the drag also scrolls the
+/// viewport under it (`drag_scroll`), so a selection made with the pointer alone reaches into
+/// the scrollback (MUX-56).
 fn drag(core: &mut Core, client: &ClientId, hit: &PaneHit) {
     let Some(rt) = core.panes.get_mut(&hit.pane) else {
         return;

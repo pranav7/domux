@@ -296,6 +296,29 @@ pub fn cell_in_pane(
     grid_cell(rect, column, row)
 }
 
+/// How far the screen row lies past the rows of `pane`'s grid: negative above them, positive
+/// below them and 0 on them, or `None` when this client draws no box for that pane. A drag held
+/// past a pane's edge scrolls it this way (MUX-56).
+pub fn rows_past_pane(input: &RenderInput, pane: &PaneId, row: u16) -> Option<i32> {
+    if !draws_panes(input.view) {
+        return None;
+    }
+    let (_, rect) = pane_boxes(input)?.into_iter().find(|(p, _)| p == pane)?;
+    let inner = boxed::Boxed::inner_of(to_rect(rect));
+    if inner.height == 0 {
+        return None;
+    }
+    let row = i32::from(row);
+    let (top, bottom) = (i32::from(inner.y), i32::from(inner.bottom()) - 1);
+    Some(if row < top {
+        row - top
+    } else if row > bottom {
+        row - bottom
+    } else {
+        0
+    })
+}
+
 /// Every pane box on this client's tab, on the rectangle `draw_panes` lays the boxes out on.
 fn pane_boxes(input: &RenderInput) -> Option<Vec<(PaneId, domux_core::model::Rect)>> {
     let tab = input.model.tab(&input.view.tab)?;
