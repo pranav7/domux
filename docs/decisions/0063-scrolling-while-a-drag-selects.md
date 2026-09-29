@@ -1,4 +1,4 @@
-# 0062: Scrolling while a drag selects
+# 0063: Scrolling while a drag selects
 
 **Date:** 2026-09-29
 **Status:** Accepted. MUX-56. Closes the gap decision record 0014 left open about a drag past a

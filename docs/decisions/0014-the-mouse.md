@@ -127,6 +127,6 @@ Three things fell out of that and are worth naming:
 - The switcher's rows do not answer a click. An open overlay owns the screen, and the switcher is
   the one overlay whose rows would mean something; it wants the same treatment the sidebar's box
   got here.
-- Closed by decision record 0062: a drag held past a pane's top or bottom edge scrolls it, so a
+- Closed by decision record 0063: a drag held past a pane's top or bottom edge scrolls it, so a
   selection runs into the scrollback with the pointer alone, and a drag that starts in one pane
   and ends in another selects in the first, clamped at its edge.

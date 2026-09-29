@@ -146,7 +146,7 @@ explain on its own. `docs/nvim.md` is what a user reads. Read both before changi
   the buttons as well as the wheel. Read `docs/decisions/0014-the-mouse.md`,
   `docs/decisions/0024-a-click-opens-the-link-under-it.md`,
   `docs/decisions/0044-a-program-that-asked-for-the-mouse-gets-the-buttons.md` and
-  `docs/decisions/0062-scrolling-while-a-drag-selects.md` before changing what any of them do.
+  `docs/decisions/0063-scrolling-while-a-drag-selects.md` before changing what any of them do.
 - One implementation per operation: a key, a CLI subcommand and an API call reach the same handler in `domux_server::api`.
 - One core task owns all mutable state. Atomic writes: `path.tmp`, then rename.
 - Test names are `behavior_condition` in snake_case.
