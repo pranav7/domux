@@ -1631,7 +1631,11 @@ impl Core {
             self.view_dirty = true;
             return;
         }
-        self.model.touch_client(&client);
+        // A screen losing the terminal's focus is the reader leaving it, so it is no activity:
+        // counted, it could make the screen just left the one the panes take their size from.
+        if !matches!(msg, ClientMsg::Focus(false)) {
+            self.model.touch_client(&client);
+        }
         match msg {
             ClientMsg::Hello(_) | ClientMsg::Colors(_) => {}
             ClientMsg::Key(key) => {
@@ -2668,7 +2672,7 @@ impl Core {
     ///
     /// Kills come before spawns so a close-and-replace frees its process before the
     /// replacement starts, and `sync_pane_sizes` comes last so a new PTY is at the size the
-    /// smallest client actually draws before its program has printed anything.
+    /// client used last actually draws before its program has printed anything.
     pub fn apply_side_effects(
         &mut self,
         spawns: Vec<PaneId>,
@@ -2742,7 +2746,7 @@ impl Core {
         true
     }
 
-    /// The size the smallest client on the pane's tab will give it, so its PTY starts at the
+    /// The size the client used last on the pane's tab will give it, so its PTY starts at the
     /// size it will be drawn at rather than at a default it is resized away from one batch
     /// later. The same arithmetic as `sync_pane_sizes`, which settles it either way.
     fn provisional_size(&self, pane: &PaneId) -> Size {
@@ -3220,8 +3224,8 @@ impl Core {
         let _ = self.persist_tx.try_send(snapshot);
     }
 
-    /// Every pane viewed by a client that draws panes takes the size the smallest such client
-    /// gives it. Panes without a drawing client keep their size.
+    /// Every pane viewed by a client that draws panes takes the size the one of those used last
+    /// gives it (decision 0062). Panes without a drawing client keep their size.
     fn sync_pane_sizes(&mut self) {
         // One entry per tab with a client that draws panes, carrying the first such client's
         // size. A below-minimum client draws only the size notice, so it must not resize a PTY
@@ -3267,6 +3271,9 @@ impl Core {
             }
         }
         if !events.is_empty() {
+            // Every client on the tab draws the boxes at the new size, not only the one whose
+            // input moved the size: the others' frames changed too.
+            self.view_dirty = true;
             self.pending_events.extend(events);
             self.publish_events();
         }

@@ -359,9 +359,9 @@ fn model_with_clients(
 /// column too wide panics rather than clips.
 ///
 /// The boundary is a client on the tab that is larger than the buffer being drawn: the pane
-/// boxes take the smallest client's size, and a view the model does not hold - which
-/// `compose` accepts, since it is public and takes the view by reference - would otherwise
-/// take that larger client's size into a buffer its own size. Every cell must land inside.
+/// boxes take the size of the client used last (decision 0062), and here that is a larger
+/// client, so the boxes reach past this buffer's edge. Every cell must land inside, and the
+/// box is cut off at the edge rather than squeezed to fit.
 #[test]
 fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
     use domux_core::model::ClientView;
@@ -410,14 +410,14 @@ fn a_larger_client_on_the_tab_never_pushes_a_box_past_this_client_s_buffer() {
         "the box still starts at the workpanel's left edge"
     );
     assert!(
-        row(&buffer, 1).ends_with('┐'),
-        "and its right border lands on the last column of this client's own screen: {:?}",
+        row(&buffer, 1).ends_with('─'),
+        "and it is cut off at the last column of this client's own screen: {:?}",
         row(&buffer, 1)
     );
 }
 
-/// The mirror of the case above: the smallest client is smaller than this one, so the box
-/// stops short and the rest of the larger screen stays blank (tmux's rule).
+/// The mirror of the case above: the client used last is smaller than this one, so the box
+/// stops short and the rest of the larger screen stays blank.
 #[test]
 fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
     use domux_server::render::{compose, RenderInput};
@@ -455,7 +455,7 @@ fn a_smaller_client_on_the_tab_shortens_the_box_and_leaves_the_rest_blank() {
         top[top.char_indices().nth(40).unwrap().0..]
             .chars()
             .all(|c| c == ' '),
-        "everything past the smallest client's width is blank: {top:?}"
+        "everything past the width of the client used last is blank: {top:?}"
     );
 }
 

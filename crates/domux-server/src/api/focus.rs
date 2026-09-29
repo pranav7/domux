@@ -39,7 +39,7 @@ pub fn step(ctx: &mut Ctx, p: FocusStepParams, dir: Direction) -> Result<Value, 
         .client_tab(&client)
         .cloned()
         .ok_or_else(|| ApiError::not_found(format!("client {client} has no tab")))?;
-    let area = ctx.smallest_area(&tab.id);
+    let area = ctx.tab_area(&tab.id);
     let rects = solve(&tab.layout, area, tab.zoomed.as_ref());
     if let Some(next) = neighbour_by_geometry(&rects, &tab.focused, dir) {
         let events = ctx.model.focus_pane(&next)?;
