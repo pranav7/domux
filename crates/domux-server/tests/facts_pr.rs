@@ -2,7 +2,7 @@
 //! waits for an answer.
 
 use domux_core::facts::{FactKey, FactState, FACT_BRANCH, FACT_PR};
-use domux_core::ids::WorkspaceId;
+use domux_core::ids::{AgentId, WorkspaceId};
 use domux_server::facts::pr::{parse_gh_pr_list, PrProvider, PR_INTERVAL, PR_TIMEOUT, PR_TTL};
 use domux_server::facts::{default_providers, FactProvider, FactTarget, ProviderScope};
 use domux_server::testing::finishes_within;
@@ -70,6 +70,7 @@ fn target(path: PathBuf, branch: &str) -> FactTarget {
         default_branch: Some("main".into()),
         handle: Some("workspace-1".into()),
         branch: Some(branch.to_string()),
+        workspace_branch: None,
         now: now(),
     }
 }
@@ -249,6 +250,42 @@ fn a_slot_resting_on_its_own_branch_is_skipped() {
         !bin.join("args").exists(),
         "gh is not even run: the model already calls this slot untouched, and a number here \
          would contradict that and cost the row its glyph"
+    );
+}
+
+/// An agent in a worktree of its own is looked up by its own branch, in its own directory,
+/// and an agent on its workspace's branch is not looked up at all: the workspace's row already
+/// carries that pull request (MUX-55).
+#[test]
+fn an_agent_is_looked_up_by_its_own_branch_and_skipped_on_its_workspace_s() {
+    let dir = tempfile::tempdir().unwrap();
+    let (bin, workspace) = bin_and_workspace(dir.path());
+    let gh = gh_printing(
+        &bin,
+        r#"[{"number":1287,"state":"OPEN","title":"Polish the session list","isDraft":false}]"#,
+    );
+    let p = PrProvider::new(&gh);
+    assert!(p.follows_agents(), "the pull request follows agents too");
+    let agent = |branch: &str| FactTarget {
+        key: FactKey::agent(&AgentId("a_5e21".into()), FACT_PR),
+        workspace_branch: Some("feat/audit-harness".into()),
+        ..target(workspace.clone(), branch)
+    };
+    assert_eq!(
+        p.fetch(&agent("feat/audit-harness")).unwrap(),
+        None,
+        "on the workspace's branch, the workspace's row has the answer"
+    );
+    assert!(!bin.join("args").exists(), "and gh is not run for it");
+    let fact = p
+        .fetch(&agent("feature/eng-533-session-polish"))
+        .unwrap()
+        .expect("a pull request for the agent's own branch");
+    assert_eq!(fact.text, "PR#1287");
+    let args = std::fs::read_to_string(bin.join("args")).unwrap();
+    assert!(
+        args.contains("--head feature/eng-533-session-polish"),
+        "looked up by the agent's branch: {args}"
     );
 }
 

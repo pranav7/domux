@@ -2,7 +2,7 @@
 //! what domux decided and persists (architecture spec section 2). A fact that did not
 //! arrive is absent. Nothing here fetches anything: the providers live in the server.
 
-use crate::ids::{ProjectId, WorkspaceId};
+use crate::ids::{AgentId, ProjectId, WorkspaceId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -27,6 +27,9 @@ pub const FACT_PR: &str = "pr";
 pub enum FactScope {
     Workspace(WorkspaceId),
     Project(ProjectId),
+    /// One agent, for the branch and pull request of the directory it works in, which can be
+    /// a worktree of its own rather than its workspace's (MUX-55, decision record 0061).
+    Agent(AgentId),
     Server,
 }
 
@@ -54,6 +57,13 @@ impl FactKey {
         }
     }
 
+    pub fn agent(id: &AgentId, name: &str) -> FactKey {
+        FactKey {
+            scope: FactScope::Agent(id.clone()),
+            name: name.to_string(),
+        }
+    }
+
     pub fn server(name: &str) -> FactKey {
         FactKey {
             scope: FactScope::Server,
@@ -75,6 +85,7 @@ impl fmt::Display for FactKey {
         match &self.scope {
             FactScope::Workspace(id) => write!(f, "{id}/{}", self.name),
             FactScope::Project(id) => write!(f, "{id}/{}", self.name),
+            FactScope::Agent(id) => write!(f, "{id}/{}", self.name),
             FactScope::Server => write!(f, "server/{}", self.name),
         }
     }
@@ -99,8 +110,11 @@ impl FromStr for FactKey {
         if let Ok(id) = scope.parse::<ProjectId>() {
             return Ok(FactKey::project(&id, name));
         }
+        if let Ok(id) = scope.parse::<AgentId>() {
+            return Ok(FactKey::agent(&id, name));
+        }
         Err(format!(
-            "{scope} is not a workspace id, a project id or the word server"
+            "{scope} is not a workspace id, a project id, an agent id or the word server"
         ))
     }
 }
@@ -250,7 +264,7 @@ mod ttl_secs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{ProjectId, WorkspaceId};
+    use crate::ids::{AgentId, ProjectId, WorkspaceId};
     use std::time::Duration;
 
     #[test]
@@ -261,6 +275,9 @@ mod tests {
         let p = FactKey::project(&ProjectId("pr_19f0".into()), "ci");
         assert_eq!(p.to_string(), "pr_19f0/ci");
         assert_eq!("pr_19f0/ci".parse::<FactKey>().unwrap(), p);
+        let a = FactKey::agent(&AgentId("a_5e21".into()), FACT_BRANCH);
+        assert_eq!(a.to_string(), "a_5e21/branch");
+        assert_eq!("a_5e21/branch".parse::<FactKey>().unwrap(), a);
         let s = FactKey::server("usage");
         assert_eq!(s.to_string(), "server/usage");
         assert_eq!("server/usage".parse::<FactKey>().unwrap(), s);
@@ -274,7 +291,7 @@ mod tests {
         );
         assert_eq!(
             "x_0001/pr".parse::<FactKey>().unwrap_err(),
-            "x_0001 is not a workspace id, a project id or the word server"
+            "x_0001 is not a workspace id, a project id, an agent id or the word server"
         );
     }
 
@@ -286,6 +303,7 @@ mod tests {
         for scope in [
             FactScope::Workspace(WorkspaceId("w_c3a1".into())),
             FactScope::Project(ProjectId("pr_19f0".into())),
+            FactScope::Agent(AgentId("a_5e21".into())),
             FactScope::Server,
         ] {
             let text = serde_json::to_string(&scope).unwrap();

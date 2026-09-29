@@ -873,60 +873,26 @@ async fn every_role_is_drawn_where_the_role_table_says() {
                 text("◉").in_row("probe-read"),
                 WaitingDotSeen,
             ),
-            fg("a session name", text("probe-work"), Text),
+            // The Navigator draws a session name in its kind's colour and the glyph without
+            // the word; the words are checked in the agents overlay (decision record 0061).
+            fg("a session name", text("probe-work"), Claude),
             fg(
                 "a claude working glyph",
                 text("probe-work").skip(11),
                 Claude,
             ),
-            band(
-                "a claude working word",
-                text("probe-work").skip(13),
-                BandClaudeDim,
-            ),
             fg("a codex label", text("codex"), Codex),
             fg("a codex working glyph", text("codex").skip(6), Codex),
-            band("a codex working word", text("codex").skip(8), BandCodexDim),
-            fg("an opencode label", text("opencode").in_row("…"), Opencode),
+            fg("an opencode label", text("opencode"), Opencode),
             fg(
                 "an opencode working glyph",
-                text("opencode").in_row("…").skip(9),
+                text("opencode").skip(9),
                 Opencode,
-            ),
-            band(
-                "an opencode working word",
-                text("opencode").in_row("…").skip(11),
-                BandOpencodeDim,
             ),
             breath(
                 "the compacting arrow",
                 text("probe-compact").skip(14),
                 Compacting,
-            ),
-            band(
-                "the compacting word",
-                text("Compacting…"),
-                BandCompactingDim,
-            ),
-            fg(
-                "the kind in the tail",
-                text("claude").in_row("probe-compact"),
-                Claude,
-            ),
-            fg(
-                "the separator in the tail",
-                text("›").in_row("probe-compact"),
-                Separator,
-            ),
-            fg(
-                "the tab in the tail",
-                text("t_").in_row("probe-compact"),
-                DimText,
-            ),
-            fg(
-                "the pane in the tail",
-                text("sh").in_row("probe-compact"),
-                DimText,
             ),
             fg(
                 "an unknown agent's name",
@@ -991,6 +957,23 @@ async fn every_role_is_drawn_where_the_role_table_says() {
             ),
             fg("the pane on line 2", text("› sh").nth(0).skip(2), DimText),
             fg("a recap", text("Probe recap busy"), Recap),
+            fg("a session name", text("probe-work"), Text),
+            band(
+                "a claude working word",
+                text("probe-work").skip(13),
+                BandClaudeDim,
+            ),
+            band("a codex working word", text("codex").skip(8), BandCodexDim),
+            band(
+                "an opencode working word",
+                text("opencode").in_row("…").skip(11),
+                BandOpencodeDim,
+            ),
+            band(
+                "the compacting word",
+                text("Compacting…"),
+                BandCompactingDim,
+            ),
         ],
         &mut failures,
         &mut covered,

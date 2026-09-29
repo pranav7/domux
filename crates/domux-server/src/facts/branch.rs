@@ -29,6 +29,10 @@ impl FactProvider for BranchProvider {
         ProviderScope::Workspace
     }
 
+    fn follows_agents(&self) -> bool {
+        true
+    }
+
     fn fetch(&self, target: &FactTarget) -> Result<Option<Fact>, String> {
         // A missing path and a directory that is not a repository are both absent, never an
         // error the engineer sees: a workspace whose slot was removed outside domux, or a

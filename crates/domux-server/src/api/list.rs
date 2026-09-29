@@ -134,7 +134,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
         let (_, area, _) =
             crate::render::sidebar::split_for(ctx.model, ctx.facts, view.size, false);
         let now = ctx.deps.clock.now();
-        let agents = crate::core::agents_view(ctx.model, ctx.agents, now);
+        let agents = crate::core::agents_view(ctx.model, ctx.facts, ctx.agents, now);
         // The rows are built for the keys and their styles are thrown away, so any theme gives
         // the same rows.
         let all = agents_box::rows(
@@ -156,7 +156,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     if surface == Surface::AgentsOverlay {
         let width = crate::render::overlay::list_overlay_width(screen);
         let now = ctx.deps.clock.now();
-        let agents = crate::core::agents_view(ctx.model, ctx.agents, now);
+        let agents = crate::core::agents_view(ctx.model, ctx.facts, ctx.agents, now);
         let all = agents_box::rows(
             domux_core::theme::Theme::domux(),
             &agents,
@@ -200,7 +200,7 @@ fn visible(ctx: &mut Ctx, client: &ClientId) -> Result<Visible, ApiError> {
     // `core::agents_view` is the same call the frame this cursor moves over makes, so a key
     // cannot give an agent a different word from the one the reader is looking at.
     let now = ctx.deps.clock.now();
-    let nested = navigator.then(|| crate::core::agents_view(ctx.model, ctx.agents, now));
+    let nested = navigator.then(|| crate::core::agents_view(ctx.model, ctx.facts, ctx.agents, now));
     let view = ctx
         .model
         .client(client)
