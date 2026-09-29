@@ -12,7 +12,8 @@ use crate::copy_mode::{self, CopyMode};
 use crate::core::Core;
 use crate::render::Hit;
 use domux_core::api::{
-    ClientParams, Method, PaneTargetParams, TabCreateParams, TabSelectParams, WorkspaceFocusParams,
+    AgentTargetParams, ClientParams, Method, PaneTargetParams, TabCreateParams, TabSelectParams,
+    WorkspaceFocusParams,
 };
 use domux_core::ids::{ClientId, PaneId};
 use domux_core::model::Focus;
@@ -204,6 +205,13 @@ fn chrome(core: &mut Core, client: &ClientId, hit: Hit) {
         // what the reader asked for and the cursor follows the workspace they land in.
         Hit::Workspace(workspace) => Method::WorkspaceFocus(WorkspaceFocusParams {
             workspace: workspace.to_string(),
+            client: Some(client.clone()),
+        }),
+        // A click on an agent row opens that agent's pane, which is what Enter on the row does
+        // (MUX-31).
+        Hit::Agent(agent) => Method::AgentFocus(AgentTargetParams {
+            agent: Some(agent.to_string()),
+            pane: None,
             client: Some(client.clone()),
         }),
         Hit::Pane { .. } => return,

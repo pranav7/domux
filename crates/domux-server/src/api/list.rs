@@ -285,7 +285,7 @@ fn step(ctx: &mut Ctx, delta: isize) -> Result<Value, ApiError> {
     let scroll = scroll_to_show(&v.rows, Some(next), v.height, v.scroll);
     // Which of the two the key names is a question for the model, not for the shape of the
     // string: the Navigator's rows carry both kinds and an id's prefix is not a contract.
-    let target = key.as_deref().and_then(|k| row_target(ctx, k));
+    let target = key.as_deref().and_then(|k| ctx.model.row_target(k));
     let navigator = ctx.config.config.navigator.enabled;
     if let Some(view) = ctx.model.client_mut(&client) {
         if navigator && v.surface.is_projects() {
@@ -301,19 +301,6 @@ fn step(ctx: &mut Ctx, delta: isize) -> Result<Value, ApiError> {
     }
     ctx.view_dirty = true;
     ok(Ack { ok: true })
-}
-
-/// What a row key names, asked of the model rather than read off the string.
-///
-/// The Navigator's rows carry a workspace id or an agent id, and telling them apart by their
-/// prefix would make `w_` and `a_` a contract that `Model::next_id` never promised.
-fn row_target(ctx: &Ctx, key: &str) -> Option<RowTarget> {
-    let workspace = WorkspaceId(key.to_string());
-    if ctx.model.workspace(&workspace).is_some() {
-        return Some(RowTarget::Workspace(workspace));
-    }
-    let agent = AgentId(key.to_string());
-    ctx.model.agent(&agent).map(|_| RowTarget::Agent(agent))
 }
 
 pub fn down(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
@@ -348,7 +335,7 @@ pub fn activate(ctx: &mut Ctx, _p: ClientParams) -> Result<Value, ApiError> {
     };
     // The Navigator's rows are of two kinds, so what Enter does is decided by what the key
     // names rather than by which box it came from.
-    match row_target(ctx, &key) {
+    match ctx.model.row_target(&key) {
         Some(RowTarget::Agent(agent)) => return activate_agent(ctx, &client, agent),
         Some(RowTarget::Workspace(_)) => {}
         // A row whose key names neither, which is a record or a workspace that went between

@@ -14,7 +14,7 @@ use crate::render::projects_box::{filled_index, rows, rows_at, Extras};
 use crate::render::theme::color;
 use crate::render::top_bar::Piece;
 use crate::render::RenderInput;
-use domux_core::model::{ClientView, Focus, RegionKind, SIDEBAR_WIDTH};
+use domux_core::model::{ClientView, Focus, RegionKind, RowTarget, SIDEBAR_WIDTH};
 use domux_core::text::truncate_with_ellipsis;
 use domux_core::theme::{Role, Theme};
 use domux_term::Size;
@@ -240,9 +240,11 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
     (built, focused)
 }
 
-/// The workspace whose row is at `row` of the screen, or `None` for a header, a blank, the box's
-/// border, the hint row, or a row past the end of the list.
-pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::WorkspaceId> {
+/// What the Navigator's row at `row` of the screen names: a workspace, or an agent under one.
+/// `None` for a header, a blank, the box's border, the hint row, or a row past the end of the
+/// list. The key is asked of the model, the way Enter asks it, so a click on an agent row is
+/// the agent and never a workspace of that name.
+pub fn row_target_at(input: &RenderInput, row: u16) -> Option<RowTarget> {
     let area = projects_area(input.model, input.facts, input.view.size, input.navigator);
     let (built, _) = built_rows(input, area);
     let inner = text_area(area, pad_for(input.navigator));
@@ -253,11 +255,8 @@ pub fn workspace_at(input: &RenderInput, row: u16) -> Option<domux_core::ids::Wo
         input.view.projects_scroll,
     );
     let at = crate::render::list_box::row_at(&built.rows, scroll, inner, row)?;
-    built
-        .rows
-        .get(at)
-        .and_then(|r| r.key.clone())
-        .map(domux_core::ids::WorkspaceId)
+    let key = built.rows.get(at)?.key.as_deref()?;
+    input.model.row_target(key)
 }
 
 /// The sidebar's column: the two boxes with the hint row under them, or the Navigator's one
