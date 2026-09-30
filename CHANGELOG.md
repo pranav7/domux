@@ -36,6 +36,10 @@ notes, and a missing or empty section stops the release. Versions follow
   and never said it stopped. `unknown` means an agent is running and nothing is reporting; the
   next hook takes the row back. A row waiting on you is untouched, and so is one whose agent is
   still writing.
+- With two screens on one tab, such as an iTerm window and a Ghostty one, the panes now take the
+  size of the screen you used last, so the one you are typing in fills its width and height. They
+  used to take the smallest screen's size and leave the rest of a larger one blank. A smaller
+  screen shows the boxes cut off at its edge until you use it.
 
 ## [0.1.3] - 2026-09-18
 

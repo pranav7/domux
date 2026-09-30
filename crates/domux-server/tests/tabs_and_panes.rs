@@ -420,7 +420,7 @@ async fn send_text_send_key_and_read_go_through_the_pane() {
 /// paths are checked separately on purpose: one reads what the core published beside the
 /// model, this one reads what the API answers.
 #[tokio::test]
-async fn pane_list_reports_the_size_the_smallest_client_gives_each_pane() {
+async fn pane_list_reports_the_size_the_client_used_last_gives_each_pane() {
     let mut h = Harness::start(Config::default(), 60, 20).await;
     let second = h.attach(40, 10).await;
     let pane = h.focused_pane(h.client.clone());
@@ -437,6 +437,67 @@ async fn pane_list_reports_the_size_the_smallest_client_gives_each_pane() {
         (panes[0]["cols"].as_u64(), panes[0]["rows"].as_u64()),
         (Some(published.cols as u64), Some(published.rows as u64)),
         "the API and the published sizes agree"
+    );
+}
+
+/// MUX-53: a larger screen attached beside a smaller one drew its panes at the smaller one's
+/// size and left the rest blank. The client used last sizes the panes (decision 0062).
+#[tokio::test]
+async fn the_panes_take_the_size_of_the_client_used_last() {
+    let mut h = Harness::start(Config::default(), 60, 20).await;
+    let second = h.attach(40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.frame(second.clone()).await;
+    assert_eq!(
+        (h.pane_size(&pane).cols, h.pane_size(&pane).rows),
+        (38, 7),
+        "the smaller client attached last"
+    );
+    h.type_text(h.client.clone(), "x").await;
+    let f = h.frame(h.client.clone()).await;
+    assert_eq!(
+        (h.pane_size(&pane).cols, h.pane_size(&pane).rows),
+        (58, 17),
+        "the larger client was used last:\n{f}"
+    );
+    let top = f.lines().find(|l| l.starts_with("|┌")).unwrap_or_default();
+    assert!(
+        top.ends_with("┐|"),
+        "the box reaches the larger screen's last column:\n{f}"
+    );
+    let small = h.frame(second.clone()).await;
+    assert!(
+        small
+            .lines()
+            .find(|l| l.starts_with("|┌"))
+            .is_some_and(|l| l.ends_with("─|")),
+        "the smaller screen shows the box cut off at its edge:\n{small}"
+    );
+}
+
+/// Leaving a screen is no activity on it: a focus-out that arrives after the other screen's
+/// focus-in must not hand the panes back to the screen just left.
+#[tokio::test]
+async fn a_screen_losing_the_focus_does_not_take_the_panes() {
+    let mut h = Harness::start(Config::default(), 60, 20).await;
+    let second = h.attach(40, 10).await;
+    let pane = h.focused_pane(h.client.clone());
+    h.focus(h.client.clone(), true).await;
+    h.frame(h.client.clone()).await;
+    assert_eq!((h.pane_size(&pane).cols, h.pane_size(&pane).rows), (58, 17));
+    h.focus(second.clone(), false).await;
+    h.frame(second.clone()).await;
+    assert_eq!(
+        (h.pane_size(&pane).cols, h.pane_size(&pane).rows),
+        (58, 17),
+        "the focus-out changed nothing"
+    );
+    h.focus(second.clone(), true).await;
+    h.frame(second.clone()).await;
+    assert_eq!(
+        (h.pane_size(&pane).cols, h.pane_size(&pane).rows),
+        (38, 7),
+        "the focus-in did"
     );
 }
 

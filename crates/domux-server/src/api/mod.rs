@@ -153,9 +153,9 @@ impl Ctx<'_> {
         }
     }
 
-    /// The workpanel area of the smallest client on `tab`, or 80x24 when none shows it.
+    /// The workpanel area of the client used last on `tab`, or 80x24 when none shows it.
     /// The same rectangle `render::draw_panes` draws and `Core::sync_pane_sizes` sizes for.
-    pub fn smallest_area(&self, tab: &TabId) -> Rect {
+    pub fn tab_area(&self, tab: &TabId) -> Rect {
         crate::render::tab_workpanel(self.model, tab, UNVIEWED_SIZE)
     }
 

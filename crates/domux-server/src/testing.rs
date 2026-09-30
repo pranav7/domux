@@ -625,6 +625,11 @@ impl Harness {
         }
     }
 
+    /// The client's terminal gained or lost the focus.
+    pub async fn focus(&mut self, client: ClientId, focused: bool) {
+        self.send(&client, ClientMsg::Focus(focused)).await;
+    }
+
     pub async fn paste(&mut self, client: ClientId, text: &str) {
         self.send(&client, ClientMsg::Paste(text.to_string())).await;
     }
@@ -963,7 +968,7 @@ impl Harness {
     }
 
     /// A pane's emulator size: the screen its program believes it has, which is what the
-    /// smallest client on the tab gives it. Published beside the model after every batch,
+    /// client used last on the tab gives it. Published beside the model after every batch,
     /// so call `frame` first when the resize you want to see was only just requested.
     pub fn pane_size(&self, pane: &PaneId) -> Size {
         self.server

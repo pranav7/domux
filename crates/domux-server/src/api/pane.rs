@@ -156,7 +156,7 @@ pub fn resize(ctx: &mut Ctx, p: PaneResizeParams) -> Result<Value, ApiError> {
         .model
         .pane_location(&pane)
         .ok_or_else(|| ApiError::not_found(format!("pane {pane} does not exist")))?;
-    let area = ctx.smallest_area(&loc.tab);
+    let area = ctx.tab_area(&loc.tab);
     // The bool `resize_pane` returns says an ancestor split owned the axis, not that the
     // geometry moved, so it is deliberately not reported. `Ack.ok` means the call ran.
     ctx.model.resize_pane(&pane, p.dir, p.cells, area)?;
@@ -173,7 +173,7 @@ pub fn swap(ctx: &mut Ctx, p: PaneSwapParams) -> Result<Value, ApiError> {
         .model
         .pane_location(&pane)
         .ok_or_else(|| ApiError::not_found(format!("pane {pane} does not exist")))?;
-    let area = ctx.smallest_area(&loc.tab);
+    let area = ctx.tab_area(&loc.tab);
     let (with, events) = ctx.model.swap_pane(&pane, p.dir, area)?;
     ctx.view_dirty |= with.is_some();
     ctx.events.extend(events);

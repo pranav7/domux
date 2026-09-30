@@ -299,7 +299,7 @@ pub fn cell_in_pane(
 /// Every pane box on this client's tab, on the rectangle `draw_panes` lays the boxes out on.
 fn pane_boxes(input: &RenderInput) -> Option<Vec<(PaneId, domux_core::model::Rect)>> {
     let tab = input.model.tab(&input.view.tab)?;
-    let area = smallest_workpanel(input.model, &tab.id, input.view);
+    let area = agreed_workpanel(input.model, &tab.id, input.view);
     Some(solve(&tab.layout, area, tab.zoomed.as_ref()))
 }
 
@@ -322,29 +322,20 @@ fn draws_panes(view: &ClientView) -> bool {
     view.size.cols >= MIN_COLS && view.size.rows >= MIN_ROWS
 }
 
-/// The smallest workpanel among the clients that draw panes on `tab`, or `None` when no
-/// client draws it.
+/// The workpanel of the client on `tab` that was used last, among the clients that draw
+/// panes, or `None` when no client draws it (decision 0062).
 ///
 /// Only the width and the height are agreed on. Where the rectangle sits is each client's
 /// own business: two clients that disagree about the sidebar draw the same boxes at
-/// different columns, and the larger screen leaves the rest blank.
-fn smallest_among(model: &Model, tab: &TabId) -> Option<domux_core::model::Rect> {
-    let mut area: Option<domux_core::model::Rect> = None;
-    for view in model
+/// different columns. A larger screen leaves the rest blank, and a smaller one shows the
+/// boxes cut off at its edge until it is used and the panes take its size.
+fn latest_among(model: &Model, tab: &TabId) -> Option<domux_core::model::Rect> {
+    model
         .clients
         .iter()
         .filter(|view| &view.tab == tab && draws_panes(view))
-    {
-        let theirs = workpanel_area(view);
-        match &mut area {
-            None => area = Some(theirs),
-            Some(area) => {
-                area.width = area.width.min(theirs.width);
-                area.height = area.height.min(theirs.height);
-            }
-        }
-    }
-    area
+        .max_by_key(|view| view.last_active_seq)
+        .map(workpanel_area)
 }
 
 /// The workpanel every client on `tab` agrees on when no particular client is asking: the
@@ -355,7 +346,7 @@ fn smallest_among(model: &Model, tab: &TabId) -> Option<domux_core::model::Rect>
 /// The fallback is not an upper bound on the clients - a client wider than it still draws
 /// its own width - so it never shrinks a pane that something is actually drawing.
 pub fn tab_workpanel(model: &Model, tab: &TabId, fallback: Size) -> domux_core::model::Rect {
-    smallest_among(model, tab).unwrap_or_else(|| {
+    latest_among(model, tab).unwrap_or_else(|| {
         workpanel_of(
             Size {
                 cols: fallback.cols.max(MIN_COLS),
@@ -366,15 +357,6 @@ pub fn tab_workpanel(model: &Model, tab: &TabId, fallback: Size) -> domux_core::
     })
 }
 
-/// The same rectangle at `view`'s own position, and never larger than `view`'s own screen.
-///
-/// The second clamp is load-bearing. `Boxed::render` and `render_grid` index the buffer
-/// without checking their area against it, so an area past its edge panics rather than
-/// clips, and this is the first place an area is computed from something other than the
-/// buffer's own size: a client reports its size in its hello and its resizes, and nothing
-/// clamps that. When the rendering view is one of `model.clients` the smallest is already
-/// no larger, but `compose` is public and a caller can pass a view the model does not hold,
-/// in which case a larger client on the tab would otherwise size this buffer's boxes.
 /// The size of the program's own screen inside a pane box at `rect`.
 ///
 /// The one place a layout rectangle has the box's chrome taken off it. `draw_panes` draws to
@@ -389,23 +371,58 @@ pub fn pane_screen(rect: domux_core::model::Rect) -> Size {
     }
 }
 
-pub fn smallest_workpanel(
-    model: &Model,
-    tab: &TabId,
-    view: &ClientView,
-) -> domux_core::model::Rect {
+/// The rectangle every client on `tab` agrees on, at `view`'s own position.
+///
+/// It can reach past `view`'s own screen, when the client used last is larger, so
+/// `draw_panes` clips what it draws to the buffer rather than trusting the rectangle to fit.
+pub fn agreed_workpanel(model: &Model, tab: &TabId, view: &ClientView) -> domux_core::model::Rect {
     let here = workpanel_area(view);
-    let mut area = smallest_among(model, tab).unwrap_or(here);
+    let mut area = latest_among(model, tab).unwrap_or(here);
     area.x = here.x;
     area.y = here.y;
-    area.width = area.width.min(here.width);
-    area.height = area.height.min(here.height);
     area
 }
 
+/// Draws the tab's pane boxes on the agreed workpanel, cut off at the edge of this client's
+/// own screen when the client used last is larger.
+///
+/// `Boxed::render` and `render_grid` index the buffer without checking their area against
+/// it, so an area past its edge would panic rather than clip. A workpanel that does not fit
+/// is drawn on a buffer large enough to hold it, and only the cells of this screen are
+/// copied back. The cursor is kept only when it lands on this screen.
 pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<CursorState> {
     let tab = input.model.tab(&input.view.tab)?;
-    let area = smallest_workpanel(input.model, &tab.id, input.view);
+    let area = agreed_workpanel(input.model, &tab.id, input.view);
+    let right = area.x.saturating_add(area.width);
+    let bottom = area.y.saturating_add(area.height);
+    if right <= buf.area.right() && bottom <= buf.area.bottom() {
+        return draw_boxes(input, tab, area, buf);
+    }
+    let mut whole = Buffer::empty(Rect::new(
+        0,
+        0,
+        right.max(buf.area.right()),
+        bottom.max(buf.area.bottom()),
+    ));
+    whole.merge(buf);
+    let cursor = draw_boxes(input, tab, area, &mut whole);
+    for y in buf.area.top()..buf.area.bottom() {
+        for x in buf.area.left()..buf.area.right() {
+            buf[(x, y)] = whole[(x, y)].clone();
+        }
+    }
+    cursor.filter(|c| {
+        buf.area
+            .contains(ratatui::layout::Position { x: c.x, y: c.y })
+    })
+}
+
+fn draw_boxes(
+    input: &RenderInput,
+    tab: &domux_core::model::Tab,
+    area: domux_core::model::Rect,
+    buf: &mut Buffer,
+) -> Option<CursorState> {
     let focused_pane = input.focused_pane();
     let mut cursor = None;
     for (pane_id, rect) in solve(&tab.layout, area, tab.zoomed.as_ref()) {
@@ -592,14 +609,27 @@ mod tests {
         assert_eq!((area.width, area.height), (200, 49));
     }
 
+    /// The client used last sizes the tab, larger or smaller than the others (decision 0062).
     #[test]
-    fn the_smallest_client_on_the_tab_sizes_the_workpanel() {
-        let m = model_with(vec![
+    fn the_client_used_last_on_the_tab_sizes_the_workpanel() {
+        let mut m = model_with(vec![
             view("c_0001", "t_0001", 200, 50, false),
             view("c_0002", "t_0001", 100, 30, false),
         ]);
+        m.touch_client(&ClientId("c_0002".into()));
         let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
-        assert_eq!((area.width, area.height), (100, 29));
+        assert_eq!(
+            (area.width, area.height),
+            (100, 29),
+            "the smaller, used last"
+        );
+        m.touch_client(&ClientId("c_0001".into()));
+        let area = tab_workpanel(&m, &TabId("t_0001".into()), Size { cols: 80, rows: 24 });
+        assert_eq!(
+            (area.width, area.height),
+            (200, 49),
+            "the larger, used last"
+        );
     }
 
     /// A screen under the minimum shows only the size notice, so it draws no pane box and
@@ -629,31 +659,28 @@ mod tests {
     #[test]
     fn the_agreed_workpanel_sits_at_the_asking_clients_own_columns() {
         let asking = view("c_0001", "t_0001", 120, 24, true);
-        let m = model_with(vec![
-            asking.clone(),
-            view("c_0002", "t_0001", 200, 50, false),
-        ]);
-        let area = smallest_workpanel(&m, &TabId("t_0001".into()), &asking);
+        let other = view("c_0002", "t_0001", 200, 50, false);
+        let mut m = model_with(vec![asking.clone(), other.clone()]);
+        m.touch_client(&asking.id);
+        let area = agreed_workpanel(&m, &TabId("t_0001".into()), &asking);
         assert_eq!((area.x, area.y), (39, 1), "this client's own position");
         assert_eq!(
             (area.width, area.height),
             (81, 23),
-            "the smaller client's size"
+            "the size of the client used last"
         );
-        let other = view("c_0002", "t_0001", 200, 50, false);
-        let area = smallest_workpanel(&m, &TabId("t_0001".into()), &other);
+        let area = agreed_workpanel(&m, &TabId("t_0001".into()), &other);
         assert_eq!((area.x, area.width), (0, 81));
     }
 
-    /// `compose` is public and a caller can pass a view the model does not hold. The boxes
-    /// are still clamped to that view's own screen, because `Boxed::render` indexes the
-    /// buffer without checking and an area past its edge panics rather than clips.
+    /// A client smaller than the one used last is given the larger rectangle, and
+    /// `draw_panes` cuts it off at the edge of that client's own screen.
     #[test]
-    fn a_view_the_model_does_not_hold_still_clamps_to_its_own_screen() {
+    fn the_agreed_workpanel_can_reach_past_a_smaller_clients_screen() {
         let m = model_with(vec![view("c_0001", "t_0001", 200, 50, false)]);
         let stranger = view("c_0009", "t_0001", 60, 20, false);
-        let area = smallest_workpanel(&m, &TabId("t_0001".into()), &stranger);
-        assert_eq!((area.width, area.height), (60, 19));
+        let area = agreed_workpanel(&m, &TabId("t_0001".into()), &stranger);
+        assert_eq!((area.width, area.height), (200, 49));
     }
 
     #[test]

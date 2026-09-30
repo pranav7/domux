@@ -192,7 +192,7 @@ async fn a_screen_narrower_than_the_sidebar_plus_a_pane_hides_it_without_forgett
 }
 
 #[tokio::test]
-async fn the_pane_is_narrower_by_the_sidebar_and_the_smallest_client_still_sizes_it() {
+async fn the_pane_is_narrower_by_the_sidebar_and_its_client_still_sizes_it() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     h.api("sidebar.show", serde_json::json!({})).await.unwrap();
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
