@@ -1762,6 +1762,12 @@ impl Core {
         })?
     }
 
+    /// How far the cell at `row` of this client's screen lies past `pane`'s grid, above it
+    /// negative and below it positive. The question is `render::rows_past_pane`'s.
+    pub fn rows_past_pane(&mut self, client: &ClientId, pane: &PaneId, row: u16) -> Option<i32> {
+        self.ask_screen(client, |input| render::rows_past_pane(input, pane, row))?
+    }
+
     /// Asks `question` about this client's screen, or answers `None` for a client the model
     /// does not have.
     ///
@@ -2822,6 +2828,9 @@ impl Core {
     /// prevent, left running for the life of the server. The guard is one boolean walk over
     /// the records, twelve and a half times a second, and it cannot fail.
     fn animation_tick(&mut self) {
+        // A drag held past a pane's edge keeps scrolling while the pointer stays still, so the
+        // step is the ticker's rather than the pointer's (MUX-56).
+        self.view_dirty |= crate::mouse::drag_scroll_tick(self);
         if crate::agents::observer::any_working(&self.model) {
             self.agents.tick = self.agents.tick.wrapping_add(1);
             self.view_dirty = true;

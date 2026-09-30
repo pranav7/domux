@@ -28,6 +28,9 @@ pub enum Mode {
     /// DECSET 9, 1000, 1002 or 1003: the program asked to be told about the mouse, so the
     /// wheel over its pane is its own rather than copy mode's (decision 0014).
     MouseTracking,
+    /// DECSET 1007: on the alternate screen, with no mouse asked for, the wheel is Up and Down
+    /// keys. It is on until the program turns it off, as in Ghostty.
+    AlternateScroll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

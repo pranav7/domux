@@ -26,6 +26,7 @@ const fn mode(value: u16, ansi: bool) -> ffi::GhosttyMode {
 const MODE_APP_CURSOR: ffi::GhosttyMode = mode(1, false);
 const MODE_FOCUS_EVENT: ffi::GhosttyMode = mode(1004, false);
 const MODE_BRACKETED_PASTE: ffi::GhosttyMode = mode(2004, false);
+const MODE_ALTERNATE_SCROLL: ffi::GhosttyMode = mode(1007, false);
 
 /// State the C callbacks write into. Lives in a Box so its address is stable.
 struct Callbacks {
@@ -981,6 +982,7 @@ impl Emulator for GhosttyEmulator {
             Mode::FocusEvents => self.mode_enabled(MODE_FOCUS_EVENT),
             Mode::AppCursor => self.mode_enabled(MODE_APP_CURSOR),
             Mode::MouseTracking => self.mouse_tracking_active(),
+            Mode::AlternateScroll => self.mode_enabled(MODE_ALTERNATE_SCROLL),
         }
     }
 

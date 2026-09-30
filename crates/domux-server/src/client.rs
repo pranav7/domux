@@ -73,6 +73,11 @@ pub struct ClientConn {
     /// is held. The drag and the release that follow go to that program wherever the pointer
     /// is, so it is never left holding a button nobody let go of (decision 0044).
     pub reported_press: Option<PaneId>,
+    /// The pane a drag from this client is selecting in while domux holds the button, and the
+    /// way the drag scrolls it: 1 line into the history on each tick while the pointer is above
+    /// the pane, -1 towards the live screen while it is below, and 0 while it is on the pane.
+    /// The drag and the release go to that pane wherever the pointer is (MUX-56).
+    pub selecting: Option<(PaneId, i16)>,
 }
 
 /// One client's painted theme, with what it was painted from. It is painted again only when
@@ -131,6 +136,7 @@ impl ClientConn {
             follow_unsent: None,
             theme: ThemeCache::default(),
             reported_press: None,
+            selecting: None,
         }
     }
 

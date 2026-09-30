@@ -164,7 +164,7 @@ pub fn finish_copy(core: &mut Core, client: &ClientId, pane: &PaneId, outcome: C
     }
 }
 
-fn leave_copy_mode(core: &mut Core, pane: &PaneId) {
+pub(crate) fn leave_copy_mode(core: &mut Core, pane: &PaneId) {
     if let Some(rt) = core.panes.get_mut(pane) {
         rt.copy = None;
         rt.dirty = true;
