@@ -40,6 +40,8 @@ notes, and a missing or empty section stops the release. Versions follow
   size of the screen you used last, so the one you are typing in fills its width and height. They
   used to take the smallest screen's size and leave the rest of a larger one blank. A smaller
   screen shows the boxes cut off at its edge until you use it.
+- A click in the Navigator lands on the row you see once the list has scrolled. It used to be
+  measured as if the list were scrolled to the top, so it switched to another row or did nothing.
 
 ## [0.1.3] - 2026-09-18
 
