@@ -94,3 +94,8 @@ machine never ends up with two holds or an orphan nothing can kill.
   sudoers file are left where they are.
 - The architecture spec's section 9 `[stay_alive]` table, its `stay_alive` method row and its
   "4 at M4" schema note no longer describe the build. This record replaces all three.
+- MUX-59: the launch daemon's file says `Disabled`, so launchd never loads it at boot, and a
+  hold loads it with `launchctl load -F` and ends it with `launchctl bootout` by its label.
+  Before this, the daemon ran from every boot onwards and held the lid with stay awake off.
+  The lid goes back with whatever ended the hold: `disable` in the mode the hold was taken in,
+  a holder that died, and a full mode start that finds no hold to adopt.

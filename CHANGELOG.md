@@ -26,6 +26,12 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ### Fixed
 
+- Stay awake in full mode on macOS no longer keeps the machine awake after it is turned off. The
+  launch daemon that holds the lid loaded itself at every boot, so the lid stayed held overnight
+  whether stay awake was on or not. It now loads only while a hold is on, and the lid is given
+  back when the hold ends any way at all: turned off after the mode changed, a holder that died,
+  or a server that stopped without giving it back. Run `domux stay-awake install --full --apply`
+  once to replace the daemon file an earlier version wrote.
 - A Claude turn that dies on an API error, such as a rate limit or an overloaded model, now
   leaves its row idle. Claude Code ends such a turn with `StopFailure` and never sends `Stop`, so
   the row kept the working word and the turning star until the session ended. Run
