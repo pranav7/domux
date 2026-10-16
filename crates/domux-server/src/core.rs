@@ -655,7 +655,9 @@ impl Core {
     /// showed green for a hold nobody has would be worse than the feature being off.
     fn take_the_hold_the_state_file_remembers(&mut self) {
         let platform = self.deps.platform.clone();
+        let mode = self.config.config.stay_awake.mode;
         self.stay_awake.adopt(
+            mode,
             &platform,
             self.deps.runner.as_ref(),
             self.deps.inspector.as_ref(),
@@ -663,7 +665,6 @@ impl Core {
         if !self.model.stay_awake || self.stay_awake.on() {
             return;
         }
-        let mode = self.config.config.stay_awake.mode;
         match self
             .stay_awake
             .enable(mode, &platform, self.deps.runner.as_ref())
@@ -2903,7 +2904,11 @@ impl Core {
         }
         // A holder killed from outside domux leaves a green dot saying something that is no
         // longer true. The flag follows the hold, so this is a change worth persisting.
-        if self.stay_awake.recheck(self.deps.inspector.as_ref()) {
+        if self.stay_awake.recheck(
+            &self.deps.platform,
+            self.deps.runner.as_ref(),
+            self.deps.inspector.as_ref(),
+        ) {
             self.model.stay_awake = false;
             self.pending_events
                 .push(Event::StayAwakeChanged { on: false });

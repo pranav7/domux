@@ -39,8 +39,12 @@ pub fn sudoers_path() -> String {
 
 /// The daemon full mode needs on macOS. It sets the flag again every 30 seconds because the
 /// system clears it across some sleep and wake cycles, and `KeepAlive` starts the loop again
-/// if it ever stops. The job only exists while it is loaded, and turning stay awake off
-/// unloads it, so it never outlives a hold.
+/// if it ever stops.
+///
+/// `Disabled` is what keeps it to a hold. launchd loads every file in `/Library/LaunchDaemons`
+/// at boot, and a daemon it loaded there would keep the lid held through every night after,
+/// whether stay awake was on or not (MUX-59). Disabled, it runs only when a hold loads it with
+/// `load -F`, and turning stay awake off boots it out, so it never outlives a hold.
 pub fn plist_text() -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -58,6 +62,8 @@ pub fn plist_text() -> String {
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
+    <true/>
+    <key>Disabled</key>
     <true/>
 </dict>
 </plist>
@@ -132,6 +138,9 @@ pub fn backend_for(os: &str) -> Option<Backend> {
 pub struct StayAwake {
     pid_file: PathBuf,
     holder: Option<u32>,
+    /// The mode the hold was taken in. Giving it back gives back what it took, so a config
+    /// changed from full to partial while the hold was on still puts the lid back.
+    held_mode: StayAwakeMode,
 }
 
 impl StayAwake {
@@ -139,6 +148,7 @@ impl StayAwake {
         StayAwake {
             pid_file: state_dir.join(PID_FILE_NAME),
             holder: None,
+            held_mode: StayAwakeMode::Partial,
         }
     }
 
@@ -153,7 +163,30 @@ impl StayAwake {
     /// Two questions, because one is not enough: the process has to still be running, and it
     /// has to still be the program that was started. Process ids come around again, and a
     /// hold that thinks it owns somebody else's process would kill it on the way out.
+    ///
+    /// A server that finds no hold to take over gives the lid back too, when full mode is
+    /// set: a server that died while it held the lid left the setting on, and nothing else
+    /// would ever turn it off.
     pub fn adopt(
+        &mut self,
+        mode: StayAwakeMode,
+        os: &str,
+        runner: &dyn CommandRunner,
+        inspector: &dyn ProcessInspector,
+    ) {
+        self.adopt_holder(os, runner, inspector);
+        if self.on() {
+            self.held_mode = mode;
+            return;
+        }
+        if let Ok(backend) = backend(os) {
+            if let Some(note) = self.hold_lid(false, mode, backend, runner) {
+                tracing::debug!("stay awake: {note}");
+            }
+        }
+    }
+
+    fn adopt_holder(
         &mut self,
         os: &str,
         runner: &dyn CommandRunner,
@@ -177,10 +210,21 @@ impl StayAwake {
 
     /// Looks at the holder again, and answers whether the hold has gone since the last look.
     /// A holder killed from outside domux leaves a green dot saying something that is no
-    /// longer true, so the core asks this on its tick.
-    pub fn recheck(&mut self, inspector: &dyn ProcessInspector) -> bool {
+    /// longer true, so the core asks this on its tick. The lid goes back with it: a hold that
+    /// is over holds nothing.
+    pub fn recheck(
+        &mut self,
+        os: &str,
+        runner: &dyn CommandRunner,
+        inspector: &dyn ProcessInspector,
+    ) -> bool {
         match self.holder {
             Some(pid) if !inspector.is_alive(pid) => {
+                if let Ok(backend) = backend(os) {
+                    if let Some(note) = self.hold_lid(false, self.held_mode, backend, runner) {
+                        tracing::warn!("stay awake: {note}");
+                    }
+                }
                 self.forget();
                 true
             }
@@ -212,6 +256,7 @@ impl StayAwake {
             return Err(format!("could not write {}: {e}", self.pid_file.display()));
         }
         self.holder = Some(pid);
+        self.held_mode = mode;
         Ok(self.hold_lid(true, mode, backend, runner))
     }
 
@@ -223,6 +268,12 @@ impl StayAwake {
         runner: &dyn CommandRunner,
     ) -> Result<Option<String>, String> {
         let backend = backend(os)?;
+        // What the hold took, or what the config asks for now, whichever reaches further.
+        let mode = if self.on() && self.held_mode == StayAwakeMode::Full {
+            StayAwakeMode::Full
+        } else {
+            mode
+        };
         // The lid goes back first: after `forget` there is no hold to say it belongs to.
         let note = self.hold_lid(false, mode, backend, runner);
         if let Some(pid) = self.holder {
@@ -249,15 +300,20 @@ impl StayAwake {
         if mode == StayAwakeMode::Partial || backend.holds_the_lid_itself() {
             return None;
         }
-        let load = if on { "load" } else { "unload" };
         let flag = if on { "1" } else { "0" };
+        // `-F` loads the daemon although its file says `Disabled`, which is what keeps launchd
+        // from loading it at boot. It goes by its label, so nothing about the file decides
+        // whether it can be stopped.
+        let launchctl = if on {
+            vec!["load".to_string(), "-F".into(), plist_path()]
+        } else {
+            vec!["bootout".to_string(), format!("system/{}", plist_label())]
+        };
         let steps = [
-            vec![
-                "-n".to_string(),
-                "launchctl".into(),
-                load.into(),
-                plist_path(),
-            ],
+            ["-n".to_string(), "launchctl".into()]
+                .into_iter()
+                .chain(launchctl)
+                .collect::<Vec<_>>(),
             vec![
                 "-n".to_string(),
                 "pmset".into(),
@@ -294,6 +350,7 @@ impl StayAwake {
     /// forgotten but the file still names is a hold the next server would adopt.
     fn forget(&mut self) {
         self.holder = None;
+        self.held_mode = StayAwakeMode::Partial;
         let _ = std::fs::remove_file(&self.pid_file);
     }
 }
@@ -476,7 +533,7 @@ mod tests {
         assert_eq!(s.enable(Full, "macos", &runner), Ok(None));
         assert!(runner.ran("caffeinate", &["-dimsu"]));
         assert!(
-            runner.ran("sudo", &["-n", "launchctl", "load", &plist_path()]),
+            runner.ran("sudo", &["-n", "launchctl", "load", "-F", &plist_path()]),
             "{:?}",
             runner.calls()
         );
@@ -502,7 +559,15 @@ mod tests {
         let mut s = StayAwake::new(d.path());
         s.enable(Full, "macos", &runner).unwrap();
         s.disable(Full, "macos", &runner).unwrap();
-        assert!(runner.ran("sudo", &["-n", "launchctl", "unload", &plist_path()]));
+        assert!(runner.ran(
+            "sudo",
+            &[
+                "-n",
+                "launchctl",
+                "bootout",
+                &format!("system/{}", plist_label())
+            ]
+        ));
         assert!(runner.ran("sudo", &["-n", "pmset", "-a", "disablesleep", "0"]));
     }
 
@@ -581,7 +646,7 @@ mod tests {
         let runner = runner_with("caffeinate");
         std::fs::write(d.path().join(PID_FILE_NAME), "4242\n").unwrap();
         let mut s = StayAwake::new(d.path());
-        s.adopt("macos", &runner, &FakeInspector::default());
+        s.adopt(Partial, "macos", &runner, &FakeInspector::default());
         assert!(s.on());
         s.enable(Partial, "macos", &runner).unwrap();
         assert!(
@@ -598,7 +663,7 @@ mod tests {
         let inspector = FakeInspector::default();
         inspector.set_dead(4242);
         let mut s = StayAwake::new(d.path());
-        s.adopt("macos", &runner, &inspector);
+        s.adopt(Partial, "macos", &runner, &inspector);
         assert!(!s.on());
         assert!(!d.path().join(PID_FILE_NAME).exists());
     }
@@ -611,7 +676,7 @@ mod tests {
         runner.answer("ps", &["-o", "comm=", "-p", "4242"], "postgres");
         std::fs::write(d.path().join(PID_FILE_NAME), "4242\n").unwrap();
         let mut s = StayAwake::new(d.path());
-        s.adopt("macos", &runner, &FakeInspector::default());
+        s.adopt(Partial, "macos", &runner, &FakeInspector::default());
         assert!(!s.on(), "the number came back around to another program");
         assert!(!d.path().join(PID_FILE_NAME).exists());
     }
@@ -623,12 +688,21 @@ mod tests {
         let mut s = StayAwake::new(d.path());
         s.enable(Partial, "macos", &runner).unwrap();
         let inspector = FakeInspector::default();
-        assert!(!s.recheck(&inspector), "nothing changed while it is alive");
+        assert!(
+            !s.recheck("macos", &runner, &inspector),
+            "nothing changed while it is alive"
+        );
         inspector.set_dead(4242);
-        assert!(s.recheck(&inspector), "the hold went away");
+        assert!(
+            s.recheck("macos", &runner, &inspector),
+            "the hold went away"
+        );
         assert!(!s.on());
         assert!(!d.path().join(PID_FILE_NAME).exists());
-        assert!(!s.recheck(&inspector), "it only changes once");
+        assert!(
+            !s.recheck("macos", &runner, &inspector),
+            "it only changes once"
+        );
     }
 
     #[test]
@@ -637,7 +711,7 @@ mod tests {
         let runner = runner_with("caffeinate");
         runner.fail(
             "sudo",
-            &["-n", "launchctl", "load", &plist_path()],
+            &["-n", "launchctl", "load", "-F", &plist_path()],
             "sudo: a password is required",
         );
         let mut s = StayAwake::new(d.path());
@@ -661,7 +735,15 @@ mod tests {
         assert!(note.contains("sudo pmset -a disablesleep 0"), "{note}");
         assert!(!s.on(), "the hold itself went either way");
         assert!(
-            runner.ran("sudo", &["-n", "launchctl", "unload", &plist_path()]),
+            runner.ran(
+                "sudo",
+                &[
+                    "-n",
+                    "launchctl",
+                    "bootout",
+                    &format!("system/{}", plist_label())
+                ]
+            ),
             "the other step still ran: {:?}",
             runner.calls()
         );
@@ -743,9 +825,101 @@ mod tests {
         assert!(plist.contains(&plist_label()), "{plist}");
         assert!(plist.contains("while :; do /usr/bin/pmset -a disablesleep 1; sleep 30; done"));
         assert!(plist.contains("<key>KeepAlive</key>"));
+        assert!(
+            plist.contains("<key>Disabled</key>\n    <true/>"),
+            "launchd must not load it at boot: {plist}"
+        );
         assert_eq!(
             sudoers_text("ada"),
             "ada ALL=(ALL) NOPASSWD: /usr/bin/pmset, /bin/launchctl\n"
         );
+    }
+
+    #[test]
+    fn a_hold_taken_in_full_mode_gives_the_lid_back_after_the_config_changed_to_partial() {
+        let d = dir();
+        let runner = runner_with("caffeinate");
+        let mut s = StayAwake::new(d.path());
+        s.enable(Full, "macos", &runner).unwrap();
+        s.disable(Partial, "macos", &runner).unwrap();
+        assert!(
+            runner.ran("sudo", &["-n", "pmset", "-a", "disablesleep", "0"]),
+            "{:?}",
+            runner.calls()
+        );
+    }
+
+    #[test]
+    fn a_full_holder_that_died_on_its_own_gives_the_lid_back() {
+        let d = dir();
+        let runner = runner_with("caffeinate");
+        let mut s = StayAwake::new(d.path());
+        s.enable(Full, "macos", &runner).unwrap();
+        let inspector = FakeInspector::default();
+        inspector.set_dead(4242);
+        assert!(s.recheck("macos", &runner, &inspector));
+        assert!(
+            runner.ran("sudo", &["-n", "pmset", "-a", "disablesleep", "0"]),
+            "{:?}",
+            runner.calls()
+        );
+        assert!(runner.ran(
+            "sudo",
+            &[
+                "-n",
+                "launchctl",
+                "bootout",
+                &format!("system/{}", plist_label())
+            ]
+        ));
+    }
+
+    #[test]
+    fn a_partial_holder_that_died_on_its_own_asks_for_no_password() {
+        let d = dir();
+        let runner = runner_with("caffeinate");
+        let mut s = StayAwake::new(d.path());
+        s.enable(Partial, "macos", &runner).unwrap();
+        let inspector = FakeInspector::default();
+        inspector.set_dead(4242);
+        assert!(s.recheck("macos", &runner, &inspector));
+        assert!(runner.calls_to("sudo").is_empty(), "{:?}", runner.calls());
+    }
+
+    #[test]
+    fn a_full_mode_server_that_finds_no_hold_gives_the_lid_back() {
+        let d = dir();
+        let runner = runner_with("caffeinate");
+        let inspector = FakeInspector::default();
+        inspector.set_dead(4242);
+        std::fs::write(d.path().join(PID_FILE_NAME), "4242\n").unwrap();
+        let mut s = StayAwake::new(d.path());
+        s.adopt(Full, "macos", &runner, &inspector);
+        assert!(!s.on());
+        assert!(
+            runner.ran("sudo", &["-n", "pmset", "-a", "disablesleep", "0"]),
+            "a server that died holding the lid left it held: {:?}",
+            runner.calls()
+        );
+    }
+
+    #[test]
+    fn a_full_mode_server_that_adopts_a_hold_keeps_the_lid() {
+        let d = dir();
+        let runner = runner_with("caffeinate");
+        std::fs::write(d.path().join(PID_FILE_NAME), "4242\n").unwrap();
+        let mut s = StayAwake::new(d.path());
+        s.adopt(Full, "macos", &runner, &FakeInspector::default());
+        assert!(s.on());
+        assert!(runner.calls_to("sudo").is_empty(), "{:?}", runner.calls());
+    }
+
+    #[test]
+    fn a_partial_mode_server_asks_for_no_password_at_start() {
+        let d = dir();
+        let runner = runner_with("caffeinate");
+        let mut s = StayAwake::new(d.path());
+        s.adopt(Partial, "macos", &runner, &FakeInspector::default());
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
     }
 }
