@@ -244,6 +244,10 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
 /// `None` for a header, a blank, the box's border, the hint row, or a row past the end of the
 /// list. The key is asked of the model, the way Enter asks it, so a click on an agent row is
 /// the agent and never a workspace of that name.
+///
+/// The scroll is `list_scroll`, the one `draw_projects` draws with. The Navigator keeps its
+/// own, and a click measured against the Projects box's put every row of a scrolled Navigator
+/// under the wrong pointer (MUX-58).
 pub fn row_target_at(input: &RenderInput, row: u16) -> Option<RowTarget> {
     let area = projects_area(input.model, input.facts, input.view.size, input.navigator);
     let (built, _) = built_rows(input, area);
@@ -252,7 +256,7 @@ pub fn row_target_at(input: &RenderInput, row: u16) -> Option<RowTarget> {
         &built.rows,
         built.filled,
         inner.height,
-        input.view.projects_scroll,
+        input.list_scroll(),
     );
     let at = crate::render::list_box::row_at(&built.rows, scroll, inner, row)?;
     let key = built.rows.get(at)?.key.as_deref()?;
