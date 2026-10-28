@@ -256,6 +256,52 @@ async fn a_click_on_an_agent_row_opens_the_agents_pane() {
     );
 }
 
+/// A click lands on the row the Navigator draws there after the Navigator has scrolled
+/// (MUX-58). The cursor walks to the bottom of a list taller than the box and back up, which
+/// leaves the box scrolled; the click on the row showing `workspace-1` has to switch to that
+/// workspace and not to whichever row would be there unscrolled.
+#[tokio::test]
+async fn a_click_in_a_scrolled_navigator_lands_on_the_row_drawn_there() {
+    let mut h = Harness::start(Config::default(), 120, 12).await;
+    let (_root, w1, w2) = h.git_project_with_two_slots().await;
+    // An agent under each workspace makes the list taller than the box.
+    let here = h.focused_pane(h.client.clone());
+    let p1 = h.first_pane_of(w1.as_str()).await;
+    let p2 = h.first_pane_of(w2.as_str()).await;
+    for (n, pane) in [here, p1, p2].into_iter().enumerate() {
+        let works = format!(r#"{{"hook_event_name":"UserPromptSubmit","session_id":"s{n}"}}"#);
+        h.report(pane, AgentKind::Claude, &works).await;
+    }
+    h.api("sidebar.show", json!({})).await.unwrap();
+    h.wait_for(h.client.clone(), |f| f.contains("Navigator"), WAIT)
+        .await;
+    h.key(h.client.clone(), "C-h").await;
+    for _ in 0..8 {
+        h.key(h.client.clone(), "j").await;
+    }
+    for _ in 0..2 {
+        h.key(h.client.clone(), "k").await;
+    }
+    let f = h.frame(h.client.clone()).await;
+    assert!(
+        h.model().client(&h.client).unwrap().navigator_scroll > 0,
+        "the walk left the box scrolled:\n{f}"
+    );
+    assert_ne!(h.model().client(&h.client).unwrap().workspace, w1);
+
+    let at = row_with(&f, "workspace-1") as u16;
+    h.mouse(h.client.clone(), MouseAction::Press, 5, at, 1)
+        .await;
+    h.mouse(h.client.clone(), MouseAction::Release, 5, at, 1)
+        .await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.model().client(&h.client).unwrap().workspace,
+        w1,
+        "the click switched to the workspace drawn on that row:\n{f}"
+    );
+}
+
 /// `leader a` opens the agents overlay with the Navigator on: the agents alone, grouped under
 /// a header per project, over the one list rather than in place of it (decision record 0033).
 #[tokio::test]
