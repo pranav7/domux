@@ -1580,6 +1580,7 @@ impl Core {
             input: domux_core::model::TextInput::new(""),
             overlay_under: None,
             pill: None,
+            super_held: None,
         };
         self.pending_events.extend(self.model.attach_client(view));
         let _ = tx.try_send(ServerMsg::Welcome {
@@ -1632,13 +1633,23 @@ impl Core {
             self.view_dirty = true;
             return;
         }
+        // Nor is the super key going down or up: a hand resting on cmd has typed nothing, and
+        // the key changes no more than whether the Navigator writes the agents' numbers
+        // (decision record 0065).
+        if let ClientMsg::SuperHeld(held) = msg {
+            if let Some(view) = self.model.client_mut(&client) {
+                view.super_held = Some(held);
+            }
+            self.view_dirty = true;
+            return;
+        }
         // A screen losing the terminal's focus is the reader leaving it, so it is no activity:
         // counted, it could make the screen just left the one the panes take their size from.
         if !matches!(msg, ClientMsg::Focus(false)) {
             self.model.touch_client(&client);
         }
         match msg {
-            ClientMsg::Hello(_) | ClientMsg::Colors(_) => {}
+            ClientMsg::Hello(_) | ClientMsg::Colors(_) | ClientMsg::SuperHeld(_) => {}
             ClientMsg::Key(key) => {
                 self.clear_action_hint(&client);
                 self.key(&client, key);

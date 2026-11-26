@@ -441,9 +441,10 @@ fn help_list_block_lines(list_block: &[String]) -> Vec<(HelpLineKind, String)> {
 }
 
 /// The bindings with each run of one method over numbered targets in one row: `1` to `9` on
-/// `agent.focus #1` to `#9` read `1-9` and `agent.focus #<n>`, and `M-1` to `M-9` on
-/// `tab.select 1` to `9` read `M-1-9` and `tab.select <n>`. A number bound alone keeps its own
-/// row, because `<n>` would then hide which one it is. Keys and actions as `(key, action)`.
+/// `agent.focus #1` to `#9` read `1-9` and `agent.focus #<n>`, `D-1` to `D-9` on the same
+/// read `D-1-9`, and `M-1` to `M-9` on `tab.select 1` to `9` read `M-1-9` and
+/// `tab.select <n>`. A number bound alone keeps its own row, because `<n>` would then hide which
+/// one it is. Keys and actions as `(key, action)`.
 fn collapse_numbered(bindings: Vec<(String, String)>) -> Vec<(String, String)> {
     // `agent.focus #3` is `("agent.focus", "#", 3)`; anything else is not numbered.
     fn numbered(action: &str) -> Option<(&str, &str, u32)> {

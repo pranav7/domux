@@ -299,6 +299,52 @@ async fn leader_and_a_number_opens_the_agent_the_navigator_numbers_so() {
     assert_eq!(h.focused_pane(h.client.clone()), pane);
 }
 
+/// `D-1`, cmd and 1 on macOS, opens the agent the Navigator numbers 1 in one chord, the way
+/// `leader 1` does in two (decision record 0065).
+#[tokio::test]
+async fn super_and_a_number_opens_the_agent_the_navigator_numbers_so() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = one_agent(&mut h).await;
+    h.api("tab.create", json!({})).await.unwrap();
+    h.frame(h.client.clone()).await;
+    assert_ne!(h.focused_pane(h.client.clone()), pane, "a new tab");
+    h.key(h.client.clone(), "D-1").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        pane,
+        "the chord opened the pane the agent runs in"
+    );
+}
+
+/// At a client that can tell, the number is written only while the super key is down, and its
+/// cells stay while the key is up, so nothing else in the row moves. A client that never said
+/// is the test above, which reads the number with no key held (decision record 0065).
+#[tokio::test]
+async fn agent_numbers_show_only_while_the_super_key_is_held() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = one_agent(&mut h).await;
+    // Idle, so the glyph holds still and the frames differ by the number alone.
+    h.report(pane, AgentKind::Claude, STOPS).await;
+    h.super_held(h.client.clone(), false).await;
+    let f = h.frame(h.client.clone()).await;
+    let at = row_with(&f, "└ claude");
+    let up: Vec<char> = row(&f, at).chars().collect();
+    assert_eq!(up[1 + 35], ' ', "no number while the key is up:\n{f}");
+
+    h.super_held(h.client.clone(), true).await;
+    let f = h.frame(h.client.clone()).await;
+    let mut down: Vec<char> = row(&f, at).chars().collect();
+    assert_eq!(down[1 + 35], '1', "the number while it is down:\n{f}");
+    down[1 + 35] = ' ';
+    assert_eq!(down, up, "and nothing else in the row moved");
+
+    h.super_held(h.client.clone(), false).await;
+    let f = h.frame(h.client.clone()).await;
+    let again: Vec<char> = row(&f, at).chars().collect();
+    assert_eq!(again, up, "gone again when the key comes up:\n{f}");
+}
+
 /// A click lands on the row the Navigator draws there after the Navigator has scrolled
 /// (MUX-58). The cursor walks to the bottom of a list taller than the box and back up, which
 /// leaves the box scrolled; the click on the row showing `workspace-1` has to switch to that

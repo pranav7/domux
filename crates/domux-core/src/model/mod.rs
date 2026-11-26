@@ -329,9 +329,20 @@ pub struct ClientView {
     /// The last result of an action, shown in the hint row or the footer.
     #[serde(default)]
     pub pill: Option<Pill>,
+    /// Whether the reader is holding the super key, cmd on macOS, at this client. `None` until
+    /// the client says, and a client that cannot tell never does. The Navigator writes the
+    /// agents' numbers while it is held, and always where it is `None` (decision record 0065).
+    #[serde(default)]
+    pub super_held: Option<bool>,
 }
 
 impl ClientView {
+    /// Whether the Navigator writes the agents' numbers for this client: while the reader holds
+    /// the super key, and always for a client that cannot tell (decision record 0065).
+    pub fn shows_agent_numbers(&self) -> bool {
+        self.super_held != Some(false)
+    }
+
     /// Whether this client draws the sidebar now.
     ///
     /// Two bits, not one (interface spec 12.1). `sidebar_open` is the remembered intent, and
@@ -2244,6 +2255,7 @@ mod tests {
             input: TextInput::new(""),
             overlay_under: None,
             pill: None,
+            super_held: None,
         }
     }
 

@@ -43,8 +43,9 @@ const TAIL_SEP: &str = " · ";
 /// which agent this is, and a long branch must not push it out of the row.
 const NAME_FLOOR: usize = 16;
 
-/// The highest number a Navigator row writes: `leader 1` to `leader 9` open the agents
-/// numbered so, and a number no key reaches is not worth the cell (decision record 0064).
+/// The highest number a Navigator row writes: `D-1` to `D-9` and `leader 1` to `leader 9`
+/// open the agents numbered so, and a number no key reaches is not worth the cell (decision
+/// records 0064 and 0065).
 pub const MAX_NUMBER: usize = 9;
 
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
@@ -259,21 +260,26 @@ fn indented(row: ListRow) -> ListRow {
 /// One agent's row, for a caller that places it itself. `render::projects_box` uses it to put
 /// an agent under the workspace it runs in, so the Navigator draws the same grammar this box
 /// draws and there is still one place it is written (principle 14).
+///
+/// `numbers` says whether a nested row writes its number now: `ClientView::shows_agent_numbers`
+/// for the client drawn. The row keeps the number's cells either way, so nothing in it moves
+/// when the number comes and goes (decision record 0065).
 pub fn one_row(
     theme: &Theme,
     a: &AgentEntry,
     view: &AgentsView,
     form: RowForm,
     width: u16,
+    numbers: bool,
 ) -> ListRow {
+    if form.nested() {
+        return nested_row(theme, a, view, form, width as usize, numbers);
+    }
     row(theme, a, view, form, width)
 }
 
 fn row(theme: &Theme, a: &AgentEntry, view: &AgentsView, form: RowForm, width: u16) -> ListRow {
     let width = width as usize;
-    if form.nested() {
-        return nested_row(theme, a, view, form, width);
-    }
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(2 + RECAP_LINES);
     lines.push(Line::from(line_one(theme, a, view, form, width)));
     lines.push(Line::from(line_two(theme, a, form, width)));
@@ -303,6 +309,7 @@ fn nested_row(
     view: &AgentsView,
     form: RowForm,
     width: usize,
+    numbers: bool,
 ) -> ListRow {
     let lead = display_width(NEST);
     // The number takes the row's last cell, after at least one blank, and in the corner's
@@ -343,7 +350,7 @@ fn nested_row(
         room.saturating_sub(tail_width),
     ));
     first.extend(tail);
-    if let Some(n) = number {
+    if let Some(n) = number.filter(|_| numbers) {
         let used: usize = first.iter().map(|s| display_width(&s.content)).sum();
         let blank = width.saturating_sub(used + display_width(&n));
         first.push(Span::raw(" ".repeat(blank)));
@@ -856,7 +863,7 @@ mod tests {
         a.number = Some(3);
         let v = view(vec![a]);
         for form in [RowForm::Nested, RowForm::NestedWide] {
-            let row = one_row(Theme::domux(), &v.agents[0], &v, form, 30);
+            let row = one_row(Theme::domux(), &v.agents[0], &v, form, 30, true);
             let line = &text(&row)[0];
             assert_eq!(line, &format!("└ auth-cleanup{}3", " ".repeat(15)));
             assert_eq!(display_width(line), 30, "{form:?}: the row's whole width");
@@ -875,13 +882,33 @@ mod tests {
         );
         a.number = Some(9);
         let v = view(vec![a]);
-        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 20);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 20, true);
         assert_eq!(text(&row)[0], "└ a-session-name-… 9");
         let mut a = entry(AgentState::Idle, Some("auth-cleanup"), AgentKind::Claude);
         a.number = Some(10);
         let v = view(vec![a]);
-        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 30);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 30, true);
         assert_eq!(text(&row)[0], "└ auth-cleanup", "no key reaches 10");
+    }
+
+    /// While the number is not shown its cells stay, so a name the number shortened is the
+    /// same name with the number gone, and nothing moves when the reader presses cmd (decision
+    /// record 0065).
+    #[test]
+    fn a_hidden_number_keeps_its_cells() {
+        let mut a = entry(
+            AgentState::Idle,
+            Some("a-session-name-far-too-long-for-the-row"),
+            AgentKind::Claude,
+        );
+        a.number = Some(9);
+        let v = view(vec![a]);
+        for form in [RowForm::Nested, RowForm::NestedWide] {
+            let shown = one_row(Theme::domux(), &v.agents[0], &v, form, 20, true);
+            let hidden = one_row(Theme::domux(), &v.agents[0], &v, form, 20, false);
+            assert_eq!(text(&shown)[0], "└ a-session-name-… 9", "{form:?}");
+            assert_eq!(text(&hidden)[0], "└ a-session-name-…", "{form:?}");
+        }
     }
 
     /// MUX-42: the default Navigator sidebar row (`RowForm::Nested`) has no second line and no
@@ -894,7 +921,7 @@ mod tests {
             Some("auth-cleanup"),
             AgentKind::Codex,
         )]);
-        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 72);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 72, true);
         let label = &row.lines[0].spans[1];
         assert_eq!(label.content, "auth-cleanup");
         assert_eq!(
@@ -1000,7 +1027,7 @@ mod tests {
                 AgentKind::Claude,
             )]);
             v.tick = tick;
-            let row = one_row(Theme::domux(), &v.agents[0], &v, form, 72);
+            let row = one_row(Theme::domux(), &v.agents[0], &v, form, 72, true);
             let arrow = row.lines[0]
                 .spans
                 .iter()
@@ -1130,7 +1157,7 @@ mod tests {
         ] {
             let v = view(vec![entry(state, Some("auth-cleanup"), AgentKind::Claude)]);
             let first = |form: RowForm| {
-                text(&one_row(Theme::domux(), &v.agents[0], &v, form, 72))[0].clone()
+                text(&one_row(Theme::domux(), &v.agents[0], &v, form, 72, true))[0].clone()
             };
             assert_eq!(
                 first(RowForm::Nested),
@@ -1178,7 +1205,14 @@ mod tests {
         e.branch = Some("feature/eng-533-session-polish".into());
         e.pr = Some(a_pull_request(FactState::Open));
         let v = view(vec![e]);
-        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::NestedWide, 80);
+        let row = one_row(
+            Theme::domux(),
+            &v.agents[0],
+            &v,
+            RowForm::NestedWide,
+            80,
+            true,
+        );
         assert_eq!(
             text(&row)[0],
             "└ audit-planning ✶  feature/eng-533-session-polish · PR#1287"
@@ -1215,7 +1249,14 @@ mod tests {
     #[test]
     fn an_agent_on_its_workspace_s_branch_adds_nothing_after_the_glyph() {
         let v = view(vec![entry(AgentState::Idle, None, AgentKind::Codex)]);
-        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::NestedWide, 80);
+        let row = one_row(
+            Theme::domux(),
+            &v.agents[0],
+            &v,
+            RowForm::NestedWide,
+            80,
+            true,
+        );
         assert_eq!(text(&row)[0], "└ codex");
     }
 
@@ -1238,6 +1279,7 @@ mod tests {
                 &v,
                 RowForm::NestedWide,
                 width,
+                true,
             ))[0]
                 .clone()
         };

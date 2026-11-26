@@ -3,7 +3,8 @@
 **Date:** 2026-11-26
 **Status:** Accepted. MUX-60. Replaces interface spec assumption 18 and the one column of gap
 interface spec 12.18 put between the sidebar and the workpanel. Moves the tabs off `leader 1` to
-`leader 9`.
+`leader 9`. **Amended by decision record 0065**, which adds `D-1` to `D-9` for the agents and
+writes their numbers only while cmd is held, at a client that can tell.
 **Decision:** Neighbouring pane boxes share their facing line, and so do the sidebar and the
 first pane, with the lines joined where they meet. Every pane but the tab's focused one is mixed
 30% towards the terminal's background. `leader 1` to `leader 9` open the agent the Navigator
