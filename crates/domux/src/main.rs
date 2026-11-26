@@ -56,7 +56,7 @@ enum Command {
     Read(cli::agent::ReadCmd),
     /// Wait for an agent to finish. Messaging arrives in M4
     Wait(cli::agent::WaitCmd),
-    /// Install the domux hooks for an agent
+    /// Install the domux hooks for an agent, or let cmd and a number reach domux in Ghostty
     Install(cli::install::InstallCmd),
     /// Hold this machine awake: on, off, toggle, status, install
     #[command(name = "stay-awake")]

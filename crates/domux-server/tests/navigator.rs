@@ -345,6 +345,25 @@ async fn agent_numbers_show_only_while_the_super_key_is_held() {
     assert_eq!(again, up, "gone again when the key comes up:\n{f}");
 }
 
+/// A client whose Ghostty keeps cmd and a number says so at attach, and the hint stands until the
+/// reader's next key, the way a clipboard failure does (decision record 0066).
+#[tokio::test]
+async fn a_notice_from_the_client_stands_in_the_hint_row_until_the_next_key() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.notice(h.client.clone(), "Ghostty keeps cmd+1-9").await;
+    let f = h.frame(h.client.clone()).await;
+    assert!(
+        f.contains("Ghostty keeps cmd+1-9"),
+        "the notice is shown:\n{f}"
+    );
+    h.type_text(h.client.clone(), "x").await;
+    let f = h.frame(h.client.clone()).await;
+    assert!(
+        !f.contains("Ghostty keeps cmd+1-9"),
+        "and the next key clears it:\n{f}"
+    );
+}
+
 /// A click lands on the row the Navigator draws there after the Navigator has scrolled
 /// (MUX-58). The cursor walks to the bottom of a list taller than the box and back up, which
 /// leaves the box scrolled; the click on the row showing `workspace-1` has to switch to that

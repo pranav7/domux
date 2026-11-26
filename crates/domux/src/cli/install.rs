@@ -1,11 +1,13 @@
-//! `install claude|codex|opencode [--apply]`.
+//! `install claude|codex|opencode|ghostty [--apply]`.
 //!
 //! The one subcommand that is not an API call: installing hooks writes a file in the reader's
 //! home directory and needs no server, so it runs here. Without `--apply` it prints what it
-//! would do and writes nothing.
+//! would do and writes nothing. `ghostty` is not an agent: it hands cmd and a number from
+//! Ghostty's tabs to domux (decision record 0066).
 
 use super::print_line;
 use clap::Args;
+use domux_client::ghostty;
 use domux_core::model::agent::AgentKind;
 use domux_core::names::BIN_NAME;
 use domux_server::agents::install::{apply, hook_binary, plan, preview};
@@ -14,9 +16,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 pub struct InstallCmd {
-    /// The agent to install the hooks for: claude, codex or opencode
-    #[arg(value_parser = super::agent::parse_kind)]
-    pub kind: AgentKind,
+    /// The agent to install the hooks for: claude, codex or opencode. Or ghostty, so that cmd and
+    /// a number reach domux rather than Ghostty's tabs
+    #[arg(value_parser = parse_target)]
+    pub kind: Target,
     /// Write the file. Without this, the command prints what it would do
     #[arg(long)]
     pub apply: bool,
@@ -25,16 +28,118 @@ pub struct InstallCmd {
     pub dir: Option<PathBuf>,
 }
 
+/// What an install is for: an agent's hooks, or Ghostty's keys.
+#[derive(Debug, Clone, Copy)]
+pub enum Target {
+    Agent(AgentKind),
+    Ghostty,
+}
+
+fn parse_target(text: &str) -> Result<Target, String> {
+    if text == "ghostty" {
+        return Ok(Target::Ghostty);
+    }
+    super::agent::parse_kind(text).map(Target::Agent)
+}
+
 pub fn run(cmd: InstallCmd) -> anyhow::Result<()> {
+    match cmd.kind {
+        Target::Ghostty if cmd.dir.is_some() => anyhow::bail!(
+            "--dir names an agent's configuration directory; Ghostty's config is found the way \
+             Ghostty finds it"
+        ),
+        Target::Ghostty => ghostty(cmd.apply),
+        Target::Agent(kind) => agent(kind, cmd),
+    }
+}
+
+/// Hands cmd and a number to domux: asks Ghostty which numbers it keeps, adds the lines that
+/// unbind them to the last config file Ghostty reads, and asks again (decision record 0066).
+fn ghostty(apply: bool) -> anyhow::Result<()> {
+    let bin = ghostty::binary(
+        std::env::var_os("GHOSTTY_BIN_DIR").as_deref(),
+        std::env::var_os("PATH").as_deref(),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "no ghostty binary in GHOSTTY_BIN_DIR, on PATH or in /Applications/Ghostty.app"
+        )
+    })?;
+    let kept = keeps(&bin)?;
+    if kept.is_empty() {
+        return print_line("Nothing to change. Ghostty leaves cmd+1 to cmd+9 to domux.");
+    }
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let files = ghostty::config_files(&home()?, xdg.as_deref(), cfg!(target_os = "macos"));
+    let file = ghostty::target(&files).expect("Ghostty reads at least one file");
+    // Through a link to the file it names, so a config kept in a dotfiles repository is the one
+    // written and the link stays a link.
+    let path = std::fs::canonicalize(&file).unwrap_or(file);
+    let before = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
+    };
+    let plan = ghostty::plan(path, before);
+    print_line(&format!(
+        "Ghostty keeps {} for its own tabs, so domux never gets them.",
+        ghostty::chords(&kept)
+    ))?;
+    if plan.added.is_empty() {
+        anyhow::bail!(
+            "{} already unbinds them, so a file Ghostty reads after it binds them again",
+            plan.path.display()
+        );
+    }
+    if !apply {
+        print_line(&format!("This adds to {}:", plan.path.display()))?;
+        for line in &plan.added {
+            print_line(&format!("  {line}"))?;
+        }
+        return print_line("Run it again with --apply to write the file.");
+    }
+    let stamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+    let backup = ghostty::apply(&plan, &stamp)
+        .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", plan.path.display()))?;
+    match backup {
+        Some(backup) => {
+            print_line(&format!("Patched {}.", plan.path.display()))?;
+            print_line(&format!("The previous file is at {}.", backup.display()))?;
+        }
+        None => print_line(&format!("Created {}.", plan.path.display()))?,
+    }
+    let still = keeps(&bin)?;
+    if !still.is_empty() {
+        anyhow::bail!(
+            "Ghostty still keeps {}: a config file it reads after {} binds them again",
+            ghostty::chords(&still),
+            plan.path.display()
+        );
+    }
+    print_line(
+        "Ghostty now leaves cmd+1 to cmd+9 to domux. Reload its config with cmd+shift+, to use them.",
+    )
+}
+
+/// The numbers Ghostty keeps with cmd, as its own config files leave them.
+fn keeps(bin: &Path) -> anyhow::Result<Vec<u8>> {
+    let list = ghostty::list_keybinds(bin)
+        .ok_or_else(|| anyhow::anyhow!("{} +list-keybinds failed", bin.display()))?;
+    Ok(ghostty::kept_digits(&list))
+}
+
+fn agent(kind: AgentKind, cmd: InstallCmd) -> anyhow::Result<()> {
     let registry = Registry::builtin();
     let target = &registry
-        .for_kind(cmd.kind)
-        .ok_or_else(|| anyhow::anyhow!("no manifest for {}", cmd.kind))?
+        .for_kind(kind)
+        .ok_or_else(|| anyhow::anyhow!("no manifest for {kind}"))?
         .hooks;
     let dir = config_dir(target, cmd.dir.clone())?;
     let linked = home()?.join("bin").join(BIN_NAME);
     let bin = hook_binary(&linked, &running_binary()?);
-    let mut plan = plan(&registry, cmd.kind, &dir, &bin)?;
+    let mut plan = plan(&registry, kind, &dir, &bin)?;
     // A reader who has something at the `~/bin` path expects the install to write it, and it is
     // most likely V1 or a link that a `cargo clean` broke. `symlink_metadata` rather than
     // `exists`, so a broken link counts as something. First among the notes, so an apply says it

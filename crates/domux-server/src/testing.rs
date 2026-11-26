@@ -631,6 +631,13 @@ impl Harness {
         self.send(&client, ClientMsg::SuperHeld(held)).await;
     }
 
+    /// A line the client found for its hint row, such as a terminal that keeps cmd and a number
+    /// (decision record 0066).
+    pub async fn notice(&mut self, client: ClientId, text: &str) {
+        self.send(&client, ClientMsg::Notice(text.to_string()))
+            .await;
+    }
+
     /// The client's terminal gained or lost the focus.
     pub async fn focus(&mut self, client: ClientId, focused: bool) {
         self.send(&client, ClientMsg::Focus(focused)).await;

@@ -3,7 +3,8 @@
 **Date:** 2026-11-26
 **Status:** Accepted. Amends decision record 0064: the agents gain `D-1` to `D-9`, and the
 Navigator writes their numbers only while the super key is held, at a client that can tell. The
-rest of 0064 stands.
+rest of 0064 stands. **Amended by decision record 0066**, which adds `domux install ghostty` and
+reads cmd only where Ghostty confirms that cmd and a number reaches domux.
 **Decision:** `D-1` to `D-9`, cmd and a number on macOS, open the agent the Navigator numbers
 so. `leader 1` to `leader 9` still do, and `M-1` to `M-9` still select the tabs. A client on the
 reader's own Mac asks macOS whether cmd is held while its terminal has the focus and tells the
@@ -23,9 +24,10 @@ bindings to `agent.focus #1` to `#9`, beside `M-1` to `M-9` for the tabs, so the
 which list a number counts in. The Keys overlay collapses them into one row, `D-1-9
 agent.focus #<n>`.
 
-The terminal has to let the chord through. Ghostty binds cmd and a number to its own tabs, so its
-config needs `keybind = cmd+1=unbind` through `cmd+9=unbind`. Ghostty then sends the chord to
-the program, and under the keyboard protocol the client already asks for, it arrives as super and
+The terminal has to let the chord through. Ghostty binds cmd and a number to its own tabs twice,
+by the character and by the key, so its config needs `keybind = cmd+1=unbind` through
+`cmd+9=unbind` and `keybind = cmd+digit_1=unbind` through `cmd+digit_9=unbind`. `domux install
+ghostty --apply` writes them (decision record 0066). Ghostty then sends the chord to the program, and under the keyboard protocol the client already asks for, it arrives as super and
 the digit. Hyprland, under Omarchy, binds super and a number to its workspaces and never sends it
 on. So `leader 1` to `leader 9` stay bound to the agents: they reach domux from any terminal and
 over ssh.

@@ -1643,13 +1643,24 @@ impl Core {
             self.view_dirty = true;
             return;
         }
+        // Nor is a notice: the client found something at attach, and the reader did nothing.
+        if let ClientMsg::Notice(text) = msg {
+            if let Some(conn) = self.clients.get_mut(&client) {
+                conn.hint = Some(Hint::action(text));
+            }
+            self.view_dirty = true;
+            return;
+        }
         // A screen losing the terminal's focus is the reader leaving it, so it is no activity:
         // counted, it could make the screen just left the one the panes take their size from.
         if !matches!(msg, ClientMsg::Focus(false)) {
             self.model.touch_client(&client);
         }
         match msg {
-            ClientMsg::Hello(_) | ClientMsg::Colors(_) | ClientMsg::SuperHeld(_) => {}
+            ClientMsg::Hello(_)
+            | ClientMsg::Colors(_)
+            | ClientMsg::SuperHeld(_)
+            | ClientMsg::Notice(_) => {}
             ClientMsg::Key(key) => {
                 self.clear_action_hint(&client);
                 self.key(&client, key);
