@@ -23,8 +23,9 @@ pub struct Capabilities {
 /// Bumped when a message shape changes. The server refuses a client with another value.
 /// 3 added `ClientMsg::Mouse` (decision 0014). 4 carries the terminal's palette and the
 /// desktop in the hello, and adds `ClientMsg::Colors` and `ServerMsg::FollowColors` (decision
-/// 0042). 5 adds `ClientMsg::SuperHeld` (decision 0065).
-pub const PROTOCOL_VERSION: u32 = 5;
+/// 0042). 5 adds `ClientMsg::SuperHeld` (decision 0065), and 6 `ClientMsg::Notice` (decision
+/// 0066).
+pub const PROTOCOL_VERSION: u32 = 6;
 /// A frame larger than this is a bug or an attack, never a screen. The value is also what
 /// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.
 pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
@@ -116,6 +117,10 @@ pub enum ClientMsg {
     /// `false` when the terminal loses the focus. A client that never sends it cannot tell,
     /// and the Navigator writes the agents' numbers for it all the time (decision 0065).
     SuperHeld(bool),
+    /// A line for this client's hint row about something only the client can see, such as a
+    /// terminal that keeps cmd and a number for itself. It stands until the reader's next key,
+    /// like a clipboard failure, and is not the reader's activity (decision 0066).
+    Notice(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

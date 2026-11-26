@@ -12,7 +12,7 @@ use domux_server::agents::hooks::EVENTS_CLAUDE;
 use domux_server::testing::{boxes, git, repo_with_origin, Harness, HarnessOptions};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -2123,6 +2123,109 @@ async fn install_apply_writes_the_file_and_names_the_backup() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.starts_with("Nothing to change."), "{text}");
     assert!(!text.contains(".domux-backup-"), "{text}");
+}
+
+/// A Ghostty that keeps cmd+1 and cmd+9 until `config` unbinds `cmd+digit_1`, the way the real
+/// one answers `+list-keybinds` before and after an install. Answers the directory to name in
+/// `GHOSTTY_BIN_DIR`.
+fn fake_ghostty(home: &Path, config: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = home.join("ghostty-bin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("ghostty");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = +list-keybinds ] || exit 2\n\
+             grep -q 'cmd+digit_1=unbind' '{}' 2>/dev/null && exit 0\n\
+             printf 'keybind = super+digit_1=goto_tab:1\\nkeybind = super+9=last_tab\\n'\n",
+            config.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// `install ghostty` in a home whose Ghostty config is a link into a dotfiles directory.
+fn ghostty_install(home: &Path) -> (Command, PathBuf, PathBuf) {
+    let real = home.join("dotfiles/ghostty-config");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "font-size = 11\n").unwrap();
+    let link = home.join(".config/ghostty/config");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real = std::fs::canonicalize(&real).unwrap();
+    let mut c = install_cmd(home);
+    c.env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GHOSTTY_BIN_DIR", fake_ghostty(home, &real));
+    (c, real, link)
+}
+
+/// Without `--apply` the install names what Ghostty keeps and the lines it would add to the file
+/// Ghostty reads, and writes nothing (decision record 0066).
+#[tokio::test]
+async fn install_ghostty_without_apply_names_the_kept_keys_and_writes_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut c, real, _link) = ghostty_install(home.path());
+    let out = c.args(["install", "ghostty"]).output().await.unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("Ghostty keeps cmd+1, cmd+9 for its own tabs"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("This adds to {}:", real.display())),
+        "{text}"
+    );
+    assert!(text.contains("  keybind = cmd+digit_1=unbind"), "{text}");
+    assert!(text.contains("--apply"), "{text}");
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "font-size = 11\n");
+}
+
+/// `--apply` writes through the link to the file it names, keeps the old file, and asks Ghostty
+/// again before it says the keys are domux's. A second run finds nothing to change.
+#[tokio::test]
+async fn install_ghostty_apply_writes_through_the_link_and_asks_ghostty_again() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut c, real, link) = ghostty_install(home.path());
+    let out = c
+        .args(["install", "ghostty", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains(&format!("Patched {}.", real.display())),
+        "{text}"
+    );
+    assert!(text.contains(".domux-backup-"), "{text}");
+    assert!(
+        text.contains("Ghostty now leaves cmd+1 to cmd+9 to domux"),
+        "{text}"
+    );
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let written = std::fs::read_to_string(&real).unwrap();
+    assert!(written.starts_with("font-size = 11\n"), "{written}");
+    assert!(written.contains("keybind = cmd+9=unbind\n"), "{written}");
+
+    let mut again = install_cmd(home.path());
+    again
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("GHOSTTY_BIN_DIR", home.path().join("ghostty-bin"));
+    let out = again
+        .args(["install", "ghostty", "--apply"])
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("Nothing to change."), "{text}");
 }
 
 /// A home with no settings file at all: the install creates one and says so. "Patched" would be

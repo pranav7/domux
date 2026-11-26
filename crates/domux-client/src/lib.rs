@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod control;
 pub mod desktop;
 pub mod frame;
+pub mod ghostty;
 pub mod input;
 pub mod omarchy;
 pub mod super_key;
@@ -102,9 +103,13 @@ struct Session<B: Backend> {
     follow: Option<omarchy::Follow>,
     /// Whether the server said the client's theme reads the terminal, with `FollowColors`.
     following: bool,
-    /// Reads whether the super key is down, on a client that can tell. `None` sends nothing,
-    /// and the server then writes the agents' numbers all the time (decision record 0065).
+    /// Reads whether the super key is down, once the check at attach found that cmd and a
+    /// number reaches domux. `None` sends nothing, and the server then writes the agents'
+    /// numbers all the time (decision records 0065 and 0066).
     super_key: Option<super_key::Reader>,
+    /// The check at attach, running beside the session because it may ask Ghostty, which takes
+    /// a tenth of a second the reader should not wait for. Taken by `run`.
+    super_check: Option<tokio::task::JoinHandle<super_key::Check>>,
     /// Whether the outer terminal has the focus, from its focus reports. True at attach, since
     /// the reader has just typed the command into it.
     focused: bool,
@@ -139,6 +144,7 @@ where
         // while the terminal had no focus is taken as soon as it has it again.
         let mut super_poll = tokio::time::interval(super_key::POLL);
         super_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut super_check = self.super_check.take();
         tokio::pin!(stop);
         let outcome = loop {
             tokio::select! {
@@ -198,6 +204,19 @@ where
                                 let _ = writer.write_all(&bytes).await;
                             }
                             break AttachOutcome::Detached(TERMINAL_ENDED.into());
+                        }
+                    }
+                }
+                found = async { super_check.as_mut().expect("the branch runs only while it is there").await }, if super_check.is_some() => {
+                    super_check = None;
+                    if let Some(msg) = self.on_super_check(found) {
+                        match encode(&msg) {
+                            Err(err) => tracing::warn!(%err, "the check of cmd and a number could not be framed and was not sent"),
+                            Ok(bytes) => {
+                                if writer.write_all(&bytes).await.is_err() {
+                                    break AttachOutcome::ConnectionLost;
+                                }
+                            }
                         }
                     }
                 }
@@ -314,6 +333,28 @@ where
             omarchy::Polled::Unchanged | omarchy::Polled::Same => {}
         }
         true
+    }
+
+    /// What the check at attach found: a reader to start the looks with, or the hint that names
+    /// the install when Ghostty keeps the chord (decision record 0066).
+    fn on_super_check(
+        &mut self,
+        found: Result<super_key::Check, tokio::task::JoinError>,
+    ) -> Option<ClientMsg> {
+        match found {
+            Ok(super_key::Check::Reads(read)) => {
+                self.super_key = Some(read);
+                None
+            }
+            Ok(super_key::Check::GhosttyKeeps(_)) => {
+                Some(ClientMsg::Notice(ghostty::KEEPS_HINT.to_string()))
+            }
+            Ok(super_key::Check::CannotTell) => None,
+            Err(err) => {
+                tracing::warn!(%err, "the check of cmd and a number did not finish");
+                None
+            }
+        }
     }
 
     /// Whether the super key is worth a look: while the terminal has the focus, and once more
@@ -571,6 +612,17 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     let (cols, rows) = crossterm::terminal::size()?;
     let desktop_env = desktop::DesktopEnv::from_process();
     let desktop = desktop::detect(&desktop_env);
+    let remote = desktop_env.remote;
+    let terminal = env.term_program.clone();
+    let super_check = tokio::task::spawn_blocking(move || {
+        super_key::check(remote, terminal.as_deref(), || {
+            let bin = ghostty::binary(
+                std::env::var_os("GHOSTTY_BIN_DIR").as_deref(),
+                std::env::var_os("PATH").as_deref(),
+            )?;
+            ghostty::list_keybinds(&bin)
+        })
+    });
     let follow = match (desktop, std::env::var_os("HOME")) {
         (Desktop::Omarchy, Some(home)) => follow_omarchy(Path::new(&home), &capabilities.colors),
         _ => None,
@@ -587,7 +639,8 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         clicks: Clicks::default(),
         follow,
         following: false,
-        super_key: super_key::reader(desktop_env.remote),
+        super_key: None,
+        super_check: Some(super_check),
         focused: true,
         super_sent: None,
     };
@@ -660,7 +713,7 @@ mod tests {
         copy: CopyFn,
         stop: impl Future<Output = Stop> + Send + 'static,
         follow: Option<omarchy::Follow>,
-        super_key: Option<super_key::Reader>,
+        check: Option<super_key::Check>,
     ) -> (Events, DuplexStream, Ran) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let (mut reader, mut writer) = tokio::io::split(client);
@@ -674,7 +727,8 @@ mod tests {
             clicks: Clicks::default(),
             follow,
             following: false,
-            super_key,
+            super_key: None,
+            super_check: check.map(|c| tokio::spawn(async move { c })),
             focused: true,
             super_sent: None,
         };
@@ -1155,7 +1209,9 @@ mod tests {
             clipboard_works,
             std::future::pending::<Stop>(),
             None,
-            Some(Box::new(move || read.load(Ordering::SeqCst))),
+            Some(super_key::Check::Reads(Box::new(move || {
+                read.load(Ordering::SeqCst)
+            }))),
         );
         expect_soon(&mut server, &ClientMsg::SuperHeld(false)).await;
         down.store(true, Ordering::SeqCst);
@@ -1166,6 +1222,36 @@ mod tests {
         events.unbounded_send(Ok(Event::FocusGained)).unwrap();
         expect_soon(&mut server, &ClientMsg::Focus(true)).await;
         expect_soon(&mut server, &ClientMsg::SuperHeld(true)).await;
+    }
+
+    /// A Ghostty that keeps cmd and a number leaves a hint naming the install, and the client
+    /// never says where cmd is, so the server writes the numbers all the time (decision record
+    /// 0066). The clipboard message after it is answered only once the hint has gone, so the
+    /// failure that follows proves nothing came between.
+    #[tokio::test]
+    async fn super_key_is_not_read_while_ghostty_keeps_the_chord() {
+        let (_events, mut server, _task) = running_with(
+            4,
+            2,
+            clipboard_fails,
+            std::future::pending::<Stop>(),
+            None,
+            Some(super_key::Check::GhosttyKeeps(vec![1, 9])),
+        );
+        expect_soon(
+            &mut server,
+            &ClientMsg::Notice(ghostty::KEEPS_HINT.to_string()),
+        )
+        .await;
+        server
+            .write_all(&encode(&ServerMsg::Clipboard("x".into())).unwrap())
+            .await
+            .unwrap();
+        expect_soon(
+            &mut server,
+            &ClientMsg::ClipboardFailed("no clipboard tool found".into()),
+        )
+        .await;
     }
 
     /// A session on Omarchy whose terminal draws Ristretto, as attach leaves it: the `Follow`

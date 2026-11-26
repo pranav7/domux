@@ -14,9 +14,12 @@ notes, and a missing or empty section stops the release. Versions follow
 ### Added
 
 - The Navigator numbers the first nine agents, and cmd and a number (`D-1` to `D-9`), or the
-  leader and a number, opens that agent. On macOS the numbers show while you hold cmd. Over ssh
-  and on Linux they show all the time. In Ghostty, add `keybind = cmd+1=unbind` through
-  `keybind = cmd+9=unbind` to your config so the keys reach domux instead of Ghostty's tabs.
+  leader and a number, opens that agent.
+- `domux install ghostty` hands cmd and a number from Ghostty's tabs to domux. It shows the lines
+  it would add to your Ghostty config, `--apply` writes them, and it asks Ghostty to confirm.
+  Reload Ghostty's config afterwards. Once cmd and a number reaches domux, the numbers show only
+  while you hold cmd. Until then, and over ssh, on Linux and in other terminals, they show all the
+  time, and domux reminds you of the command when you attach in Ghostty.
 
 ### Changed
 
