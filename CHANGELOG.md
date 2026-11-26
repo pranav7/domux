@@ -39,7 +39,7 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ### Fixed
 
-- A link Claude Code prints opens on a click again. Every pane sets `FORCE_HYPERLINK=1`, so a
+- A link Claude Code prints opens on a click. Every pane sets `FORCE_HYPERLINK=1`, so a
   program that asks the terminal before drawing a link draws one. Open a new pane, or restart
   the program, to pick it up.
 - Stay awake in full mode on macOS no longer keeps the machine awake after it is turned off. The
