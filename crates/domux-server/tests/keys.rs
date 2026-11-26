@@ -183,9 +183,9 @@ async fn the_help_overlay_swallows_keys_until_it_closes() {
     assert_eq!(h.pane_input(&pane), b"y".to_vec());
 }
 
-/// Principle 8: a key that cannot do what it says still answers. `C-s 9` selects the ninth
-/// tab, and a workspace with one tab has none, so the failure is named where the clock is
-/// and stands until the next key.
+/// Principle 8: a key that cannot do what it says still answers. `C-s 9` opens the agent the
+/// Navigator numbers 9 (decision record 0064), and with no agent running there is none, so
+/// the failure is named where the clock is and stands until the next key.
 #[tokio::test]
 async fn a_failed_action_names_the_failure_until_the_next_key() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
@@ -193,13 +193,13 @@ async fn a_failed_action_names_the_failure_until_the_next_key() {
     h.key(h.client.clone(), "9").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("tab 9 does not exist; this workspace has 1 tabs"),
+        |f| f.contains("no agent #9: no agent is running"),
         Duration::from_secs(2),
     )
     .await;
     h.key(h.client.clone(), "y").await;
     let frame = h.frame(h.client.clone()).await;
-    assert!(!frame.contains("tab 9 does not exist"), "{frame}");
+    assert!(!frame.contains("no agent #9"), "{frame}");
     assert!(frame.contains("14:32"), "the clock is back:\n{frame}");
 }
 

@@ -590,8 +590,9 @@ async fn the_tab_row_drops_the_plus_before_the_current_tab_on_a_narrow_screen() 
 #[tokio::test]
 async fn a_hint_too_long_for_the_room_beside_the_tabs_elides() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
-    h.key(h.client.clone(), "C-s").await;
-    h.key(h.client.clone(), "9").await;
+    // `M-9` selects the ninth tab, and the one tab there is gives a failure long enough to
+    // elide (decision record 0064 moved the tabs off `leader 9`).
+    h.key(h.client.clone(), "M-9").await;
     let f = h
         .wait_for(
             h.client.clone(),
@@ -713,8 +714,9 @@ async fn an_actionable_right_end_elides_into_a_floor_of_its_own_rather_than_goin
         )
         .await;
     let before = row(&before, 0).to_string();
-    h.key(h.client.clone(), "C-s").await;
-    h.key(h.client.clone(), "9").await;
+    // `M-9` selects the ninth tab, and the one tab there is gives a failure long enough to
+    // elide (decision record 0064 moved the tabs off `leader 9`).
+    h.key(h.client.clone(), "M-9").await;
     let f = h
         .wait_for(
             h.client.clone(),
