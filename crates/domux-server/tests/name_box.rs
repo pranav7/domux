@@ -188,7 +188,7 @@ async fn n_in_the_sidebar_box_names_the_cursor_row_and_takes_the_keys_off_the_si
     h.wait_for(client.clone(), |f| f.contains("Navigator"), WAIT)
         .await;
     h.key(client.clone(), "C-h").await;
-    h.wait_for(client.clone(), |f| f.contains("r0 c0-0 fg=#cba6f7"), WAIT)
+    h.wait_for(client.clone(), |f| f.contains("r1 c0-0 fg=#cba6f7"), WAIT)
         .await;
     // The cursor starts on `proj`'s `main`, the last row: two steps up is `workspace-1`.
     h.key(client.clone(), "k").await;
@@ -216,7 +216,7 @@ async fn n_in_the_sidebar_box_names_the_cursor_row_and_takes_the_keys_off_the_si
     // The dim is the name box's own, over everything it did not draw, so this line reads
     // "dimmed and unfocused" rather than "dimmed", which a focused border would also be.
     assert!(
-        f.contains("r0 c0-0 dim fg=#585b70"),
+        f.contains("r1 c0-0 dim fg=#585b70"),
         "so the sidebar's box gives up the accent:\n{f}"
     );
 }

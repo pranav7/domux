@@ -361,6 +361,51 @@ async fn a_click_on_the_tab_rows_rule_does_nothing() {
     );
 }
 
+/// With the sidebar shown, row 0 is one bar across the screen (decision record 0067). A click
+/// on the `project › workspace` label over the sidebar acts on nothing, and a click on a tab
+/// further along the same row still selects it.
+#[tokio::test]
+async fn a_click_on_the_bar_over_the_sidebar_does_nothing_and_a_tab_still_selects() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    h.api("sidebar.show", serde_json::json!({})).await.unwrap();
+    h.api("tab.create", serde_json::json!({})).await.unwrap();
+    let f = h
+        .wait_for(
+            h.client.clone(),
+            |f| f.contains(" 2 ") && f.contains("┌ Navigator"),
+            Duration::from_secs(2),
+        )
+        .await;
+    let second = h.current_tab(h.client.clone());
+    let label = column_of(&f, 0, '›');
+    assert!(label < 37, "the label sits over the sidebar:\n{f}");
+    h.mouse(h.client.clone(), MouseAction::Press, label, 0, 1)
+        .await;
+    h.mouse(h.client.clone(), MouseAction::Release, label, 0, 1)
+        .await;
+    h.wait_for(h.client.clone(), |_| true, Duration::from_secs(2))
+        .await;
+    assert_eq!(
+        h.current_tab(h.client.clone()),
+        second,
+        "the label is not a target"
+    );
+
+    let first = column_of(&f, 0, '1');
+    assert!(first >= 38, "the tabs start over the panes:\n{f}");
+    h.mouse(h.client.clone(), MouseAction::Press, first, 0, 1)
+        .await;
+    h.mouse(h.client.clone(), MouseAction::Release, first, 0, 1)
+        .await;
+    h.wait_for(h.client.clone(), |_| true, Duration::from_secs(2))
+        .await;
+    assert_ne!(
+        h.current_tab(h.client.clone()),
+        second,
+        "the click on the first tab selected it"
+    );
+}
+
 /// A click on a workspace's row in the sidebar switches to that workspace, which is what Enter
 /// on the row does. The row is found on the screen rather than counted: the box draws a header
 /// and a blank between projects, and the click has to land on the row the reader sees.

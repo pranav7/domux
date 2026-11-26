@@ -140,7 +140,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
 
 /// `project › workspace`, the label the full-width bar opens with. `None` when this client's
 /// workspace is gone, which is when the bar draws nothing at all.
-fn location_label(input: &RenderInput) -> Option<String> {
+pub fn location_label(input: &RenderInput) -> Option<String> {
     let ws = input.model.workspace(&input.view.workspace)?;
     let project = input
         .model

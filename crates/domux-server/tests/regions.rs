@@ -23,8 +23,9 @@ fn cols(line: &str, from: usize, to: usize) -> String {
 /// The whole frame is the wrong thing to search for a workspace's handle here: every test
 /// that builds slots leaves `Created workspace-2` in the hint row, so `f.contains(...)` would
 /// be answered by the pill as readily as by the row (a second cause for the same observation).
-/// The box's rows are r1 upwards, r0 is its top border, r22 is its hint row, its own footer
-/// now, and r23 is its bottom border.
+/// Row 0 is the bar over the whole screen, r1 is the box's top border, its rows are r2
+/// upwards, r22 is its hint row, its own footer now, and r23 is its bottom border (decision
+/// record 0067).
 fn box_row(f: &str, n: usize) -> String {
     cols(row(f, n), 0, 37)
 }
@@ -88,7 +89,7 @@ async fn in_the_box(h: &mut Harness) -> String {
     h.key(h.client.clone(), "C-h").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("r0 c0-0 fg=#cba6f7"),
+        |f| f.contains("r1 c0-0 fg=#cba6f7"),
         Duration::from_secs(2),
     )
     .await
@@ -122,7 +123,7 @@ async fn c_h_from_the_leftmost_pane_enters_the_projects_box_and_c_l_and_esc_retu
     h.key(h.client.clone(), "C-h").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("r0 c0-0 fg=#cba6f7"),
+        |f| f.contains("r1 c0-0 fg=#cba6f7"),
         Duration::from_secs(2),
     )
     .await;
@@ -509,7 +510,7 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     let (_root, _w1, _w2) = h.git_project_with_two_slots().await;
     let f = in_the_box(&mut h).await;
     assert!(
-        box_row(&f, 3).contains("workspace-1") && box_row(&f, 4).contains("workspace-2"),
+        box_row(&f, 4).contains("workspace-1") && box_row(&f, 5).contains("workspace-2"),
         "both slots start visible:\n{f}"
     );
 
@@ -518,16 +519,16 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !box_row(f, 4).contains("workspace-2"),
+            |f| !box_row(f, 5).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
     assert_eq!(filter(&h), ("workspace-1".to_string(), true));
     assert!(
-        box_row(&f, 2).contains("workspace-1"),
+        box_row(&f, 3).contains("workspace-1"),
         "the row that matches stays, under its own header:\n{f}"
     );
-    assert!(box_row(&f, 1).contains("AUDREY-APP"), "{f}");
+    assert!(box_row(&f, 2).contains("AUDREY-APP"), "{f}");
     assert!(
         row(&f, 22).contains("Filter › workspace-1"),
         "the hint row says the box is filtering:\n{}",
@@ -538,7 +539,7 @@ async fn slash_filters_the_box_as_you_type_and_esc_clears_it() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| box_row(f, 4).contains("workspace-2"),
+            |f| box_row(f, 5).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -602,7 +603,7 @@ async fn leaving_the_box_gives_the_sidebar_its_whole_list_back() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !box_row(f, 4).contains("workspace-2"),
+            |f| !box_row(f, 5).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -616,7 +617,7 @@ async fn leaving_the_box_gives_the_sidebar_its_whole_list_back() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| box_row(f, 4).contains("workspace-2"),
+            |f| box_row(f, 5).contains("workspace-2"),
             Duration::from_secs(2),
         )
         .await;
@@ -695,16 +696,14 @@ async fn the_switcher_opens_with_an_empty_filter_each_time() {
 
 /// The box scrolls to keep the cursor in view.
 ///
-/// A third slot, and 19 rows, which leaves the box seven lines to draw eight in: on a taller
+/// A third slot, and 10 rows, which leaves the box six lines to draw eight in: on a taller
 /// screen the whole list fits and a hard-coded scroll of 0 passes. The field can only be
-/// tested under the condition that makes it matter. It was 10 rows until M3 halved the column
-/// between the two boxes, which left the Projects box two lines and no room for the
-/// arithmetic below.
+/// tested under the condition that makes it matter.
 #[tokio::test]
 async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_row() {
-    // Ten rows, which is the shortest screen domux draws. The Navigator takes the column, so
-    // its text area is the screen less the hint row and its two borders: seven rows for the
-    // eight lines below, which is what makes the box scroll at all.
+    // Ten rows, which is the shortest screen domux draws. The Navigator takes the column under
+    // the bar on row 0, so its text area is the screen less that row, the hint row and its two
+    // borders: six rows for the eight lines below, which is what makes the box scroll at all.
     let mut h = Harness::start(Config::default(), 120, 10).await;
     let (_root, _w1, w2) = h.git_project_with_two_slots().await;
     let project = h
@@ -743,14 +742,14 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
         h.key(h.client.clone(), "j").await;
     }
     let f = h.frame(h.client.clone()).await;
-    // 1 exactly, and not merely "more than 0". The eight lines are a header, `main`, three
+    // 2 exactly, and not merely "more than 0". The eight lines are a header, `main`, three
     // slots, the blank before the next header, that header and its `main`, so the last row
-    // ends on line 8 and the box shows 7: one line has to go. That number is what tells the
+    // ends on line 8 and the box shows 6: two lines have to go. That number is what tells the
     // compact rows from the switcher's wider ones, which give every workspace a tab list line
     // and would put the same cursor five lines further down.
     assert_eq!(
         h.model().client(&h.client).unwrap().navigator_scroll,
-        1,
+        2,
         "the cursor left the view, so the box scrolled by exactly what it had to:\n{f}"
     );
     assert!(
@@ -770,7 +769,7 @@ async fn the_box_scrolls_to_keep_the_cursor_in_view_when_it_cannot_show_every_ro
     let f = h.frame(h.client.clone()).await;
     assert_eq!(
         h.model().client(&h.client).unwrap().navigator_scroll,
-        1,
+        2,
         "a step inside the window leaves the view where it is:\n{f}"
     );
 }
@@ -839,12 +838,12 @@ async fn the_box_takes_the_accent_and_gives_it_back() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let f = in_the_box(&mut h).await;
     assert_eq!(
-        cols(row(&f, 0), 0, 37),
-        "┌ Navigator ─────────────────────────┐",
+        cols(row(&f, 1), 0, 37),
+        "┌ Navigator ─────────────────────────┬",
         "{f}"
     );
     assert!(
-        f.contains("r0 c1-11 bold fg=#cba6f7"),
+        f.contains("r1 c1-11 bold fg=#cba6f7"),
         "the title goes bold in the accent with the border:\n{f}"
     );
     h.key(h.client.clone(), "Esc").await;
@@ -856,12 +855,12 @@ async fn the_box_takes_the_accent_and_gives_it_back() {
         )
         .await;
     assert!(
-        !f.contains("r0 c0-0 fg=#cba6f7"),
+        !f.contains("r1 c0-0 fg=#cba6f7"),
         "and hands it back to the pane:\n{f}"
     );
     assert_eq!(
-        cols(row(&f, 0), 0, 37),
-        "┌ Navigator ─────────────────────────┐",
+        cols(row(&f, 1), 0, 37),
+        "┌ Navigator ─────────────────────────┬",
         "the box is still drawn, in its unfocused colours:\n{f}"
     );
 }
@@ -916,7 +915,11 @@ async fn a_step_after_the_filter_drops_the_cursor_starts_at_the_top() {
         .project_of_workspace(&_w1)
         .and_then(|p| p.workspaces.first().map(|w| w.id.clone()))
         .expect("the git project holds main");
-    in_the_box(&mut h).await;
+    let f = in_the_box(&mut h).await;
+    assert!(
+        box_row(&f, 7).contains("PROJ"),
+        "the plain folder's header starts on row 7:\n{f}"
+    );
     let here = cursor(&h);
     assert_eq!(
         here,
@@ -930,7 +933,7 @@ async fn a_step_after_the_filter_drops_the_cursor_starts_at_the_top() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| !box_row(f, 8).contains("PROJ"),
+            |f| !box_row(f, 7).contains("PROJ"),
             Duration::from_secs(2),
         )
         .await;
@@ -1035,7 +1038,7 @@ async fn coming_back_into_the_box_never_lands_in_a_filter_field_nobody_opened() 
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("r0 c0-0 fg=#cba6f7"),
+            |f| f.contains("r1 c0-0 fg=#cba6f7"),
             Duration::from_secs(2),
         )
         .await;

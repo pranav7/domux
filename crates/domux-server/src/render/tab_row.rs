@@ -383,26 +383,45 @@ fn prompt_cell(theme: &Theme, number: usize, input: &TextInput) -> TabCell {
     ])
 }
 
-/// The tab row at the top of the workpanel, with the right end's pieces at its end.
+/// The bar on row 0 while the sidebar is shown: `project › workspace` over the sidebar, then the
+/// tab row from the workpanel's first column, with the right end's pieces at its end.
 ///
-/// It sits on the panes: no rule under it, and the ground is `tab_row_background`, which both
-/// built-in themes leave to the terminal's own, so the sidebar's column and the workpanel read
-/// as two things rather than one banded screen (interface spec 4.2). The cells it shares with the right end are shared by the same rule the
+/// The sidebar starts on row 1, so this row is one bar across the screen (decision record
+/// 0067). Its ground is `tab_row_background`, which both built-in themes leave to the
+/// terminal's own. The cells it shares with the right end are shared by the same rule the
 /// full-width bar uses, so the clock gives way to the tabs in one place, not two.
 pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
     let (left, right) = crate::render::workpanel_row_span(input.view);
+    let bg = color(input.theme, Role::TabRowBackground);
+    // The ground covers the whole row, the way the top bar fills its own: the pieces below
+    // only paint the cells they write into.
+    let right_edge = right.min(buf.area.x + buf.area.width);
+    if buf.area.height == 0 {
+        return;
+    }
+    for x in buf.area.x..right_edge {
+        buf[(x, 0)].reset();
+        buf[(x, 0)].set_style(Style::default().bg(bg));
+    }
+    // `project › workspace` over the sidebar, as the full-width bar opens with it. It stops
+    // two cells short of the tabs, so a long name is cut rather than run into them.
+    if let Some(location) = crate::render::top_bar::location_label(input) {
+        if left >= 2 {
+            put_within(
+                buf,
+                buf.area.x,
+                0,
+                left - 2,
+                &location,
+                Style::default()
+                    .fg(color(input.theme, Role::Text))
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+    }
     let Some(row) = crate::render::top_bar::tab_row_of(input) else {
         return;
     };
-    let bg = color(input.theme, Role::TabRowBackground);
-    // The ground covers the whole row, the cells between the pieces too, the way the top bar
-    // fills its own: the pieces below only paint the cells they write into.
-    let right_edge = right.min(buf.area.x + buf.area.width);
-    if buf.area.height > 0 {
-        for x in left..right_edge {
-            buf[(x, 0)].reset();
-            buf[(x, 0)].set_style(Style::default().bg(bg));
-        }
-    }
     crate::render::top_bar::draw_tabs_and_right(input, &row, left, 0, right, bg, buf);
 }
