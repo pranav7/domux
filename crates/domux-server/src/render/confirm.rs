@@ -371,6 +371,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, 24));
         for cell in buf.content.iter_mut() {

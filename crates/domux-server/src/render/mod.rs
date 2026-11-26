@@ -5,6 +5,7 @@ pub mod agents_box;
 pub mod agents_overlay;
 pub mod boxed;
 pub mod confirm;
+pub mod dim;
 pub mod list_box;
 pub mod name_box;
 pub mod overlay;
@@ -79,6 +80,9 @@ pub struct RenderInput<'a> {
     pub navigator: bool,
     /// This client's colours, painted from the chosen theme and this client's terminal.
     pub theme: &'a domux_core::theme::Theme,
+    /// `[terminal] dim_unfocused`: how far, in percent, the panes other than the focused one
+    /// are mixed towards the terminal's background (decision record 0064). 0 is off.
+    pub dim_unfocused: u8,
 }
 
 /// The one line a list of notes prints as, or `None` when there is nothing to say.
@@ -134,16 +138,34 @@ impl<'a> RenderInput<'a> {
 
 /// The panes' rectangle on a screen of `size`, with or without the sidebar beside it.
 ///
-/// One column of gap between the sidebar and the workpanel (interface spec 12.18), so the
-/// pane boxes never share a column with the sidebar's border.
+/// With the sidebar, the workpanel starts on the sidebar's last column, so the sidebar's right
+/// border and the first pane's left border are one line (decision record 0064). It took the
+/// column after a blank one until MUX-60 (interface spec 12.18).
 pub fn workpanel_of(size: Size, sidebar: bool) -> domux_core::model::Rect {
-    let x = if sidebar { SIDEBAR_WIDTH + 1 } else { 0 };
+    let x = if sidebar {
+        SIDEBAR_WIDTH - domux_core::model::layout::SHARED
+    } else {
+        0
+    };
     domux_core::model::Rect {
         x,
         y: 1,
         width: size.cols.saturating_sub(x),
         height: size.rows.saturating_sub(1),
     }
+}
+
+/// The columns the tab row takes over the workpanel while the sidebar is shown, from its first
+/// to one past its last. It starts one column in, after the line the sidebar and the panes
+/// share, so a tab never sits on the sidebar's corner. The drawing and the pointer both ask
+/// here.
+pub fn workpanel_row_span(view: &ClientView) -> (u16, u16) {
+    let area = workpanel_area(view);
+    let right = area.x + area.width;
+    (
+        (area.x + domux_core::model::layout::SHARED).min(right),
+        right,
+    )
 }
 
 /// One client's workpanel: under the top bar when the sidebar is hidden, right of the
@@ -245,11 +267,11 @@ pub fn hit_at(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
             });
         }
         if row == 0 {
-            let area = workpanel_area(input.view);
+            let (left, right) = workpanel_row_span(input.view);
             let tabs = top_bar::tab_row_of(input)?;
             return tab_hit(
                 input,
-                top_bar::tab_target_at(input, &tabs, area.x, area.x + area.width, column),
+                top_bar::tab_target_at(input, &tabs, left, right, column),
             );
         }
     } else if row == 0 {
@@ -440,6 +462,15 @@ pub(crate) fn draw_panes(input: &RenderInput, buf: &mut Buffer) -> Option<Cursor
     })
 }
 
+/// Draws the boxes in three passes, so that boxes sharing a line meet rather than cover each
+/// other (decision record 0064): every border, the focused pane's last so its accent wins the
+/// lines it shares; then every title and flag, which sit on the top border and must not be
+/// covered by a neighbour's border drawn after them; then the grids, each inside its own box.
+///
+/// The panes other than the tab's focused one are then mixed towards the terminal's
+/// background, so the pane in front reads at full strength. The tab's focused pane is never
+/// dimmed, even while the keys are in the sidebar, so opening the Navigator does not grey the
+/// whole workpanel.
 fn draw_boxes(
     input: &RenderInput,
     tab: &domux_core::model::Tab,
@@ -447,48 +478,68 @@ fn draw_boxes(
     buf: &mut Buffer,
 ) -> Option<CursorState> {
     let focused_pane = input.focused_pane();
+    let mut boxes: Vec<_> = solve(&tab.layout, area, tab.zoomed.as_ref())
+        .into_iter()
+        .filter_map(|(pane_id, rect)| {
+            let pane = input.model.pane(&pane_id)?;
+            let runtime = input.panes.get(&pane_id);
+            let focused = focused_pane == Some(&pane_id);
+            let zoomed = tab.zoomed.as_ref() == Some(&pane_id);
+            let copy = runtime.and_then(|r| r.copy.as_ref());
+            let exited = runtime.and_then(|r| r.exited);
+            // The rows copy mode may walk, which is not the same question as how many rows
+            // the emulator is holding: see `copy_mode::history`.
+            let history = runtime.map(crate::copy_mode::history).unwrap_or(0);
+            let flag_text = flag(zoomed, copy.map(|c| c.offset), exited, history);
+            let title = pane.command.clone().unwrap_or_default();
+            Some((pane_id, to_rect(rect), runtime, focused, title, flag_text))
+        })
+        .collect();
+    // A stable sort, so the panes keep reading order among themselves.
+    boxes.sort_by_key(|(_, _, _, focused, _, _)| *focused);
+    for (_, rect, _, focused, title, flag) in &boxes {
+        Boxed {
+            title,
+            flag: flag.as_deref(),
+            focused: *focused,
+        }
+        .border(input.theme, *rect, buf, true);
+    }
     let mut cursor = None;
-    for (pane_id, rect) in solve(&tab.layout, area, tab.zoomed.as_ref()) {
-        let Some(pane) = input.model.pane(&pane_id) else {
+    for (pane_id, rect, runtime, focused, title, flag) in &boxes {
+        let inner = Boxed {
+            title,
+            flag: flag.as_deref(),
+            focused: *focused,
+        }
+        .labels(input.theme, *rect, buf);
+        let Some(rt) = runtime else {
             continue;
         };
-        let runtime = input.panes.get(&pane_id);
-        let focused = focused_pane == Some(&pane_id);
-        let zoomed = tab.zoomed.as_ref() == Some(&pane_id);
-        let copy = runtime.and_then(|r| r.copy.as_ref());
-        let exited = runtime.and_then(|r| r.exited);
-        // The rows copy mode may walk, which is not the same question as how many rows the
-        // emulator is holding: see `copy_mode::history`.
-        let history = runtime.map(crate::copy_mode::history).unwrap_or(0);
-        let flag_text = flag(zoomed, copy.map(|c| c.offset), exited, history);
-        let title = pane.command.clone().unwrap_or_default();
-        let inner = Boxed {
-            title: &title,
-            flag: flag_text.as_deref(),
-            focused,
+        let copy = rt.copy.as_ref();
+        let history = crate::copy_mode::history(rt);
+        let selection = copy.and_then(|c| c.selection_at(history));
+        render_grid(&rt.grid, selection.as_ref(), inner, buf);
+        if pane_id != &tab.focused {
+            dim::dim(buf, inner, input.dim_unfocused, &input.view.caps.colors);
         }
-        .render(input.theme, to_rect(rect), buf);
-        if let Some(rt) = runtime {
-            let selection = copy.and_then(|c| c.selection_at(history));
-            render_grid(&rt.grid, selection.as_ref(), inner, buf);
-            if focused {
-                let c = match copy {
-                    Some(c) => domux_term::Cursor {
-                        row: c.cursor.0,
-                        col: c.cursor.1,
-                        visible: true,
-                        shape: domux_term::CursorShape::Block,
-                        blink: false,
-                    },
-                    None => rt.emulator.cursor(),
-                };
-                cursor = cursor_position(inner, &c).map(|p| CursorState {
-                    x: p.x,
-                    y: p.y,
-                    shape: c.shape,
-                    blink: c.blink,
-                });
-            }
+        if *focused {
+            let c = match copy {
+                Some(c) => domux_term::Cursor {
+                    row: c.cursor.0,
+                    col: c.cursor.1,
+                    visible: true,
+                    shape: domux_term::CursorShape::Block,
+                    blink: false,
+                },
+                None => rt.emulator.cursor(),
+            };
+            cursor = cursor_position(inner, &c).map(|p| CursorState {
+                x: p.x,
+                y: p.y,
+                shape: c.shape,
+                blink: c.blink,
+            });
         }
     }
     cursor
@@ -555,10 +606,10 @@ mod tests {
         assert_eq!((area.width, area.height), (80, 23));
     }
 
-    /// 38 columns of sidebar, then one column of gap, so the panes start at 39 and a
-    /// 120-column screen leaves them 81 (interface spec 12.18).
+    /// 38 columns of sidebar, the last of them shared with the panes, so the panes start at 37
+    /// and a 120-column screen leaves them 83 (decision record 0064).
     #[test]
-    fn the_sidebar_and_its_gap_push_the_workpanel_to_column_39() {
+    fn the_sidebar_pushes_the_workpanel_to_its_own_last_column() {
         let area = workpanel_of(
             Size {
                 cols: 120,
@@ -566,8 +617,18 @@ mod tests {
             },
             true,
         );
-        assert_eq!((area.x, area.y), (39, 1));
-        assert_eq!((area.width, area.height), (81, 23));
+        assert_eq!((area.x, area.y), (37, 1));
+        assert_eq!((area.width, area.height), (83, 23));
+    }
+
+    /// The tab row starts after the line the sidebar and the panes share, and with no sidebar
+    /// there is no tab row over the panes to ask about.
+    #[test]
+    fn the_tab_row_starts_one_column_into_the_workpanel() {
+        assert_eq!(
+            workpanel_row_span(&view("c_0001", "t_0001", 120, 24, true)),
+            (38, 120)
+        );
     }
 
     /// A screen one row tall has no room under the top bar. `saturating_sub` gives an empty
@@ -592,7 +653,7 @@ mod tests {
     fn a_view_takes_the_sidebar_rectangle_only_while_the_sidebar_is_visible() {
         assert_eq!(
             workpanel_area(&view("c_0001", "t_0001", 120, 24, true)).x,
-            39
+            37
         );
         assert_eq!(
             workpanel_area(&view("c_0001", "t_0001", 119, 24, true)).x,
@@ -686,14 +747,14 @@ mod tests {
         let mut m = model_with(vec![asking.clone(), other.clone()]);
         m.touch_client(&asking.id);
         let area = agreed_workpanel(&m, &TabId("t_0001".into()), &asking);
-        assert_eq!((area.x, area.y), (39, 1), "this client's own position");
+        assert_eq!((area.x, area.y), (37, 1), "this client's own position");
         assert_eq!(
             (area.width, area.height),
-            (81, 23),
+            (83, 23),
             "the size of the client used last"
         );
         let area = agreed_workpanel(&m, &TabId("t_0001".into()), &other);
-        assert_eq!((area.x, area.width), (0, 81));
+        assert_eq!((area.x, area.width), (0, 83));
     }
 
     /// A client smaller than the one used last is given the larger rectangle, and

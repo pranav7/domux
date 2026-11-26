@@ -1804,6 +1804,7 @@ impl Core {
             toast: self.toast.as_ref(),
             navigator: self.config.config.navigator.enabled,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: self.config.config.terminal.dim_unfocused,
         };
         Some(question(&input))
     }
@@ -3334,6 +3335,7 @@ impl Core {
                 toast: self.toast.as_ref(),
                 navigator: self.config.config.navigator.enabled,
                 theme,
+                dim_unfocused: self.config.config.terminal.dim_unfocused,
             };
             let (buffer, cursor) = render::compose(&input);
             conn.queue_frame(buffer, cursor);
@@ -3741,6 +3743,7 @@ pub(crate) fn agents_view(
     use crate::render::agents_box::{AgentEntry, AgentsView};
     use domux_core::facts::{FACT_BRANCH, FACT_PR};
     let sorted = model.sorted_agents();
+    let numbered: Vec<&AgentId> = model.navigator_agents().iter().map(|a| &a.id).collect();
     let mut entries = Vec::with_capacity(sorted.len());
     for a in sorted {
         // A working word for a working agent and for no other, so a row that must not carry
@@ -3779,6 +3782,7 @@ pub(crate) fn agents_view(
             word,
             branch,
             pr,
+            number: numbered.iter().position(|id| *id == &a.id).map(|i| i + 1),
         });
     }
     AgentsView {

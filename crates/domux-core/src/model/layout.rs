@@ -1,5 +1,5 @@
 //! The tab's layout: binary splits with a direction and a ratio, panes as leaves, and the
-//! solver that turns the tree into box rectangles with a one-cell gap between boxes.
+//! solver that turns the tree into box rectangles, neighbouring boxes sharing one line.
 
 use crate::ids::PaneId;
 use schemars::JsonSchema;
@@ -24,11 +24,11 @@ impl Rect {
     }
 }
 
-/// Cells between neighbouring boxes. The spec assumed 1 (interface spec assumption 18), which
-/// put three rows of chrome between two stacked panes: a bottom border, a blank row, a top
-/// border. Every box already draws its own edge, so the blank row separated nothing and only
-/// spent screen. Zero leaves the two borders touching, which is the least a full box can use.
-pub const GAP: u16 = 0;
+/// Cells two neighbouring boxes share. The spec assumed a blank cell between them (interface
+/// spec assumption 18), and until MUX-60 the two borders touched with none, which still drew
+/// two lines side by side. One shared cell draws a single line between two panes, and the
+/// renderer joins the lines where they meet (decision record 0064).
+pub const SHARED: u16 = 1;
 /// The smallest box: one border row above and below one content row, or the columns for it.
 pub const MIN_BOX: u16 = 3;
 
@@ -346,7 +346,7 @@ impl LayoutNode {
                     SplitDir::Right => area.width,
                     SplitDir::Down => area.height,
                 }
-                .saturating_sub(GAP) as f32;
+                .saturating_add(SHARED) as f32;
                 // Both children need MIN_BOX out of `total`, so below 2 * MIN_BOX there is no
                 // legal ratio and the boundary genuinely cannot move. Refusing is honest;
                 // widening the clamp would place a box below MIN_BOX.
@@ -369,47 +369,42 @@ impl LayoutNode {
     }
 }
 
-/// Splits `area` into the two child areas with a `GAP` between them.
+/// Splits `area` into the two child areas, which share their facing edge: the last column of
+/// the first is the first column of the second, or the same for rows.
 fn split_areas(dir: SplitDir, ratio: f32, area: Rect) -> (Rect, Rect) {
+    let (along, start) = match dir {
+        SplitDir::Right => (area.width, area.x),
+        SplitDir::Down => (area.height, area.y),
+    };
+    // The shared cell counts once for each child, so the two lengths add up to one more than
+    // the area's. An empty area has no edge to share and gives two empty children.
+    let usable = if along == 0 { 0 } else { along + SHARED };
+    let first = ((usable as f32) * ratio).round().clamp(0.0, usable as f32) as u16;
+    let second = usable - first;
+    let second_start = (start + first).saturating_sub(SHARED).max(start);
     match dir {
-        SplitDir::Right => {
-            let usable = area.width.saturating_sub(GAP);
-            let first_w = ((usable as f32) * ratio).round().clamp(0.0, usable as f32) as u16;
-            let second_w = usable - first_w;
-            (
-                Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: first_w,
-                    height: area.height,
-                },
-                Rect {
-                    x: area.x + first_w + GAP,
-                    y: area.y,
-                    width: second_w,
-                    height: area.height,
-                },
-            )
-        }
-        SplitDir::Down => {
-            let usable = area.height.saturating_sub(GAP);
-            let first_h = ((usable as f32) * ratio).round().clamp(0.0, usable as f32) as u16;
-            let second_h = usable - first_h;
-            (
-                Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: area.width,
-                    height: first_h,
-                },
-                Rect {
-                    x: area.x,
-                    y: area.y + first_h + GAP,
-                    width: area.width,
-                    height: second_h,
-                },
-            )
-        }
+        SplitDir::Right => (
+            Rect {
+                width: first,
+                ..area
+            },
+            Rect {
+                x: second_start,
+                width: second,
+                ..area
+            },
+        ),
+        SplitDir::Down => (
+            Rect {
+                height: first,
+                ..area
+            },
+            Rect {
+                y: second_start,
+                height: second,
+                ..area
+            },
+        ),
     }
 }
 
@@ -442,8 +437,9 @@ fn solve_into(node: &LayoutNode, area: Rect, out: &mut Vec<(PaneId, Rect)>) {
     }
 }
 
-/// The pane next to `from` in `dir`: among panes whose edge faces `from` across the gap, the
-/// nearest one. Distance ranks first so focus never skips a column or a row; among panes at
+/// The pane next to `from` in `dir`: among panes whose edge faces `from`, the nearest one. Two
+/// neighbours share their facing edge, so a pane that faces `from` starts on `from`'s last
+/// cell, and two panes that share only a corner do not face each other. Distance ranks first so focus never skips a column or a row; among panes at
 /// the same distance the one whose extent on the other axis overlaps `from` most wins, and
 /// among panes tied on both the earliest in reading order wins.
 pub fn neighbour_by_geometry(
@@ -457,28 +453,28 @@ pub fn neighbour_by_geometry(
         if id == from {
             continue;
         }
-        let (facing, distance, overlap) = match dir {
+        let shared = SHARED as i32;
+        let (distance, overlap) = match dir {
             Direction::Left => (
-                r.right() <= me.x,
-                me.x as i32 - r.right() as i32,
+                me.x as i32 - (r.right() as i32 - shared),
                 overlap_1d(me.y, me.bottom(), r.y, r.bottom()),
             ),
             Direction::Right => (
-                r.x >= me.right(),
-                r.x as i32 - me.right() as i32,
+                r.x as i32 - (me.right() as i32 - shared),
                 overlap_1d(me.y, me.bottom(), r.y, r.bottom()),
             ),
             Direction::Up => (
-                r.bottom() <= me.y,
-                me.y as i32 - r.bottom() as i32,
+                me.y as i32 - (r.bottom() as i32 - shared),
                 overlap_1d(me.x, me.right(), r.x, r.right()),
             ),
             Direction::Down => (
-                r.y >= me.bottom(),
-                r.y as i32 - me.bottom() as i32,
+                r.y as i32 - (me.bottom() as i32 - shared),
                 overlap_1d(me.x, me.right(), r.x, r.right()),
             ),
         };
+        // The shared line is not an overlap: two panes that meet at a corner share one cell of
+        // it and face nothing of each other.
+        let (facing, overlap) = (distance >= 0, overlap - shared);
         if !facing || overlap <= 0 {
             continue;
         }
@@ -572,7 +568,8 @@ mod tests {
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         assert!(tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002")));
         let rects = solve(&tree, area(), None);
-        // The two boxes share all 40 columns, half each, with their borders touching.
+        // The two boxes share column 20, so 41 columns between them: 21 rounds up for the
+        // first and the second takes 20.
         assert_eq!(
             rects[0],
             (
@@ -580,7 +577,7 @@ mod tests {
                 Rect {
                     x: 0,
                     y: 1,
-                    width: 20,
+                    width: 21,
                     height: 9
                 }
             )
@@ -604,7 +601,7 @@ mod tests {
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
         let rects = solve(&tree, area(), None);
-        // 9 rows split in half is 4.5: the first box rounds up and the second takes 4.
+        // 9 rows and the shared one counted twice is 10, five each, meeting on row 5.
         assert_eq!(
             rects[0].1,
             Rect {
@@ -618,9 +615,9 @@ mod tests {
             rects[1].1,
             Rect {
                 x: 0,
-                y: 6,
+                y: 5,
                 width: 40,
-                height: 4
+                height: 5
             }
         );
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Left, pane("p_0003"));
@@ -664,11 +661,12 @@ mod tests {
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002"));
         assert!(tree.resize(&PaneId("p_0001".into()), Direction::Right, 2, area()));
         let rects = solve(&tree, area(), None);
-        assert_eq!(rects[0].1.width, 22);
+        // Two columns more than the 21 and 20 an even split gives, which share one.
+        assert_eq!(rects[0].1.width, 23);
         assert_eq!(rects[1].1.width, 18);
         assert!(tree.resize(&PaneId("p_0002".into()), Direction::Left, 4, area()));
         let rects = solve(&tree, area(), None);
-        assert_eq!(rects[0].1.width, 18);
+        assert_eq!(rects[0].1.width, 19);
         // A vertical resize with no stacked ancestor does nothing and says so.
         assert!(!tree.resize(&PaneId("p_0001".into()), Direction::Up, 1, area()));
     }
@@ -686,9 +684,9 @@ mod tests {
 
     #[test]
     fn resize_refuses_when_the_split_is_too_small_for_two_boxes() {
-        // The split's own axis minus GAP is what the two children share, and each needs
-        // MIN_BOX, so below 2 * MIN_BOX no ratio is legal and the resize is refused.
-        for height in 0..2 * MIN_BOX {
+        // The split's own axis plus the shared cell is what the two children share, and each
+        // needs MIN_BOX, so below 2 * MIN_BOX no ratio is legal and the resize is refused.
+        for height in 0..2 * MIN_BOX - SHARED {
             let mut tree = LayoutNode::leaf(pane("p_0001"));
             tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
             let small = Rect {
@@ -711,19 +709,19 @@ mod tests {
             Rect {
                 x: 0,
                 y: 0,
-                width: 5,
+                width: 4,
                 height: 9
             }
         ));
 
-        // 6 is the first size that fits two 3-cell boxes.
+        // 5 is the first size that fits two 3-cell boxes sharing a row.
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0002"));
         let fits = Rect {
             x: 0,
             y: 0,
             width: 40,
-            height: 6,
+            height: 5,
         };
         assert!(tree.resize(&PaneId("p_0001".into()), Direction::Down, 1, fits));
         let rects = solve(&tree, fits, None);
@@ -734,7 +732,8 @@ mod tests {
     #[test]
     fn neighbour_by_geometry_prefers_the_nearest_pane_over_a_larger_overlap() {
         // Split(Right, p1, Split(Right, Split(Down, p2, p4), p3)) over {0, 1, 40, 9} gives
-        // p1 {0,1,20,9}, p2 {21,1,9,4}, p4 {21,6,9,4}, p3 {31,1,9,9}, in that reading order.
+        // p1 {0,1,21,9}, p2 {20,1,11,5}, p4 {20,5,11,5}, p3 {30,1,10,9}, in that reading order,
+        // each pair of neighbours sharing a line.
         // Every pane in the right two columns faces p1, so p3 is the largest overlap from p1
         // (9 rows against 4) and the first candidate in order from p3's own left. Both times
         // the right answer is the middle column, one cell away, not p3's tall column.
@@ -763,9 +762,48 @@ mod tests {
         assert_eq!(neighbour_by_geometry(&rects, &left, Direction::Left), None);
     }
 
+    /// Neighbours share their facing line, so they face across it; two panes that meet only at
+    /// a corner of it do not (decision record 0064).
+    #[test]
+    fn neighbours_face_across_the_line_they_share_and_not_across_a_corner() {
+        // p1 | p2 over {0,1,40,9}, each split down in half: four boxes meeting at one cell,
+        // where p1 and p4, and p2 and p3, share nothing but that corner.
+        let mut tree = LayoutNode::leaf(pane("p_0001"));
+        tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002"));
+        tree.split_leaf(&PaneId("p_0001".into()), Direction::Down, pane("p_0003"));
+        tree.split_leaf(&PaneId("p_0002".into()), Direction::Down, pane("p_0004"));
+        let rects = solve(&tree, area(), None);
+        let p = |id: &str| PaneId(id.into());
+        assert_eq!(
+            neighbour_by_geometry(&rects, &p("p_0001"), Direction::Right),
+            Some(p("p_0002"))
+        );
+        assert_eq!(
+            neighbour_by_geometry(&rects, &p("p_0004"), Direction::Left),
+            Some(p("p_0003")),
+            "p1 meets p4 only at the corner"
+        );
+        assert_eq!(
+            neighbour_by_geometry(&rects, &p("p_0001"), Direction::Down),
+            Some(p("p_0003"))
+        );
+        assert_eq!(
+            neighbour_by_geometry(&rects, &p("p_0003"), Direction::Up),
+            Some(p("p_0001"))
+        );
+        assert_eq!(
+            neighbour_by_geometry(&rects, &p("p_0003"), Direction::Right),
+            Some(p("p_0004"))
+        );
+        assert_eq!(
+            neighbour_by_geometry(&rects, &p("p_0003"), Direction::Down),
+            None
+        );
+    }
+
     /// `p_0001 | (p_0002 / p_0003)` over `area()`, with the side-by-side split moved off 0.5
     /// so a swap that rebuilt a split instead of trading two leaves would show in the widths:
-    /// p1 {0,1,24,9}, p2 {24,1,16,5}, p3 {24,6,16,4}.
+    /// p1 {0,1,25,9}, p2 {24,1,16,5}, p3 {24,5,16,5}.
     fn wide_left_and_a_stacked_right() -> LayoutNode {
         let mut tree = LayoutNode::leaf(pane("p_0001"));
         tree.split_leaf(&PaneId("p_0001".into()), Direction::Right, pane("p_0002"));
@@ -786,7 +824,7 @@ mod tests {
                     Rect {
                         x: 0,
                         y: 1,
-                        width: 24,
+                        width: 25,
                         height: 9
                     }
                 ),
@@ -803,9 +841,9 @@ mod tests {
                     PaneId("p_0001".into()),
                     Rect {
                         x: 24,
-                        y: 6,
+                        y: 5,
                         width: 16,
-                        height: 4
+                        height: 5
                     }
                 ),
             ]

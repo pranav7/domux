@@ -235,9 +235,10 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
     // pane.clear added one more, M3 added agents.open and the box keys' Tab, the
     // modifier legend plus a blank line ahead of each of the three groups added five
     // more, tmux's two pane.swap keys added two, and MUX-50's `c` and `D` in the box
-    // keys added two, so this grew from the 80x30 M1 needed. The 80x24 case is the next
-    // test, which is where truncation is the behaviour under test.
-    let mut h = Harness::start(cfg, 80, 58).await;
+    // keys added two, and MUX-60's `M-1-9` row for the tabs added one beside the leader's
+    // digits, so this grew from the 80x30 M1 needed. The 80x24 case is the next test, which
+    // is where truncation is the behaviour under test.
+    let mut h = Harness::start(cfg, 80, 59).await;
     h.key(h.client.clone(), "C-b").await;
     h.key(h.client.clone(), "?").await;
     let f = h
@@ -249,8 +250,12 @@ async fn help_lists_the_configured_bindings_and_esc_closes_it() {
         .await;
     assert!(f.contains("C-b g      pane.split right"), "{f}");
     assert!(
-        f.contains("C-b 1-9    tab.select <n>"),
+        f.contains("C-b 1-9    agent.focus #<n>"),
         "the nine digits collapse into one row:\n{f}"
+    );
+    assert!(
+        f.contains("M-1-9      tab.select <n>"),
+        "and so do the nine tab keys:\n{f}"
     );
     assert!(!f.contains("C-b |"), "the unbound default is gone:\n{f}");
     assert!(f.contains("C-h        focus.left"), "{f}");

@@ -160,6 +160,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         draw(&input, &mut buf);
@@ -350,6 +351,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 80, 24));
         draw(&input, &mut buf);

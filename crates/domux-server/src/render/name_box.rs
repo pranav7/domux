@@ -205,6 +205,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, cols, rows));
         for y in 0..rows {

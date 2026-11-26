@@ -43,6 +43,10 @@ const TAIL_SEP: &str = " · ";
 /// which agent this is, and a long branch must not push it out of the row.
 const NAME_FLOOR: usize = 16;
 
+/// The highest number a Navigator row writes: `leader 1` to `leader 9` open the agents
+/// numbered so, and a number no key reaches is not worth the cell (decision record 0064).
+pub const MAX_NUMBER: usize = 9;
+
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the
 /// hollow glyph on an untouched slot, so every name in the box starts in one column.
 pub const NEST: &str = "└ ";
@@ -112,6 +116,10 @@ pub struct AgentEntry {
     pub branch: Option<String>,
     /// The pull request for `branch`. Absent whenever `branch` is.
     pub pr: Option<Fact>,
+    /// The agent's place in `Model::navigator_agents`, from 1: what `#3` names. The Navigator
+    /// lists a workspace's agents in this order and writes the number at the end of the row
+    /// while a key opens it (decision record 0064). Absent for an agent with no row there.
+    pub number: Option<usize>,
 }
 
 /// What the renderer reads. The core builds one per frame.
@@ -297,7 +305,16 @@ fn nested_row(
     width: usize,
 ) -> ListRow {
     let lead = display_width(NEST);
-    let room = width.saturating_sub(lead);
+    // The number takes the row's last cell, after at least one blank, and in the corner's
+    // colour: it is there for the reader who looks for it, and is not meant to be read in
+    // passing (decision record 0064).
+    let number = a
+        .number
+        .filter(|n| (1..=MAX_NUMBER).contains(n))
+        .map(|n| n.to_string())
+        .filter(|n| width >= lead + 2 + display_width(n));
+    let number_cells = number.as_deref().map(|n| 1 + display_width(n)).unwrap_or(0);
+    let room = width.saturating_sub(lead + number_cells);
     let mut first = vec![Span::styled(
         NEST,
         Style::default().fg(color(theme, Role::FaintText)),
@@ -326,6 +343,15 @@ fn nested_row(
         room.saturating_sub(tail_width),
     ));
     first.extend(tail);
+    if let Some(n) = number {
+        let used: usize = first.iter().map(|s| display_width(&s.content)).sum();
+        let blank = width.saturating_sub(used + display_width(&n));
+        first.push(Span::raw(" ".repeat(blank)));
+        first.push(Span::styled(
+            n,
+            Style::default().fg(color(theme, Role::FaintText)),
+        ));
+    }
     let mut lines = vec![Line::from(first)];
     if form == RowForm::NestedWide {
         if let Some(recap) = &a.recap {
@@ -725,6 +751,7 @@ mod tests {
             word: "Percolating",
             branch: None,
             pr: None,
+            number: None,
         }
     }
 
@@ -819,6 +846,42 @@ mod tests {
             Some(Color::Rgb(0x7f, 0x84, 0x9c)),
             "the place in the agents overlay"
         );
+    }
+
+    /// The number a key opens sits in the row's last cell, in the corner's faint colour, and a
+    /// number past what a key reaches is not drawn (decision record 0064).
+    #[test]
+    fn a_numbered_agent_row_ends_in_its_number_in_the_faint_colour() {
+        let mut a = entry(AgentState::Idle, Some("auth-cleanup"), AgentKind::Claude);
+        a.number = Some(3);
+        let v = view(vec![a]);
+        for form in [RowForm::Nested, RowForm::NestedWide] {
+            let row = one_row(Theme::domux(), &v.agents[0], &v, form, 30);
+            let line = &text(&row)[0];
+            assert_eq!(line, &format!("└ auth-cleanup{}3", " ".repeat(15)));
+            assert_eq!(display_width(line), 30, "{form:?}: the row's whole width");
+            let digit = row.lines[0].spans.last().unwrap();
+            assert_eq!(
+                digit.style.fg,
+                Some(color(Theme::domux(), Role::FaintText)),
+                "{form:?}"
+            );
+        }
+        // A long name gives way to the number, not the other way round.
+        let mut a = entry(
+            AgentState::Idle,
+            Some("a-session-name-far-too-long-for-the-row"),
+            AgentKind::Claude,
+        );
+        a.number = Some(9);
+        let v = view(vec![a]);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 20);
+        assert_eq!(text(&row)[0], "└ a-session-name-… 9");
+        let mut a = entry(AgentState::Idle, Some("auth-cleanup"), AgentKind::Claude);
+        a.number = Some(10);
+        let v = view(vec![a]);
+        let row = one_row(Theme::domux(), &v.agents[0], &v, RowForm::Nested, 30);
+        assert_eq!(text(&row)[0], "└ auth-cleanup", "no key reaches 10");
     }
 
     /// MUX-42: the default Navigator sidebar row (`RowForm::Nested`) has no second line and no

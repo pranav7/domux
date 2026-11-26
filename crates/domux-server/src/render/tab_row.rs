@@ -390,27 +390,19 @@ fn prompt_cell(theme: &Theme, number: usize, input: &TextInput) -> TabCell {
 /// as two things rather than one banded screen (interface spec 4.2). The cells it shares with the right end are shared by the same rule the
 /// full-width bar uses, so the clock gives way to the tabs in one place, not two.
 pub fn draw_workpanel_row(input: &RenderInput, buf: &mut Buffer) {
-    let area = crate::render::workpanel_area(input.view);
+    let (left, right) = crate::render::workpanel_row_span(input.view);
     let Some(row) = crate::render::top_bar::tab_row_of(input) else {
         return;
     };
     let bg = color(input.theme, Role::TabRowBackground);
     // The ground covers the whole row, the cells between the pieces too, the way the top bar
     // fills its own: the pieces below only paint the cells they write into.
-    let right_edge = (area.x + area.width).min(buf.area.x + buf.area.width);
+    let right_edge = right.min(buf.area.x + buf.area.width);
     if buf.area.height > 0 {
-        for x in area.x..right_edge {
+        for x in left..right_edge {
             buf[(x, 0)].reset();
             buf[(x, 0)].set_style(Style::default().bg(bg));
         }
     }
-    crate::render::top_bar::draw_tabs_and_right(
-        input,
-        &row,
-        area.x,
-        0,
-        area.x + area.width,
-        bg,
-        buf,
-    );
+    crate::render::top_bar::draw_tabs_and_right(input, &row, left, 0, right, bg, buf);
 }
