@@ -258,6 +258,9 @@ impl PtySpawner for RealSpawner {
         }
         cmd.env("TERM", &req.term);
         cmd.env("COLORTERM", "truecolor");
+        // Programs decide from `TERM_PROGRAM`, which a pane does not carry, whether to draw
+        // OSC 8 links. The emulator keeps them, and a click opens one (decision record 0067).
+        cmd.env("FORCE_HYPERLINK", "1");
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
@@ -910,7 +913,13 @@ mod tests {
     /// server's answer to a question the pane has already answered.
     #[test]
     fn a_pane_drops_the_names_it_sets_for_itself() {
-        for name in ["TERM", "COLORTERM", "DOMUX_PANE", "DOMUX_SOCKET"] {
+        for name in [
+            "TERM",
+            "COLORTERM",
+            "FORCE_HYPERLINK",
+            "DOMUX_PANE",
+            "DOMUX_SOCKET",
+        ] {
             assert!(!pane_keeps(name), "the pane sets {name} itself");
         }
     }
