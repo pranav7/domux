@@ -1685,8 +1685,8 @@ impl Model {
 
     /// Every agent in the order the Navigator lists them: projects by name without case,
     /// workspaces in their own order, and each workspace's agents in the order they started.
-    /// An agent's number is its place here counted from 1, which `leader 1` to `leader 9`
-    /// open and the Navigator writes at the end of its row (decision record 0064).
+    /// An agent's number is its place here counted from 1, which `D-1` to `D-9` open and the
+    /// Navigator writes at the end of its row (decision records 0064 and 0065).
     ///
     /// The order follows the Navigator's because the number is read off the Navigator: a key
     /// that opened the third agent of some other list would open a row the reader cannot see

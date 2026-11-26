@@ -183,14 +183,13 @@ async fn the_help_overlay_swallows_keys_until_it_closes() {
     assert_eq!(h.pane_input(&pane), b"y".to_vec());
 }
 
-/// Principle 8: a key that cannot do what it says still answers. `C-s 9` opens the agent the
-/// Navigator numbers 9 (decision record 0064), and with no agent running there is none, so
+/// Principle 8: a key that cannot do what it says still answers. `D-9` opens the agent the
+/// Navigator numbers 9 (decision record 0065), and with no agent running there is none, so
 /// the failure is named where the clock is and stands until the next key.
 #[tokio::test]
 async fn a_failed_action_names_the_failure_until_the_next_key() {
     let mut h = Harness::start(Config::default(), 80, 10).await;
-    h.key(h.client.clone(), "C-s").await;
-    h.key(h.client.clone(), "9").await;
+    h.key(h.client.clone(), "D-9").await;
     h.wait_for(
         h.client.clone(),
         |f| f.contains("no agent #9: no agent is running"),
@@ -249,10 +248,10 @@ async fn shift_and_ctrl_shift_arrows_resize_by_two_cells_and_by_eight() {
     );
 }
 
-/// `M-1` to `M-9` select a tab with no leader, since the digits under the leader open agents
-/// (decision record 0064), and nothing of the chord reaches the pane.
+/// `leader 1` to `leader 9` select a tab (decision record 0068). Alt and a number selects none,
+/// since it is no longer bound.
 #[tokio::test]
-async fn alt_and_a_number_selects_that_tab() {
+async fn leader_and_a_number_selects_that_tab() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     let tab = |h: &Harness| {
         h.model()
@@ -266,11 +265,19 @@ async fn alt_and_a_number_selects_that_tab() {
     h.frame(h.client.clone()).await;
     let second = tab(&h);
     assert_ne!(first, second, "a new tab");
-    h.key(h.client.clone(), "M-1").await;
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "1").await;
     h.frame(h.client.clone()).await;
     assert_eq!(tab(&h), first);
-    assert!(h.pane_input(&pane).is_empty(), "the chord is domux's");
-    h.key(h.client.clone(), "M-2").await;
+    assert!(
+        h.pane_input(&pane).is_empty(),
+        "the leader and the digit are domux's"
+    );
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "2").await;
     h.frame(h.client.clone()).await;
     assert_eq!(tab(&h), second);
+    h.key(h.client.clone(), "M-1").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(tab(&h), second, "alt and a number selects no tab");
 }

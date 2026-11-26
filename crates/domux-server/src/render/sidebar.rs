@@ -33,9 +33,18 @@ pub const MIN_PROJECTS: u16 = 6;
 /// spare.
 pub const MIN_AGENTS: u16 = 5;
 
-/// The sidebar's whole column, the full height of the screen.
+/// The sidebar's whole column, from the row under the bar to the bottom of the screen.
+///
+/// It starts on row 1, the row the pane boxes start on, so the Navigator's top line and the
+/// panes' are one line, joined where they meet. Row 0 is the bar over the whole screen
+/// (decision record 0067).
 pub fn sidebar_area(size: Size) -> Rect {
-    Rect::new(0, 0, SIDEBAR_WIDTH.min(size.cols), size.rows)
+    Rect::new(
+        0,
+        1.min(size.rows),
+        SIDEBAR_WIDTH.min(size.cols),
+        size.rows.saturating_sub(1),
+    )
 }
 
 /// The sidebar's column, split into the Projects box, the Agents box and the hint row, with
@@ -168,8 +177,8 @@ pub fn projects_area(
 /// starts beside it, and the Projects box otherwise (interface spec 12.29).
 ///
 /// Every rectangle is in screen rows. `render::workpanel_of` places a pane's rectangle on the
-/// screen and `sidebar_area` starts at the screen's own origin, so the two are already
-/// measured against the same top edge.
+/// screen and `sidebar_area` places the sidebar's, both in screen rows and both from row 1,
+/// so the two are already measured against the same top edge.
 ///
 /// **Projects is the default and the pane's own top row is the only thing that moves it.** A
 /// pane filling the workpanel starts at row 1, beside the Projects box, so it enters Projects
@@ -736,8 +745,9 @@ mod tests {
         assert_eq!(row_of(&v), " workspace 2 cleared                  ");
     }
 
-    /// 38 columns of sidebar the whole height of the screen, split into the two boxes and the
-    /// hint row, with one row between them and the hint row at the bottom.
+    /// 38 columns of sidebar from row 1 to the bottom of the screen, under the bar on row 0,
+    /// split into the two boxes and the hint row, with one row between them and the hint row
+    /// at the bottom.
     ///
     /// A Projects box that wants more than half the column is capped at half, which is the
     /// split M2 had at every height and the one the geometry tests below read.
@@ -747,15 +757,15 @@ mod tests {
             cols: 120,
             rows: 24,
         });
-        assert_eq!((bar.x, bar.y, bar.width, bar.height), (0, 0, 38, 24));
+        assert_eq!((bar.x, bar.y, bar.width, bar.height), (0, 1, 38, 23));
         let (projects, agents, hint) = split_column(bar, 40);
         assert_eq!(
             (projects.x, projects.y, projects.width, projects.height),
-            (0, 0, 38, 11)
+            (0, 1, 38, 11)
         );
         assert_eq!(
             (agents.x, agents.y, agents.width, agents.height),
-            (0, 12, 38, 11),
+            (0, 13, 38, 10),
             "one row between the boxes (interface spec 12.18)"
         );
         assert_eq!((hint.x, hint.y, hint.width, hint.height), (0, 23, 38, 1));
@@ -777,13 +787,13 @@ mod tests {
         });
         let (projects, agents, _) = split_column(bar, 12);
         assert_eq!(projects.height, 12, "the rows its projects asked for");
-        assert_eq!(agents.y, 13);
-        assert_eq!(agents.height, 26, "and everything left over");
+        assert_eq!(agents.y, 14);
+        assert_eq!(agents.height, 25, "and everything left over");
 
         // Under `MIN_PROJECTS` the box keeps its floor, so an empty list still has room for
         // its own empty text.
         let (projects, agents, _) = split_column(bar, 1);
-        assert_eq!((projects.height, agents.height), (MIN_PROJECTS, 32));
+        assert_eq!((projects.height, agents.height), (MIN_PROJECTS, 31));
     }
 
     /// And a list longer than half the column stops at half. Past that the Projects box
@@ -796,7 +806,7 @@ mod tests {
             rows: 40,
         });
         let (projects, agents, _) = split_column(bar, 200);
-        assert_eq!((projects.height, agents.height), (19, 19));
+        assert_eq!((projects.height, agents.height), (19, 18));
     }
 
     /// The height the box asks for is its rows plus its two borders, taken from the whole list
@@ -1025,14 +1035,17 @@ mod tests {
             }
         }
         draw_two(&mut buf, |_, _| {});
-        for y in 0..24 {
+        // The sidebar's column starts on row 1; row 0 is the bar's, drawn by the tab row.
+        for y in 1..24 {
             let line: String = (0..38).map(|x| buf[(x, y)].symbol()).collect();
             assert!(
                 !line.contains('@'),
                 "row {y} of the sidebar's column still shows what was under it: {line:?}"
             );
         }
-        // The column beside it is untouched: the box covers its own rectangle and no more.
+        // The cells around it are untouched: the box covers its own rectangle and no more.
+        let line: String = (0..38).map(|x| buf[(x, 0)].symbol()).collect();
+        assert_eq!(line, "@".repeat(38), "the box painted over the bar's row");
         let line: String = (38..120).map(|x| buf[(x, 5)].symbol()).collect();
         assert_eq!(line, "@".repeat(82), "the box painted past its own width");
     }
@@ -1147,7 +1160,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
         draw_two(&mut buf, |_, _| {});
         assert_eq!(
-            buf[(0u16, 0u16)].fg,
+            buf[(0u16, 1u16)].fg,
             ratatui::style::Color::Rgb(0x58, 0x5b, 0x70),
             "the keys are in a pane, so the box takes the unfocused border"
         );
@@ -1157,7 +1170,7 @@ mod tests {
             v.focus = Focus::Region(RegionKind::SidebarProjects)
         });
         assert_eq!(
-            buf[(0u16, 0u16)].fg,
+            buf[(0u16, 1u16)].fg,
             ratatui::style::Color::Rgb(0xcb, 0xa6, 0xf7),
             "with the keys in the box it is the focused region, so the border is the accent"
         );
@@ -1169,23 +1182,24 @@ mod tests {
     /// which M2 has not built. The screen here is short enough that the box cannot show
     /// every row, which is the only condition under which the field can matter at all.
     ///
-    /// 11 rows and not 12. The column splits between the two boxes from M3, and the Agents
-    /// box keeps its five rows on a column too short for both minimums, so 11 leaves the
-    /// Projects box two lines for this fixture's three and 12 leaves it exactly three. At 12
-    /// a hard-coded scroll of 0 passes the test.
+    /// 12 rows and not 13. The sidebar's column is every row under the bar on row 0, the
+    /// column splits between the two boxes from M3, and the Agents box keeps its five rows on
+    /// a column too short for both minimums, so 12 leaves the Projects box two lines for this
+    /// fixture's three and 13 leaves it exactly three. At 13 a hard-coded scroll of 0 passes
+    /// the test.
     #[test]
     fn the_scroll_the_client_remembers_moves_the_view() {
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 11));
-        draw_sized(&mut buf, 11, |_, _| {});
-        let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 12));
+        draw_sized(&mut buf, 12, |_, _| {});
+        let top: String = (1..37u16).map(|x| buf[(x, 2u16)].symbol()).collect();
         assert!(
             top.starts_with(" AUDREY-APP"),
             "unscrolled, the box starts at the project header: {top:?}"
         );
 
-        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 11));
-        draw_sized(&mut buf, 11, |v, _| v.projects_scroll = 1);
-        let top: String = (1..37u16).map(|x| buf[(x, 1u16)].symbol()).collect();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 120, 12));
+        draw_sized(&mut buf, 12, |v, _| v.projects_scroll = 1);
+        let top: String = (1..37u16).map(|x| buf[(x, 2u16)].symbol()).collect();
         assert_eq!(
             top.trim_end(),
             "   main",

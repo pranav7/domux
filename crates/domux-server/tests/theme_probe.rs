@@ -1176,15 +1176,27 @@ async fn every_role_is_drawn_where_the_role_table_says() {
                 text("│ AUDREY-APP").skip(1),
                 SidebarBackground,
             ),
+            // Row 0 is one bar across the whole screen, over the sidebar too, and opens with
+            // `project › workspace` (decision record 0067). The Navigator starts on row 1.
             bg(
                 "the tab row on the panes",
-                text("+").in_row("┌ Navigator"),
+                text("+").in_row("audrey-app › workspace-1"),
                 TabRowBackground,
             ),
             bg(
                 "a blank cell between the tabs and the right end",
-                text("+").in_row("┌ Navigator").skip(4),
+                text("+").in_row("audrey-app › workspace-1").skip(4),
                 TabRowBackground,
+            ),
+            bg(
+                "the tab row's first column, over the sidebar",
+                cell(0, 0),
+                TabRowBackground,
+            ),
+            fg(
+                "the location over the sidebar",
+                text("audrey-app › workspace-1"),
+                Text,
             ),
             bg(
                 "the tab row's last column",

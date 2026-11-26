@@ -119,11 +119,13 @@ async fn the_sidebar_holds_the_agents_box_under_the_projects_box_with_one_row_be
         "the row between the boxes is empty up to the shared line:\n{f}"
     );
     // The whole geometry, not just the gap: a split that gave one box every row it could and
-    // the other three would pass every assertion above. One project with `main` under it is
-    // five rows of Projects box (MUX-18), and the Agents box takes the other twenty-three.
+    // the other three would pass every assertion above. The sidebar starts on row 1, under the
+    // bar on row 0 (decision record 0067). One project with `main` under it asks for no more
+    // than `MIN_PROJECTS`, so the Projects box is six rows (MUX-18), and the Agents box takes
+    // the other twenty-one, rows 8 to 28.
     assert_eq!(
         (projects_top, projects_bottom, agents_top),
-        (0, 5, 7),
+        (1, 6, 8),
         "the Projects box takes the rows its projects need on a 30 row screen:\n{f}"
     );
     assert_eq!(
@@ -360,9 +362,10 @@ async fn c_h_from_a_pane_enters_the_box_whose_rows_overlap_it_most() {
 /// so the tie is between two boxes that are both really on the screen rather than between a
 /// box and an empty rectangle.
 ///
-/// It is also the case that can never fire if the comparison is made against the two boxes as
-/// drawn: the tab row takes screen row 0, so the pane misses the Projects box's first row and
-/// leans to Agents by exactly one. See `render::sidebar::region_for_rows`.
+/// It is also the case an overlap comparison got wrong. While the sidebar started on screen row
+/// 0 and the pane on row 1, the pane missed the Projects box's first row and leaned to Agents
+/// by exactly one. Both start on row 1 now (decision record 0067), and the rule still answers
+/// by the pane's top row rather than by overlap. See `render::sidebar::region_for_rows`.
 #[tokio::test]
 async fn c_h_from_the_one_pane_of_an_unsplit_tab_enters_projects_on_the_tie() {
     // Four heights and not one, two of each parity. The rule lived in the geometry of the
@@ -496,7 +499,7 @@ async fn an_empty_agents_box_still_draws_its_border_and_says_why_it_is_empty() {
     h.api("sidebar.show", json!({})).await.unwrap();
     let f = sidebar_frame(&mut h).await;
     let agents_top = row_with(&f, "┌ Agents");
-    assert_eq!(agents_top, 7, "the border is always there (principle 14)");
+    assert_eq!(agents_top, 8, "the border is always there (principle 14)");
     // Wrapped over two rows and not cut: 34 columns for text inside the border and its pad,
     // and the action is the second half of the sentence (principle 9, plan assumption 22).
     // The text starts where a row's text starts, one column in.

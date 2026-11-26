@@ -1,8 +1,9 @@
 //! The sidebar's geometry and API, the tab row on the panes, and the remembered state.
 //!
-//! The waits below are on the full-width top bar going away rather than on the box arriving,
-//! because `on_the_panes` states the layout positively: a client that has drawn nothing
-//! satisfies "no top bar" and would pass a wait written the other way round.
+//! The waits below state each layout positively, with `on_the_panes` and `on_the_top_bar`: a
+//! client that has drawn nothing satisfies "no top bar" and would pass a wait written as an
+//! absence. `project › workspace` is on row 0 in both layouts (decision record 0067), so its
+//! presence alone says nothing about which one is drawn.
 
 use domux_core::config::Config;
 use domux_server::testing::{row, Harness};
@@ -14,15 +15,23 @@ fn cols(line: &str, from: usize, to: usize) -> String {
 }
 
 /// True once this client draws the sidebar's layout: no full-width top bar, and the pane box
-/// starts on the sidebar's last column, the line the two share, where its corner meets the
-/// sidebar's edge (decision record 0064).
+/// starts on the sidebar's last column, the line the two share, where its top line and the
+/// Navigator's meet (decision records 0064 and 0067).
 ///
-/// Positive on purpose. `!f.contains("proj › main")` alone is true of a client that has
-/// drawn nothing at all, so a client that never got its frame would pass it.
+/// Positive on purpose. `!on_the_top_bar(f)` alone is true of a client that has drawn
+/// nothing at all, so a client that never got its frame would pass it.
 fn on_the_panes(f: &str) -> bool {
     f.lines().filter(|l| l.starts_with('|')).count() > 2
-        && !f.contains("proj › main")
-        && cols(row(f, 1), 37, 38) == "├ "
+        && !on_the_top_bar(f)
+        && cols(row(f, 1), 37, 38) == "┬ "
+}
+
+/// True once this client draws the full-width top bar: the first tab follows
+/// `project › workspace` directly. With the sidebar shown the same label sits alone over the
+/// sidebar and the tabs start at column 38, so the label alone does not tell the two apart.
+fn on_the_top_bar(f: &str) -> bool {
+    f.lines().filter(|l| l.starts_with('|')).count() > 2
+        && cols(row(f, 0), 0, 16) == " proj › main  1 │"
 }
 
 /// `leader b` reaches `sidebar.toggle`, the full-width top bar goes, the sidebar takes the
@@ -53,19 +62,31 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     );
     // 82 = 81 dashes + "┘" (1)
     assert_eq!(cols(row(&f, 23), 38, 119), format!("{}┘", "─".repeat(81)));
-    // `cols(line, 0, 37)` takes 38 cells, the sidebar's whole width.
+    // `cols(line, 0, 37)` takes 38 cells, the sidebar's whole width. Row 0 over the sidebar
+    // is the same bar as over the panes, and opens with `project › workspace` in bold text
+    // (decision record 0067).
     assert_eq!(
         cols(row(&f, 0), 0, 37),
-        "┌ Navigator ─────────────────────────┐",
+        format!(" proj › main{}", " ".repeat(26)),
         "{f}"
     );
-    // The pane's top left corner meets the sidebar's edge on the line they share.
+    assert!(
+        f.contains("r0 c0-12 bold fg=#cdd6f4\n"),
+        "the location label is bold text on the row's own ground:\n{f}"
+    );
+    // The sidebar starts on row 1, so the Navigator's top line and the pane's are one line,
+    // joined where they meet.
     assert_eq!(
         cols(row(&f, 1), 0, 37),
-        "│ PROJ ───────────────────────────── ├"
+        "┌ Navigator ─────────────────────────┬",
+        "{f}"
     );
     assert_eq!(
         cols(row(&f, 2), 0, 37),
+        "│ PROJ ───────────────────────────── │"
+    );
+    assert_eq!(
+        cols(row(&f, 3), 0, 37),
         "│   main                             │"
     );
     assert_eq!(
@@ -84,16 +105,16 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     // where it put the fill, so the band and the brightening are one answer: the band runs
     // the row's whole inner width and the text on it is brightened to `text`.
     assert!(
-        f.contains("r2 c2-7 fg=#cdd6f4 bg=#313244"),
+        f.contains("r3 c2-7 fg=#cdd6f4 bg=#313244"),
         "`main` is the current workspace, so its row carries the fill, its indent \
          included:\n{f}"
     );
     assert!(
-        f.contains("r2 c1-1 bg=#313244") && f.contains("r2 c8-36 bg=#313244"),
+        f.contains("r3 c1-1 bg=#313244") && f.contains("r3 c8-36 bg=#313244"),
         "and the band runs to the border rather than stopping at the text:\n{f}"
     );
     assert!(
-        f.contains("r1 c2-6 bold fg=#7f849c\n"),
+        f.contains("r2 c2-6 bold fg=#7f849c\n"),
         "the project header is not a row the keys can act on, so it takes no fill:\n{f}"
     );
 }
@@ -123,11 +144,7 @@ async fn hiding_the_sidebar_brings_the_top_bar_back_and_the_server_remembers_the
     );
     h.api("sidebar.hide", serde_json::json!({})).await.unwrap();
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("proj › main"),
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
         .await;
     assert_eq!(cols(row(&f, 0), 0, 20), " proj › main  1 │ + │");
     assert!(!h.model().sidebar_open);
@@ -141,14 +158,10 @@ async fn a_screen_narrower_than_the_sidebar_plus_a_pane_hides_it_without_forgett
         .await;
     h.resize(h.client.clone(), 119, 24).await;
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("proj › main"),
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
         .await;
     assert!(
-        f.contains("proj › main"),
+        on_the_top_bar(&f),
         "below 120 columns the sidebar hides itself and the top bar returns:\n{f}"
     );
     assert!(
@@ -166,8 +179,8 @@ async fn a_screen_narrower_than_the_sidebar_plus_a_pane_hides_it_without_forgett
         .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     assert_eq!(
-        cols(row(&f, 0), 0, 37),
-        "┌ Navigator ─────────────────────────┐",
+        cols(row(&f, 1), 0, 37),
+        "┌ Navigator ─────────────────────────┬",
         "the sidebar the reader asked for, on a screen that would not show it alone:\n{f}"
     );
     let result = h
@@ -180,14 +193,10 @@ async fn a_screen_narrower_than_the_sidebar_plus_a_pane_hides_it_without_forgett
     );
     h.resize(h.client.clone(), 120, 24).await;
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("proj › main"),
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
         .await;
     assert!(
-        f.contains("proj › main"),
+        on_the_top_bar(&f),
         "a sidebar you hid yourself stays hidden when the screen widens:\n{f}"
     );
 }
@@ -256,12 +265,8 @@ async fn the_pane_takes_the_sidebars_columns_back_when_the_sidebar_hides_itself(
     let pane = h.focused_pane(h.client.clone());
     assert_eq!((h.pane_size(&pane).cols, h.pane_size(&pane).rows), (81, 21));
     h.resize(h.client.clone(), 119, 24).await;
-    h.wait_for(
-        h.client.clone(),
-        |f| f.contains("proj › main"),
-        Duration::from_secs(2),
-    )
-    .await;
+    h.wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
+        .await;
     assert_eq!(
         (h.pane_size(&pane).cols, h.pane_size(&pane).rows),
         (117, 21),
@@ -371,11 +376,7 @@ async fn hiding_the_sidebar_redraws_a_client_whose_panes_do_not_change_size() {
     assert_eq!((before.cols, before.rows), (79, 21));
     h.api("sidebar.hide", me).await.unwrap();
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("proj › main"),
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
         .await;
     let after = h.pane_size(&pane);
     assert_eq!(
@@ -444,7 +445,7 @@ async fn a_call_naming_a_client_that_is_not_attached_changes_nothing() {
     assert!(!h.model().sidebar_open, "the remembered state is untouched");
     let f = h.frame(h.client.clone()).await;
     assert!(
-        f.contains("proj › main"),
+        on_the_top_bar(&f),
         "and the attached client keeps its top bar:\n{f}"
     );
 }
@@ -478,7 +479,7 @@ async fn asking_for_the_sidebar_on_a_narrow_screen_leaves_another_narrow_client_
     );
     let g = h.frame(other).await;
     assert!(
-        g.contains("proj › main"),
+        on_the_top_bar(&g),
         "the client that did not ask is still auto-hidden:\n{g}"
     );
     assert!(
@@ -502,12 +503,8 @@ async fn a_client_that_did_not_ask_keeps_no_override_across_another_clients_show
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     h.api("sidebar.hide", me).await.unwrap();
-    h.wait_for(
-        h.client.clone(),
-        |f| f.contains("proj › main"),
-        Duration::from_secs(2),
-    )
-    .await;
+    h.wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
+        .await;
     let wide = h.attach(120, 24).await;
     h.api(
         "sidebar.show",
@@ -516,14 +513,10 @@ async fn a_client_that_did_not_ask_keeps_no_override_across_another_clients_show
     .await
     .unwrap();
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.contains("proj › main"),
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), on_the_top_bar, Duration::from_secs(2))
         .await;
     assert!(
-        f.contains("proj › main"),
+        on_the_top_bar(&f),
         "the narrow client is auto-hidden again, not still forced from before:\n{f}"
     );
     let g = h.wait_for(wide, on_the_panes, Duration::from_secs(2)).await;

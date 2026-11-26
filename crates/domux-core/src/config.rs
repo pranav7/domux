@@ -174,19 +174,18 @@ impl Default for KeysConfig {
                 // holding something they did not type.
                 ("k", "pane.clear"),
                 ("t", "tab.create"),
-                // The agent the Navigator numbers so. The digits were the tabs' until MUX-60,
-                // which moved the tabs to `M-1` to `M-9` (decision record 0064). `D-1` to
-                // `D-9` open the same agents with no leader, and these stay for a terminal or a
-                // desktop that keeps that chord for itself (decision record 0065).
-                ("1", "agent.focus #1"),
-                ("2", "agent.focus #2"),
-                ("3", "agent.focus #3"),
-                ("4", "agent.focus #4"),
-                ("5", "agent.focus #5"),
-                ("6", "agent.focus #6"),
-                ("7", "agent.focus #7"),
-                ("8", "agent.focus #8"),
-                ("9", "agent.focus #9"),
+                // One leader and a number to a tab. The digits opened agents for a while
+                // (decision records 0064 and 0065) and went back to the tabs in decision record
+                // 0068. Cmd and a number open those agents now, `D-1` to `D-9`.
+                ("1", "tab.select 1"),
+                ("2", "tab.select 2"),
+                ("3", "tab.select 3"),
+                ("4", "tab.select 4"),
+                ("5", "tab.select 5"),
+                ("6", "tab.select 6"),
+                ("7", "tab.select 7"),
+                ("8", "tab.select 8"),
+                ("9", "tab.select 9"),
                 // Destructive, so the key asks first: see `Core::confirmation_for`.
                 ("x", "tab.close"),
                 ("R", "tab.clear_name"),
@@ -208,17 +207,6 @@ impl Default for KeysConfig {
                 ("C-k", "focus.up"),
                 ("C-l", "focus.right"),
                 ("C-\\", "focus.last"),
-                // One chord to a tab, with no leader: the digits under the leader open agents
-                // (decision record 0064).
-                ("M-1", "tab.select 1"),
-                ("M-2", "tab.select 2"),
-                ("M-3", "tab.select 3"),
-                ("M-4", "tab.select 4"),
-                ("M-5", "tab.select 5"),
-                ("M-6", "tab.select 6"),
-                ("M-7", "tab.select 7"),
-                ("M-8", "tab.select 8"),
-                ("M-9", "tab.select 9"),
                 // Cmd and a number on macOS, super and a number elsewhere: the agent the
                 // Navigator numbers so, in one chord (decision record 0065).
                 ("D-1", "agent.focus #1"),
@@ -642,11 +630,12 @@ mod tests {
         );
         assert_eq!(
             c.keys.bindings.get("9").map(String::as_str),
-            Some("agent.focus #9")
+            Some("tab.select 9")
         );
         assert_eq!(
-            c.keys.global.get("M-9").map(String::as_str),
-            Some("tab.select 9")
+            c.keys.global.get("M-9"),
+            None,
+            "alt and a number is unbound"
         );
         assert_eq!(
             c.keys.global.get("D-9").map(String::as_str),

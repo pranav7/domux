@@ -259,13 +259,8 @@ pub fn hit_at(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
         return None;
     }
     if input.view.sidebar_visible() {
-        let sidebar = sidebar::sidebar_area(size);
-        if column < sidebar.right() {
-            return sidebar::row_target_at(input, row).map(|target| match target {
-                RowTarget::Workspace(workspace) => Hit::Workspace(workspace),
-                RowTarget::Agent(agent) => Hit::Agent(agent),
-            });
-        }
+        // Row 0 is the bar across the whole screen, over the sidebar too (decision record
+        // 0067), and only its tabs act on a click.
         if row == 0 {
             let (left, right) = workpanel_row_span(input.view);
             let tabs = top_bar::tab_row_of(input)?;
@@ -273,6 +268,13 @@ pub fn hit_at(input: &RenderInput, column: u16, row: u16) -> Option<Hit> {
                 input,
                 top_bar::tab_target_at(input, &tabs, left, right, column),
             );
+        }
+        let sidebar = sidebar::sidebar_area(size);
+        if column < sidebar.right() {
+            return sidebar::row_target_at(input, row).map(|target| match target {
+                RowTarget::Workspace(workspace) => Hit::Workspace(workspace),
+                RowTarget::Agent(agent) => Hit::Agent(agent),
+            });
         }
     } else if row == 0 {
         return tab_hit(input, top_bar::bar_tab_hit(input, column));
