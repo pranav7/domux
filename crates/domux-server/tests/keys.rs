@@ -2,7 +2,7 @@
 //! reaching the pane unchanged (design principle 1).
 
 use domux_core::config::Config;
-use domux_server::testing::Harness;
+use domux_server::testing::{boxes, Harness};
 use serde_json::json;
 use std::time::Duration;
 
@@ -29,12 +29,8 @@ async fn leader_then_binding_runs_the_action_and_nothing_reaches_the_pane() {
     let pane = h.focused_pane(h.client.clone());
     h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "\\").await;
-    h.wait_for(
-        h.client.clone(),
-        |f| f.matches('┌').count() == 2,
-        Duration::from_secs(2),
-    )
-    .await;
+    h.wait_for(h.client.clone(), |f| boxes(f) == 2, Duration::from_secs(2))
+        .await;
     assert!(h.pane_input(&pane).is_empty());
     assert!(
         h.model().client(&h.client).unwrap().chord.is_none(),
@@ -67,12 +63,8 @@ async fn global_focus_keys_move_focus_unless_the_foreground_is_a_passthrough_com
     let left = h.focused_pane(h.client.clone());
     h.key(h.client.clone(), "C-s").await;
     h.key(h.client.clone(), "\\").await;
-    h.wait_for(
-        h.client.clone(),
-        |f| f.matches('┌').count() == 2,
-        Duration::from_secs(2),
-    )
-    .await;
+    h.wait_for(h.client.clone(), |f| boxes(f) == 2, Duration::from_secs(2))
+        .await;
     let right = h.focused_pane(h.client.clone());
     h.key(h.client.clone(), "C-h").await;
     h.frame(h.client.clone()).await;
@@ -255,4 +247,30 @@ async fn shift_and_ctrl_shift_arrows_resize_by_two_cells_and_by_eight() {
         cols,
         "no split owns the horizontal axis here"
     );
+}
+
+/// `M-1` to `M-9` select a tab with no leader, since the digits under the leader open agents
+/// (decision record 0064), and nothing of the chord reaches the pane.
+#[tokio::test]
+async fn alt_and_a_number_selects_that_tab() {
+    let mut h = Harness::start(Config::default(), 40, 10).await;
+    let tab = |h: &Harness| {
+        h.model()
+            .client(&h.client)
+            .map(|v| v.tab.clone())
+            .expect("the client is attached")
+    };
+    let first = tab(&h);
+    let pane = h.focused_pane(h.client.clone());
+    h.api("tab.create", json!({})).await.unwrap();
+    h.frame(h.client.clone()).await;
+    let second = tab(&h);
+    assert_ne!(first, second, "a new tab");
+    h.key(h.client.clone(), "M-1").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(tab(&h), first);
+    assert!(h.pane_input(&pane).is_empty(), "the chord is domux's");
+    h.key(h.client.clone(), "M-2").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(tab(&h), second);
 }

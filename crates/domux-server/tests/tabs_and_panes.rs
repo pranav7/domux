@@ -1,7 +1,7 @@
 //! The tab and pane methods, each one checked by the frame it produces.
 
 use domux_core::config::Config;
-use domux_server::testing::{row, Harness};
+use domux_server::testing::{boxes, row, Harness};
 use serde_json::json;
 use std::time::Duration;
 
@@ -11,19 +11,19 @@ async fn split_right_draws_two_boxes_edge_to_edge_and_focuses_the_new_pane() {
     let first = h.focused_pane(h.client.clone());
     let info = h.api("pane.split", json!({"dir": "right"})).await.unwrap();
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.matches('┌').count() == 2,
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), |f| boxes(f) == 2, Duration::from_secs(2))
         .await;
-    // The two boxes touch, and 40 columns divide evenly between them.
+    // The two boxes share column 20 (decision record 0064): 41 columns between them, 21 for
+    // the first and 20 for the second, and one line where the borders meet.
     assert_eq!(
         row(&f, 1),
-        "|┌ sh ──────────────┐┌ sh ──────────────┐|",
+        format!("|┌ sh {}┬ sh {}┐|", "─".repeat(15), "─".repeat(14)),
         "{f}"
     );
-    assert_eq!(row(&f, 9), "|└──────────────────┘└──────────────────┘|");
+    assert_eq!(
+        row(&f, 9),
+        format!("|└{}┴{}┘|", "─".repeat(19), "─".repeat(18))
+    );
     assert!(
         f.contains("r1 c25-39 fg=#cba6f7"),
         "the right box is focused:\n{f}"
@@ -47,23 +47,18 @@ async fn split_right_draws_two_boxes_edge_to_edge_and_focuses_the_new_pane() {
 }
 
 #[tokio::test]
-async fn split_down_stacks_with_the_boxes_touching() {
+async fn split_down_stacks_the_boxes_on_one_shared_row() {
     let mut h = Harness::start(Config::default(), 40, 10).await;
     h.api("pane.split", json!({"dir": "down"})).await.unwrap();
     let f = h
-        .wait_for(
-            h.client.clone(),
-            |f| f.matches('┌').count() == 2,
-            Duration::from_secs(2),
-        )
+        .wait_for(h.client.clone(), |f| boxes(f) == 2, Duration::from_secs(2))
         .await;
-    // 9 rows do not divide evenly, so the first box takes the odd one.
+    // 9 rows and the shared one counted twice is 10, five rows each, meeting on row 5.
     assert_eq!(row(&f, 1), "|┌ sh ──────────────────────────────────┐|");
-    assert_eq!(row(&f, 5), "|└──────────────────────────────────────┘|");
     assert_eq!(
-        row(&f, 6),
-        "|┌ sh ──────────────────────────────────┐|",
-        "the next box starts on the row below, with nothing between them"
+        row(&f, 5),
+        format!("|├ sh {}┤|", "─".repeat(34)),
+        "the next box starts on the first's bottom row, one line between them:\n{f}"
     );
     assert_eq!(row(&f, 9), "|└──────────────────────────────────────┘|");
 }
@@ -86,15 +81,11 @@ async fn zoom_takes_the_whole_workpanel_and_shows_the_flag() {
         "|┌ sh ────────────────────────── zoomed ┐|",
         "{f}"
     );
-    assert_eq!(f.matches('┌').count(), 1);
+    assert_eq!(boxes(&f), 1);
     let r = h.api("pane.zoom", json!({})).await.unwrap();
     assert!(r["zoomed"].is_null());
-    h.wait_for(
-        h.client.clone(),
-        |f| f.matches('┌').count() == 2,
-        Duration::from_secs(2),
-    )
-    .await;
+    h.wait_for(h.client.clone(), |f| boxes(f) == 2, Duration::from_secs(2))
+        .await;
 }
 
 /// tmux's own keys: `prefix {` swaps the pane with the one before it, and `prefix }` with the
@@ -116,7 +107,7 @@ async fn leader_braces_swap_the_focused_pane_as_in_tmux() {
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│LEFT              ││RIGHT             │|",
+        "|│LEFT               │RIGHT             │|",
         "{f}"
     );
 
@@ -131,7 +122,7 @@ async fn leader_braces_swap_the_focused_pane_as_in_tmux() {
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│RIGHT             ││LEFT              │|",
+        "|│RIGHT              │LEFT              │|",
         "{f}"
     );
     assert_eq!(
@@ -155,7 +146,7 @@ async fn leader_braces_swap_the_focused_pane_as_in_tmux() {
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│LEFT              ││RIGHT             │|",
+        "|│LEFT               │RIGHT             │|",
         "{f}"
     );
     assert_eq!(h.focused_pane(h.client.clone()), right);
@@ -212,7 +203,7 @@ async fn pane_swap_redraws_two_panes_of_one_size() {
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│RIGHT             ││LEFT              │|",
+        "|│RIGHT              │LEFT              │|",
         "{f}"
     );
 }

@@ -564,9 +564,9 @@ async fn the_leader_inside_copy_mode_shows_the_chord_rather_than_the_copy_keys()
 }
 
 /// The wheel hits the pane the reader sees under the pointer, and the sidebar shifts every
-/// pane box 39 columns right. Hit testing and drawing have to read the same rectangle: if
+/// pane box 37 columns right. Hit testing and drawing have to read the same rectangle: if
 /// hit testing kept the sidebar-less one, a scroll over the sidebar would scroll a pane and
-/// a scroll over the left pane would land on whatever sits 39 columns further left.
+/// a scroll over the left pane would land on whatever sits 37 columns further left.
 #[tokio::test]
 async fn wheel_scroll_finds_the_pane_under_the_pointer_beside_an_open_sidebar() {
     let mut h = Harness::start(Config::default(), 120, 14).await;
@@ -590,7 +590,8 @@ async fn wheel_scroll_finds_the_pane_under_the_pointer_beside_an_open_sidebar() 
         "a scroll over the sidebar scrolls nothing"
     );
 
-    // Column 45 is inside the left pane's box, which starts at column 39.
+    // Column 45 is inside the left pane's box, which starts at column 37, on the line it
+    // shares with the sidebar.
     h.scroll(h.client.clone(), 45, 5, 3).await;
     let f = h
         .wait_for(

@@ -1452,6 +1452,18 @@ pub fn client_view() -> ClientView {
 }
 
 /// The nth `|...|` row of a frame, without the trailing newline.
+/// How many boxes a frame draws, counted by their top left corners. A box beside or under
+/// another shares its line, so its corner is `┬`, `├` or `┼` rather than `┌` (decision record
+/// 0064), and counting `┌` alone counts only the first.
+pub fn boxes(frame: &str) -> usize {
+    frame
+        .lines()
+        .filter(|l| l.starts_with('|'))
+        .flat_map(str::chars)
+        .filter(|c| matches!(c, '┌' | '┬' | '├' | '┼'))
+        .count()
+}
+
 pub fn row(frame: &str, n: usize) -> &str {
     frame
         .lines()

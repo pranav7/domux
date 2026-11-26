@@ -26,6 +26,12 @@ pub fn dim(buf: &mut Buffer, area: Rect, percent: u8, colors: &TerminalColors) {
     for y in area.y..bottom {
         for x in area.x..right {
             let cell = &mut buf[(x, y)];
+            // A blank on the terminal's own background draws nothing a colour could change,
+            // so it is left as it is rather than sent again with colours nobody sees.
+            let shows = Modifier::REVERSED | Modifier::UNDERLINED | Modifier::CROSSED_OUT;
+            if cell.symbol() == " " && cell.bg == Color::Reset && !cell.modifier.intersects(shows) {
+                continue;
+            }
             let Some(ground) = colors.bg else {
                 cell.modifier.insert(Modifier::DIM);
                 continue;
@@ -177,6 +183,29 @@ mod tests {
             &TerminalColors::default(),
         );
         assert!(buf[(0, 0)].modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn a_blank_on_the_terminals_background_is_left_alone() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        let before = buf.clone();
+        dim(&mut buf, Rect::new(0, 0, 1, 1), 30, &answers());
+        assert_eq!(buf, before);
+        dim(
+            &mut buf,
+            Rect::new(0, 0, 1, 1),
+            30,
+            &TerminalColors::default(),
+        );
+        assert_eq!(buf, before, "and is not drawn faint either");
+        let mut buf = one_cell(Style::default().add_modifier(Modifier::REVERSED));
+        buf[(0, 0)].set_symbol(" ");
+        dim(&mut buf, Rect::new(0, 0, 1, 1), 50, &answers());
+        assert_eq!(
+            buf[(0, 0)].fg,
+            Color::Rgb(100, 100, 100),
+            "a reversed blank shows its foreground"
+        );
     }
 
     #[test]
