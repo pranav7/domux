@@ -75,7 +75,7 @@ async fn real_pty_delivers_output_env_and_exit_through_core_messages() {
         &[
             "sh",
             "-c",
-            "printf \"%s %s $DOMUX_PANE\" \"$TERM\" \"$(pwd)\"; exit 3",
+            "printf \"%s %s %s $DOMUX_PANE\" \"$TERM\" \"$FORCE_HYPERLINK\" \"$(pwd)\"; exit 3",
         ],
         dir.path().to_str().unwrap(),
     );
@@ -112,12 +112,12 @@ async fn real_pty_delivers_output_env_and_exit_through_core_messages() {
     pane.0.snapshot();
     let row: String = pane.0.grid.row(0).iter().map(|c| c.text.as_str()).collect();
     let expected = format!(
-        "xterm-256color {} p_0001",
+        "xterm-256color 1 {} p_0001",
         dir.path().canonicalize().unwrap().display()
     );
     assert!(
         row.trim_end() == expected
-            || row.trim_end() == format!("xterm-256color {} p_0001", dir.path().display()),
+            || row.trim_end() == format!("xterm-256color 1 {} p_0001", dir.path().display()),
         "{row:?}"
     );
     assert_eq!(pane.0.exited, Some(Some(3)));
