@@ -7,6 +7,7 @@ pub mod desktop;
 pub mod frame;
 pub mod input;
 pub mod omarchy;
+pub mod super_key;
 pub mod terminal;
 
 use crate::frame::Screen;
@@ -101,6 +102,14 @@ struct Session<B: Backend> {
     follow: Option<omarchy::Follow>,
     /// Whether the server said the client's theme reads the terminal, with `FollowColors`.
     following: bool,
+    /// Reads whether the super key is down, on a client that can tell. `None` sends nothing,
+    /// and the server then writes the agents' numbers all the time (decision record 0065).
+    super_key: Option<super_key::Reader>,
+    /// Whether the outer terminal has the focus, from its focus reports. True at attach, since
+    /// the reader has just typed the command into it.
+    focused: bool,
+    /// What the server was last told about the super key, or `None` before the first look.
+    super_sent: Option<bool>,
 }
 
 impl<B: Backend> Session<B>
@@ -126,6 +135,10 @@ where
         // when following turns on, and finds the stamp `read_now` just took.
         let mut follow_poll = tokio::time::interval(FOLLOW_POLL);
         follow_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The same for the super key: the first tick is the look at attach, and one missed
+        // while the terminal had no focus is taken as soon as it has it again.
+        let mut super_poll = tokio::time::interval(super_key::POLL);
+        super_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tokio::pin!(stop);
         let outcome = loop {
             tokio::select! {
@@ -185,6 +198,18 @@ where
                                 let _ = writer.write_all(&bytes).await;
                             }
                             break AttachOutcome::Detached(TERMINAL_ENDED.into());
+                        }
+                    }
+                }
+                _ = super_poll.tick(), if self.polls_super() => {
+                    if let Some(msg) = self.super_changed() {
+                        match encode(&msg) {
+                            Err(err) => tracing::warn!(%err, "the super key's state could not be framed and was not sent"),
+                            Ok(bytes) => {
+                                if writer.write_all(&bytes).await.is_err() {
+                                    break AttachOutcome::ConnectionLost;
+                                }
+                            }
                         }
                     }
                 }
@@ -291,6 +316,24 @@ where
         true
     }
 
+    /// Whether the super key is worth a look: while the terminal has the focus, and once more
+    /// after it lost the focus with the key down, to say the key is up.
+    fn polls_super(&self) -> bool {
+        self.super_key.is_some() && (self.focused || self.super_sent == Some(true))
+    }
+
+    /// What a look at the super key calls for: its state, when that is not what the server was
+    /// last told. The key is up whenever the terminal has no focus, because a key held in
+    /// another window is not held here.
+    fn super_changed(&mut self) -> Option<ClientMsg> {
+        let held = self.focused && (self.super_key.as_ref()?)();
+        if self.super_sent == Some(held) {
+            return None;
+        }
+        self.super_sent = Some(held);
+        Some(ClientMsg::SuperHeld(held))
+    }
+
     /// The message one terminal event becomes, or `None` for an event with nothing to say.
     fn on_event(&mut self, event: Event) -> Option<ClientMsg> {
         match event {
@@ -328,8 +371,14 @@ where
                 self.screen = Screen::new(cols, rows);
                 Some(ClientMsg::Resize { cols, rows })
             }
-            Event::FocusGained => Some(ClientMsg::Focus(true)),
-            Event::FocusLost => Some(ClientMsg::Focus(false)),
+            Event::FocusGained => {
+                self.focused = true;
+                Some(ClientMsg::Focus(true))
+            }
+            Event::FocusLost => {
+                self.focused = false;
+                Some(ClientMsg::Focus(false))
+            }
         }
     }
 }
@@ -520,7 +569,8 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
     let colors = caps::ask_terminal_colors(caps::attach_cap(env.probe_took));
     let capabilities = client_capabilities(&env, colors);
     let (cols, rows) = crossterm::terminal::size()?;
-    let desktop = desktop::detect(&desktop::DesktopEnv::from_process());
+    let desktop_env = desktop::DesktopEnv::from_process();
+    let desktop = desktop::detect(&desktop_env);
     let follow = match (desktop, std::env::var_os("HOME")) {
         (Desktop::Omarchy, Some(home)) => follow_omarchy(Path::new(&home), &capabilities.colors),
         _ => None,
@@ -537,6 +587,9 @@ pub async fn attach(socket: &Path) -> anyhow::Result<AttachOutcome> {
         clicks: Clicks::default(),
         follow,
         following: false,
+        super_key: super_key::reader(desktop_env.remote),
+        focused: true,
+        super_sent: None,
     };
     let mut events = EventStream::new();
     let stop = async move {
@@ -597,7 +650,7 @@ mod tests {
         copy: CopyFn,
         stop: impl Future<Output = Stop> + Send + 'static,
     ) -> (Events, DuplexStream, Ran) {
-        running_with(cols, rows, copy, stop, None)
+        running_with(cols, rows, copy, stop, None, None)
     }
 
     /// The same, with the `Follow` attach kept.
@@ -607,6 +660,7 @@ mod tests {
         copy: CopyFn,
         stop: impl Future<Output = Stop> + Send + 'static,
         follow: Option<omarchy::Follow>,
+        super_key: Option<super_key::Reader>,
     ) -> (Events, DuplexStream, Ran) {
         let (client, server) = tokio::io::duplex(1024 * 1024);
         let (mut reader, mut writer) = tokio::io::split(client);
@@ -620,6 +674,9 @@ mod tests {
             clicks: Clicks::default(),
             follow,
             following: false,
+            super_key,
+            focused: true,
+            super_sent: None,
         };
         let task = tokio::spawn(async move {
             let outcome = session
@@ -1083,6 +1140,34 @@ mod tests {
             .unwrap_or_else(|_| panic!("nothing was sent within 10 polls; wanted {expected:?}"));
     }
 
+    /// A client that can read the super key says where it is at attach and at each change, and
+    /// says it is up when the terminal loses the focus, whatever the key does in the other
+    /// window. Back in this one, it says the key is down again (decision record 0065).
+    #[tokio::test]
+    async fn super_key_is_sent_at_attach_and_at_each_change_while_focused() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let down = Arc::new(AtomicBool::new(false));
+        let read = down.clone();
+        let (events, mut server, _task) = running_with(
+            4,
+            2,
+            clipboard_works,
+            std::future::pending::<Stop>(),
+            None,
+            Some(Box::new(move || read.load(Ordering::SeqCst))),
+        );
+        expect_soon(&mut server, &ClientMsg::SuperHeld(false)).await;
+        down.store(true, Ordering::SeqCst);
+        expect_soon(&mut server, &ClientMsg::SuperHeld(true)).await;
+        events.unbounded_send(Ok(Event::FocusLost)).unwrap();
+        expect_soon(&mut server, &ClientMsg::Focus(false)).await;
+        expect_soon(&mut server, &ClientMsg::SuperHeld(false)).await;
+        events.unbounded_send(Ok(Event::FocusGained)).unwrap();
+        expect_soon(&mut server, &ClientMsg::Focus(true)).await;
+        expect_soon(&mut server, &ClientMsg::SuperHeld(true)).await;
+    }
+
     /// A session on Omarchy whose terminal draws Ristretto, as attach leaves it: the `Follow`
     /// kept, having read Ristretto. The clipboard fails, so a
     /// clipboard message is answered and the test can tell when the session has read what came
@@ -1096,6 +1181,7 @@ mod tests {
             clipboard_fails,
             std::future::pending::<Stop>(),
             Some(follow),
+            None,
         );
         (home, events, server, task)
     }
@@ -1199,6 +1285,7 @@ mod tests {
             clipboard_fails,
             std::future::pending::<Stop>(),
             Some(follow),
+            None,
         );
         send_and_settle(&mut server, &ServerMsg::FollowColors(true)).await;
         expect_nothing_sent(&events, &mut server).await;
@@ -1287,8 +1374,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_session_with_no_follow_ignores_follow_colors_true() {
         let home = omarchy_home("ristretto", &[("colors.toml", RISTRETTO_COLORS_TOML)]);
-        let (events, mut server, task) =
-            running_with(4, 2, clipboard_fails, std::future::pending::<Stop>(), None);
+        let (events, mut server, task) = running_with(
+            4,
+            2,
+            clipboard_fails,
+            std::future::pending::<Stop>(),
+            None,
+            None,
+        );
         send_and_settle(&mut server, &ServerMsg::FollowColors(true)).await;
         set_catppuccin(home.path());
         expect_nothing_sent(&events, &mut server).await;

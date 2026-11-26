@@ -11,7 +11,17 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- The Navigator numbers the first nine agents, and cmd and a number (`D-1` to `D-9`), or the
+  leader and a number, opens that agent. On macOS the numbers show while you hold cmd. Over ssh
+  and on Linux they show all the time. In Ghostty, add `keybind = cmd+1=unbind` through
+  `keybind = cmd+9=unbind` to your config so the keys reach domux instead of Ghostty's tabs.
+
 ### Changed
+
+- Alt and a number (`M-1` to `M-9`) selects a tab. The leader and a number did, and now opens
+  an agent.
 
 - The switcher (`leader s`) is a quick switch. It opens with the filter field ready, so you type
   part of a project, workspace or agent name straight away, the first match is highlighted, and

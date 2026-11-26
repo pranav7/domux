@@ -23,8 +23,8 @@ pub struct Capabilities {
 /// Bumped when a message shape changes. The server refuses a client with another value.
 /// 3 added `ClientMsg::Mouse` (decision 0014). 4 carries the terminal's palette and the
 /// desktop in the hello, and adds `ClientMsg::Colors` and `ServerMsg::FollowColors` (decision
-/// 0042).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// 0042). 5 adds `ClientMsg::SuperHeld` (decision 0065).
+pub const PROTOCOL_VERSION: u32 = 5;
 /// A frame larger than this is a bug or an attack, never a screen. The value is also what
 /// keeps the two protocols on one socket apart: see `is_control_api_first_byte`.
 pub const MAX_FRAME: u32 = 64 * 1024 * 1024;
@@ -111,6 +111,11 @@ pub enum ClientMsg {
     /// The terminal's colours now, sent when the desktop theme the client follows changed. Not
     /// the reader's activity: it moves no focus and no most recent client.
     Colors(TerminalColors),
+    /// Whether the reader is holding the super key, cmd on macOS, while the terminal has the
+    /// focus. Only a client that can tell sends it: once at attach, then at every change, and
+    /// `false` when the terminal loses the focus. A client that never sends it cannot tell,
+    /// and the Navigator writes the agents' numbers for it all the time (decision 0065).
+    SuperHeld(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -438,7 +443,7 @@ mod tests {
         let v3::ClientMsg::Hello(old) = bincode::deserialize::<v3::ClientMsg>(&frame[4..])
             .expect("a protocol 3 server reads it");
         assert_eq!(old.version, "1.1.0");
-        assert_eq!(old.protocol, 4);
+        assert_eq!(old.protocol, PROTOCOL_VERSION);
         assert_eq!((old.cols, old.rows), (120, 40));
         assert!(old.caps.truecolor && !old.caps.kitty_keyboard);
         assert!(old.caps.hyperlinks && old.caps.osc52);

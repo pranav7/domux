@@ -175,7 +175,9 @@ impl Default for KeysConfig {
                 ("k", "pane.clear"),
                 ("t", "tab.create"),
                 // The agent the Navigator numbers so. The digits were the tabs' until MUX-60,
-                // which moved the tabs to `M-1` to `M-9` (decision record 0064).
+                // which moved the tabs to `M-1` to `M-9` (decision record 0064). `D-1` to
+                // `D-9` open the same agents with no leader, and these stay for a terminal or a
+                // desktop that keeps that chord for itself (decision record 0065).
                 ("1", "agent.focus #1"),
                 ("2", "agent.focus #2"),
                 ("3", "agent.focus #3"),
@@ -217,6 +219,17 @@ impl Default for KeysConfig {
                 ("M-7", "tab.select 7"),
                 ("M-8", "tab.select 8"),
                 ("M-9", "tab.select 9"),
+                // Cmd and a number on macOS, super and a number elsewhere: the agent the
+                // Navigator numbers so, in one chord (decision record 0065).
+                ("D-1", "agent.focus #1"),
+                ("D-2", "agent.focus #2"),
+                ("D-3", "agent.focus #3"),
+                ("D-4", "agent.focus #4"),
+                ("D-5", "agent.focus #5"),
+                ("D-6", "agent.focus #6"),
+                ("D-7", "agent.focus #7"),
+                ("D-8", "agent.focus #8"),
+                ("D-9", "agent.focus #9"),
                 // Resize moves the boundary the arrow points at. Shift moves it two cells,
                 // ctrl with shift moves it eight: a step small enough to settle on the
                 // column you want, and one large enough to cross a pane in a few presses.
@@ -634,6 +647,10 @@ mod tests {
         assert_eq!(
             c.keys.global.get("M-9").map(String::as_str),
             Some("tab.select 9")
+        );
+        assert_eq!(
+            c.keys.global.get("D-9").map(String::as_str),
+            Some("agent.focus #9")
         );
         assert_eq!(
             c.keys.bindings.get("R").map(String::as_str),

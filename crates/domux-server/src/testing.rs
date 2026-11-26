@@ -625,6 +625,12 @@ impl Harness {
         }
     }
 
+    /// The reader pressed or let go of the super key, cmd on macOS: what a client that can
+    /// tell sends (decision record 0065).
+    pub async fn super_held(&mut self, client: ClientId, held: bool) {
+        self.send(&client, ClientMsg::SuperHeld(held)).await;
+    }
+
     /// The client's terminal gained or lost the focus.
     pub async fn focus(&mut self, client: ClientId, focused: bool) {
         self.send(&client, ClientMsg::Focus(focused)).await;
@@ -1448,6 +1454,7 @@ pub fn client_view() -> ClientView {
         input: TextInput::new(""),
         overlay_under: None,
         pill: None,
+        super_held: None,
     }
 }
 

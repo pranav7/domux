@@ -58,6 +58,10 @@ pub struct Extras {
     /// line as noise, and it was the reason almost every row in the switcher was two lines
     /// and so earned a blank row on both sides of it.
     pub wide: bool,
+    /// Whether an agent row writes its number now: `ClientView::shows_agent_numbers` for the
+    /// client drawn. True unless a surface says otherwise, because the rows are also built for
+    /// their keys alone, and the number takes its cells either way (decision record 0065).
+    pub numbers: bool,
 }
 
 impl Extras {
@@ -65,6 +69,7 @@ impl Extras {
         Extras {
             width: width as usize,
             wide: false,
+            numbers: true,
         }
     }
 
@@ -72,7 +77,13 @@ impl Extras {
         Extras {
             width: width as usize,
             wide: true,
+            numbers: true,
         }
+    }
+
+    /// The same, writing the agents' numbers or not.
+    pub fn with_numbers(self, numbers: bool) -> Extras {
+        Extras { numbers, ..self }
     }
 }
 
@@ -270,7 +281,16 @@ fn agent_rows(
     agents.sort_by_key(|a| a.number.unwrap_or(usize::MAX));
     agents
         .into_iter()
-        .map(|a| indented_row(agents_box::one_row(theme, a, view, form, width)))
+        .map(|a| {
+            indented_row(agents_box::one_row(
+                theme,
+                a,
+                view,
+                form,
+                width,
+                extras.numbers,
+            ))
+        })
         .collect()
 }
 

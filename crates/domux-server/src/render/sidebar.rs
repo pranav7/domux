@@ -234,7 +234,8 @@ fn built_rows(input: &RenderInput, area: Rect) -> (crate::render::projects_box::
         filter,
         cursor,
         input.view.workspace.as_str(),
-        Extras::compact(content_width(area.width, SIDEBAR_PAD)),
+        Extras::compact(content_width(area.width, SIDEBAR_PAD))
+            .with_numbers(input.view.shows_agent_numbers()),
         input.navigator.then_some(input.agents),
     );
     (built, focused)

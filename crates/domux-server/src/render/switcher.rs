@@ -35,7 +35,7 @@ pub fn draw(input: &RenderInput, buf: &mut Buffer) {
         &input.view.filter,
         input.list_cursor(),
         input.view.workspace.as_str(),
-        Extras::switcher(inner_width),
+        Extras::switcher(inner_width).with_numbers(input.view.shows_agent_numbers()),
         input.navigator.then_some(input.agents),
     );
     let lines = rows
