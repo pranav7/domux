@@ -3,7 +3,9 @@
 **Date:** 2026-11-26
 **Status:** Accepted. MUX-60. Replaces interface spec assumption 18 and the one column of gap
 interface spec 12.18 put between the sidebar and the workpanel. Moves the tabs off `leader 1` to
-`leader 9`. **Amended by decision record 0065**, which adds `D-1` to `D-9` for the agents and
+`leader 9`. **Amended by decision record 0068**, which gives the tabs back `leader 1` to `leader 9` and
+unbinds `M-1` to `M-9`. **Amended by decision record 0065**, which adds `D-1` to `D-9` for the
+agents and
 writes their numbers only while cmd is held, at a client that can tell. **Amended by decision
 record 0067**, which starts the sidebar on row 1, level with the panes, under one bar.
 **Decision:** Neighbouring pane boxes share their facing line, and so do the sidebar and the

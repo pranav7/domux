@@ -499,8 +499,9 @@ async fn the_keys_overlay_lists_the_box_keys_from_the_configured_table() {
     // 56 rather than 54 since MUX-50: `c` and `D` joined `[keys.list]`, and the assertion
     // below that nothing is truncated is only worth making on a screen that fits everything.
     // 57 since MUX-60, whose `M-1-9 tab.select <n>` row joined the leader's digit row, and 58
-    // since `D-1-9 agent.focus #<n>` joined both (decision record 0065).
-    let mut h = Harness::start(cfg, 80, 58).await;
+    // since `D-1-9 agent.focus #<n>` joined both (decision record 0065). Decision record 0068
+    // took `M-1-9` out, so 57 is enough again.
+    let mut h = Harness::start(cfg, 80, 57).await;
     h.api("help", json!({})).await.unwrap();
     let f = h
         .wait_for(

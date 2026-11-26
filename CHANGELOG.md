@@ -13,8 +13,8 @@ notes, and a missing or empty section stops the release. Versions follow
 
 ### Added
 
-- The Navigator numbers the first nine agents, and cmd and a number (`D-1` to `D-9`), or the
-  leader and a number, opens that agent.
+- The Navigator numbers the first nine agents, and cmd and a number (`D-1` to `D-9`) opens that
+  agent.
 - `domux install ghostty` hands cmd and a number from Ghostty's tabs to domux. It shows the lines
   it would add to your Ghostty config, `--apply` writes them, and it asks Ghostty to confirm.
   Reload Ghostty's config afterwards. Once cmd and a number reaches domux, the numbers show only
@@ -22,9 +22,6 @@ notes, and a missing or empty section stops the release. Versions follow
   time, and domux reminds you of the command when you attach in Ghostty.
 
 ### Changed
-
-- Alt and a number (`M-1` to `M-9`) selects a tab. The leader and a number did, and now opens
-  an agent.
 
 - The switcher (`leader s`) is a quick switch. It opens with the filter field ready, so you type
   part of a project, workspace or agent name straight away, the first match is highlighted, and

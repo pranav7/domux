@@ -403,7 +403,7 @@ fn resize_step(action: &Action) -> Option<&str> {
 /// project or a workspace. `agents.open` has its own heading because the overlay it opens is
 /// its own answer to its own question, in both layouts (decision record 0033), and the
 /// heading empties itself the day the binding does. `agent.focus #<n>` sits under it too,
-/// since the digits open agents (decision record 0064).
+/// since cmd and a number open agents (decision record 0065).
 const HELP_GROUPS: [&str; 3] = ["projects", "agents", "workpanel"];
 
 /// Which of `HELP_GROUPS` a row belongs in, decided from the action's own name so a
@@ -441,10 +441,9 @@ fn help_list_block_lines(list_block: &[String]) -> Vec<(HelpLineKind, String)> {
 }
 
 /// The bindings with each run of one method over numbered targets in one row: `1` to `9` on
-/// `agent.focus #1` to `#9` read `1-9` and `agent.focus #<n>`, `D-1` to `D-9` on the same
-/// read `D-1-9`, and `M-1` to `M-9` on `tab.select 1` to `9` read `M-1-9` and
-/// `tab.select <n>`. A number bound alone keeps its own row, because `<n>` would then hide which
-/// one it is. Keys and actions as `(key, action)`.
+/// `tab.select 1` to `9` read `1-9` and `tab.select <n>`, and `D-1` to `D-9` on `agent.focus #1`
+/// to `#9` read `D-1-9` and `agent.focus #<n>`. A number bound alone keeps its own row, because
+/// `<n>` would then hide which one it is. Keys and actions as `(key, action)`.
 fn collapse_numbered(bindings: Vec<(String, String)>) -> Vec<(String, String)> {
     // `agent.focus #3` is `("agent.focus", "#", 3)`; anything else is not numbered.
     fn numbered(action: &str) -> Option<(&str, &str, u32)> {
@@ -483,7 +482,7 @@ fn collapse_numbered(bindings: Vec<(String, String)>) -> Vec<(String, String)> {
             continue;
         }
         let (first, last) = (&keys[0].1, &keys[keys.len() - 1].1);
-        // `M-1` and `M-9` share `M-`, so the row reads `M-1-9`; bare digits read `1-9`.
+        // `D-1` and `D-9` share `D-`, so the row reads `D-1-9`; bare digits read `1-9`.
         let shared = first
             .char_indices()
             .zip(last.chars())
@@ -539,8 +538,8 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     if in_a_box && !list_block.is_empty() {
         sections.push(help_list_block_lines(&list_block));
     }
-    // Collapse a run of numbered bindings, `agent.focus #1` to `#9` under the leader and
-    // `tab.select 1` to `9` on `M-`, into one row each. Nine near-identical rows push the
+    // Collapse a run of numbered bindings, `tab.select 1` to `9` under the leader and
+    // `agent.focus #1` to `#9` on `D-`, into one row each. Nine near-identical rows push the
     // globals and the footer past the bottom of the box on an 80x24 screen, and the row still
     // renders the configured keys (principle 3).
     let mut bindings = collapse_numbered(
@@ -720,21 +719,18 @@ mod tests {
     #[test]
     fn numbered_bindings_collapse_into_one_row_per_run() {
         let mut leader: Vec<(String, String)> = (1..=9)
-            .map(|n| (n.to_string(), format!("agent.focus #{n}")))
+            .map(|n| (n.to_string(), format!("tab.select {n}")))
             .collect();
         leader.extend(pairs(&[("z", "pane.zoom")]));
         let mut got = collapse_numbered(leader);
         got.sort();
-        assert_eq!(
-            got,
-            pairs(&[("1-9", "agent.focus #<n>"), ("z", "pane.zoom")])
-        );
+        assert_eq!(got, pairs(&[("1-9", "tab.select <n>"), ("z", "pane.zoom")]));
         let global: Vec<(String, String)> = (1..=9)
-            .map(|n| (format!("M-{n}"), format!("tab.select {n}")))
+            .map(|n| (format!("D-{n}"), format!("agent.focus #{n}")))
             .collect();
         assert_eq!(
             collapse_numbered(global),
-            pairs(&[("M-1-9", "tab.select <n>")])
+            pairs(&[("D-1-9", "agent.focus #<n>")])
         );
         assert_eq!(
             collapse_numbered(pairs(&[("g", "tab.select 2")])),

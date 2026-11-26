@@ -43,9 +43,8 @@ const TAIL_SEP: &str = " · ";
 /// which agent this is, and a long branch must not push it out of the row.
 const NAME_FLOOR: usize = 16;
 
-/// The highest number a Navigator row writes: `D-1` to `D-9` and `leader 1` to `leader 9`
-/// open the agents numbered so, and a number no key reaches is not worth the cell (decision
-/// records 0064 and 0065).
+/// The highest number a Navigator row writes: `D-1` to `D-9` open the agents numbered so, and
+/// a number no key reaches is not worth the cell (decision records 0064, 0065 and 0068).
 pub const MAX_NUMBER: usize = 9;
 
 /// The corner an agent row wears under its workspace in the Navigator. Two cells, like the

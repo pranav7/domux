@@ -3,7 +3,9 @@
 **Date:** 2026-11-26
 **Status:** Accepted. Amends decision record 0064: the agents gain `D-1` to `D-9`, and the
 Navigator writes their numbers only while the super key is held, at a client that can tell. The
-rest of 0064 stands. **Amended by decision record 0066**, which adds `domux install ghostty` and
+rest of 0064 stands. **Amended by decision record 0068**, which gives `leader 1` to `leader 9` back to the tabs and
+unbinds `M-1` to `M-9`, so the agents keep `D-1` to `D-9` only. **Amended by decision record 0066**,
+which adds `domux install ghostty` and
 reads cmd only where Ghostty confirms that cmd and a number reaches domux.
 **Decision:** `D-1` to `D-9`, cmd and a number on macOS, open the agent the Navigator numbers
 so. `leader 1` to `leader 9` still do, and `M-1` to `M-9` still select the tabs. A client on the

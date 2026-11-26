@@ -256,10 +256,10 @@ async fn a_click_on_an_agent_row_opens_the_agents_pane() {
     );
 }
 
-/// `leader 1` opens the agent the Navigator numbers 1, from another tab, and the row ends in
-/// that number, in the faint colour of its corner (decision record 0064).
+/// The row ends in the number the Navigator gives its agent, in the faint colour of its corner,
+/// and `D-1` opens that agent from another tab (decision records 0064 and 0065).
 #[tokio::test]
-async fn leader_and_a_number_opens_the_agent_the_navigator_numbers_so() {
+async fn the_navigator_numbers_an_agent_and_that_number_opens_it() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
     let pane = one_agent(&mut h).await;
     let f = h.frame(h.client.clone()).await;
@@ -283,8 +283,7 @@ async fn leader_and_a_number_opens_the_agent_the_navigator_numbers_so() {
     h.api("tab.create", json!({})).await.unwrap();
     h.frame(h.client.clone()).await;
     assert_ne!(h.focused_pane(h.client.clone()), pane, "a new tab");
-    h.key(h.client.clone(), "C-s").await;
-    h.key(h.client.clone(), "1").await;
+    h.key(h.client.clone(), "D-1").await;
     h.frame(h.client.clone()).await;
     assert_eq!(
         h.focused_pane(h.client.clone()),
@@ -293,14 +292,12 @@ async fn leader_and_a_number_opens_the_agent_the_navigator_numbers_so() {
     );
 
     // A number no agent has is refused, and the keys stay where they were.
-    h.key(h.client.clone(), "C-s").await;
-    h.key(h.client.clone(), "2").await;
+    h.key(h.client.clone(), "D-2").await;
     h.frame(h.client.clone()).await;
     assert_eq!(h.focused_pane(h.client.clone()), pane);
 }
 
-/// `D-1`, cmd and 1 on macOS, opens the agent the Navigator numbers 1 in one chord, the way
-/// `leader 1` does in two (decision record 0065).
+/// `D-1`, cmd and 1 on macOS, opens the agent the Navigator numbers 1 (decision record 0065).
 #[tokio::test]
 async fn super_and_a_number_opens_the_agent_the_navigator_numbers_so() {
     let mut h = Harness::start(Config::default(), 120, 24).await;
