@@ -14,14 +14,15 @@ fn cols(line: &str, from: usize, to: usize) -> String {
 }
 
 /// True once this client draws the sidebar's layout: no full-width top bar, and the pane box
-/// starts right of the sidebar's 38 columns and the one gap column.
+/// starts on the sidebar's last column, the line the two share, where its corner meets the
+/// sidebar's edge (decision record 0064).
 ///
 /// Positive on purpose. `!f.contains("proj › main")` alone is true of a client that has
 /// drawn nothing at all, so a client that never got its frame would pass it.
 fn on_the_panes(f: &str) -> bool {
     f.lines().filter(|l| l.starts_with('|')).count() > 2
         && !f.contains("proj › main")
-        && cols(row(f, 1), 38, 40) == " ┌ "
+        && cols(row(f, 1), 37, 38) == "├ "
 }
 
 /// `leader b` reaches `sidebar.toggle`, the full-width top bar goes, the sidebar takes the
@@ -284,10 +285,10 @@ async fn the_leader_indicator_reaches_the_end_of_the_tab_row_on_the_panes() {
             Duration::from_secs(2),
         )
         .await;
-    // 82 = "  1 │ + │" (9) + 61 spaces + "C-s  ? keys " (12)
+    // 82 = " 1 │ + │" (8) + 60 spaces + "C-s  ? keys ● " (14)
     assert_eq!(
         cols(row(&f, 0), 38, 119),
-        "  1 │ + │                                                           C-s  ? keys ● ",
+        format!(" 1 │ + │{}C-s  ? keys ● ", " ".repeat(60)),
         "{f}"
     );
     assert!(
