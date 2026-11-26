@@ -1,7 +1,7 @@
 //! Persistence and resume: what survives a restart, and what a broken state file does.
 
 use domux_core::config::Config;
-use domux_server::testing::{row, Harness, HarnessOptions};
+use domux_server::testing::{boxes, row, Harness, HarnessOptions};
 use serde_json::json;
 use std::time::Duration;
 
@@ -82,11 +82,7 @@ async fn kill_and_restart_brings_back_tabs_panes_names_layout_and_cwds() {
         "| proj › main  1 code │ 2 │ + │          14:32   Fri 4 Sep ● |",
         "{f}"
     );
-    assert_eq!(
-        f.matches('┌').count(),
-        2,
-        "two panes on the restored current tab"
-    );
+    assert_eq!(boxes(&f), 2, "two panes on the restored current tab");
     let requests = h.spawner.as_ref().unwrap().requests();
     assert_eq!(requests.len(), 6, "three shells respawned");
     let respawned: Vec<_> = requests[3..].iter().collect();

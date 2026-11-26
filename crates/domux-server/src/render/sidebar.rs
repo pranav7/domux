@@ -583,6 +583,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         draw(&input, buf);
     }
@@ -610,6 +611,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         draw(&input, buf);
     }
@@ -683,6 +685,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         hint_row(&input, area, buf);
     }
@@ -1209,6 +1212,7 @@ mod tests {
             word: "",
             branch: None,
             pr: None,
+            number: None,
         });
         view
     }
@@ -1248,6 +1252,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 38, 1));
         hint_row(&input, Rect::new(0, 0, 38, 1), &mut buf);
@@ -1323,6 +1328,7 @@ mod tests {
                 toast: None,
                 navigator: false,
                 theme: domux_core::theme::Theme::domux(),
+                dim_unfocused: 0,
             };
             let mut buf = Buffer::empty(Rect::new(0, 0, 120, 24));
             draw(&input, &mut buf);

@@ -49,6 +49,10 @@ pub struct TerminalConfig {
     pub shell: Option<String>,
     pub scrollback: usize,
     pub remain_on_exit: bool,
+    /// How far, in percent, every pane but the focused one is mixed towards the terminal's
+    /// background, so the pane with the keys reads at full strength (decision record 0064).
+    /// 0 turns it off.
+    pub dim_unfocused: u8,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -170,15 +174,17 @@ impl Default for KeysConfig {
                 // holding something they did not type.
                 ("k", "pane.clear"),
                 ("t", "tab.create"),
-                ("1", "tab.select 1"),
-                ("2", "tab.select 2"),
-                ("3", "tab.select 3"),
-                ("4", "tab.select 4"),
-                ("5", "tab.select 5"),
-                ("6", "tab.select 6"),
-                ("7", "tab.select 7"),
-                ("8", "tab.select 8"),
-                ("9", "tab.select 9"),
+                // The agent the Navigator numbers so. The digits were the tabs' until MUX-60,
+                // which moved the tabs to `M-1` to `M-9` (decision record 0064).
+                ("1", "agent.focus #1"),
+                ("2", "agent.focus #2"),
+                ("3", "agent.focus #3"),
+                ("4", "agent.focus #4"),
+                ("5", "agent.focus #5"),
+                ("6", "agent.focus #6"),
+                ("7", "agent.focus #7"),
+                ("8", "agent.focus #8"),
+                ("9", "agent.focus #9"),
                 // Destructive, so the key asks first: see `Core::confirmation_for`.
                 ("x", "tab.close"),
                 ("R", "tab.clear_name"),
@@ -200,6 +206,17 @@ impl Default for KeysConfig {
                 ("C-k", "focus.up"),
                 ("C-l", "focus.right"),
                 ("C-\\", "focus.last"),
+                // One chord to a tab, with no leader: the digits under the leader open agents
+                // (decision record 0064).
+                ("M-1", "tab.select 1"),
+                ("M-2", "tab.select 2"),
+                ("M-3", "tab.select 3"),
+                ("M-4", "tab.select 4"),
+                ("M-5", "tab.select 5"),
+                ("M-6", "tab.select 6"),
+                ("M-7", "tab.select 7"),
+                ("M-8", "tab.select 8"),
+                ("M-9", "tab.select 9"),
                 // Resize moves the boundary the arrow points at. Shift moves it two cells,
                 // ctrl with shift moves it eight: a step small enough to settle on the
                 // column you want, and one large enough to cross a pane in a few presses.
@@ -261,12 +278,17 @@ impl Default for PassthroughConfig {
     }
 }
 
+/// `[terminal] dim_unfocused` when the file does not set it: enough to tell the panes apart at
+/// a glance, and little enough that the text in the other panes still reads.
+pub const DIM_UNFOCUSED: u8 = 30;
+
 impl Default for TerminalConfig {
     fn default() -> Self {
         TerminalConfig {
             shell: None,
             scrollback: 10000,
             remain_on_exit: false,
+            dim_unfocused: DIM_UNFOCUSED,
         }
     }
 }
@@ -321,7 +343,10 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
         &["leader", "bindings", "global", "passthrough", "list"],
     ),
     ("keys.passthrough", &["commands", "keys"]),
-    ("terminal", &["shell", "scrollback", "remain_on_exit"]),
+    (
+        "terminal",
+        &["shell", "scrollback", "remain_on_exit", "dim_unfocused"],
+    ),
     ("worktrees", &["base"]),
     ("stay_awake", &["mode"]),
     ("navigator", &["enabled"]),
@@ -604,6 +629,10 @@ mod tests {
         );
         assert_eq!(
             c.keys.bindings.get("9").map(String::as_str),
+            Some("agent.focus #9")
+        );
+        assert_eq!(
+            c.keys.global.get("M-9").map(String::as_str),
             Some("tab.select 9")
         );
         assert_eq!(

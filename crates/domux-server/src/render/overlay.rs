@@ -398,11 +398,12 @@ fn resize_step(action: &Action) -> Option<&str> {
 
 /// The three headings the Keys overlay groups `[keys.bindings]` and `[keys.global]` rows
 /// under, in the order they are drawn: opening or renaming a project or workspace, opening
-/// the agents overlay, then everything else on the workpanel. `sidebar.toggle` and
+/// the agents overlay or an agent, then everything else on the workpanel. `sidebar.toggle` and
 /// `client.detach` read as workpanel rather than projects: they act on the screen, not on a
 /// project or a workspace. `agents.open` has its own heading because the overlay it opens is
 /// its own answer to its own question, in both layouts (decision record 0033), and the
-/// heading empties itself the day the binding does.
+/// heading empties itself the day the binding does. `agent.focus #<n>` sits under it too,
+/// since the digits open agents (decision record 0064).
 const HELP_GROUPS: [&str; 3] = ["projects", "agents", "workpanel"];
 
 /// Which of `HELP_GROUPS` a row belongs in, decided from the action's own name so a
@@ -410,7 +411,7 @@ const HELP_GROUPS: [&str; 3] = ["projects", "agents", "workpanel"];
 fn help_group(action: &str) -> usize {
     if action.starts_with("workspace.") || action == "switcher.open" {
         0
-    } else if action.starts_with("agents.") {
+    } else if action.starts_with("agents.") || action.starts_with("agent.") {
         1
     } else {
         2
@@ -437,6 +438,66 @@ fn help_list_block_lines(list_block: &[String]) -> Vec<(HelpLineKind, String)> {
         out.extend(rest.iter().cloned().map(|s| (HelpLineKind::Body, s)));
     }
     out
+}
+
+/// The bindings with each run of one method over numbered targets in one row: `1` to `9` on
+/// `agent.focus #1` to `#9` read `1-9` and `agent.focus #<n>`, and `M-1` to `M-9` on
+/// `tab.select 1` to `9` read `M-1-9` and `tab.select <n>`. A number bound alone keeps its own
+/// row, because `<n>` would then hide which one it is. Keys and actions as `(key, action)`.
+fn collapse_numbered(bindings: Vec<(String, String)>) -> Vec<(String, String)> {
+    // `agent.focus #3` is `("agent.focus", "#", 3)`; anything else is not numbered.
+    fn numbered(action: &str) -> Option<(&str, &str, u32)> {
+        let (method, arg) = action.split_once(' ')?;
+        let (mark, digits) = match arg.strip_prefix('#') {
+            Some(digits) => ("#", digits),
+            None => ("", arg),
+        };
+        let n = digits
+            .parse()
+            .ok()
+            .filter(|_| digits.bytes().all(|b| b.is_ascii_digit()))?;
+        Some((method, mark, n))
+    }
+    // A run is a method and its mark, with the number and key of each binding in it.
+    type Run = (String, String);
+    let mut runs: Vec<(Run, Vec<(u32, String)>)> = Vec::new();
+    let mut rest = Vec::new();
+    for (key, action) in bindings {
+        match numbered(&action) {
+            Some((method, mark, n)) => {
+                let run = (method.to_string(), mark.to_string());
+                match runs.iter_mut().find(|(r, _)| r == &run) {
+                    Some((_, keys)) => keys.push((n, key)),
+                    None => runs.push((run, vec![(n, key)])),
+                }
+            }
+            None => rest.push((key, action)),
+        }
+    }
+    for ((method, mark), mut keys) in runs {
+        keys.sort();
+        if keys.len() == 1 {
+            let (n, key) = keys.remove(0);
+            rest.push((key, format!("{method} {mark}{n}")));
+            continue;
+        }
+        let (first, last) = (&keys[0].1, &keys[keys.len() - 1].1);
+        // `M-1` and `M-9` share `M-`, so the row reads `M-1-9`; bare digits read `1-9`.
+        let shared = first
+            .char_indices()
+            .zip(last.chars())
+            .take_while(|((_, a), b)| a == b)
+            .last()
+            .map(|((i, c), _)| i + c.len_utf8())
+            .unwrap_or(0);
+        let shared = first[..shared].trim_end_matches(|c: char| c.is_ascii_digit());
+        let tail = |key: &str| key[shared.len()..].to_string();
+        rest.push((
+            format!("{shared}{}-{}", tail(first), tail(last)),
+            format!("{method} {mark}<n>"),
+        ));
+    }
+    rest
 }
 
 fn draw_help(input: &RenderInput, buf: &mut Buffer) {
@@ -477,29 +538,18 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     if in_a_box && !list_block.is_empty() {
         sections.push(help_list_block_lines(&list_block));
     }
-    // Collapse the run of `tab.select <n>` bindings into one row. Nine near-identical rows
-    // push the globals and the footer past the bottom of the box on an 80x24 screen, and the
-    // row still renders the configured keys (principle 3).
-    let mut digits: Vec<String> = km
-        .bindings
-        .iter()
-        .filter(|b| b.action.to_string().starts_with("tab.select "))
-        .map(|b| b.key.to_string())
-        .collect();
-    digits.sort();
-    let mut bindings: Vec<(String, String)> = km
-        .bindings
-        .iter()
-        .filter(|b| !b.action.to_string().starts_with("tab.select "))
-        .map(|b| (format!("{} {}", km.leader, b.key), b.action.to_string()))
-        .collect();
-    if let (Some(first), Some(last)) = (digits.first(), digits.last()) {
-        let keys = if digits.len() == 1 {
-            first.clone()
-        } else {
-            format!("{first}-{last}")
-        };
-        bindings.push((format!("{} {}", km.leader, keys), "tab.select <n>".into()));
+    // Collapse a run of numbered bindings, `agent.focus #1` to `#9` under the leader and
+    // `tab.select 1` to `9` on `M-`, into one row each. Nine near-identical rows push the
+    // globals and the footer past the bottom of the box on an 80x24 screen, and the row still
+    // renders the configured keys (principle 3).
+    let mut bindings = collapse_numbered(
+        km.bindings
+            .iter()
+            .map(|b| (b.key.to_string(), b.action.to_string()))
+            .collect(),
+    );
+    for (key, _) in &mut bindings {
+        *key = format!("{} {key}", km.leader);
     }
     bindings.sort_by(|a, b| a.1.cmp(&b.1));
     // Collapse the resize bindings the same way, and for the same reason: four directions at
@@ -507,7 +557,7 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
     // has to spare. Each step size gets one row naming its own keys. A step bound in a single
     // direction keeps its own row instead, because `<dir>` would then hide which direction it
     // is, where `<n>` above hides nothing.
-    let mut globals: Vec<(String, String)> = Vec::new();
+    let mut numbered: Vec<(String, String)> = Vec::new();
     let mut steps: Vec<&str> = Vec::new();
     for b in &km.global {
         match resize_step(&b.action) {
@@ -516,9 +566,10 @@ fn draw_help(input: &RenderInput, buf: &mut Buffer) {
                     steps.push(cells);
                 }
             }
-            None => globals.push((b.key.to_string(), b.action.to_string())),
+            None => numbered.push((b.key.to_string(), b.action.to_string())),
         }
     }
+    let mut globals = collapse_numbered(numbered);
     for cells in steps {
         let at_step: Vec<&Binding> = km
             .global
@@ -657,6 +708,39 @@ mod tests {
         crate::testing::client_view()
     }
 
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, a)| (k.to_string(), a.to_string()))
+            .collect()
+    }
+
+    /// One row for each run of numbered targets, keys and all, and a lone number keeps its
+    /// own row (decision record 0064).
+    #[test]
+    fn numbered_bindings_collapse_into_one_row_per_run() {
+        let mut leader: Vec<(String, String)> = (1..=9)
+            .map(|n| (n.to_string(), format!("agent.focus #{n}")))
+            .collect();
+        leader.extend(pairs(&[("z", "pane.zoom")]));
+        let mut got = collapse_numbered(leader);
+        got.sort();
+        assert_eq!(
+            got,
+            pairs(&[("1-9", "agent.focus #<n>"), ("z", "pane.zoom")])
+        );
+        let global: Vec<(String, String)> = (1..=9)
+            .map(|n| (format!("M-{n}"), format!("tab.select {n}")))
+            .collect();
+        assert_eq!(
+            collapse_numbered(global),
+            pairs(&[("M-1-9", "tab.select <n>")])
+        );
+        assert_eq!(
+            collapse_numbered(pairs(&[("g", "tab.select 2")])),
+            pairs(&[("g", "tab.select 2")])
+        );
+    }
+
     /// Draws the footer for `view` into `area` of `buf`, leaving whatever else is in `buf`.
     fn footer_into(view: &ClientView, area: Rect, buf: &mut Buffer) {
         hints_into(
@@ -689,6 +773,7 @@ mod tests {
             toast: None,
             navigator: false,
             theme: domux_core::theme::Theme::domux(),
+            dim_unfocused: 0,
         };
         footer(&input, hints, area, buf);
     }

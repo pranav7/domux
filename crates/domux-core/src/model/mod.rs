@@ -1672,6 +1672,24 @@ impl Model {
         self.agents.iter().find(|a| a.pane.as_ref() == Some(pane))
     }
 
+    /// Every agent in the order the Navigator lists them: projects by name without case,
+    /// workspaces in their own order, and each workspace's agents in the order they started.
+    /// An agent's number is its place here counted from 1, which `leader 1` to `leader 9`
+    /// open and the Navigator writes at the end of its row (decision record 0064).
+    ///
+    /// The order follows the Navigator's because the number is read off the Navigator: a key
+    /// that opened the third agent of some other list would open a row the reader cannot see
+    /// the number of. An agent whose workspace no project holds has no row and no number.
+    pub fn navigator_agents(&self) -> Vec<&Agent> {
+        let mut projects: Vec<&Project> = self.projects.iter().collect();
+        projects.sort_by_key(|p| p.name.to_lowercase());
+        projects
+            .into_iter()
+            .flat_map(|p| p.workspaces.iter())
+            .flat_map(|w| self.agents.iter().filter(move |a| a.workspace == w.id))
+            .collect()
+    }
+
     /// Every record of a workspace, in creation order.
     pub fn agents_in_workspace(&self, ws: &WorkspaceId) -> Vec<&Agent> {
         self.agents.iter().filter(|a| &a.workspace == ws).collect()
@@ -2050,6 +2068,26 @@ impl Model {
         agents
     }
 
+    /// The agent `#n` names: the `n`th of `navigator_agents`, counted from 1.
+    fn resolve_agent_number(&self, n: &str) -> Result<AgentId, ApiError> {
+        let agents = self.navigator_agents();
+        let Ok(n) = n.parse::<usize>() else {
+            return Err(ApiError::invalid_params(format!(
+                "#{n} is not an agent number; write # and a number from 1, such as #2"
+            )));
+        };
+        match n.checked_sub(1).and_then(|i| agents.get(i)) {
+            Some(a) => Ok(a.id.clone()),
+            None if agents.is_empty() => Err(ApiError::not_found(format!(
+                "no agent #{n}: no agent is running"
+            ))),
+            None => Err(ApiError::not_found(format!(
+                "no agent #{n}: the Navigator numbers {} from 1",
+                agents.len()
+            ))),
+        }
+    }
+
     /// Agents with a red dot across every project: the number `agent.list` answers with.
     ///
     /// It was the top bar's count too until MUX-23 took that off the bar. Nothing on a screen
@@ -2059,11 +2097,16 @@ impl Model {
     }
 
     /// An agent id; or a workspace (id, handle, name or branch) holding exactly one record;
-    /// or `workspace/tab` when it holds more (architecture spec section 7).
+    /// or `workspace/tab` when it holds more (architecture spec section 7); or `#3`, the
+    /// agent the Navigator numbers 3 (decision record 0064). The `#` keeps a number from
+    /// reading as a workspace someone named `3`.
     ///
     /// It took the calling verb's precondition until decision record 0030, which left every
     /// record live and every verb able to act on any of them.
     pub fn resolve_agent_target(&self, target: &str) -> Result<AgentId, ApiError> {
+        if let Some(n) = target.strip_prefix('#') {
+            return self.resolve_agent_number(n);
+        }
         if let Ok(id) = target.parse::<AgentId>() {
             return self.agent(&id).map(|a| a.id.clone()).ok_or_else(|| {
                 ApiError::not_found(format!(
@@ -4155,6 +4198,54 @@ mod tests {
             }]
         );
         assert!(m.agents.is_empty());
+    }
+
+    /// The Navigator's order: projects by name, then each workspace's agents as they started,
+    /// whatever state each is in (decision record 0064).
+    #[test]
+    fn navigator_agents_follow_the_projects_then_the_order_they_started() {
+        let mut m = Model::new(7);
+        let (_, zeta, _) = m.add_folder_project(PathBuf::from("/x/zeta")).unwrap();
+        let (_, alpha, _) = m.add_folder_project(PathBuf::from("/x/Alpha")).unwrap();
+        let start = |m: &mut Model, ws: &WorkspaceId, sid: &str| {
+            let (_, pane, _) = m.create_tab(ws, PathBuf::from("/x")).unwrap();
+            m.report_agent(
+                &pane,
+                AgentKind::Claude,
+                hook(AgentEvent::SessionStart, sid),
+                "2026-09-04T14:00:00+00:00",
+            )
+            .unwrap()
+            .unwrap()
+            .agent
+        };
+        let in_zeta = start(&mut m, &zeta, "z");
+        let first = start(&mut m, &alpha, "a1");
+        let second = start(&mut m, &alpha, "a2");
+        // A state change moves a row in `sorted_agents` and never here.
+        m.report_agent(
+            m.agent(&second).unwrap().pane.clone().as_ref().unwrap(),
+            AgentKind::Claude,
+            hook(AgentEvent::UserPromptSubmit, "a2"),
+            "2026-09-04T14:05:00+00:00",
+        )
+        .unwrap()
+        .unwrap();
+        let order: Vec<AgentId> = m.navigator_agents().iter().map(|a| a.id.clone()).collect();
+        assert_eq!(order, vec![first.clone(), second.clone(), in_zeta.clone()]);
+        assert_eq!(m.resolve_agent_target("#1").unwrap(), first);
+        assert_eq!(m.resolve_agent_target("#3").unwrap(), in_zeta);
+        let past = m.resolve_agent_target("#4").unwrap_err();
+        assert!(past.message.contains("numbers 3"), "{}", past.message);
+        assert!(m.resolve_agent_target("#0").is_err());
+        assert!(m.resolve_agent_target("#two").is_err());
+    }
+
+    #[test]
+    fn an_agent_number_with_no_agent_running_says_so() {
+        let m = Model::new(7);
+        let e = m.resolve_agent_target("#1").unwrap_err();
+        assert!(e.message.contains("no agent is running"), "{}", e.message);
     }
 
     #[test]

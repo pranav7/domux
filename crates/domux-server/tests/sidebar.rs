@@ -14,14 +14,15 @@ fn cols(line: &str, from: usize, to: usize) -> String {
 }
 
 /// True once this client draws the sidebar's layout: no full-width top bar, and the pane box
-/// starts right of the sidebar's 38 columns and the one gap column.
+/// starts on the sidebar's last column, the line the two share, where its corner meets the
+/// sidebar's edge (decision record 0064).
 ///
 /// Positive on purpose. `!f.contains("proj › main")` alone is true of a client that has
 /// drawn nothing at all, so a client that never got its frame would pass it.
 fn on_the_panes(f: &str) -> bool {
     f.lines().filter(|l| l.starts_with('|')).count() > 2
         && !f.contains("proj › main")
-        && cols(row(f, 1), 38, 40) == " ┌ "
+        && cols(row(f, 1), 37, 38) == "├ "
 }
 
 /// `leader b` reaches `sidebar.toggle`, the full-width top bar goes, the sidebar takes the
@@ -36,33 +37,32 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
         .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     assert!(h.model().sidebar_open);
-    // `cols(line, 38, 119)` takes 82 cells: the one gap column, then the 81-column
-    // workpanel (120 screen - 38 sidebar - 1 gap). Every literal below is exactly 82.
-    // 82 = "  1 │ + │" (9) + 55 spaces + "14:32   Fri 4 Sep " (18)
+    // `cols(line, 38, 119)` takes 82 cells: the 83-column workpanel (120 screen - 38 sidebar
+    // + the 1 column the two share) without that shared column, which is the sidebar's in
+    // the literals below (decision record 0064). Every literal here is exactly 82.
+    // 82 = " 1 │ + │" (8) + 54 spaces + "14:32   Fri 4 Sep ● " (20)
     assert_eq!(
         cols(row(&f, 0), 38, 119),
-        "  1 │ + │                                                     14:32   Fri 4 Sep ● ",
-        "the tab row sits on the panes with the clock at its end:\n{f}"
+        format!(" 1 │ + │{}14:32   Fri 4 Sep ● ", " ".repeat(54)),
+        "the tab row sits on the panes, after the shared line, with the clock at its end:\n{f}"
     );
-    // 82 = " ┌ sh " (6) + 75 dashes + "┐" (1)
+    // 82 = " sh " (4) + 77 dashes + "┐" (1)
     assert_eq!(
         cols(row(&f, 1), 38, 119),
-        " ┌ sh ───────────────────────────────────────────────────────────────────────────┐"
+        format!(" sh {}┐", "─".repeat(77))
     );
-    // 82 = " └" (2) + 79 dashes + "┘" (1)
-    assert_eq!(
-        cols(row(&f, 23), 38, 119),
-        " └───────────────────────────────────────────────────────────────────────────────┘"
-    );
+    // 82 = 81 dashes + "┘" (1)
+    assert_eq!(cols(row(&f, 23), 38, 119), format!("{}┘", "─".repeat(81)));
     // `cols(line, 0, 37)` takes 38 cells, the sidebar's whole width.
     assert_eq!(
         cols(row(&f, 0), 0, 37),
         "┌ Navigator ─────────────────────────┐",
         "{f}"
     );
+    // The pane's top left corner meets the sidebar's edge on the line they share.
     assert_eq!(
         cols(row(&f, 1), 0, 37),
-        "│ PROJ ───────────────────────────── │"
+        "│ PROJ ───────────────────────────── ├"
     );
     assert_eq!(
         cols(row(&f, 2), 0, 37),
@@ -75,8 +75,9 @@ async fn leader_b_replaces_the_top_bar_with_the_sidebar_and_puts_the_tab_row_on_
     );
     assert_eq!(
         cols(row(&f, 23), 0, 37),
-        "└────────────────────────────────────┘",
-        "so the box's bottom border reaches the same row the workpanel's does:\n{f}"
+        "└────────────────────────────────────┴",
+        "so the box's bottom border reaches the same row the workpanel's does, and the two \
+         meet:\n{f}"
     );
     // The fill marks the row the keys act on, which with focus in a pane is the workspace
     // this client is in (domain model, section 3.3). `rows` is given the key and hands back
@@ -203,8 +204,9 @@ async fn the_pane_is_narrower_by_the_sidebar_and_its_client_still_sizes_it() {
             panes[0]["cols"].as_u64().unwrap(),
             panes[0]["rows"].as_u64().unwrap()
         ),
-        (79, 21),
-        "120 minus 38 for the sidebar, 1 for the gap, 2 for the box border"
+        (81, 21),
+        "120 minus 38 for the sidebar, plus the 1 column it shares with the box, minus 2 for \
+         the box border"
     );
 }
 
@@ -252,7 +254,7 @@ async fn the_pane_takes_the_sidebars_columns_back_when_the_sidebar_hides_itself(
     h.wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     let pane = h.focused_pane(h.client.clone());
-    assert_eq!((h.pane_size(&pane).cols, h.pane_size(&pane).rows), (79, 21));
+    assert_eq!((h.pane_size(&pane).cols, h.pane_size(&pane).rows), (81, 21));
     h.resize(h.client.clone(), 119, 24).await;
     h.wait_for(
         h.client.clone(),
@@ -283,10 +285,10 @@ async fn the_leader_indicator_reaches_the_end_of_the_tab_row_on_the_panes() {
             Duration::from_secs(2),
         )
         .await;
-    // 82 = "  1 │ + │" (9) + 61 spaces + "C-s  ? keys " (12)
+    // 82 = " 1 │ + │" (8) + 60 spaces + "C-s  ? keys ● " (14)
     assert_eq!(
         cols(row(&f, 0), 38, 119),
-        "  1 │ + │                                                           C-s  ? keys ● ",
+        format!(" 1 │ + │{}C-s  ? keys ● ", " ".repeat(60)),
         "{f}"
     );
     assert!(
@@ -310,11 +312,11 @@ async fn the_tab_row_on_the_panes_carries_no_background() {
         .wait_for(h.client.clone(), on_the_panes, Duration::from_secs(2))
         .await;
     assert!(
-        f.contains("r0 c42-42 fg=#313244\n"),
+        f.contains("r0 c41-41 fg=#313244\n"),
         "and on nothing over the panes:\n{f}"
     );
     assert!(
-        f.contains("r0 c39-41 bold fg=#1e1e2e bg=#cba6f7"),
+        f.contains("r0 c38-40 bold fg=#1e1e2e bg=#cba6f7"),
         "while the fill on the tab that owns the keys keeps its own background:\n{f}"
     );
 }
@@ -336,13 +338,13 @@ async fn a_tab_that_does_not_own_the_keys_carries_no_background_on_the_panes() {
             Duration::from_secs(2),
         )
         .await;
-    assert_eq!(cols(row(&f, 0), 38, 50), "  1 │ 2 │ + │", "{f}");
+    assert_eq!(cols(row(&f, 0), 38, 49), " 1 │ 2 │ + │", "{f}");
     assert!(
-        f.contains("r0 c39-41 fg=#7f849c\n"),
+        f.contains("r0 c38-40 fg=#7f849c\n"),
         "tab 1 does not own the keys, so its cell sits on nothing:\n{f}"
     );
     assert!(
-        f.contains("r0 c43-45 bold fg=#1e1e2e bg=#cba6f7"),
+        f.contains("r0 c42-44 bold fg=#1e1e2e bg=#cba6f7"),
         "tab 2 owns them and keeps its own fill:\n{f}"
     );
 }
@@ -611,7 +613,7 @@ async fn the_current_tab_carries_no_background_while_an_overlay_owns_the_keys() 
         )
         .await;
     assert!(
-        f.contains("r0 c39-41 bold fg=#cdd6f4\n"),
+        f.contains("r0 c38-40 bold fg=#cdd6f4\n"),
         "the current tab is bold text on nothing: not the accent fill, and not a mantle band:\n{f}"
     );
 }

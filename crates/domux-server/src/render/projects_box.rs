@@ -262,9 +262,14 @@ fn agent_rows(
         false => RowForm::Nested,
     };
     let width = extras.width.saturating_sub(INDENT) as u16;
-    view.agents
-        .iter()
-        .filter(|a| a.workspace == w.id)
+    // In the order they started, which is the order of their numbers, rather than the order of
+    // the view, which is the agents overlay's and moves as states change (decision records
+    // 0030 and 0064).
+    let mut agents: Vec<&agents_box::AgentEntry> =
+        view.agents.iter().filter(|a| a.workspace == w.id).collect();
+    agents.sort_by_key(|a| a.number.unwrap_or(usize::MAX));
+    agents
+        .into_iter()
         .map(|a| indented_row(agents_box::one_row(theme, a, view, form, width)))
         .collect()
 }

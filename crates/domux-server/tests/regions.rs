@@ -101,7 +101,7 @@ async fn c_h_from_the_leftmost_pane_enters_the_projects_box_and_c_l_and_esc_retu
     let f = in_the_box(&mut h).await;
     assert_eq!(focus(&h), Focus::Region(RegionKind::SidebarProjects), "{f}");
     assert!(
-        !f.contains("r1 c39-39 fg=#cba6f7"),
+        !f.contains("r1 c38-41 bold fg=#cba6f7"),
         "no pane carries the accent while the box has it:\n{f}"
     );
     assert!(
@@ -113,7 +113,7 @@ async fn c_h_from_the_leftmost_pane_enters_the_projects_box_and_c_l_and_esc_retu
     h.key(h.client.clone(), "C-l").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("r1 c39-39 fg=#cba6f7"),
+        |f| f.contains("r1 c38-41 bold fg=#cba6f7"),
         Duration::from_secs(2),
     )
     .await;
@@ -129,7 +129,7 @@ async fn c_h_from_the_leftmost_pane_enters_the_projects_box_and_c_l_and_esc_retu
     h.key(h.client.clone(), "Esc").await;
     h.wait_for(
         h.client.clone(),
-        |f| f.contains("r1 c39-39 fg=#cba6f7"),
+        |f| f.contains("r1 c38-41 bold fg=#cba6f7"),
         Duration::from_secs(2),
     )
     .await;
@@ -851,7 +851,7 @@ async fn the_box_takes_the_accent_and_gives_it_back() {
     let f = h
         .wait_for(
             h.client.clone(),
-            |f| f.contains("r1 c39-39 fg=#cba6f7"),
+            |f| f.contains("r1 c38-41 bold fg=#cba6f7"),
             Duration::from_secs(2),
         )
         .await;

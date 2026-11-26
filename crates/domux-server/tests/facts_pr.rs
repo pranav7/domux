@@ -7,7 +7,6 @@ use domux_server::facts::pr::{parse_gh_pr_list, PrProvider, PR_INTERVAL, PR_TIME
 use domux_server::facts::{default_providers, FactProvider, FactTarget, ProviderScope};
 use domux_server::testing::finishes_within;
 use domux_server::FixedClock;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -29,16 +28,25 @@ fn bin_and_workspace(dir: &Path) -> (PathBuf, PathBuf) {
 /// Both records go to `$(dirname "$0")`, which is the absolute path the provider ran, never a
 /// relative one: a relative path would land wherever `gh` happened to be run, which for the
 /// mutant these records exist to catch is the m2 worktree.
+///
+/// A shell writes the file, not this process. Tests run on threads of one process, and a
+/// thread that forks while this one holds the script open for writing hands the child that
+/// descriptor until the child execs; running the script in that window fails with `Text file
+/// busy` on Linux. A descriptor that only ever lives in another process cannot be inherited.
 fn fake_gh(bin: &Path, body: &str) -> PathBuf {
     let path = bin.join("gh");
-    std::fs::write(
-        &path,
-        format!(
-            "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\npwd > \"$(dirname \"$0\")/cwd\"\n{body}\n"
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = format!(
+        "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\npwd > \"$(dirname \"$0\")/cwd\"\n{body}\n"
+    );
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"")
+        .arg("sh")
+        .arg(&script)
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "the fake gh was not written");
     path
 }
 

@@ -256,6 +256,49 @@ async fn a_click_on_an_agent_row_opens_the_agents_pane() {
     );
 }
 
+/// `leader 1` opens the agent the Navigator numbers 1, from another tab, and the row ends in
+/// that number, in the faint colour of its corner (decision record 0064).
+#[tokio::test]
+async fn leader_and_a_number_opens_the_agent_the_navigator_numbers_so() {
+    let mut h = Harness::start(Config::default(), 120, 24).await;
+    let pane = one_agent(&mut h).await;
+    let f = h.frame(h.client.clone()).await;
+    let at = row_with(&f, "└ claude");
+    let line: Vec<char> = row(&f, at).chars().collect();
+    // `|`, then the border, the pad and 34 cells of row: the number is the row's last cell.
+    assert_eq!(
+        line[1 + 35],
+        '1',
+        "the number ends the row: {:?}",
+        row(&f, at)
+    );
+    assert_eq!(line[1 + 34], ' ', "after a blank: {:?}", row(&f, at));
+    let buf = h.buffer(&h.client);
+    assert_eq!(
+        buf[(35, at as u16)].fg,
+        buf[(4, at as u16)].fg,
+        "in the corner's colour:\n{f}"
+    );
+
+    h.api("tab.create", json!({})).await.unwrap();
+    h.frame(h.client.clone()).await;
+    assert_ne!(h.focused_pane(h.client.clone()), pane, "a new tab");
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "1").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(
+        h.focused_pane(h.client.clone()),
+        pane,
+        "the key opened the pane the agent runs in"
+    );
+
+    // A number no agent has is refused, and the keys stay where they were.
+    h.key(h.client.clone(), "C-s").await;
+    h.key(h.client.clone(), "2").await;
+    h.frame(h.client.clone()).await;
+    assert_eq!(h.focused_pane(h.client.clone()), pane);
+}
+
 /// A click lands on the row the Navigator draws there after the Navigator has scrolled
 /// (MUX-58). The cursor walks to the bottom of a list taller than the box and back up, which
 /// leaves the box scrolled; the click on the row showing `workspace-1` has to switch to that

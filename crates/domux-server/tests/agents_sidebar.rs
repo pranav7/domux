@@ -111,10 +111,12 @@ async fn the_sidebar_holds_the_agents_box_under_the_projects_box_with_one_row_be
     );
     // The row between them is the sidebar's own background and nothing else: a gap that
     // still carried a border would satisfy the row arithmetic above.
+    // Column 37 is the line the sidebar shares with the panes (decision record 0064), so the
+    // sidebar's own cells are the 37 before it.
     assert_eq!(
         cols(rows[projects_bottom + 1], 0, 37),
-        " ".repeat(38),
-        "the row between the boxes is empty:\n{f}"
+        format!("{}│", " ".repeat(37)),
+        "the row between the boxes is empty up to the shared line:\n{f}"
     );
     // The whole geometry, not just the gap: a split that gave one box every row it could and
     // the other three would pass every assertion above. One project with `main` under it is
@@ -126,7 +128,7 @@ async fn the_sidebar_holds_the_agents_box_under_the_projects_box_with_one_row_be
     );
     assert_eq!(
         cols(row(&f, 28), 0, 37),
-        format!("└{}┘", "─".repeat(36)),
+        format!("└{}┤", "─".repeat(36)),
         "the Agents box ends one row above the hint row:\n{f}"
     );
     assert!(
@@ -468,8 +470,8 @@ async fn the_hint_row_shows_the_cursor_rows_key_while_focus_is_in_the_agents_box
         )
         .await;
     assert_eq!(
-        cols(row(&f, 29), 0, 37),
-        format!(" ⏎ open · ? more{}", " ".repeat(22)),
+        cols(row(&f, 29), 0, 36),
+        format!(" ⏎ open · ? more{}", " ".repeat(21)),
         "a live row offers open (interface spec 12.11):\n{f}"
     );
     h.report(pane, AgentKind::Claude, CLAUDE_ENDS).await;
