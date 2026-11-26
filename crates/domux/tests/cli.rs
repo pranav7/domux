@@ -9,7 +9,7 @@ use domux_core::config::Config;
 use domux_core::model::agent::AgentKind;
 use domux_core::model::ProjectKind;
 use domux_server::agents::hooks::EVENTS_CLAUDE;
-use domux_server::testing::{git, repo_with_origin, Harness, HarnessOptions};
+use domux_server::testing::{boxes, git, repo_with_origin, Harness, HarnessOptions};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::Path;
@@ -202,12 +202,8 @@ async fn pane_split_read_and_send_text_act_on_the_pane_from_the_environment() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    h.wait_for(
-        h.client.clone(),
-        |f| f.matches('┌').count() == 2,
-        Duration::from_secs(10),
-    )
-    .await;
+    h.wait_for(h.client.clone(), |f| boxes(f) == 2, Duration::from_secs(10))
+        .await;
 }
 
 /// `DOMUX_PANE` names the pane that moves, which need not be the focused one: a script in the
