@@ -179,7 +179,9 @@ async fn pane_swap_gives_each_pane_the_size_of_the_box_it_moved_into() {
 /// wait below fails rather than passing on a redraw something else supplied.
 #[tokio::test]
 async fn pane_swap_redraws_two_panes_of_one_size() {
-    let mut h = Harness::start(Config::default(), 40, 10).await;
+    // 41 columns, so the two boxes are 21 each with the line they share (decision record
+    // 0064): at 40 one of them takes the odd column and the panes are not one size.
+    let mut h = Harness::start(Config::default(), 41, 10).await;
     let left = h.focused_pane(h.client.clone());
     h.api("pane.split", json!({"dir": "right"})).await.unwrap();
     let right = h.focused_pane(h.client.clone());
@@ -203,7 +205,7 @@ async fn pane_swap_redraws_two_panes_of_one_size() {
         .await;
     assert_eq!(
         row(&f, 2),
-        "|│RIGHT              │LEFT              │|",
+        "|│RIGHT              │LEFT               │|",
         "{f}"
     );
 }
